@@ -4,3 +4,4 @@ data/** -text
 crates/mb-unicode/src/tables.rs text eol=lf
 crates/mb-unicode/src/idna/tables.rs text eol=lf
 crates/mb-encoding/src/tables.rs text eol=lf
+crates/mb-html/src/entities/tables.rs text eol=lf
