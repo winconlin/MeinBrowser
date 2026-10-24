@@ -1,4 +1,4 @@
-//! Das Programm MeinBrowser. Noch ein Platzhalter, siehe `docs/architektur.md`, Abschnitt 11.
+//! Das Programm MeinBrowser. Noch ein Platzhalter, siehe `docs/architektur.md`, Abschnitt 12.
 
 #![forbid(unsafe_code)]
 
