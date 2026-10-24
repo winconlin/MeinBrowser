@@ -2,13 +2,14 @@
 //!
 //! Siehe `docs/architektur.md`, Abschnitt 4.3.
 //!
-//! Die Tabellen in `tables.rs` erzeugt `cargo run -p datagen` aus den
-//! Rohdaten unter `data/unicode/`. Codepunkte sind hier `u32` statt `char`,
+//! Die Tabellen in `tables.rs` und `idna/tables.rs` erzeugt
+//! `cargo run -p datagen` aus den Rohdaten unter `data/unicode/`. Codepunkte sind hier `u32` statt `char`,
 //! damit auch einzelne Surrogate aus JavaScript-Zeichenketten abgefragt
 //! werden können (RS-9).
 
 #![forbid(unsafe_code)]
 
+pub mod idna;
 pub mod normalization;
 #[rustfmt::skip]
 mod tables;

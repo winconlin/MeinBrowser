@@ -238,7 +238,7 @@ fn fill(
     let (missing, data) = ucd::parse_property_file(file, text)?;
     let mut value_of: Vec<Option<usize>> = vec![None; count];
     for line in missing.iter().chain(&data) {
-        let value = find(values, &line.value).map_err(|message| format!("{file}: {message}"))?;
+        let value = find(values, line.value()).map_err(|message| format!("{file}: {message}"))?;
         value_of
             .get_mut(index(line.first)?..=index(line.last)?)
             .ok_or_else(|| format!("{file}: Bereich außerhalb des Coderaums"))?
