@@ -591,7 +591,7 @@ MeinBrowser/
 
 Große Testsammlungen wie die WPT werden nicht ins Repository kopiert, sondern in der CI in einer festgelegten Version geholt.
 
-**Stand 24.10.2026:** Angelegt sind der Workspace, alle Crates unter `crates/`, `tools/deps-guard`, `data/` und die CI für Linux, Windows und macOS. Inhalt haben bisher `mb-platform` (Fenster mit Eingabe und CPU-Bildausgabe: eigener X11-Client, Win32, AppKit), `mb-raster` (Zeichenfläche und Testbild) und `meinbrowser` (zeigt das Testbild, mit Selbsttest in der CI). Die übrigen Crates sind noch leer. `tools/codegen`, `tools/datagen`, `tools/testrunner` und `tests/` kommen mit den Meilensteinen, die sie brauchen.
+**Stand 24.10.2026:** Angelegt sind der Workspace, alle Crates unter `crates/`, `tools/deps-guard`, `tools/datagen`, `data/` und die CI für Linux, Windows und macOS. Inhalt haben bisher `mb-platform` (Fenster mit Eingabe und CPU-Bildausgabe: eigener X11-Client, Win32, AppKit), `mb-raster` (Zeichenfläche und Testbild), `meinbrowser` (zeigt das Testbild, mit Selbsttest in der CI) und `mb-unicode` (allgemeine Kategorie und kanonische Kombinationsklasse, von `tools/datagen` aus der Unicode-Zeichendatenbank 18.0.0 erzeugt). Damit ist M0 abgeschlossen. Die übrigen Crates sind noch leer. `tools/codegen`, `tools/testrunner` und `tests/` kommen mit den Meilensteinen, die sie brauchen.
 
 ---
 
