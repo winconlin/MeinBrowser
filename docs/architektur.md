@@ -2,7 +2,7 @@
 
 Stand: Entwurf vom 24.10.2026 · Status: zur Diskussion
 
-Dieses Dokument beschreibt, wie MeinBrowser aufgebaut werden soll: welche Bausteine es gibt, wo wir bewusst andere Wege gehen als heutige Browser, wie die eigene JavaScript-Engine aussieht, wie Chrome- und Firefox-Erweiterungen laufen sollen und in welcher Reihenfolge wir bauen. Es ist ein Entwurf. Alles, was noch entschieden werden muss, steht gesammelt in [Abschnitt 13](#13-offene-entscheidungen).
+Dieses Dokument beschreibt, wie MeinBrowser aufgebaut werden soll: welche Bausteine es gibt, wo wir bewusst andere Wege gehen als heutige Browser, wie die eigene JavaScript-Engine aussieht, wie Chrome- und Firefox-Erweiterungen laufen sollen und in welcher Reihenfolge wir bauen. Es ist ein Entwurf. Alles, was noch entschieden werden muss, steht gesammelt in [Abschnitt 14](#14-offene-entscheidungen).
 
 ## Inhalt
 
@@ -13,13 +13,14 @@ Dieses Dokument beschreibt, wie MeinBrowser aufgebaut werden soll: welche Bauste
 5. [Erweiterungen für Chrome und Firefox](#5-erweiterungen-für-chrome-und-firefox)
 6. [Modifizierbarkeit und Skins](#6-modifizierbarkeit-und-skins)
 7. [Ressourcenschonung](#7-ressourcenschonung)
-8. [Plattformen](#8-plattformen)
-9. [Kompatibilität messen](#9-kompatibilität-messen)
-10. [Aufbau des Repositorys](#10-aufbau-des-repositorys)
-11. [Roadmap und Meilensteine](#11-roadmap-und-meilensteine)
-12. [Der Aufwand, ehrlich betrachtet](#12-der-aufwand-ehrlich-betrachtet)
-13. [Offene Entscheidungen](#13-offene-entscheidungen)
-14. [Quellen](#14-quellen)
+8. [Sicherheit](#8-sicherheit)
+9. [Plattformen](#9-plattformen)
+10. [Kompatibilität messen](#10-kompatibilität-messen)
+11. [Aufbau des Repositorys](#11-aufbau-des-repositorys)
+12. [Roadmap und Meilensteine](#12-roadmap-und-meilensteine)
+13. [Der Aufwand, ehrlich betrachtet](#13-der-aufwand-ehrlich-betrachtet)
+14. [Offene Entscheidungen](#14-offene-entscheidungen)
+15. [Quellen](#15-quellen)
 
 ---
 
@@ -29,8 +30,9 @@ Dieses Dokument beschreibt, wie MeinBrowser aufgebaut werden soll: welche Bauste
 
 - **Open Source** unter der MIT-Lizenz (wie im Repository festgelegt).
 - **Extrem ressourcenschonend**: wenig Arbeitsspeicher, schneller Start, kaum Energieverbrauch im Leerlauf.
-- **Maximal kompatibel**: gemessen an den offiziellen Testsammlungen des Webs (web-platform-tests, Test262 und weitere, siehe [Abschnitt 9](#9-kompatibilität-messen)) und an echten Webseiten.
+- **Maximal kompatibel**: gemessen an den offiziellen Testsammlungen des Webs (web-platform-tests, Test262 und weitere, siehe [Abschnitt 10](#10-kompatibilität-messen)) und an echten Webseiten.
 - **Erweiterungen**: Chrome- und Firefox-Erweiterungen laufen ohne Anpassung.
+- **Sicher**: Weder Webseiten noch Erweiterungen noch Angreifer im Netzwerk kommen an Daten anderer Seiten oder an den Rechner (siehe [Abschnitt 8](#8-sicherheit)).
 - **Modifizierbar und skinbar**: Aussehen und Verhalten lassen sich ändern, ohne den Browser neu zu übersetzen.
 - **Läuft auf jedem System**: Linux, Windows und macOS zuerst, danach Android, BSD und weitere.
 - **Komplett eigen**: eine von Grund auf neue Engine, ohne fremde Engines oder Bibliotheken.
@@ -336,6 +338,8 @@ Ein eigener, absturzsicherer Speicherkern (Schreib-Log plus B-Baum) trägt alles
 
 ### 4.14 Sicherheit und Sandbox
 
+Das Bedrohungsmodell und alle Schutzschichten im Überblick stehen in [Abschnitt 8](#8-sicherheit). Hier stehen die technischen Bausteine.
+
 - **Rust schützt vor Speicherfehlern**, solange kein `unsafe` im Spiel ist. Darum steht in allen Crates außer wenigen ausgewiesenen (Plattformschicht, JIT, Garbage Collector, IPC) `#![forbid(unsafe_code)]`. Die Ausnahmen werden besonders geprüft und gefuzzt.
 - **Sandbox je System:** unter Linux seccomp-bpf, Namespaces und Landlock, unter Windows AppContainer, eingeschränkte Tokens und Job-Objekte, unter macOS die Seatbelt-Sandbox.
 - **Fähigkeiten statt Umgebungsrechten:** Eine Komponente bekommt nur Handles auf das, was sie braucht. Eine Inhaltszelle öffnet keine Dateien selbst, sie bekommt sie vom Steuerprozess, wenn der Nutzer sie ausgewählt hat.
@@ -399,7 +403,7 @@ flowchart TB
 
 Eine gemeinsame offizielle Testsammlung wie die WPT gibt es für Erweiterungs-APIs nach unserem Kenntnisstand nicht. Die W3C WebExtensions Community Group arbeitet an einer gemeinsamen Grundlage, der wir folgen. Wir bauen zusätzlich eigene API-Tests aus der Dokumentation und eine Liste realer Zielerweiterungen als Abnahmetest, zum Beispiel uBlock Origin, Dark Reader und Bitwarden.
 
-Offen ist, wie die Installation direkt aus den Stores aussieht, denn beide Stores haben eigene Nutzungsbedingungen (siehe [Abschnitt 13](#13-offene-entscheidungen)).
+Offen ist, wie die Installation direkt aus den Stores aussieht, denn beide Stores haben eigene Nutzungsbedingungen (siehe [Abschnitt 14](#14-offene-entscheidungen)).
 
 ---
 
@@ -441,7 +445,67 @@ Die Oberfläche selbst führt kein JavaScript aus. Ihre Logik ist in Rust geschr
 
 ---
 
-## 8. Plattformen
+## 8. Sicherheit
+
+Ein Browser führt ständig fremden Code aus und ist deshalb eines der wichtigsten Angriffsziele auf jedem Rechner. Viele Entscheidungen weiter oben sind darum zugleich Sicherheitsentscheidungen. Dieser Abschnitt bündelt sie, nennt das Bedrohungsmodell und ergänzt, was in den anderen Abschnitten fehlt.
+
+### 8.1 Bedrohungsmodell
+
+| Angreifer | Ziel | Wichtigster Schutz |
+|---|---|---|
+| Bösartige Webseite | Daten anderer Seiten lesen, aus der Sandbox ausbrechen, Code auf dem Rechner ausführen | Rust, Zellen pro Website, Sandbox, Fuzzing |
+| Angreifer im Netzwerk | Verbindungen mitlesen oder verändern | TLS, Zertifikatsprüfung, HSTS, HTTPS zuerst |
+| Bösartige oder übernommene Erweiterung | mehr Daten abgreifen, als ihre Berechtigungen erlauben | Fähigkeiten, Erweiterungszellen, Berechtigungsdialoge, Signaturen |
+| Bösartiger Mod oder Skin | wie bei Erweiterungen | WebAssembly-Sandbox mit Fähigkeiten, Skins enthalten keinen Code |
+| Täuschung des Nutzers | Phishing, gefälschte Adresszeile, gefälschte Dialoge | Regeln für die Oberfläche, Anzeige internationaler Domainnamen, Schutzlisten |
+| Lieferkette | Schadcode über Abhängigkeiten, Build oder Updates | keine fremden Crates, abgesicherte CI, signierte Updates |
+
+**Grundannahme:** Irgendwann wird eine Inhaltszelle trotz allem übernommen. Die Architektur muss dafür sorgen, dass eine übernommene Zelle nicht mehr kann als die Seite, die sie anzeigt. Sie darf weder an Daten anderer Websites noch an Dateien oder Netzwerkzugänge kommen, die der Steuerprozess ihr nicht gegeben hat.
+
+### 8.2 Schutzschichten
+
+Jede Schicht soll auch dann noch schützen, wenn die davor versagt hat.
+
+1. **Speichersicherheit:** Rust, `unsafe` nur in drei Crates (`mb-platform`, `mb-ipc`, `mb-js`), jeder `unsafe`-Block mit Begründung. Die Workspace-Lints erzwingen das schon heute ([4.14](#414-sicherheit-und-sandbox)).
+2. **Isolation:** eine Zelle pro Website, auch für Frames fremder Websites ([3.1](#31-prozesse-und-zellen)). Dazu kommen die Gegenmaßnahmen gegen Spectre, die die Webplattform vorsieht: Antworten fremder Herkunft, die eine Seite nicht lesen darf, gelangen gar nicht erst in deren Zelle (Opaque Response Blocking). `SharedArrayBuffer` und genaue Zeitmessung gibt es nur in herkunftsisolierten Seiten (COOP und COEP). Zeitstempel werden so vergröbert, wie es die High-Resolution-Time-Spezifikation vorsieht.
+3. **Sandbox:** Die Mechanismen der Betriebssysteme aus [4.14](#414-sicherheit-und-sandbox). Eine Inhaltszelle hat keinen direkten Zugriff auf Dateien, Netz oder GPU.
+4. **Misstrauische Prozessgrenzen:** Jede Nachricht aus einer Inhalts- oder Erweiterungszelle gilt als möglicherweise bösartig. Der Empfänger prüft sie vollständig, mit Prüfcode, der aus derselben Schnittstellenbeschreibung generiert wird wie die Nachrichten selbst. Die IPC ist der Hauptweg, um aus einer Sandbox auszubrechen, und wird deshalb besonders gefuzzt.
+5. **GPU:** Grafiktreiber sind eine große Angriffsfläche. Darum laufen sie in einem eigenen Prozess, und Shader aus WebGL und WebGPU prüft unser Shader-Übersetzer vollständig, bevor ein Treiber sie sieht.
+6. **JIT:** Fehler in JIT-Compilern sind in Browsern eine häufige Ursache schwerer Lücken. Gegenmaßnahmen: W^X, ein JIT-freier Modus als Einstellung, und differentielles Fuzzing, bei dem Interpreter und JIT dieselben Programme ausführen und gleiche Ergebnisse liefern müssen.
+7. **Netzwerk:** TLS 1.3 bevorzugt, vollständige Zertifikatsprüfung, HSTS mit Preload-Liste, HTTPS zuerst (unverschlüsselte Verbindungen nur nach Warnung), Blockieren gemischter Inhalte, Prüfung von Certificate Transparency und von widerrufenen Zertifikaten (Verfahren noch offen, siehe [Abschnitt 14](#14-offene-entscheidungen)).
+8. **Sicherheitsmechanismen der Webplattform,** exakt nach Spezifikation und mit den WPT getestet: Same-Origin-Policy, CORS, Content Security Policy, Trusted Types, Sandbox-Frames, Permissions Policy, Referrer Policy, SameSite-Cookies und sichere Kontexte für mächtige Funktionen.
+9. **Berechtigungen:** Kamera, Mikrofon, Standort, Benachrichtigungen und Ähnliches nur mit Zustimmung, nur in sicheren Kontexten, pro Website widerrufbar.
+10. **Oberfläche:** Die Adresszeile zeigt die Herkunft eindeutig. Internationale Domainnamen, die mit verwechselbaren Zeichen arbeiten, werden nach den Regeln von UTS #39 (Unicode Security Mechanisms) als Punycode angezeigt. Die Oberfläche des Browsers liegt immer außerhalb des Bereichs, in den eine Seite zeichnen kann. Vollbild und Mauszeigersperre werden deutlich angekündigt.
+11. **Erweiterungen, Mods und Skins:** Berechtigungen werden vor der Installation angezeigt, Zugriff auf Websites lässt sich auch erst bei Bedarf erteilen. Erweiterungen laufen in eigenen Zellen, Inhalts-Skripte in isolierten Welten. Mods laufen in der WebAssembly-Sandbox und bekommen nur die Fähigkeiten, die der Nutzer freigibt. Skins sind reine Daten ohne Code und dürfen nur lokale Ressourcen laden, damit sie weder nachladen noch mitlesen können.
+12. **Datenschutz:** Vorschlag: Speicher und Cookies werden standardmäßig nach der obersten Website getrennt (Partitionierung), damit eingebettete Inhalte Nutzer nicht über Websites hinweg verfolgen können.
+13. **Lieferkette:** keine fremden Crates (der Abhängigkeitswächter läuft bereits in der CI), GitHub Actions auf feste Commit-Hashes festgelegt, reproduzierbare Builds als Ziel, Updates signiert mit einem Schlüssel, der nicht auf dem Build-Server liegt.
+14. **Fehler finden, bevor andere es tun:** Fuzzing für jeden Parser ab dem ersten Tag (HTML, CSS, URL, JavaScript, Bilder, Schriften, Kompression, TLS, IPC-Nachrichten), nächtlich in der CI. Das Werkzeug dafür ist noch offen, denn verbreitete Rust-Fuzzer werden als Crate eingebunden und fallen damit unter die Regel „keine fremden Crates“.
+15. **Umgang mit gemeldeten Lücken:** eine `SECURITY.md` mit vertraulichem Meldeweg (zum Beispiel die private Schwachstellenmeldung von GitHub), Sicherheitshinweise zu jeder behobenen Lücke und schnelle Sicherheitsupdates. Vor Version 1.0 prüft ein externes Audit Kryptografie, Sandbox, IPC und JIT.
+
+### 8.3 Sicherheit in jedem Meilenstein
+
+| Meilenstein | Sicherheitsaufgaben |
+|---|---|
+| M0 | `SECURITY.md` und Meldeweg, Abhängigkeitswächter (erledigt), GitHub Actions auf Commit-Hashes festlegen |
+| M1 | Fuzzing für alle Parser, nächtlich in der CI |
+| M2 | Belastungstests für den Garbage Collector, differentielle Tests der JavaScript-Engine |
+| M3 | TLS gegen Testvektoren, HSTS-Preload, Certificate Transparency und Widerrufsprüfung |
+| M5 | Zellen pro Website und Sandbox auf allen Stufe-1-Systemen, Prüfung aller IPC-Nachrichten, Berechtigungsdialoge, Regeln für die Adresszeile |
+| M6 | Signaturprüfung und Berechtigungsanzeige für Erweiterungen |
+| M8 | Härtung des JIT, differentielles Fuzzing Interpreter gegen JIT |
+| M10 | externes Audit, signierte Updates, Ablauf für Sicherheitsupdates |
+
+**Wichtig:** Vor M5 fehlen Isolation und Sandbox. Bis dahin ist der Browser ausdrücklich nur für Entwicklung und Tests gedacht, nicht für beliebige Websites.
+
+### 8.4 Restrisiken, ehrlich benannt
+
+- **Junge Codebasis:** Selbst Browser mit großen Sicherheitsteams schließen jedes Jahr viele Sicherheitslücken. Eine neue Engine wird anfangs mehr Fehler haben. Für Onlinebanking und vergleichbar heikle Dinge eignet sie sich erst nach dem externen Audit.
+- **Eigene Kryptografie:** bewusst entschieden, mit den Gegenmaßnahmen aus [4.11](#411-netzwerk-und-kryptografie), aber ein bleibendes Risiko.
+- **Außerhalb unserer Kontrolle:** Betriebssystem, Grafiktreiber und Hardware. Seitenkanäle wie Spectre lassen sich nur eindämmen, nicht ganz beseitigen.
+
+---
+
+## 9. Plattformen
 
 | Stufe | Systeme | Bedeutung |
 |---|---|---|
@@ -455,7 +519,7 @@ Auf Plattformen ohne JIT-Erlaubnis läuft JavaScript über den Interpreter. Die 
 
 ---
 
-## 9. Kompatibilität messen
+## 10. Kompatibilität messen
 
 | Testsammlung | Prüft | Ab |
 |---|---|---|
@@ -476,7 +540,7 @@ Auf Plattformen ohne JIT-Erlaubnis läuft JavaScript über den Interpreter. Die 
 
 ---
 
-## 10. Aufbau des Repositorys
+## 11. Aufbau des Repositorys
 
 Ein Cargo-Workspace, ausschließlich mit eigenen Crates. Vorschlag:
 
@@ -531,9 +595,9 @@ Große Testsammlungen wie die WPT werden nicht ins Repository kopiert, sondern i
 
 ---
 
-## 11. Roadmap und Meilensteine
+## 12. Roadmap und Meilensteine
 
-Die Meilensteine bauen aufeinander auf, viele Teile lassen sich aber parallel bearbeiten. Jeder Meilenstein hat ein prüfbares Abschlusskriterium. Bewusst stehen hier keine Termine, denn die hängen davon ab, wie viele Menschen mitarbeiten (siehe [Abschnitt 12](#12-der-aufwand-ehrlich-betrachtet)).
+Die Meilensteine bauen aufeinander auf, viele Teile lassen sich aber parallel bearbeiten. Jeder Meilenstein hat ein prüfbares Abschlusskriterium. Bewusst stehen hier keine Termine, denn die hängen davon ab, wie viele Menschen mitarbeiten (siehe [Abschnitt 13](#13-der-aufwand-ehrlich-betrachtet)).
 
 | # | Meilenstein | Inhalt | Fertig, wenn |
 |---|---|---|---|
@@ -549,11 +613,11 @@ Die Meilensteine bauen aufeinander auf, viele Teile lassen sich aber parallel be
 | M9 | Breite | Android, weitere Architekturen, vollständige Barrierefreiheit und Eingabemethoden, Entwicklerwerkzeuge und CDP, WebRTC, Service Worker, Push | Stufe-2-Plattformen laufen, Screenreader-Tests auf allen Stufe-1-Systemen bestehen. |
 | M10 | Version 1.0 | Externes Sicherheitsaudit (insbesondere Kryptografie, Sandbox, JIT), signierte Updates, Absturzberichte, Datenschutzprüfung, Doku für Skin- und Mod-Autoren | Das Audit ist abgeschlossen und alle kritischen Befunde sind behoben. |
 
-Barrierefreiheit (M9) wird schon ab M5 mitgedacht und nicht erst am Ende angefangen.
+Barrierefreiheit (M9) wird schon ab M5 mitgedacht und nicht erst am Ende angefangen. Die Sicherheitsaufgaben je Meilenstein stehen in [8.3](#83-sicherheit-in-jedem-meilenstein).
 
 ---
 
-## 12. Der Aufwand, ehrlich betrachtet
+## 13. Der Aufwand, ehrlich betrachtet
 
 Ein Browser, der heutige Webseiten zuverlässig darstellt und die Webtests weitgehend besteht, gehört zu den größten Softwareprojekten überhaupt. Allein JavaScript-Engine, Textformung für alle Schriften, CSS-Layout oder ein Videocodec wie AV1 sind jeweils ein eigenes, jahrelanges Vorhaben.
 
@@ -568,7 +632,7 @@ Was daraus folgt:
 
 ---
 
-## 13. Offene Entscheidungen
+## 14. Offene Entscheidungen
 
 **Bereits entschieden (24.10.2026)**
 
@@ -584,10 +648,14 @@ Was daraus folgt:
 5. **Rust-Version:** Edition 2024 und eine festgelegte Mindestversion des Compilers.
 6. **Mitwirkung:** Beitragsregeln (zum Beispiel Developer Certificate of Origin), Code-Review-Regeln, Umgang mit `unsafe`.
 7. **Telemetrie:** keine, oder nur freiwillig?
+8. **Schutzlisten gegen Phishing und Schadsoftware:** Google Safe Browsing hat eigene Nutzungsbedingungen. Welche Listen nutzen wir, und wie bleibt dabei die Privatsphäre gewahrt?
+9. **Widerruf von Zertifikaten und Certificate Transparency:** eigenes Verfahren nach dem Vorbild von CRLite (Firefox) oder CRLSets (Chrome), oder Sperrlisten der Aussteller direkt? Woher kommt die Liste der CT-Logs?
+10. **Fuzzing-Werkzeug:** selbst schreiben oder für dieses Entwicklungswerkzeug eine Ausnahme von „keine fremden Crates“ machen ([8.2](#82-schutzschichten), Punkt 14)?
+11. **Partitionierung als Standard:** Speicher und Cookies standardmäßig nach oberster Website trennen ([8.2](#82-schutzschichten), Punkt 12)?
 
 ---
 
-## 14. Quellen
+## 15. Quellen
 
 **Spezifikationen und Testsammlungen**
 
@@ -609,7 +677,7 @@ Was daraus folgt:
 - Chrome-Erweiterungen: <https://developer.chrome.com/docs/extensions>
 - Firefox-Erweiterungen (MDN): <https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions>
 
-**Zum Vergleich mit Ladybird ([Abschnitt 12](#12-der-aufwand-ehrlich-betrachtet))**
+**Zum Vergleich mit Ladybird ([Abschnitt 13](#13-der-aufwand-ehrlich-betrachtet))**
 
 - Ladybird, Startseite und FAQ (eigene Engine, kleines Vollzeit-Team, Fremdbibliotheken für Medienformate, Verschlüsselung und Grafik): <https://ladybird.org/>
 - Ankündigung vom 1. Juli 2024 (Ursprung als HTML-Betrachter in SerenityOS): <https://ladybird.org/posts/announcement/>
