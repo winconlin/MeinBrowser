@@ -1,0 +1,11 @@
+[package]
+name = "mb-devtools"
+description = "Entwicklerwerkzeuge, WebDriver und Chrome DevTools Protocol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

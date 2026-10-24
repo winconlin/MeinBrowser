@@ -1,0 +1,11 @@
+[package]
+name = "mb-net"
+description = "DNS, HTTP/1.1, HTTP/2, HTTP/3, QUIC, TLS, Fetch und Cookies"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

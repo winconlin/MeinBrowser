@@ -1,0 +1,19 @@
+[workspace]
+members = ["crates/*", "tools/*"]
+resolver = "3"
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/winconlin/MeinBrowser"
+publish = false
+
+# Nur eigene Crates: Fremde Abhängigkeiten sind nicht erlaubt, auch nicht als
+# dev- oder build-dependency. `cargo run -p deps-guard` prüft das.
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "deny"

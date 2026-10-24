@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  check:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Rust stable mit rustfmt und clippy
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+          rustup component add rustfmt clippy
+
+      - name: Keine externen Abhängigkeiten
+        run: cargo run --locked -p deps-guard
+
+      - name: Formatierung
+        run: cargo fmt --all --check
+
+      - name: Lints
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test --locked --workspace

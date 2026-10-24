@@ -1,0 +1,11 @@
+[package]
+name = "meinbrowser"
+description = "Das Programm MeinBrowser"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
