@@ -7,5 +7,9 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[dependencies]
+mb-platform = { path = "../mb-platform" }
+mb-raster = { path = "../mb-raster" }
+
 [lints]
 workspace = true

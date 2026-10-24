@@ -50,3 +50,16 @@ jobs:
 
       - name: Tests
         run: cargo test --locked --workspace
+
+      # M0: Ein Fenster zeigt das selbst gezeichnete Testbild. Der Selbsttest
+      # liest es aus dem Fenster zurück und prüft feste Messpunkte.
+      - name: Selbsttest mit Fenster (Xvfb)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q xvfb
+          xvfb-run -a -s "-screen 0 1024x768x24" cargo run --locked -p meinbrowser -- --selbsttest
+
+      - name: Selbsttest mit Fenster
+        if: runner.os != 'Linux'
+        run: cargo run --locked -p meinbrowser -- --selbsttest
