@@ -14,7 +14,10 @@ cargo run -p deps-guard                                # keine externen Abhängi
 cargo fmt --all --check                                # Formatierung
 cargo clippy --workspace --all-targets -- -D warnings  # Lints
 cargo test --workspace                                 # Tests
-cargo run -p meinbrowser                               # Programm (noch ein Platzhalter)
+cargo run -p meinbrowser                               # Fenster mit Testbild (Meilenstein M0)
+cargo run -p meinbrowser -- --selbsttest               # zeigt das Testbild und prüft es
 ```
+
+Unter Linux braucht das Fenster einen X-Server (unter Wayland über XWayland). Ohne Bildschirm geht es mit `xvfb-run cargo run -p meinbrowser -- --selbsttest`.
 
 Fremde Crates sind nicht erlaubt, auch nicht als dev- oder build-dependency.

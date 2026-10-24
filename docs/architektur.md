@@ -218,7 +218,7 @@ Die einzige Stelle, die mit dem Betriebssystem spricht. Sie bietet dem Rest eine
 
 | System | Fenster und Eingabe | Grafik |
 |---|---|---|
-| Linux | eigener Wayland-Client und eigener X11-Client (beides dokumentierte Protokolle über Sockets, ohne `libwayland` oder `libX11`) | Vulkan, sonst CPU über gemeinsamen Speicher |
+| Linux | eigener Wayland-Client und eigener X11-Client (beides dokumentierte Protokolle über Sockets, ohne `libwayland` oder `libX11`); der X11-Client steht, unter Wayland läuft er bis zum eigenen Wayland-Client über XWayland | Vulkan, sonst CPU über gemeinsamen Speicher |
 | Windows | Win32 | Direct3D 12, alternativ Vulkan, sonst CPU |
 | macOS | AppKit über die Objective-C-Laufzeit | Metal, sonst CPU |
 | Android | NDK-Schnittstellen (Native Activity) | Vulkan, sonst CPU |
@@ -591,7 +591,7 @@ MeinBrowser/
 
 Große Testsammlungen wie die WPT werden nicht ins Repository kopiert, sondern in der CI in einer festgelegten Version geholt.
 
-**Stand 24.10.2026:** Angelegt sind der Workspace, alle Crates unter `crates/` (noch ohne Inhalt), `tools/deps-guard`, `data/` und die CI für Linux, Windows und macOS. `tools/codegen`, `tools/datagen`, `tools/testrunner` und `tests/` kommen mit den Meilensteinen, die sie brauchen.
+**Stand 24.10.2026:** Angelegt sind der Workspace, alle Crates unter `crates/`, `tools/deps-guard`, `data/` und die CI für Linux, Windows und macOS. Inhalt haben bisher `mb-platform` (Fenster mit Eingabe und CPU-Bildausgabe: eigener X11-Client, Win32, AppKit), `mb-raster` (Zeichenfläche und Testbild) und `meinbrowser` (zeigt das Testbild, mit Selbsttest in der CI). Die übrigen Crates sind noch leer. `tools/codegen`, `tools/datagen`, `tools/testrunner` und `tests/` kommen mit den Meilensteinen, die sie brauchen.
 
 ---
 
