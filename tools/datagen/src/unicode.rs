@@ -25,6 +25,15 @@ struct Group {
     members: Vec<usize>,
 }
 
+/// Erzeugt den Quelltext von `tables.rs`. `read` liefert den Inhalt einer
+/// Datei aus [`DATA`].
+pub fn run(read: &dyn Fn(&str) -> Result<String, String>) -> Result<String, String> {
+    generate(
+        &read("UnicodeData.txt")?,
+        &read("PropertyValueAliases.txt")?,
+    )
+}
+
 /// Erzeugt den Quelltext von `tables.rs` aus den Inhalten von
 /// `UnicodeData.txt` und `PropertyValueAliases.txt`.
 pub fn generate(unicode_data: &str, value_aliases: &str) -> Result<String, String> {
@@ -341,18 +350,5 @@ mod tests {
         assert!(generate(UNICODE_DATA, &aliases).is_err());
         let aliases = VALUE_ALIASES.replace("gc ; Cn ; Unassigned\n", "");
         assert!(generate(UNICODE_DATA, &aliases).is_err());
-    }
-
-    #[test]
-    fn checked_in_tables_are_current() {
-        let generated = generate(
-            include_str!("../../../data/unicode/UnicodeData.txt"),
-            include_str!("../../../data/unicode/PropertyValueAliases.txt"),
-        )
-        .expect("Rohdaten lesbar");
-        assert!(
-            generated == include_str!("../../../crates/mb-unicode/src/tables.rs"),
-            "{OUTPUT} ist veraltet, bitte `cargo run -p datagen` ausführen"
-        );
     }
 }

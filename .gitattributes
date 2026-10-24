@@ -2,3 +2,4 @@
 data/** -text
 # Generierte Dateien immer mit LF, damit `datagen --check` auf allen Systemen vergleichen kann.
 crates/mb-unicode/src/tables.rs text eol=lf
+crates/mb-encoding/src/tables.rs text eol=lf

@@ -23,4 +23,4 @@ Unter Linux braucht das Fenster einen X-Server (unter Wayland über XWayland). O
 
 Fremde Crates sind nicht erlaubt, auch nicht als dev- oder build-dependency.
 
-Tabellen aus Rohdaten unter `data/` (zurzeit die Unicode-Zeichendatenbank) erzeugt `cargo run -p datagen`. Die erzeugten Dateien werden eingecheckt.
+Tabellen aus Rohdaten unter `data/` (zurzeit die Unicode-Zeichendatenbank und die Daten des WHATWG Encoding Standard) erzeugt `cargo run -p datagen`. Die erzeugten Dateien werden eingecheckt.
