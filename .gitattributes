@@ -1,0 +1,4 @@
+# Rohdaten byte-genau auschecken, damit die Prüfsummen in HERKUNFT.md überall stimmen.
+data/** -text
+# Generierte Dateien immer mit LF, damit `datagen --check` auf allen Systemen vergleichen kann.
+crates/mb-unicode/src/tables.rs text eol=lf

@@ -3,6 +3,10 @@
 version = 4
 
 [[package]]
+name = "datagen"
+version = "0.0.0"
+
+[[package]]
 name = "deps-guard"
 version = "0.0.0"
 

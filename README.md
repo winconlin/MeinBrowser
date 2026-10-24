@@ -11,6 +11,7 @@ Voraussetzung ist eine aktuelle stabile Rust-Toolchain mit rustfmt und clippy.
 
 ```sh
 cargo run -p deps-guard                                # keine externen Abhängigkeiten
+cargo run -p datagen -- --check                        # generierte Tabellen passen zu data/
 cargo fmt --all --check                                # Formatierung
 cargo clippy --workspace --all-targets -- -D warnings  # Lints
 cargo test --workspace                                 # Tests
@@ -21,3 +22,5 @@ cargo run -p meinbrowser -- --selbsttest               # zeigt das Testbild und 
 Unter Linux braucht das Fenster einen X-Server (unter Wayland über XWayland). Ohne Bildschirm geht es mit `xvfb-run cargo run -p meinbrowser -- --selbsttest`.
 
 Fremde Crates sind nicht erlaubt, auch nicht als dev- oder build-dependency.
+
+Tabellen aus Rohdaten unter `data/` (zurzeit die Unicode-Zeichendatenbank) erzeugt `cargo run -p datagen`. Die erzeugten Dateien werden eingecheckt.

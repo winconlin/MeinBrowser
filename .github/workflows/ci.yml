@@ -42,6 +42,9 @@ jobs:
       - name: Keine externen Abhängigkeiten
         run: cargo run --locked -p deps-guard
 
+      - name: Generierte Tabellen aktuell
+        run: cargo run --locked -p datagen -- --check
+
       - name: Formatierung
         run: cargo fmt --all --check
 
