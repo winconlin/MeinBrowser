@@ -478,15 +478,15 @@ Jede Schicht soll auch dann noch schützen, wenn die davor versagt hat.
 10. **Oberfläche:** Die Adresszeile zeigt die Herkunft eindeutig. Internationale Domainnamen, die mit verwechselbaren Zeichen arbeiten, werden nach den Regeln von UTS #39 (Unicode Security Mechanisms) als Punycode angezeigt. Die Oberfläche des Browsers liegt immer außerhalb des Bereichs, in den eine Seite zeichnen kann. Vollbild und Mauszeigersperre werden deutlich angekündigt.
 11. **Erweiterungen, Mods und Skins:** Berechtigungen werden vor der Installation angezeigt, Zugriff auf Websites lässt sich auch erst bei Bedarf erteilen. Erweiterungen laufen in eigenen Zellen, Inhalts-Skripte in isolierten Welten. Mods laufen in der WebAssembly-Sandbox und bekommen nur die Fähigkeiten, die der Nutzer freigibt. Skins sind reine Daten ohne Code und dürfen nur lokale Ressourcen laden, damit sie weder nachladen noch mitlesen können.
 12. **Datenschutz:** Vorschlag: Speicher und Cookies werden standardmäßig nach der obersten Website getrennt (Partitionierung), damit eingebettete Inhalte Nutzer nicht über Websites hinweg verfolgen können.
-13. **Lieferkette:** keine fremden Crates (der Abhängigkeitswächter läuft bereits in der CI), GitHub Actions auf feste Commit-Hashes festgelegt, reproduzierbare Builds als Ziel, Updates signiert mit einem Schlüssel, der nicht auf dem Build-Server liegt.
+13. **Lieferkette:** keine fremden Crates (der Abhängigkeitswächter läuft bereits in der CI), keine fremden GitHub Actions (die CI holt den Quelltext selbst mit git; braucht es doch einmal eine Action, wird sie auf einen festen Commit-Hash festgelegt), reproduzierbare Builds als Ziel, Updates signiert mit einem Schlüssel, der nicht auf dem Build-Server liegt.
 14. **Fehler finden, bevor andere es tun:** Fuzzing für jeden Parser ab dem ersten Tag (HTML, CSS, URL, JavaScript, Bilder, Schriften, Kompression, TLS, IPC-Nachrichten), nächtlich in der CI. Das Werkzeug dafür ist noch offen, denn verbreitete Rust-Fuzzer werden als Crate eingebunden und fallen damit unter die Regel „keine fremden Crates“.
-15. **Umgang mit gemeldeten Lücken:** eine `SECURITY.md` mit vertraulichem Meldeweg (zum Beispiel die private Schwachstellenmeldung von GitHub), Sicherheitshinweise zu jeder behobenen Lücke und schnelle Sicherheitsupdates. Vor Version 1.0 prüft ein externes Audit Kryptografie, Sandbox, IPC und JIT.
+15. **Umgang mit gemeldeten Lücken:** eine `SECURITY.md` mit vertraulichem Meldeweg (die private Schwachstellenmeldung von GitHub), Sicherheitshinweise zu jeder behobenen Lücke und schnelle Sicherheitsupdates. Vor Version 1.0 prüft ein externes Audit Kryptografie, Sandbox, IPC und JIT.
 
 ### 8.3 Sicherheit in jedem Meilenstein
 
 | Meilenstein | Sicherheitsaufgaben |
 |---|---|
-| M0 | `SECURITY.md` und Meldeweg, Abhängigkeitswächter (erledigt), GitHub Actions auf Commit-Hashes festlegen |
+| M0 | `SECURITY.md` und Meldeweg (erledigt), Abhängigkeitswächter (erledigt), keine fremden GitHub Actions (erledigt) |
 | M1 | Fuzzing für alle Parser, nächtlich in der CI |
 | M2 | Belastungstests für den Garbage Collector, differentielle Tests der JavaScript-Engine |
 | M3 | TLS gegen Testvektoren, HSTS-Preload, Certificate Transparency und Widerrufsprüfung |

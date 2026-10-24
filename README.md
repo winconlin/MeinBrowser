@@ -3,6 +3,8 @@ A new Browser lightweight, open source, fully compatible to firefox and chrome p
 
 Architekturkonzept (Deutsch): [docs/architektur.md](docs/architektur.md)
 
+Sicherheitslücken bitte vertraulich melden, siehe [SECURITY.md](SECURITY.md).
+
 ## Bauen und prüfen
 
 Voraussetzung ist eine aktuelle stabile Rust-Toolchain mit rustfmt und clippy.
