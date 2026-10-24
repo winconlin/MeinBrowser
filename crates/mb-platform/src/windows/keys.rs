@@ -5,10 +5,9 @@
 use crate::event::{Key, NamedKey};
 
 /// Die Taste zu einem virtuellen Tastencode. `character` ist das Zeichen,
-/// das die Taste laut Belegung ohne Umschalttaste erzeugt (aus
-/// `MapVirtualKeyW`), `upper` sagt, ob Großbuchstaben gelten (Umschalttaste
-/// oder Feststelltaste).
-pub fn key_from_virtual_key(vk: u32, character: Option<char>, upper: bool) -> Key {
+/// das die Taste mit der aktuellen Belegung und den gedrückten Umschalttasten
+/// erzeugt (aus `ToUnicodeEx`).
+pub fn key_from_virtual_key(vk: u32, character: Option<char>) -> Key {
     let named = match vk {
         0x08 => NamedKey::Backspace,
         0x09 => NamedKey::Tab,
@@ -47,29 +46,12 @@ pub fn key_from_virtual_key(vk: u32, character: Option<char>, upper: bool) -> Ke
         0x6E => return Key::Character('.'),
         0x6F => return Key::Character('/'),
         _ => {
-            return match character.filter(|c| !c.is_control()) {
-                // MapVirtualKeyW liefert Buchstaben groß.
-                Some(c) if c.is_alphabetic() => Key::Character(change_case(c, upper)),
-                Some(c) => Key::Character(c),
-                None => Key::Unidentified,
-            };
+            return character
+                .filter(|c| !c.is_control())
+                .map_or(Key::Unidentified, Key::Character);
         }
     };
     Key::Named(named)
-}
-
-fn change_case(c: char, upper: bool) -> char {
-    if upper {
-        single(c.to_uppercase()).unwrap_or(c)
-    } else {
-        single(c.to_lowercase()).unwrap_or(c)
-    }
-}
-
-/// Das einzige Zeichen, falls die Umwandlung genau eines ergibt.
-fn single(mut chars: impl Iterator<Item = char>) -> Option<char> {
-    let first = chars.next()?;
-    chars.next().is_none().then_some(first)
 }
 
 #[cfg(test)]
@@ -79,42 +61,34 @@ mod tests {
     #[test]
     fn named_keys() {
         assert_eq!(
-            key_from_virtual_key(0x0D, None, false),
+            key_from_virtual_key(0x0D, None),
             Key::Named(NamedKey::Enter)
         );
+        assert_eq!(key_from_virtual_key(0x70, None), Key::Named(NamedKey::F(1)));
         assert_eq!(
-            key_from_virtual_key(0x70, None, false),
-            Key::Named(NamedKey::F(1))
-        );
-        assert_eq!(
-            key_from_virtual_key(0x87, None, false),
+            key_from_virtual_key(0x87, None),
             Key::Named(NamedKey::F(24))
         );
-        assert_eq!(
-            key_from_virtual_key(0x5B, None, false),
-            Key::Named(NamedKey::Meta)
-        );
+        assert_eq!(key_from_virtual_key(0x5B, None), Key::Named(NamedKey::Meta));
     }
 
     #[test]
-    fn characters_follow_case() {
+    fn characters_come_from_the_layout() {
+        assert_eq!(key_from_virtual_key(0x41, Some('a')), Key::Character('a'));
+        assert_eq!(key_from_virtual_key(0x41, Some('A')), Key::Character('A'));
+        assert_eq!(key_from_virtual_key(0xDE, Some('ä')), Key::Character('ä'));
+        // Umschalttaste und 1 auf einer US-Belegung.
+        assert_eq!(key_from_virtual_key(0x31, Some('!')), Key::Character('!'));
+        assert_eq!(key_from_virtual_key(0x63, None), Key::Character('3'));
+        assert_eq!(key_from_virtual_key(0xFF, None), Key::Unidentified);
+    }
+
+    #[test]
+    fn named_keys_win_over_control_characters() {
         assert_eq!(
-            key_from_virtual_key(0x41, Some('A'), false),
-            Key::Character('a')
+            key_from_virtual_key(0x0D, Some('\r')),
+            Key::Named(NamedKey::Enter)
         );
-        assert_eq!(
-            key_from_virtual_key(0x41, Some('A'), true),
-            Key::Character('A')
-        );
-        assert_eq!(
-            key_from_virtual_key(0xDE, Some('Ä'), false),
-            Key::Character('ä')
-        );
-        assert_eq!(
-            key_from_virtual_key(0x31, Some('1'), true),
-            Key::Character('1')
-        );
-        assert_eq!(key_from_virtual_key(0x63, None, false), Key::Character('3'));
-        assert_eq!(key_from_virtual_key(0xFF, None, false), Key::Unidentified);
+        assert_eq!(key_from_virtual_key(0x41, Some('\u{1}')), Key::Unidentified);
     }
 }

@@ -356,15 +356,15 @@ impl Window {
             }
             let remaining =
                 deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()));
-            if remaining == Some(Duration::ZERO) {
-                return Ok(None);
-            }
+            let expired = remaining == Some(Duration::ZERO);
             let pool = Pool::new();
             // SAFETY: Dokumentierte Signaturen; das Ereignis ist bis zum Ende
             // des Pools gültig.
-            unsafe {
+            let received = unsafe {
                 let until: Id = match remaining {
                     None => send(class(c"NSDate"), c"distantFuture", ()),
+                    // Frist abgelaufen: nur noch abholen, was schon vorliegt.
+                    Some(_) if expired => send(class(c"NSDate"), c"distantPast", ()),
                     Some(remaining) => send(
                         class(c"NSDate"),
                         c"dateWithTimeIntervalSinceNow:",
@@ -379,9 +379,14 @@ impl Window {
                 if !event.is_null() && self.translate(event) {
                     let _: () = send(self.app, c"sendEvent:", (event,));
                 }
-            }
+                !event.is_null()
+            };
             drop(pool);
             resume_panic();
+            if expired && !received {
+                self.drain_notices();
+                return Ok(self.pending.pop_front());
+            }
         }
     }
 

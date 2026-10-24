@@ -28,6 +28,7 @@ pub type HMENU = HANDLE;
 pub type HDC = HANDLE;
 pub type HBITMAP = HANDLE;
 pub type HGDIOBJ = HANDLE;
+pub type HKL = HANDLE;
 pub type WNDPROC = Option<unsafe extern "system" fn(HWND, UINT, WPARAM, LPARAM) -> LRESULT>;
 
 pub const FALSE: BOOL = 0;
@@ -47,7 +48,9 @@ pub const SIZE_MINIMIZED: WPARAM = 1;
 pub const TME_LEAVE: DWORD = 0x0000_0002;
 pub const SWP_NOZORDER: UINT = 0x0004;
 pub const SWP_NOACTIVATE: UINT = 0x0010;
-pub const MAPVK_VK_TO_CHAR: UINT = 2;
+/// `ToUnicodeEx`: Bit 2 von `wFlags` lässt den Tastaturzustand unverändert
+/// (ab Windows 10, Version 1607).
+pub const TO_UNICODE_KEEP_STATE: UINT = 0x0004;
 pub const DIB_RGB_COLORS: UINT = 0;
 pub const BI_RGB: DWORD = 0;
 pub const SRCCOPY: DWORD = 0x00CC_0020;
@@ -83,9 +86,12 @@ pub const WM_DPICHANGED: UINT = 0x02E0;
 pub const VK_SHIFT: c_int = 0x10;
 pub const VK_CONTROL: c_int = 0x11;
 pub const VK_MENU: c_int = 0x12;
-pub const VK_CAPITAL: c_int = 0x14;
 pub const VK_LWIN: c_int = 0x5B;
 pub const VK_RWIN: c_int = 0x5C;
+pub const VK_LCONTROL: c_int = 0xA2;
+pub const VK_RCONTROL: c_int = 0xA3;
+pub const VK_LMENU: c_int = 0xA4;
+pub const VK_RMENU: c_int = 0xA5;
 
 #[repr(C)]
 pub struct WNDCLASSEXW {
@@ -263,7 +269,17 @@ unsafe extern "system" {
     pub fn ReleaseCapture() -> BOOL;
     pub fn TrackMouseEvent(lpEventTrack: *mut TRACKMOUSEEVENT) -> BOOL;
     pub fn GetKeyState(nVirtKey: c_int) -> SHORT;
-    pub fn MapVirtualKeyW(uCode: UINT, uMapType: UINT) -> UINT;
+    pub fn GetKeyboardState(lpKeyState: *mut u8) -> BOOL;
+    pub fn GetKeyboardLayout(idThread: DWORD) -> HKL;
+    pub fn ToUnicodeEx(
+        wVirtKey: UINT,
+        wScanCode: UINT,
+        lpKeyState: *const u8,
+        pwszBuff: *mut u16,
+        cchBuff: c_int,
+        wFlags: UINT,
+        dwhkl: HKL,
+    ) -> c_int;
     pub fn SetProcessDpiAwarenessContext(value: HANDLE) -> BOOL;
     #[cfg(target_pointer_width = "64")]
     pub fn GetWindowLongPtrW(hWnd: HWND, nIndex: c_int) -> isize;

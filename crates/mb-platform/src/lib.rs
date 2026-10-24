@@ -191,7 +191,8 @@ impl Window {
     /// Wartet auf das nächste Ereignis.
     ///
     /// Mit `timeout = None` wartet die Funktion unbegrenzt, sonst höchstens die
-    /// angegebene Zeit und liefert dann `Ok(None)`.
+    /// angegebene Zeit und liefert dann `Ok(None)`. Mit `Duration::ZERO` holt
+    /// sie nur ab, was schon vorliegt.
     pub fn next_event(&mut self, timeout: Option<Duration>) -> Result<Option<Event>, Error> {
         self.inner.next_event(timeout)
     }

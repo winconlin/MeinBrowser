@@ -174,7 +174,7 @@ impl Connection {
             ));
         }
         // Das niedrigste gesetzte Bit der Maske ist die Schrittweite.
-        let increment = mask & mask.wrapping_neg();
+        let increment = mask.isolate_lowest_one();
         Ok((
             Connection {
                 stream,
@@ -228,20 +228,35 @@ impl Connection {
         Some(self.input.drain(..length).collect())
     }
 
-    /// Liest weitere Daten. `Ok(false)` heißt: Frist abgelaufen.
+    /// Liest weitere Daten. `Ok(false)` heißt: Frist abgelaufen. Nach Ablauf
+    /// der Frist wird noch gelesen, was schon vorliegt, damit auch Abfragen
+    /// mit der Frist null Ereignisse bekommen.
     fn fill(&mut self, deadline: Option<Instant>) -> Result<bool, Error> {
         let timeout = match deadline {
             None => None,
             Some(deadline) => {
                 let now = Instant::now();
                 if now >= deadline {
-                    return Ok(false);
+                    return self.fill_available();
                 }
                 // Eine Frist von null lehnt die Standardbibliothek ab.
                 Some((deadline - now).max(Duration::from_millis(1)))
             }
         };
         self.stream.set_read_timeout(timeout)?;
+        self.read_some()
+    }
+
+    /// Liest, was gerade vorliegt, ohne zu warten. `Ok(false)` heißt: nichts da.
+    fn fill_available(&mut self) -> Result<bool, Error> {
+        self.stream.set_nonblocking(true)?;
+        let result = self.read_some();
+        self.stream.set_nonblocking(false)?;
+        result
+    }
+
+    /// Ein Lesevorgang. `Ok(false)` heißt: Frist abgelaufen oder nichts da.
+    fn read_some(&mut self) -> Result<bool, Error> {
         let mut buffer = [0u8; 16 * 1024];
         loop {
             match self.stream.read(&mut buffer) {
@@ -267,14 +282,6 @@ impl Connection {
                 Err(err) => return Err(err.into()),
             }
         }
-    }
-
-    /// Liest, was gerade vorliegt, ohne zu warten.
-    fn fill_available(&mut self) -> Result<(), Error> {
-        self.stream.set_nonblocking(true)?;
-        let result = self.fill(None);
-        self.stream.set_nonblocking(false)?;
-        result.map(|_| ())
     }
 
     /// Wartet auf die Antwort zu einer Anfrage.
@@ -865,4 +872,46 @@ fn apply_modifier_mapping(keymap: &mut Keymap, reply: &[u8]) -> Result<(), Error
 
 fn short(request: &str) -> Error {
     Error::Protocol(format!("Antwort auf {request} zu kurz"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn connection(stream: UnixStream) -> Connection {
+        Connection {
+            stream: Stream::Unix(stream),
+            setup: Setup {
+                resource_id_base: 0,
+                resource_id_mask: 0xff,
+                max_request_length: u16::MAX,
+                image_byte_order: ByteOrder::LsbFirst,
+                min_keycode: 8,
+                max_keycode: 255,
+                vendor: String::new(),
+                formats: Vec::new(),
+                screens: Vec::new(),
+            },
+            output: Vec::new(),
+            input: Vec::new(),
+            sequence: 0,
+            next_resource: 1,
+            resource_increment: 1,
+            queued: VecDeque::new(),
+        }
+    }
+
+    #[test]
+    fn expired_deadline_still_reads_waiting_events() {
+        let (mut server, client) = UnixStream::pair().expect("Socket-Paar");
+        let mut connection = connection(client);
+        let mut event = [0u8; proto::PACKET_SIZE];
+        event[0] = 12; // Expose
+        server.write_all(&event).expect("schreiben");
+        let packet = connection.next_packet(Some(Instant::now())).expect("lesen");
+        assert_eq!(packet.as_deref(), Some(&event[..]));
+        // Danach liegt nichts mehr vor, und die Abfrage wartet nicht.
+        let packet = connection.next_packet(Some(Instant::now())).expect("lesen");
+        assert_eq!(packet, None);
+    }
 }

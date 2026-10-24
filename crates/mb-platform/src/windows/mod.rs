@@ -427,9 +427,59 @@ fn current_modifiers() -> Modifiers {
     }
 }
 
-fn caps_lock_on() -> bool {
-    // SAFETY: GetKeyState hat keine Vorbedingungen.
-    unsafe { GetKeyState(VK_CAPITAL) & 1 != 0 }
+/// Das Zeichen, das die Taste mit der aktuellen Belegung erzeugt, samt
+/// Umschalt-, Feststell- und AltGr-Taste. Strg oder Alt allein zählen nicht
+/// mit, damit `Strg+A` wie im Web `a` meldet. Tottasten ergeben `None`.
+fn layout_character(vk: u32, lparam: LPARAM) -> Option<char> {
+    let mut state = [0u8; 256];
+    // SAFETY: Der Puffer hat die verlangten 256 Bytes.
+    if unsafe { GetKeyboardState(state.as_mut_ptr()) } == 0 {
+        return None;
+    }
+    let down = |state: &[u8; 256], key: c_int| {
+        usize::try_from(key)
+            .ok()
+            .and_then(|index| state.get(index))
+            .is_some_and(|value| value & 0x80 != 0)
+    };
+    // AltGr meldet Windows als Strg+Alt.
+    if !(down(&state, VK_CONTROL) && down(&state, VK_MENU)) {
+        for key in [
+            VK_CONTROL,
+            VK_LCONTROL,
+            VK_RCONTROL,
+            VK_MENU,
+            VK_LMENU,
+            VK_RMENU,
+        ] {
+            if let Some(value) = usize::try_from(key).ok().and_then(|i| state.get_mut(i)) {
+                *value = 0;
+            }
+        }
+    }
+    // Bits 16 bis 23 sind der Scancode. Das Bit für losgelassene Tasten bleibt
+    // frei, damit auch beim Loslassen das Zeichen der Taste herauskommt.
+    let scan_code = u32::try_from((lparam >> 16) & 0xff).unwrap_or(0);
+    let mut buffer = [0u16; 8];
+    // SAFETY: Zustand und Puffer sind gültig und so lang wie angegeben. Mit
+    // TO_UNICODE_KEEP_STATE bleibt der Zustand für Tottasten unberührt, sodass
+    // WM_CHAR danach dasselbe liefert.
+    let count = unsafe {
+        ToUnicodeEx(
+            vk,
+            scan_code,
+            state.as_ptr(),
+            buffer.as_mut_ptr(),
+            buffer.len() as c_int,
+            TO_UNICODE_KEEP_STATE,
+            GetKeyboardLayout(0),
+        )
+    };
+    // Negativ heißt Tottaste, null kein Zeichen.
+    let units = buffer.get(..usize::try_from(count).ok()?)?;
+    let mut chars = char::decode_utf16(units.iter().copied());
+    let first = chars.next()?.ok()?;
+    chars.next().is_none().then_some(first)
 }
 
 /// Die Fensterprozedur. Panics werden aufgefangen und nach der Rückkehr aus
@@ -530,17 +580,10 @@ unsafe fn handle_message(hwnd: HWND, message: UINT, wparam: WPARAM, lparam: LPAR
         WM_KEYDOWN | WM_SYSKEYDOWN | WM_KEYUP | WM_SYSKEYUP => {
             let pressed = message == WM_KEYDOWN || message == WM_SYSKEYDOWN;
             let vk = u32::try_from(wparam & 0xffff).unwrap_or(0);
-            // SAFETY: MapVirtualKeyW hat keine Vorbedingungen.
-            let mapped = unsafe { MapVirtualKeyW(vk, MAPVK_VK_TO_CHAR) };
-            // Das oberste Bit kennzeichnet Tottasten.
-            let character = if mapped & 0x8000_0000 == 0 {
-                char::from_u32(mapped & 0xffff).filter(|&c| c != '\0')
-            } else {
-                None
-            };
+            let character = layout_character(vk, lparam);
             let modifiers = current_modifiers();
             push(Event::Key(KeyEvent {
-                key: keys::key_from_virtual_key(vk, character, modifiers.shift != caps_lock_on()),
+                key: keys::key_from_virtual_key(vk, character),
                 pressed,
                 repeat: pressed && (lparam >> 30) & 1 != 0,
                 modifiers,
