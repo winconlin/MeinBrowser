@@ -10,6 +10,8 @@
 mod entities;
 pub mod error;
 pub mod tokenizer;
+pub mod tree_builder;
 
 pub use error::{ErrorCode, ParseError};
 pub use tokenizer::{Attribute, Doctype, Tag, Token, Tokenizer, TokenizerState};
+pub use tree_builder::{Options, ScriptingMode, parse_document, parse_fragment};
