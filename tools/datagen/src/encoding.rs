@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 use std::fmt::Write;
 
-use crate::json::{self, Value};
+use mb_json::Value;
 
 /// Die Rohdaten, relativ zum Workspace.
 pub const DATA: &str = "data/encoding";
@@ -70,7 +70,7 @@ pub fn run(read: &dyn Fn(&str) -> Result<String, String>) -> Result<String, Stri
 }
 
 fn parse_encodings(text: &str) -> Result<Vec<Encoding>, String> {
-    let groups = json::parse(text)?;
+    let groups = mb_json::parse(text).map_err(|error| format!("encodings.json: {error}"))?;
     let groups = groups
         .as_array()
         .ok_or("encodings.json: Liste von Gruppen erwartet")?;

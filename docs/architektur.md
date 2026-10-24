@@ -556,6 +556,7 @@ MeinBrowser/
 │   ├── mb-url/              WHATWG URL
 │   ├── mb-html/             Tokenizer und Baumaufbau
 │   ├── mb-xml/              XML, XHTML, SVG-Parser
+│   ├── mb-json/             JSON-Leser für Rohdaten, Testdaten und Manifeste
 │   ├── mb-dom/              Dokumentspeicher und Änderungsjournal
 │   ├── mb-css/              CSS-Parser und Eigenschaftsgrammatiken
 │   ├── mb-style/            Selektoren, Kaskade, berechnete Stile
@@ -583,15 +584,16 @@ MeinBrowser/
 │   ├── codegen/             Generator für die Spezifikations-Beschreibungen
 │   ├── datagen/             Generatoren für Unicode, CLDR, Zeitzonen und weitere Daten
 │   ├── deps-guard/          CI-Prüfung: keine externen Abhängigkeiten
+│   ├── testdata/            holt externe Testsammlungen in fester Version
 │   └── testrunner/          WPT-, Test262- und html5lib-Läufer
 ├── data/                    Rohdaten mit Lizenzhinweisen
 ├── docs/                    Dokumentation (dieses Dokument)
 └── tests/                   eigene Tests
 ```
 
-Große Testsammlungen wie die WPT werden nicht ins Repository kopiert, sondern in der CI in einer festgelegten Version geholt.
+Große Testsammlungen wie die WPT werden nicht ins Repository kopiert, sondern in der CI in einer festgelegten Version geholt (`cargo run -p testdata`, nur die benötigten Pfade).
 
-**Stand 25.10.2026:** Angelegt sind der Workspace, alle Crates unter `crates/`, `tools/deps-guard`, `tools/datagen`, `data/` und die CI für Linux, Windows und macOS. Inhalt haben bisher `mb-platform` (Fenster mit Eingabe und CPU-Bildausgabe: eigener X11-Client, Win32, AppKit), `mb-raster` (Zeichenfläche und Testbild), `meinbrowser` (zeigt das Testbild, mit Selbsttest in der CI), `mb-unicode` (allgemeine Kategorie und kanonische Kombinationsklasse, von `tools/datagen` aus der Unicode-Zeichendatenbank 18.0.0 erzeugt) und `mb-encoding` (alle 40 Kodierungen des WHATWG Encoding Standard, Tabellen ebenfalls von `tools/datagen`). M0 ist abgeschlossen, M1 hat begonnen. Die übrigen Crates sind noch leer. `tools/codegen`, `tools/testrunner` und `tests/` kommen mit den Meilensteinen, die sie brauchen.
+**Stand 25.10.2026:** Angelegt sind der Workspace, alle Crates unter `crates/`, `tools/deps-guard`, `tools/datagen`, `tools/testdata` (holt externe Testsammlungen in fester Version nach `target/testdata/`), `data/` und die CI für Linux, Windows und macOS. Inhalt haben bisher `mb-platform` (Fenster mit Eingabe und CPU-Bildausgabe: eigener X11-Client, Win32, AppKit), `mb-raster` (Zeichenfläche und Testbild), `meinbrowser` (zeigt das Testbild, mit Selbsttest in der CI), `mb-unicode` (allgemeine Kategorie und kanonische Kombinationsklasse, von `tools/datagen` aus der Unicode-Zeichendatenbank 18.0.0 erzeugt), `mb-encoding` (alle 40 Kodierungen des WHATWG Encoding Standard, Tabellen ebenfalls von `tools/datagen`) und `mb-json` (JSON-Leser für Rohdaten und Testdaten). M0 ist abgeschlossen, M1 hat begonnen. Die übrigen Crates sind noch leer. `tools/codegen`, `tools/testrunner` und `tests/` kommen mit den Meilensteinen, die sie brauchen.
 
 ---
 

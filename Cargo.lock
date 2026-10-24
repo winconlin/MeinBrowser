@@ -5,6 +5,9 @@ version = 4
 [[package]]
 name = "datagen"
 version = "0.0.0"
+dependencies = [
+ "mb-json",
+]
 
 [[package]]
 name = "deps-guard"
@@ -60,6 +63,10 @@ version = "0.0.0"
 
 [[package]]
 name = "mb-js"
+version = "0.0.0"
+
+[[package]]
+name = "mb-json"
 version = "0.0.0"
 
 [[package]]
@@ -137,3 +144,7 @@ dependencies = [
  "mb-platform",
  "mb-raster",
 ]
+
+[[package]]
+name = "testdata"
+version = "0.0.0"

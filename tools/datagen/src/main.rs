@@ -10,7 +10,6 @@
 #![forbid(unsafe_code)]
 
 mod encoding;
-mod json;
 mod ucd;
 mod unicode;
 
