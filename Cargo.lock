@@ -123,6 +123,12 @@ dependencies = [
 [[package]]
 name = "mb-url"
 version = "0.0.0"
+dependencies = [
+ "mb-encoding",
+ "mb-json",
+ "mb-unicode",
+ "testdata",
+]
 
 [[package]]
 name = "mb-wasm"
