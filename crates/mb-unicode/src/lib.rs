@@ -9,10 +9,11 @@
 
 #![forbid(unsafe_code)]
 
+pub mod normalization;
 #[rustfmt::skip]
 mod tables;
 
-pub use tables::{GeneralCategory, UNICODE_VERSION};
+pub use tables::{BidiClass, GeneralCategory, JoiningType, UNICODE_VERSION};
 
 /// Der größte Codepunkt.
 pub const MAX_CODE_POINT: u32 = 0x10_FFFF;
@@ -27,6 +28,18 @@ pub fn general_category(code_point: u32) -> GeneralCategory {
 /// die bei der Normalisierung nicht umsortiert werden.
 pub fn canonical_combining_class(code_point: u32) -> u8 {
     lookup(&tables::CANONICAL_COMBINING_CLASS, code_point).unwrap_or(0)
+}
+
+/// Die Bidi-Klasse eines Codepunkts. Nicht vergebene Codepunkte haben die
+/// Vorgaben aus `DerivedBidiClass.txt`, Werte über U+10FFFF gelten als `L`.
+pub fn bidi_class(code_point: u32) -> BidiClass {
+    lookup(&tables::BIDI_CLASS, code_point).unwrap_or(BidiClass::LeftToRight)
+}
+
+/// Der Joining-Type eines Codepunkts, `U` (nicht verbindend) für alle nicht
+/// genannten.
+pub fn joining_type(code_point: u32) -> JoiningType {
+    lookup(&tables::JOINING_TYPE, code_point).unwrap_or(JoiningType::NonJoining)
 }
 
 /// Sucht den Abschnitt, in dem der Codepunkt liegt. Die Tabellen beginnen
@@ -109,6 +122,63 @@ mod tests {
                 "{code_point:#X}"
             );
         }
+    }
+
+    #[test]
+    fn known_bidi_classes() {
+        use BidiClass as B;
+        let cases = [
+            (0x0041, B::LeftToRight),
+            (0x05D0, B::RightToLeft),
+            (0x0627, B::ArabicLetter),
+            (0x0030, B::EuropeanNumber),
+            (0x0660, B::ArabicNumber),
+            (0x0300, B::NonspacingMark),
+            (0x200B, B::BoundaryNeutral),
+            (0x0020, B::WhiteSpace),
+            (0x0021, B::OtherNeutral),
+            (0x0024, B::EuropeanTerminator),
+            (0x002C, B::CommonSeparator),
+            (0x002B, B::EuropeanSeparator),
+            (0x000A, B::ParagraphSeparator),
+            (0x0009, B::SegmentSeparator),
+            (0x202A, B::LeftToRightEmbedding),
+            (0x2066, B::LeftToRightIsolate),
+            // Vorgaben für nicht vergebene Codepunkte.
+            (0x05FF, B::RightToLeft),
+            (0x07BF, B::ArabicLetter),
+            (0x20CF, B::EuropeanTerminator),
+            (0xFDD0, B::BoundaryNeutral),
+            (0xE0080, B::BoundaryNeutral),
+            (0x10_FFFF, B::BoundaryNeutral),
+            (0x11_0000, B::LeftToRight),
+        ];
+        for (code_point, class) in cases {
+            assert_eq!(bidi_class(code_point), class, "{code_point:#X}");
+        }
+        assert_eq!(B::ArabicLetter.short_name(), "AL");
+        assert_eq!(B::ArabicLetter.long_name(), "Arabic_Letter");
+    }
+
+    #[test]
+    fn known_joining_types() {
+        use JoiningType as J;
+        let cases = [
+            (0x0627, J::RightJoining),
+            (0x0628, J::DualJoining),
+            (0x0640, J::JoinCausing),
+            (0x200D, J::JoinCausing),
+            (0x200C, J::NonJoining),
+            (0x0300, J::Transparent),
+            (0x00AD, J::Transparent),
+            (0xA872, J::LeftJoining),
+            (0x0041, J::NonJoining),
+            (0x11_0000, J::NonJoining),
+        ];
+        for (code_point, joining) in cases {
+            assert_eq!(joining_type(code_point), joining, "{code_point:#X}");
+        }
+        assert_eq!(J::DualJoining.short_name(), "D");
     }
 
     /// Vergleicht jeden Codepunkt mit `UnicodeData.txt`, gelesen unabhängig

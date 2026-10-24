@@ -15,6 +15,9 @@ pub struct UnicodeDataEntry {
     /// Kurzname der allgemeinen Kategorie, etwa `Lu`.
     pub general_category: String,
     pub canonical_combining_class: u8,
+    /// Die kanonische Zerlegung eine Ebene tief, leer ohne Zerlegung oder bei
+    /// einer Kompatibilitätszerlegung (`<compat> …`).
+    pub canonical_decomposition: Vec<u32>,
 }
 
 /// Liest `UnicodeData.txt`. Die Einträge müssen aufsteigend sortiert sein und
@@ -30,7 +33,16 @@ pub fn parse_unicode_data(text: &str) -> Result<Vec<UnicodeDataEntry>, String> {
             continue;
         }
         let fields: Vec<&str> = line.split(';').collect();
-        let [code_point, name, general_category, combining_class, ..] = fields.as_slice() else {
+        let [
+            code_point,
+            name,
+            general_category,
+            combining_class,
+            _,
+            decomposition,
+            ..,
+        ] = fields.as_slice()
+        else {
             return Err(error("zu wenige Felder"));
         };
         if fields.len() != 15 {
@@ -43,11 +55,21 @@ pub fn parse_unicode_data(text: &str) -> Result<Vec<UnicodeDataEntry>, String> {
         if general_category.is_empty() {
             return Err(error("allgemeine Kategorie fehlt"));
         }
+        let canonical_decomposition = if decomposition.starts_with('<') {
+            Vec::new()
+        } else {
+            decomposition
+                .split_whitespace()
+                .map(parse_code_point)
+                .collect::<Result<Vec<u32>, String>>()
+                .map_err(|message| error(&message))?
+        };
         let mut entry = UnicodeDataEntry {
             first: code_point,
             last: code_point,
             general_category: (*general_category).to_owned(),
             canonical_combining_class,
+            canonical_decomposition,
         };
         if let Some(range) = name.strip_suffix(", Last>") {
             let Some((first_name, first_line, first)) = open_range.take() else {
@@ -60,6 +82,8 @@ pub fn parse_unicode_data(text: &str) -> Result<Vec<UnicodeDataEntry>, String> {
             }
             if first.general_category != entry.general_category
                 || first.canonical_combining_class != entry.canonical_combining_class
+                || !first.canonical_decomposition.is_empty()
+                || !entry.canonical_decomposition.is_empty()
             {
                 return Err(error("Anfang und Ende des Bereichs haben andere Werte"));
             }
@@ -84,6 +108,53 @@ pub fn parse_unicode_data(text: &str) -> Result<Vec<UnicodeDataEntry>, String> {
         return Err(format!("UnicodeData.txt, Zeile {line}: Bereich ohne Ende"));
     }
     Ok(entries)
+}
+
+/// Eine Datenzeile einer Eigenschaftsdatei wie `DerivedBidiClass.txt`: ein
+/// Codepunkt oder Bereich und der Wert im zweiten Feld (leer, wenn die Zeile
+/// nur Codepunkte nennt wie `CompositionExclusions.txt`).
+#[derive(Debug, PartialEq, Eq)]
+pub struct PropertyLine {
+    pub first: u32,
+    pub last: u32,
+    pub value: String,
+}
+
+/// Die Zeilen einer Eigenschaftsdatei (UAX #44, Abschnitt 4.2): zuerst die
+/// Vorgaben aus `# @missing:`-Zeilen in ihrer Reihenfolge, dann die Daten.
+pub type PropertyFile = (Vec<PropertyLine>, Vec<PropertyLine>);
+
+/// Liest eine Eigenschaftsdatei. `file` erscheint in Fehlermeldungen.
+pub fn parse_property_file(file: &str, text: &str) -> Result<PropertyFile, String> {
+    let mut missing = Vec::new();
+    let mut data = Vec::new();
+    for (index, line) in text.lines().enumerate() {
+        let error = |message: &str| format!("{file}, Zeile {}: {message}", index + 1);
+        let (fields, target) = match line.trim().strip_prefix("# @missing:") {
+            Some(rest) => (rest, &mut missing),
+            None => (line.split('#').next().unwrap_or_default(), &mut data),
+        };
+        if fields.trim().is_empty() {
+            continue;
+        }
+        let mut fields = fields.split(';').map(str::trim);
+        let range = fields.next().unwrap_or_default();
+        let (first, last) = match range.split_once("..") {
+            Some((first, last)) => (first, last),
+            None => (range, range),
+        };
+        let first = parse_code_point(first).map_err(|message| error(&message))?;
+        let last = parse_code_point(last).map_err(|message| error(&message))?;
+        if last < first {
+            return Err(error("Bereichsende liegt vor dem Anfang"));
+        }
+        target.push(PropertyLine {
+            first,
+            last,
+            value: fields.next().unwrap_or_default().to_owned(),
+        });
+    }
+    Ok((missing, data))
 }
 
 fn parse_code_point(text: &str) -> Result<u32, String> {
@@ -176,6 +247,54 @@ mod tests {
 
     fn line(code_point: &str, name: &str, gc: &str, ccc: &str) -> String {
         format!("{code_point};{name};{gc};{ccc};L;;;;;N;;;;;\n")
+    }
+
+    #[test]
+    fn reads_canonical_decompositions() {
+        let text = "00A8;DIAERESIS;Sk;0;ON;<compat> 0020 0308;;;;N;;;;;\n\
+                    00C0;A WITH GRAVE;Lu;0;L;0041 0300;;;;N;;;;00E0;\n\
+                    212B;ANGSTROM SIGN;Lu;0;L;00C5;;;;N;;;;00E5;\n";
+        let entries = parse_unicode_data(text).expect("gültige Daten");
+        let decompositions: Vec<&[u32]> = entries
+            .iter()
+            .map(|entry| entry.canonical_decomposition.as_slice())
+            .collect();
+        assert_eq!(decompositions, [&[][..], &[0x41, 0x300], &[0xC5]]);
+        let broken = "00C0;A WITH GRAVE;Lu;0;L;0041 XYZ;;;;N;;;;00E0;\n";
+        assert!(parse_unicode_data(broken).is_err());
+    }
+
+    #[test]
+    fn reads_property_files() {
+        let text = "# @missing: 0000..10FFFF; Left_To_Right\n\
+                    # Kommentar\n\
+                    \n\
+                    0041..005A    ; L # Lu  [26] A..Z\n\
+                    05D0 ; R\n\
+                    0958    #  DEVANAGARI LETTER QA\n";
+        let (missing, data) = parse_property_file("Test.txt", text).expect("gültige Daten");
+        assert_eq!(
+            missing,
+            [PropertyLine {
+                first: 0,
+                last: 0x10_FFFF,
+                value: "Left_To_Right".into()
+            }]
+        );
+        let lines: Vec<(u32, u32, &str)> = data
+            .iter()
+            .map(|line| (line.first, line.last, line.value.as_str()))
+            .collect();
+        assert_eq!(
+            lines,
+            [(0x41, 0x5A, "L"), (0x5D0, 0x5D0, "R"), (0x958, 0x958, "")]
+        );
+        for broken in ["005A..0041 ; L\n", "XYZ ; L\n", "110000 ; L\n"] {
+            assert!(
+                parse_property_file("Test.txt", broken).is_err(),
+                "{broken:?}"
+            );
+        }
     }
 
     #[test]
