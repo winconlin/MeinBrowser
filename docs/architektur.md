@@ -37,7 +37,7 @@ Dieses Dokument beschreibt, wie MeinBrowser aufgebaut werden soll: welche Bauste
 
 ### 1.1 Was „komplett eigen“ hier bedeutet
 
-Ganz ohne fremden Code kann kein Programm laufen: Um ein Fenster zu öffnen, ins Netz zu gehen oder die Grafikkarte zu nutzen, muss der Browser mit dem Betriebssystem sprechen. Dieser Entwurf zieht die Grenze so (die endgültige Entscheidung steht noch aus, siehe [Abschnitt 13](#13-offene-entscheidungen)):
+Ganz ohne fremden Code kann kein Programm laufen: Um ein Fenster zu öffnen, ins Netz zu gehen oder die Grafikkarte zu nutzen, muss der Browser mit dem Betriebssystem sprechen. Entschieden am 24.10.2026: Erlaubt sind die Rust-Standardbibliothek sowie die Schnittstellen von Betriebssystem und Grafiktreibern. Alles darüber bauen wir selbst, auch TLS und Kryptografie. Im Einzelnen:
 
 | Kategorie | Regel |
 |---|---|
@@ -317,7 +317,7 @@ Eigener Validierer, Interpreter und Basis-Übersetzer. Später teilt es sich das
 - **TLS:** eigene Umsetzung von TLS 1.3 (RFC 8446) und TLS 1.2 für ältere Server, Zertifikatsprüfung mit eigenem ASN.1-, DER- und X.509-Code. Die Wurzelzertifikate kommen aus dem Systemspeicher oder aus einer mitgelieferten Liste.
 - **Kryptografie:** AES-GCM, ChaCha20-Poly1305, SHA-2, HMAC, HKDF, X25519, ECDSA P-256 und P-384, RSA, Ed25519 sowie die hybride Post-Quanten-Schlüsselvereinbarung X25519MLKEM768, die aktuelle Browser standardmäßig anbieten. Dieselben Bausteine bedienen die Web Crypto API.
 
-**Wichtig zur Kryptografie:** Selbst geschriebene Kryptografie ist ein ernstes Sicherheitsrisiko. Schon kleine Fehler, etwa Laufzeiten, die von geheimen Daten abhängen, können Schlüssel verraten. Deshalb gilt:
+**Wichtig zur Kryptografie:** Wir schreiben sie selbst (siehe [1.1](#11-was-komplett-eigen-hier-bedeutet)). Selbst geschriebene Kryptografie ist aber ein ernstes Sicherheitsrisiko. Schon kleine Fehler, etwa Laufzeiten, die von geheimen Daten abhängen, können Schlüssel verraten. Deshalb gilt:
 
 - Die Kryptografie liegt hinter einer schmalen Anbieter-Schnittstelle, damit sie bei Bedarf austauschbar ist.
 - Jede Primitive wird gegen offizielle Testvektoren geprüft (NIST, RFCs, Project Wycheproof), gefuzzt und auf konstante Laufzeit untersucht.
@@ -568,15 +568,20 @@ Was daraus folgt:
 
 ## 13. Offene Entscheidungen
 
-1. **Grenze des Eigenbaus:** Gelten Rust-Standardbibliothek sowie Betriebssystem- und Grafikschnittstellen als erlaubt ([1.1](#11-was-komplett-eigen-hier-bedeutet))? Dieser Entwurf geht davon aus.
-2. **Kryptografie:** selbst schreiben (mit Testvektoren, Fuzzing und externem Audit) oder eine geprüfte Bibliothek verwenden? Dank der Anbieter-Schnittstelle lässt sich das auch später noch ändern.
-3. **Werkzeuge, Testsammlungen und Datensätze:** Gelten sie als erlaubt, wie in [1.1](#11-was-komplett-eigen-hier-bedeutet) angenommen?
-4. **Patentbelastete Codecs** (H.264, AAC, HEVC): über die Medienschnittstellen des Systems nutzen oder weglassen?
-5. **DRM:** ein lizenziertes Fremdmodul wie Widevine unterstützen oder bewusst darauf verzichten?
-6. **Erweiterungen aus den Stores:** Wie sieht die Installation direkt aus dem Chrome Web Store und von addons.mozilla.org aus, mit Blick auf deren Nutzungsbedingungen? Prüfen wir die Signaturen der Stores?
-7. **Rust-Version:** Edition 2024 und eine festgelegte Mindestversion des Compilers.
-8. **Mitwirkung:** Beitragsregeln (zum Beispiel Developer Certificate of Origin), Code-Review-Regeln, Umgang mit `unsafe`.
-9. **Telemetrie:** keine, oder nur freiwillig?
+**Bereits entschieden (24.10.2026)**
+
+- **Grenze des Eigenbaus:** Rust-Standardbibliothek sowie Betriebssystem- und Grafikschnittstellen sind erlaubt, alles andere ist eigen ([1.1](#11-was-komplett-eigen-hier-bedeutet)).
+- **Kryptografie und TLS:** selbst geschrieben, mit Testvektoren, Fuzzing und externem Audit ([4.11](#411-netzwerk-und-kryptografie)).
+
+**Noch offen**
+
+1. **Werkzeuge, Testsammlungen und Datensätze:** Gelten sie als erlaubt, wie in [1.1](#11-was-komplett-eigen-hier-bedeutet) angenommen?
+2. **Patentbelastete Codecs** (H.264, AAC, HEVC): über die Medienschnittstellen des Systems nutzen oder weglassen?
+3. **DRM:** ein lizenziertes Fremdmodul wie Widevine unterstützen oder bewusst darauf verzichten?
+4. **Erweiterungen aus den Stores:** Wie sieht die Installation direkt aus dem Chrome Web Store und von addons.mozilla.org aus, mit Blick auf deren Nutzungsbedingungen? Prüfen wir die Signaturen der Stores?
+5. **Rust-Version:** Edition 2024 und eine festgelegte Mindestversion des Compilers.
+6. **Mitwirkung:** Beitragsregeln (zum Beispiel Developer Certificate of Origin), Code-Review-Regeln, Umgang mit `unsafe`.
+7. **Telemetrie:** keine, oder nur freiwillig?
 
 ---
 
