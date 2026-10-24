@@ -527,6 +527,8 @@ MeinBrowser/
 
 Große Testsammlungen wie die WPT werden nicht ins Repository kopiert, sondern in der CI in einer festgelegten Version geholt.
 
+**Stand 24.10.2026:** Angelegt sind der Workspace, alle Crates unter `crates/` (noch ohne Inhalt), `tools/deps-guard`, `data/` und die CI für Linux, Windows und macOS. `tools/codegen`, `tools/datagen`, `tools/testrunner` und `tests/` kommen mit den Meilensteinen, die sie brauchen.
+
 ---
 
 ## 11. Roadmap und Meilensteine

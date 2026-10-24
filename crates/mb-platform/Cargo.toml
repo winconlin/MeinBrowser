@@ -1,0 +1,11 @@
+[package]
+name = "mb-platform"
+description = "Die einzige Stelle, die mit Betriebssystem und Grafiktreibern spricht: Fenster, Eingabe, Ein-/Ausgabe, GPU-Oberfläche, Sandbox"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

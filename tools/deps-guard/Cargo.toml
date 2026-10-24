@@ -1,0 +1,11 @@
+[package]
+name = "deps-guard"
+description = "Prüft, dass Cargo.lock keine externen Abhängigkeiten enthält"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,11 @@
+[package]
+name = "mb-ipc"
+description = "Prozesskommunikation über typisierte Nachrichten in gemeinsamem Speicher"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
