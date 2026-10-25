@@ -11,9 +11,11 @@ publish.workspace = true
 mb-base = { path = "../mb-base" }
 mb-css = { path = "../mb-css" }
 mb-dom = { path = "../mb-dom" }
+mb-url = { path = "../mb-url" }
 
 [dev-dependencies]
 mb-html = { path = "../mb-html" }
+mb-json = { path = "../mb-json" }
 testdata = { path = "../../tools/testdata" }
 
 [lints]

@@ -26,4 +26,4 @@ Fremde Crates sind nicht erlaubt, auch nicht als dev- oder build-dependency.
 
 Tabellen aus Rohdaten unter `data/` (zurzeit die Unicode-Zeichendatenbank mit der IDNA-Zuordnungstabelle und die Daten des WHATWG Encoding Standard) erzeugt `cargo run -p datagen`. Die erzeugten Dateien werden eingecheckt.
 
-Externe Testsammlungen (zurzeit Teile der WPT, html5lib-tests, Testdateien von Unicode und css-parsing-tests) liegen nicht im Repository. `cargo run -p testdata` holt sie mit `git` in der Version, die `tools/testdata/src/lib.rs` festlegt, nach `target/testdata/`.
+Externe Testsammlungen (zurzeit Teile der WPT, html5lib-tests, Testdateien von Unicode, css-parsing-tests und webref) liegen nicht im Repository. `cargo run -p testdata` holt sie mit `git` in der Version, die `tools/testdata/src/lib.rs` festlegt, nach `target/testdata/`.

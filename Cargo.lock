@@ -123,6 +123,8 @@ dependencies = [
  "mb-css",
  "mb-dom",
  "mb-html",
+ "mb-json",
+ "mb-url",
  "testdata",
 ]
 
