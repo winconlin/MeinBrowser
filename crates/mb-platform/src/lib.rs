@@ -13,8 +13,11 @@
 //!
 //! Ein Fenster liefert seine Ereignisse über [`Window::next_event`]. Das erste
 //! Ereignis ist immer [`Event::Resized`] mit der tatsächlichen Größe.
+//!
+//! Dazu kommen die Verzeichnisse der Systemschriften ([`fonts`]).
 
 mod event;
+pub mod fonts;
 
 #[cfg(all(
     unix,

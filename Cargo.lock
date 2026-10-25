@@ -140,6 +140,7 @@ name = "mb-text"
 version = "0.0.0"
 dependencies = [
  "mb-encoding",
+ "mb-unicode",
  "testdata",
 ]
 
