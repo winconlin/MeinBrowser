@@ -7,6 +7,7 @@
 //!   Tokenizer und die Komponentenwerte,
 //! - `stylesheet_bytes.json` für das Dekodieren. Die Regeln darin sind nur
 //!   At-Regeln ohne Block.
+//! - `An+B.json` für das An+B-Format.
 //!
 //! Die übrigen Dateien zeigen die Blöcke von Regeln als rohe
 //! Komponentenwerte, behalten At-Regeln in Deklarationslisten und kürzen
@@ -33,7 +34,7 @@ use mb_encoding::Encoding;
 use mb_json::Value;
 
 use crate::{
-    ComponentValue, Rule, Sign, Source, Syntax, Token, Values, decode_stylesheet,
+    ComponentValue, Rule, Sign, Source, Syntax, Token, Values, decode_stylesheet, parse_an_plus_b,
     parse_component_value, parse_component_value_list, parse_stylesheet,
 };
 
@@ -350,6 +351,20 @@ fn stylesheet_bytes() {
             other => string(&format!("unerwartet: {other:?}")),
         });
         let got = list([list(rules), string(&encoding.name().to_ascii_lowercase())]);
+        (expected(expectation), got)
+    });
+}
+
+#[test]
+fn an_plus_b() {
+    check("An+B.json", |input, expectation| {
+        let text = input.as_str().expect("Eingabe als Text");
+        let values = parse_component_value_list(&Source::new(text));
+        let values: Vec<ComponentValue<'_>> = values.iter().collect();
+        let got = match parse_an_plus_b(&values) {
+            Some(value) => list([number(f64::from(value.a)), number(f64::from(value.b))]),
+            None => Value::Null,
+        };
         (expected(expectation), got)
     });
 }

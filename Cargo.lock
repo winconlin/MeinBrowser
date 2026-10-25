@@ -118,6 +118,13 @@ version = "0.0.0"
 [[package]]
 name = "mb-style"
 version = "0.0.0"
+dependencies = [
+ "mb-base",
+ "mb-css",
+ "mb-dom",
+ "mb-html",
+ "testdata",
+]
 
 [[package]]
 name = "mb-text"
