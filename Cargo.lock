@@ -184,3 +184,10 @@ dependencies = [
 [[package]]
 name = "testdata"
 version = "0.0.0"
+
+[[package]]
+name = "testrunner"
+version = "0.0.0"
+dependencies = [
+ "testdata",
+]
