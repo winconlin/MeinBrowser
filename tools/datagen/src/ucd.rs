@@ -111,13 +111,20 @@ pub fn parse_unicode_data(text: &str) -> Result<Vec<UnicodeDataEntry>, String> {
 }
 
 /// Eine Datenzeile einer Eigenschaftsdatei wie `DerivedBidiClass.txt`: ein
-/// Codepunkt oder Bereich und der Wert im zweiten Feld (leer, wenn die Zeile
-/// nur Codepunkte nennt wie `CompositionExclusions.txt`).
+/// Codepunkt oder Bereich und die übrigen Felder.
 #[derive(Debug, PartialEq, Eq)]
 pub struct PropertyLine {
     pub first: u32,
     pub last: u32,
-    pub value: String,
+    pub fields: Vec<String>,
+}
+
+impl PropertyLine {
+    /// Der Wert im zweiten Feld, leer, wenn die Zeile nur Codepunkte nennt
+    /// wie `CompositionExclusions.txt`.
+    pub fn value(&self) -> &str {
+        self.fields.first().map_or("", String::as_str)
+    }
 }
 
 /// Die Zeilen einer Eigenschaftsdatei (UAX #44, Abschnitt 4.2): zuerst die
@@ -151,7 +158,7 @@ pub fn parse_property_file(file: &str, text: &str) -> Result<PropertyFile, Strin
         target.push(PropertyLine {
             first,
             last,
-            value: fields.next().unwrap_or_default().to_owned(),
+            fields: fields.map(str::to_owned).collect(),
         });
     }
     Ok((missing, data))
@@ -224,7 +231,7 @@ pub struct Version {
 }
 
 impl Version {
-    fn parse(text: &str) -> Option<Version> {
+    pub fn parse(text: &str) -> Option<Version> {
         let mut parts = text.split('.').map(|part| part.parse::<u8>().ok());
         let version = Version {
             major: parts.next()??,
@@ -278,12 +285,12 @@ mod tests {
             [PropertyLine {
                 first: 0,
                 last: 0x10_FFFF,
-                value: "Left_To_Right".into()
+                fields: vec!["Left_To_Right".into()]
             }]
         );
         let lines: Vec<(u32, u32, &str)> = data
             .iter()
-            .map(|line| (line.first, line.last, line.value.as_str()))
+            .map(|line| (line.first, line.last, line.value()))
             .collect();
         assert_eq!(
             lines,
