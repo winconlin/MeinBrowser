@@ -182,6 +182,9 @@ pub struct ComputedValues {
     blockifies_children: bool,
     /// Ob das Element in einem Flex- oder Grid-Container liegt.
     flex_or_grid_item: bool,
+    /// Der Schreibmodus des Kastens, der für die Kinder der Elternkasten
+    /// ist: der eigene, bei `display: contents` der des Elternkastens.
+    box_writing_mode: WritingMode,
 }
 
 fn slot(longhand: Longhand) -> usize {
@@ -991,7 +994,29 @@ impl ComputedValues {
         } else {
             display
         };
+        // Hat der Kasten einen anderen Schreibmodus als sein Elternkasten,
+        // wird der innere Anzeigetyp `flow` zu `flow-root`, `inline` also zu
+        // `inline-block` (Writing Modes 4, Abschnitt 3.2). Das gilt nach
+        // dem Blockifizieren.
+        let display = match display {
+            Display::Pair {
+                outside,
+                inside: DisplayInside::Flow,
+                list_item,
+            } if parent.is_some_and(|parent| parent.box_writing_mode != writing_mode) => {
+                Display::Pair {
+                    outside,
+                    inside: DisplayInside::FlowRoot,
+                    list_item,
+                }
+            }
+            _ => display,
+        };
         computer.set(L::Display, V::Display(display));
+        let box_writing_mode = match (display, parent) {
+            (Display::Contents, Some(parent)) => parent.box_writing_mode,
+            _ => writing_mode,
+        };
         let blockifies_children = match display {
             Display::Pair {
                 inside: DisplayInside::Flex | DisplayInside::Grid,
@@ -1049,6 +1074,7 @@ impl ComputedValues {
             flow,
             blockifies_children,
             flex_or_grid_item: parent_blockifies,
+            box_writing_mode,
         })
     }
 
@@ -1145,8 +1171,14 @@ impl ComputedValues {
     /// Der Wert für `getComputedStyle()` (*resolved value*, CSSOM). Für
     /// die Farben, `line-height` und die Rahmenbreiten (Borders 4) ist das
     /// der verwendete Wert, für Breite, Höhe, `margin-*` und `padding-*`
-    /// ebenso, wenn das Element einen Kasten erzeugt; der hängt meist vom
-    /// Layout ab. Nur `padding-*` mit einer Länge ist ohne Layout bekannt:
+    /// ebenso, wenn die Eigenschaft für den Kasten des Elements gilt; der
+    /// hängt meist vom Layout ab. Ob sie gilt, hängt bei Breite und Höhe
+    /// davon ab, ob das Element ersetzt ist, und das entscheidet erst der
+    /// Aufbau der Kästen. Darum liefert die Methode für diese Eigenschaften
+    /// bei jedem Element mit Kasten [`NeedsLayout`], und der Aufrufer mit dem
+    /// Layout nimmt den berechneten Wert, wo sie nicht gelten, etwa bei
+    /// Breite und Höhe eines nicht ersetzten `inline`-Elements.
+    /// Nur `padding-*` mit einer Länge ist ohne Layout bekannt:
     /// Keine der vorhandenen Eigenschaften ändert ihn (`border-collapse`,
     /// das es täte, fehlt noch). `min-width` und `min-height` mit `auto`
     /// sind `0px` außer bei Flex- und Grid-Elementen (Sizing 3), ein
