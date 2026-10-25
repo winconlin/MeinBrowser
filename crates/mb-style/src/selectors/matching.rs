@@ -6,6 +6,10 @@
 //! aus WebKit: Scheitert etwa `a > b c` an einem Vorfahren für `b`, muss kein
 //! weiterer Vorfahr für `c` mehr probiert werden.
 
+use std::cell::RefCell;
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
 use mb_base::DomString;
 use mb_dom::{Document, Element, Namespace, NodeId, NodeKind, QuirksMode};
 
@@ -75,7 +79,8 @@ impl Selector {
     /// Ob der Selektor das Element trifft. Selektoren für Pseudoelemente
     /// treffen nie ein Element.
     pub fn matches(&self, element: NodeId, context: &MatchingContext<'_>) -> bool {
-        self.pseudo_element.is_none() && Matcher::new(context).complex(self, element)
+        let nesting = NestingCache::default();
+        self.pseudo_element.is_none() && Matcher::new(context, &nesting).complex(self, element)
     }
 
     /// *Match a selector against a pseudo-element*: ob der Selektor das
@@ -92,7 +97,8 @@ impl Selector {
         if selector.target != PseudoTarget::Element(pseudo_element) {
             return false;
         }
-        let matcher = Matcher::new(context);
+        let nesting = NestingCache::default();
+        let matcher = Matcher::new(context, &nesting);
         // Hinter einem Pseudoelement stehen nur Nutzeraktionen und logische
         // Kombinationen davon. Sie hängen nicht vom Element ab, also darf
         // das Ursprungselement für das Pseudoelement einstehen.
@@ -122,12 +128,18 @@ struct Frame {
     candidate: Option<NodeId>,
 }
 
+/// Was `&` ergab, je Liste (Adresse ihres `Arc`), Element und Anker von
+/// `:has()`. `&&` gleicht die Liste darüber zweimal ab; ohne diesen Speicher
+/// wüchse die Arbeit mit jeder Ebene der Verschachtelung auf das Doppelte.
+type NestingCache = RefCell<BTreeMap<(usize, NodeId, Option<NodeId>), bool>>;
+
 #[derive(Clone, Copy)]
 struct Matcher<'c, 'd> {
     context: &'c MatchingContext<'d>,
     document: &'d Document,
     /// Das Element, an dem die relativen Selektoren von `:has()` hängen.
     anchor: Option<NodeId>,
+    nesting: &'c NestingCache,
 }
 
 /// Leerraum in Selektoren und in Attributwerten wie `class`.
@@ -199,11 +211,12 @@ const CASE_INSENSITIVE_ATTRIBUTES: [&str; 46] = [
 ];
 
 impl<'c, 'd> Matcher<'c, 'd> {
-    fn new(context: &'c MatchingContext<'d>) -> Matcher<'c, 'd> {
+    fn new(context: &'c MatchingContext<'d>, nesting: &'c NestingCache) -> Matcher<'c, 'd> {
         Matcher {
             context,
             document: context.document,
             anchor: None,
+            nesting,
         }
     }
 
@@ -432,11 +445,7 @@ impl<'c, 'd> Matcher<'c, 'd> {
             PseudoClass::Visited => false,
             PseudoClass::Target => self.context.target == Some(node),
             PseudoClass::Scope | PseudoClass::Nesting(None) => self.is_scope(node),
-            // `&` kann wie `:is()` keine Pseudoelemente treffen.
-            PseudoClass::Nesting(Some(list)) => list
-                .selectors
-                .iter()
-                .any(|selector| selector.pseudo_element.is_none() && self.complex(selector, node)),
+            PseudoClass::Nesting(Some(list)) => self.nesting(list, node),
             // Ohne Nutzer und Fokus trifft keine Nutzeraktion zu.
             PseudoClass::Hover
             | PseudoClass::Active
@@ -534,6 +543,21 @@ impl<'c, 'd> Matcher<'c, 'd> {
             // Element.
             _ => matches!(self.parent_kind(node), None | Some(NodeKind::Document)),
         }
+    }
+
+    /// `&` in einer verschachtelten Regel: ob die Liste der Elternregel das
+    /// Element trifft. Wie `:is()` trifft `&` keine Pseudoelemente.
+    fn nesting(self, list: &Arc<SelectorList>, node: NodeId) -> bool {
+        let key = (Arc::as_ptr(list).addr(), node, self.anchor);
+        if let Some(known) = self.nesting.borrow().get(&key).copied() {
+            return known;
+        }
+        let matched = list
+            .selectors
+            .iter()
+            .any(|selector| selector.pseudo_element.is_none() && self.complex(selector, node));
+        self.nesting.borrow_mut().insert(key, matched);
+        matched
     }
 
     /// `:has()`: Ob ein Element, das zu einem relativen Selektor passt, an

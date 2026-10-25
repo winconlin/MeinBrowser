@@ -498,6 +498,21 @@ fn nesting() {
 }
 
 #[test]
+fn repeated_nesting_selectors() {
+    // `&&` gleicht die Liste darüber zweimal ab. Ohne Speicher für die
+    // Ergebnisse von `&` verdoppelte sich die Arbeit mit jeder Ebene; bei 60
+    // Ebenen wäre sie nicht mehr abzuwarten.
+    let depth = 60;
+    let css = format!(
+        "div {{ {} color: green {} }}",
+        "&& { ".repeat(depth),
+        "} ".repeat(depth)
+    );
+    let page = author("<div id=a></div><p id=b></p>", &css);
+    page.check(&[("a", Longhand::Color, "green"), ("b", Longhand::Color, "-")]);
+}
+
+#[test]
 fn logical_properties() {
     let page = author(
         "<div id=a></div><div id=b></div><div id=c></div><div id=d></div><div id=e></div>",
