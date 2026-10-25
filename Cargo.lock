@@ -28,6 +28,11 @@ version = "0.0.0"
 [[package]]
 name = "mb-css"
 version = "0.0.0"
+dependencies = [
+ "mb-encoding",
+ "mb-json",
+ "testdata",
+]
 
 [[package]]
 name = "mb-devtools"
