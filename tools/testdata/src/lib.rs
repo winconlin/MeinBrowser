@@ -21,7 +21,7 @@ pub struct Source {
 
 /// Alle Testsammlungen. Für einen neuen Stand den Commit ändern und
 /// `cargo run -p testdata` ausführen.
-pub const SOURCES: [Source; 3] = [
+pub const SOURCES: [Source; 4] = [
     Source {
         name: "wpt",
         repository: "https://github.com/web-platform-tests/wpt",
@@ -43,6 +43,18 @@ pub const SOURCES: [Source; 3] = [
         paths: &[
             "/unicodetools/data/ucd/18.0.0/NormalizationTest.txt",
             "/unicodetools/data/idna/18.0.0/IdnaTestV2.txt",
+        ],
+    },
+    Source {
+        name: "css-parsing-tests",
+        repository: "https://github.com/SimonSapin/css-parsing-tests",
+        commit: "203ce36bffd617db7f118c551e32794561fb273d",
+        // Nur die Dateien, die zum aktuellen Entwurf von CSS Syntax passen,
+        // siehe `crates/mb-css/src/tests.rs`.
+        paths: &[
+            "/component_value_list.json",
+            "/one_component_value.json",
+            "/stylesheet_bytes.json",
         ],
     },
 ];
