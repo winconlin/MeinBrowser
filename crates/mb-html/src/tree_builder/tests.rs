@@ -32,30 +32,6 @@ const SKIPPED_FILES: [&str; 4] = [
     "scripted_webkit01.dat",
 ];
 
-/// Diese Tests erwarten, dass `selectedcontent` den Inhalt der gewählten
-/// `option` kopiert. Das leistet nicht der Parser, sondern das Verhalten von
-/// `select`, `option` und `selectedcontent` (Abschnitt „Forms“): Auswahl,
-/// Einfügeschritte des DOM und Klonen von Knoten. Sie kommen mit diesem
-/// Verhalten dazu.
-const PENDING: [(&str, &str); 4] = [
-    (
-        "webkit02.dat",
-        "<select><button><selectedcontent></button><option>X",
-    ),
-    (
-        "webkit02.dat",
-        "<select><button><selectedcontent></button><option>x<i>i<b>ib</i>b",
-    ),
-    (
-        "webkit02.dat",
-        "<select><button><selectedcontent></button><option>X<option>Y",
-    ),
-    (
-        "webkit02.dat",
-        "<select><button><selectedcontent></button><option>X<option selected>Y",
-    ),
-];
-
 /// Ein Test: die Abschnitte nach ihrer Überschrift.
 type Case = BTreeMap<String, String>;
 
@@ -306,6 +282,9 @@ fn run(data: &str, fragment: Option<&str>, scripting: bool) -> DomString {
                 collect_errors: false,
             };
             parse_document(&mut document, input, options);
+            // `test.js` liest den Baum erst beim Ereignis `load`; bis dahin
+            // hat die Ereignisschleife die Mikroaufgaben ausgeführt.
+            document.perform_microtask_checkpoint();
             let root = document.root();
             serialize(&document, root)
         }
@@ -321,7 +300,14 @@ fn run(data: &str, fragment: Option<&str>, scripting: bool) -> DomString {
             let context = context_element(&mut document, context);
             let (fragment, _) =
                 parse_fragment(&mut document, context, input, options).expect("Kontextelement");
-            serialize(&document, fragment)
+            // Wie `innerHTML` in `test.js`: Das Fragment ersetzt die Kinder
+            // des Kontexts (bei `template` die seines Inhalts), und gelesen
+            // wird gleich danach, vor den Mikroaufgaben.
+            let target = document.template_contents(context).unwrap_or(context);
+            document
+                .replace_all(Some(fragment), target)
+                .expect("Kontext nimmt das Fragment auf");
+            serialize(&document, target)
         }
     }
 }
@@ -340,9 +326,6 @@ fn wpt_tree_construction() {
             let data = case.get("data").map_or("", String::as_str);
             let expected = DomString::from(case.get("document").map_or("", String::as_str));
             let fragment = case.get("document-fragment").map(String::as_str);
-            if PENDING.contains(&(file.as_str(), data)) {
-                continue;
-            }
             let modes: &[bool] = if case.contains_key("script-off") {
                 &[false]
             } else if case.contains_key("script-on") {
@@ -416,6 +399,34 @@ fn tree_construction_errors() {
     );
     // Bei leeren Elementen bestätigt der Baumaufbau den Schrägstrich.
     assert_eq!(errors("<!DOCTYPE html><br/><img/>"), []);
+}
+
+/// Ein CDATA-Abschnitt ganz am Anfang eines Fragments: Im Kontext `svg` ist
+/// er Text, in einem HTML-Kontext ein Kommentar mit Fehler.
+#[test]
+fn fragment_starts_with_cdata() {
+    let fragment = |context: &str| {
+        let mut document = Document::new();
+        let context = context_element(&mut document, context);
+        let options = Options {
+            scripting: ScriptingMode::Inert,
+            collect_errors: true,
+        };
+        let input = "<![CDATA[x]]>".chars().map(CodePoint::from);
+        let (fragment, errors) =
+            parse_fragment(&mut document, context, input, options).expect("Kontextelement");
+        let codes: Vec<Option<ErrorCode>> = errors.into_iter().map(|error| error.code).collect();
+        (serialize(&document, fragment), codes)
+    };
+    assert_eq!(fragment("svg svg"), (DomString::from("| \"x\""), vec![]));
+    assert_eq!(fragment("math math"), (DomString::from("| \"x\""), vec![]));
+    assert_eq!(
+        fragment("div"),
+        (
+            DomString::from("| <!-- [CDATA[x]] -->"),
+            vec![Some(ErrorCode::CdataInHtmlContent)]
+        )
+    );
 }
 
 #[test]

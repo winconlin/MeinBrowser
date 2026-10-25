@@ -5,14 +5,23 @@
 //! eigenen Spalten, die übrigen Eigenschaften je Knotenart in einer
 //! weiteren. Jede Änderung am Baum landet im Journal ([`Change`]).
 //!
-//! Bisher kann der Speicher, was der HTML-Parser braucht. Knoten werden noch
-//! nicht freigegeben (also bleibt die Generation 0), und der Inhalt eines
-//! `template` liegt im selben Speicher statt in einem eigenen Dokument (*the
-//! template contents owner document*).
+//! Einfügen, Entfernen, Ersetzen und Klonen folgen den Algorithmen des DOM
+//! Standard mit den Schritten, die andere Standards daran hängen; die des
+//! HTML Standard stehen in `html.rs`. Mutation Records, Live Ranges und
+//! Shadow Trees gibt es noch nicht, also auch nicht deren Teile der
+//! Algorithmen.
+//!
+//! Knoten werden noch nicht freigegeben (also bleibt die Generation 0), und
+//! der Inhalt eines `template` liegt im selben Speicher statt in einem
+//! eigenen Dokument (*the template contents owner document*).
 
 #![forbid(unsafe_code)]
 
+use std::collections::VecDeque;
+
 use mb_base::DomString;
+
+mod html;
 
 /// Ein Knoten: Nummer und Generation. Eine veraltete Nummer (falsche
 /// Generation) gilt wie eine unbekannte.
@@ -88,6 +97,9 @@ pub struct Element {
     pub attributes: Vec<Attribute>,
     /// Der Inhalt eines HTML-`template` (*template contents*).
     template_contents: Option<NodeId>,
+    /// Zustand nach dem HTML Standard, zum Beispiel die Auswahl einer
+    /// `option`.
+    state: html::State,
 }
 
 impl Element {
@@ -157,9 +169,9 @@ pub enum Change {
     Data(NodeId),
 }
 
-/// Der Baum passt nicht: ein Knoten würde sein eigener Vorfahr, der
-/// Bezugsknoten ist kein Kind des Elternknotens, oder ein Verweis ist
-/// unbekannt.
+/// Der Baum passt nicht: ein Knoten würde sein eigener Vorfahr, die
+/// Knotenarten passen nicht zusammen, der Bezugsknoten ist kein Kind des
+/// Elternknotens, oder ein Verweis ist unbekannt.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HierarchyError;
 
@@ -182,6 +194,10 @@ pub struct Document {
     payload: Vec<Payload>,
     mode: QuirksMode,
     journal: Vec<Change>,
+    /// Mikroaufgaben aus den Schritten in `html.rs`. Bis es eine
+    /// Ereignisschleife gibt, liegen sie hier, bis jemand
+    /// [`Document::perform_microtask_checkpoint`] aufruft.
+    microtasks: VecDeque<html::Microtask>,
 }
 
 impl Default for Document {
@@ -203,6 +219,7 @@ impl Document {
             payload: Vec::new(),
             mode: QuirksMode::NoQuirks,
             journal: Vec::new(),
+            microtasks: VecDeque::new(),
         };
         document.push(Payload::Document);
         document
@@ -290,12 +307,14 @@ impl Document {
         attributes: Vec<Attribute>,
     ) -> NodeId {
         let is_template = namespace == Some(Namespace::Html) && local_name == "template";
+        let state = html::State::new(namespace, &local_name, &attributes);
         let element = self.push(Payload::Element(Element {
             namespace,
             prefix: None,
             local_name,
             attributes,
             template_contents: None,
+            state,
         }));
         if is_template {
             let contents = self.push(Payload::Fragment {
@@ -446,6 +465,35 @@ impl Document {
         false
     }
 
+    /// Ob der Knoten in seinem Dokument hängt (*connected*). Ein
+    /// Template-Inhalt hängt nie, er ist kein Shadow Root.
+    pub fn is_connected(&self, node: NodeId) -> bool {
+        let mut current = node;
+        while let Some(parent) = self.parent(current) {
+            current = parent;
+        }
+        self.kind(current) == Some(NodeKind::Document)
+    }
+
+    /// Der nächste Knoten nach `node` in Baumreihenfolge, der noch zu
+    /// `root` gehört (ohne Template-Inhalte).
+    fn following(&self, node: NodeId, root: NodeId) -> Option<NodeId> {
+        self.first_child(node)
+            .or_else(|| self.following_skipping_children(node, root))
+    }
+
+    /// Wie [`Document::following`], aber ohne die Nachkommen von `node`.
+    fn following_skipping_children(&self, node: NodeId, root: NodeId) -> Option<NodeId> {
+        let mut current = node;
+        while current != root {
+            if let Some(next) = self.next_sibling(current) {
+                return Some(next);
+            }
+            current = self.parent(current)?;
+        }
+        None
+    }
+
     // Ändern
 
     /// Hängt den Codepunkt an die Daten eines Textknotens.
@@ -461,19 +509,51 @@ impl Document {
         }
     }
 
-    /// Hängt ein Attribut an ein Element an.
+    /// Hängt ein Attribut an ein Element an und führt die Schritte für
+    /// Attributänderungen aus.
     pub fn append_attribute(&mut self, node: NodeId, attribute: Attribute) {
         let Some(slot) = self.slot(node) else {
             return;
         };
-        if let Some(Payload::Element(element)) = self.payload.get_mut(slot) {
-            element.attributes.push(attribute);
-            self.journal.push(Change::Attributes(node));
+        let Some(Payload::Element(element)) = self.payload.get_mut(slot) else {
+            return;
+        };
+        let name = attribute
+            .namespace
+            .is_none()
+            .then(|| attribute.local_name.clone());
+        let was_present = name.as_ref().is_some_and(|name| {
+            element
+                .attributes
+                .iter()
+                .any(|existing| existing.namespace.is_none() && existing.local_name == *name)
+        });
+        element.attributes.push(attribute);
+        self.journal.push(Change::Attributes(node));
+        if let Some(name) = name {
+            self.attribute_changed(node, &name, was_present, true);
         }
     }
 
+    /// Die Prüfungen vor dem Einfügen (*ensure pre-insert validity*), soweit
+    /// sie Knotenarten und Zyklen betreffen.
+    fn check_insertion(&self, parent: NodeId, node: NodeId) -> Result<(), HierarchyError> {
+        let parent_fits = matches!(
+            self.kind(parent),
+            Some(NodeKind::Document | NodeKind::DocumentFragment | NodeKind::Element)
+        );
+        let node_fits = !matches!(self.kind(node), None | Some(NodeKind::Document));
+        if !parent_fits || !node_fits || self.is_host_including_inclusive_ancestor(node, parent) {
+            return Err(HierarchyError);
+        }
+        Ok(())
+    }
+
     /// Fügt `node` vor `reference` in `parent` ein, ohne `reference` am
-    /// Ende. Hat `node` schon einen Elternknoten, wird es dort zuerst
+    /// Ende (*pre-insert*). Von den Prüfungen macht es nur die auf
+    /// Knotenarten, Zyklen und den Bezugsknoten; ob etwa ein Dokument schon
+    /// ein Element hat, prüft der Aufrufer. Ein `DocumentFragment` gibt seine
+    /// Kinder ab. Hat `node` schon einen Elternknoten, wird es dort zuerst
     /// entfernt.
     pub fn insert_before(
         &mut self,
@@ -481,37 +561,18 @@ impl Document {
         node: NodeId,
         reference: Option<NodeId>,
     ) -> Result<(), HierarchyError> {
-        if self.slot(parent).is_none()
-            || self.slot(node).is_none()
-            || self.is_host_including_inclusive_ancestor(node, parent)
-            || reference.is_some_and(|reference| self.parent(reference) != Some(parent))
-        {
+        self.check_insertion(parent, node)?;
+        if reference.is_some_and(|reference| self.parent(reference) != Some(parent)) {
             return Err(HierarchyError);
         }
         // Wird `node` vor sich selbst eingefügt, gilt sein Nachfolger als
-        // Bezug (DOM: *insert*, Schritt „If child is node“).
+        // Bezug.
         let reference = if reference == Some(node) {
             self.next_sibling(node)
         } else {
             reference
         };
-        self.remove(node);
-        let previous = match reference {
-            Some(reference) => self.previous_sibling(reference),
-            None => self.last_child(parent),
-        };
-        Self::set_link(&mut self.parent, node, Some(parent));
-        Self::set_link(&mut self.previous_sibling, node, previous);
-        Self::set_link(&mut self.next_sibling, node, reference);
-        match previous {
-            Some(previous) => Self::set_link(&mut self.next_sibling, previous, Some(node)),
-            None => Self::set_link(&mut self.first_child, parent, Some(node)),
-        }
-        match reference {
-            Some(reference) => Self::set_link(&mut self.previous_sibling, reference, Some(node)),
-            None => Self::set_link(&mut self.last_child, parent, Some(node)),
-        }
-        self.journal.push(Change::Inserted(node));
+        self.insert(node, parent, reference);
         Ok(())
     }
 
@@ -519,7 +580,76 @@ impl Document {
         self.insert_before(parent, node, None)
     }
 
-    /// Löst den Knoten aus seinem Elternknoten, falls er einen hat.
+    /// *insert* aus dem DOM Standard, die Prüfungen sind gemacht.
+    fn insert(&mut self, node: NodeId, parent: NodeId, child: Option<NodeId>) {
+        if self.slot(node).is_none() || self.slot(parent).is_none() {
+            return;
+        }
+        let nodes: Vec<NodeId> = if self.kind(node) == Some(NodeKind::DocumentFragment) {
+            let children: Vec<NodeId> = self.children(node).collect();
+            for &fragment_child in &children {
+                self.remove(fragment_child);
+            }
+            children
+        } else {
+            vec![node]
+        };
+        for &node in &nodes {
+            // *adopt*: Hat der Knoten einen Elternknoten, wird er dort
+            // entfernt. Es gibt nur ein Dokument je Speicher.
+            self.remove(node);
+            self.attach(node, parent, child);
+            self.journal.push(Change::Inserted(node));
+            // Die *insertion steps* ändern den Baum nicht, also darf der
+            // Durchlauf ihn dabei lesen.
+            let mut current = Some(node);
+            while let Some(descendant) = current {
+                self.insertion_steps(descendant);
+                current = self.following(descendant, node);
+            }
+        }
+        // Erst alle Knoten sammeln, dann die *post-connection steps*, denn
+        // die dürfen den Baum ändern. Gesammelt werden nur Knoten, die
+        // solche Schritte haben.
+        let mut static_nodes = Vec::new();
+        for &node in &nodes {
+            let mut current = Some(node);
+            while let Some(descendant) = current {
+                if self.has_post_connection_steps(descendant) {
+                    static_nodes.push(descendant);
+                }
+                current = self.following(descendant, node);
+            }
+        }
+        for node in static_nodes {
+            if self.is_connected(node) {
+                self.post_connection_steps(node);
+            }
+        }
+    }
+
+    /// Hängt `node` vor `before` in `parent` ein (oder ans Ende).
+    fn attach(&mut self, node: NodeId, parent: NodeId, before: Option<NodeId>) {
+        let previous = match before {
+            Some(before) => self.previous_sibling(before),
+            None => self.last_child(parent),
+        };
+        Self::set_link(&mut self.parent, node, Some(parent));
+        Self::set_link(&mut self.previous_sibling, node, previous);
+        Self::set_link(&mut self.next_sibling, node, before);
+        match previous {
+            Some(previous) => Self::set_link(&mut self.next_sibling, previous, Some(node)),
+            None => Self::set_link(&mut self.first_child, parent, Some(node)),
+        }
+        match before {
+            Some(before) => Self::set_link(&mut self.previous_sibling, before, Some(node)),
+            None => Self::set_link(&mut self.last_child, parent, Some(node)),
+        }
+    }
+
+    /// Löst den Knoten aus seinem Elternknoten, falls er einen hat
+    /// (*remove*), und führt für ihn und seine Nachkommen die *removing
+    /// steps* aus.
     pub fn remove(&mut self, node: NodeId) {
         let Some(parent) = self.parent(node) else {
             return;
@@ -538,6 +668,142 @@ impl Document {
         Self::set_link(&mut self.previous_sibling, node, None);
         Self::set_link(&mut self.next_sibling, node, None);
         self.journal.push(Change::Removed { node, parent });
+        let mut current = Some(node);
+        while let Some(descendant) = current {
+            self.removing_steps(descendant);
+            current = self.following(descendant, node);
+        }
+    }
+
+    /// *replace all*: Entfernt alle Kinder von `parent` und fügt dann
+    /// `node` ein, falls angegeben. Geprüft wird wie bei
+    /// [`Document::insert_before`], bevor sich etwas ändert.
+    pub fn replace_all(
+        &mut self,
+        node: Option<NodeId>,
+        parent: NodeId,
+    ) -> Result<(), HierarchyError> {
+        match node {
+            Some(node) => self.check_insertion(parent, node)?,
+            None if self.slot(parent).is_none() => return Err(HierarchyError),
+            None => {}
+        }
+        self.replace_all_unchecked(node, parent);
+        Ok(())
+    }
+
+    fn replace_all_unchecked(&mut self, node: Option<NodeId>, parent: NodeId) {
+        let children: Vec<NodeId> = self.children(parent).collect();
+        for child in children {
+            self.remove(child);
+        }
+        if let Some(node) = node {
+            self.insert(node, parent, None);
+        }
+    }
+
+    /// *clone a node* in dasselbe Dokument, mit `subtree` samt allen
+    /// Nachkommen. Ein Dokumentknoten lässt sich nicht in seinen eigenen
+    /// Speicher klonen; dann gibt es kein Ergebnis.
+    pub fn clone_node(&mut self, node: NodeId, subtree: bool) -> Option<NodeId> {
+        /// Ein Schritt des Durchlaufs ohne Rekursion: erst die Kopie
+        /// anlegen, dann sie einhängen und die Kinder kopieren.
+        enum Work {
+            Clone {
+                source: NodeId,
+                parent: Option<NodeId>,
+            },
+            Attach {
+                source: NodeId,
+                copy: NodeId,
+                parent: Option<NodeId>,
+            },
+        }
+        let mut result = None;
+        let mut work = vec![Work::Clone {
+            source: node,
+            parent: None,
+        }];
+        while let Some(step) = work.pop() {
+            match step {
+                Work::Clone { source, parent } => {
+                    let copy = self.clone_single_node(source)?;
+                    result.get_or_insert(copy);
+                    work.push(Work::Attach {
+                        source,
+                        copy,
+                        parent,
+                    });
+                    // Die *cloning steps* eines `template` (HTML Standard)
+                    // kopieren seinen Inhalt, bevor die Kopie eingehängt
+                    // wird.
+                    if subtree
+                        && let Some(from) = self.template_contents(source)
+                        && let Some(to) = self.template_contents(copy)
+                    {
+                        let children: Vec<NodeId> = self.children(from).collect();
+                        for child in children.into_iter().rev() {
+                            work.push(Work::Clone {
+                                source: child,
+                                parent: Some(to),
+                            });
+                        }
+                    }
+                }
+                Work::Attach {
+                    source,
+                    copy,
+                    parent,
+                } => {
+                    if let Some(parent) = parent {
+                        self.insert(copy, parent, None);
+                    }
+                    if subtree {
+                        let children: Vec<NodeId> = self.children(source).collect();
+                        for child in children.into_iter().rev() {
+                            work.push(Work::Clone {
+                                source: child,
+                                parent: Some(copy),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        result
+    }
+
+    /// *clone a single node*
+    fn clone_single_node(&mut self, node: NodeId) -> Option<NodeId> {
+        let payload = self.payload(node)?.clone();
+        Some(match payload {
+            Payload::Document => return None,
+            Payload::Doctype(doctype) => self.create_doctype(doctype),
+            Payload::Fragment { .. } => self.create_fragment(),
+            Payload::Element(element) => {
+                let copy =
+                    self.create_element(element.namespace, element.local_name, element.attributes);
+                if let Some(Payload::Element(data)) =
+                    self.slot(copy).and_then(|slot| self.payload.get_mut(slot))
+                {
+                    data.prefix = element.prefix;
+                }
+                copy
+            }
+            Payload::Text(data) => self.create_text(data),
+            Payload::Comment(data) => self.create_comment(data),
+            Payload::ProcessingInstruction { target, data } => {
+                self.create_processing_instruction(target, data)
+            }
+        })
+    }
+
+    /// Führt die Mikroaufgaben aus, bis keine mehr da ist (*perform a
+    /// microtask checkpoint*), auch die, die dabei neu entstehen.
+    pub fn perform_microtask_checkpoint(&mut self) {
+        while let Some(task) = self.microtasks.pop_front() {
+            self.run_microtask(task);
+        }
     }
 
     /// Nimmt die Einträge des Journals heraus.
@@ -624,6 +890,87 @@ mod tests {
         };
         assert_eq!(document.append(a, stale), Err(HierarchyError));
         assert_eq!(document.parent(stale), None);
+    }
+
+    #[test]
+    fn clone_and_replace_all() {
+        let mut document = Document::new();
+        let id = Attribute::new(DomString::from("id"), DomString::from("a"));
+        let div = document.create_element(
+            Some(Namespace::Html),
+            DomString::from("div"),
+            vec![id.clone()],
+        );
+        let text = document.create_text(DomString::from("x"));
+        let template = element(&mut document, "template");
+        let contents = document.template_contents(template).expect("Inhalt");
+        let inner = element(&mut document, "p");
+        document.append(div, text).expect("einfügbar");
+        document.append(div, template).expect("einfügbar");
+        document.append(contents, inner).expect("einfügbar");
+
+        let shallow = document.clone_node(div, false).expect("Kopie");
+        assert_eq!(
+            document
+                .element(shallow)
+                .map(|element| element.attributes.clone()),
+            Some(vec![id])
+        );
+        assert_eq!(document.first_child(shallow), None);
+        let deep = document.clone_node(div, true).expect("Kopie");
+        let children: Vec<NodeId> = document.children(deep).collect();
+        let [text_copy, template_copy] = children.as_slice() else {
+            panic!("zwei Kinder erwartet: {children:?}");
+        };
+        assert_ne!(*text_copy, text);
+        assert_eq!(
+            document.data(*text_copy).map(DomString::to_string_lossy),
+            Some("x".to_owned())
+        );
+        // Der Inhalt des `template` wird mitkopiert.
+        let contents_copy = document
+            .template_contents(*template_copy)
+            .expect("Inhalt der Kopie");
+        let inner_copy = document.first_child(contents_copy).expect("Kind");
+        assert_ne!(inner_copy, inner);
+        assert!(document.element(inner_copy).is_some_and(|e| e.is_html("p")));
+        assert_eq!(document.clone_node(document.root(), true), None);
+
+        let target = element(&mut document, "section");
+        let old = element(&mut document, "span");
+        document.append(target, old).expect("einfügbar");
+        let fragment = document.create_fragment();
+        let a = element(&mut document, "a");
+        let b = element(&mut document, "b");
+        document.append(fragment, a).expect("einfügbar");
+        document.append(fragment, b).expect("einfügbar");
+        assert_eq!(document.replace_all(Some(fragment), target), Ok(()));
+        assert_eq!(document.children(target).collect::<Vec<_>>(), [a, b]);
+        assert_eq!(document.first_child(fragment), None);
+        assert_eq!(document.parent(old), None);
+        // Ein Zyklus wird abgelehnt, bevor sich etwas ändert.
+        assert_eq!(document.replace_all(Some(target), a), Err(HierarchyError));
+        assert_eq!(document.parent(a), Some(target));
+        assert_eq!(document.replace_all(None, target), Ok(()));
+        assert_eq!(document.first_child(target), None);
+    }
+
+    #[test]
+    fn connected_nodes() {
+        let mut document = Document::new();
+        let root = document.root();
+        let html = element(&mut document, "html");
+        let template = element(&mut document, "template");
+        let contents = document.template_contents(template).expect("Inhalt");
+        let inner = element(&mut document, "p");
+        document.append(root, html).expect("einfügbar");
+        document.append(html, template).expect("einfügbar");
+        document.append(contents, inner).expect("einfügbar");
+        assert!(document.is_connected(root));
+        assert!(document.is_connected(template));
+        assert!(!document.is_connected(inner));
+        document.remove(html);
+        assert!(!document.is_connected(template));
     }
 
     #[test]

@@ -58,6 +58,11 @@ pub struct Options {
 
 /// Parst ein ganzes Dokument in `document`, das noch leer sein sollte. Gibt
 /// die Parse-Fehler zurück, falls [`Options::collect_errors`] gesetzt ist.
+///
+/// Mikroaufgaben, die beim Aufbau entstehen (etwa beim Umhängen einer
+/// `option`), bleiben im Dokument liegen, bis der Aufrufer
+/// [`Document::perform_microtask_checkpoint`] aufruft; bei einer Seite tut
+/// das die Ereignisschleife nach der Aufgabe des Parsers.
 pub fn parse_document(
     document: &mut Document,
     input: impl IntoIterator<Item = CodePoint>,
@@ -425,6 +430,9 @@ impl<'a> TreeBuilder<'a> {
     /// Verarbeitet Token um Token bis zum Dateiende. Jeder Einfügemodus
     /// beendet das Parsen beim Dateiende („stop parsing“).
     fn run(&mut self) {
+        // Beim Fragment-Parsen ist der Kontext schon vor dem ersten Token der
+        // angepasste aktuelle Knoten; ein `<![CDATA[` am Anfang braucht das.
+        self.update_foreign_content();
         loop {
             let token = self.tokenizer.next_token();
             let end = token == Token::Eof;
@@ -459,6 +467,12 @@ impl<'a> TreeBuilder<'a> {
                 ErrorCode::NonVoidHtmlElementStartTagWithTrailingSolidus,
             ));
         }
+        self.update_foreign_content();
+    }
+
+    /// Sagt dem Tokenizer, ob der angepasste aktuelle Knoten außerhalb des
+    /// HTML-Namensraums liegt (für CDATA-Abschnitte).
+    fn update_foreign_content(&mut self) {
         let foreign = self
             .adjusted_current_node()
             .is_some_and(|node| !self.is_html_element(node));
@@ -684,9 +698,26 @@ impl<'a> TreeBuilder<'a> {
         self.in_scope(scope, |node| self.is_html_named(node, name))
     }
 
+    /// Nimmt den aktuellen Knoten vom Stapel („pop the current node off the
+    /// stack of open elements“); der Dokumentspeicher führt die Schritte
+    /// dafür aus. Das Entfernen mitten aus dem Stapel („remove … from the
+    /// stack“) zählt nicht dazu.
+    fn pop(&mut self) -> Option<NodeId> {
+        let node = self.open.pop()?;
+        self.document.popped_by_parser(node);
+        Some(node)
+    }
+
+    /// Nimmt Elemente vom Stapel, bis noch `len` übrig sind.
+    fn pop_to(&mut self, len: usize) {
+        while self.open.len() > len {
+            self.pop();
+        }
+    }
+
     /// Nimmt Elemente vom Stapel, bis eins genommen ist, für das `done` gilt.
     fn pop_until(&mut self, done: impl Fn(&Self, NodeId) -> bool) {
-        while let Some(node) = self.open.pop() {
+        while let Some(node) = self.pop() {
             if done(self, node) {
                 break;
             }
@@ -715,7 +746,7 @@ impl<'a> TreeBuilder<'a> {
             && IMPLIED_END_TAGS.contains(&name)
             && Some(name) != except
         {
-            self.open.pop();
+            self.pop();
         }
     }
 
@@ -725,7 +756,7 @@ impl<'a> TreeBuilder<'a> {
             && let Some(name) = self.html_name(node)
             && IMPLIED_END_TAGS_THOROUGHLY.contains(&name)
         {
-            self.open.pop();
+            self.pop();
         }
     }
 
@@ -795,9 +826,9 @@ impl<'a> TreeBuilder<'a> {
     }
 
     /// „Stop parsing“: Von „The end“ bleibt ohne Skripte und Ereignisse nur,
-    /// den Stapel zu leeren.
+    /// alle Knoten vom Stapel zu nehmen.
     fn stop_parsing(&mut self) {
-        self.open.clear();
+        self.pop_to(0);
     }
 
     // Die Liste aktiver Formatierungselemente
@@ -1115,7 +1146,7 @@ impl<'a> TreeBuilder<'a> {
             && self.is_html_named(current, subject)
             && self.formatting_index(current).is_none()
         {
-            self.open.pop();
+            self.pop();
             return;
         }
         for _ in 0..8 {
@@ -1160,7 +1191,7 @@ impl<'a> TreeBuilder<'a> {
                 .find(|(_, node)| self.is_special(**node))
                 .map(|(index, node)| (index, *node));
             let Some((furthest_position, furthest_block)) = furthest else {
-                self.open.truncate(formatting_position);
+                self.pop_to(formatting_position);
                 self.formatting.remove(formatting_index);
                 return;
             };
@@ -1310,7 +1341,7 @@ impl<'a> TreeBuilder<'a> {
                 if self.current_node() != Some(node) {
                     self.parse_error();
                 }
-                self.open.truncate(index);
+                self.pop_to(index);
                 return;
             }
             if self.is_special(node) {
