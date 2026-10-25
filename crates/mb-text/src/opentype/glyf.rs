@@ -241,6 +241,11 @@ enum Arguments {
 
 /// Eine einfache Glyphe mit `contours` Konturen.
 fn simple(mut reader: Reader<'_>, contours: u16, budget: &mut Budget) -> Result<Points, FontError> {
+    // Ohne Konturen darf nach dem Kopf alles fehlen, auch die Länge der
+    // Anweisungen; so lesen es fontTools und FreeType.
+    if contours == 0 {
+        return Ok(Points::default());
+    }
     let mut ends = Vec::with_capacity(usize::from(contours));
     for _ in 0..contours {
         let end = usize::from(reader.u16()?);

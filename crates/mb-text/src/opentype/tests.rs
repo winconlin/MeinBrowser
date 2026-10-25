@@ -541,6 +541,26 @@ fn composite_limits() {
 }
 
 #[test]
+fn glyphs_without_contours() {
+    // Nur der Kopf mit null Konturen, ohne die Länge der Anweisungen, und
+    // eine zusammengesetzte Glyphe daraus.
+    let mut header_only = 0i16.to_be_bytes().to_vec();
+    header_only.extend_from_slice(&[0; 8]);
+    let face = built_face(&[
+        Vec::new(),
+        header_only,
+        composite_glyph(&[offset_component(1, 5, 5)]),
+    ]);
+    for glyph in [1, 2] {
+        let outline = face.outline(GlyphId(glyph));
+        assert!(
+            outline.as_ref().is_ok_and(Outline::is_empty),
+            "Glyphe {glyph}: {outline:?}"
+        );
+    }
+}
+
+#[test]
 fn horizontal_metrics_with_trailing_bearings() {
     let glyphs = vec![Vec::new(); 5];
     let data = build_font(&glyphs, &[(600, 10), (700, 20)], &[30, 40, 50]);
