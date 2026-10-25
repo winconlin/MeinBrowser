@@ -296,13 +296,21 @@ impl FontLibrary {
         self.best_in(family, query)
     }
 
-    /// Die Ersatzschrift für ein Zeichen, das keine Schrift der Liste hat
+    /// Die Ersatzschrift für Zeichen, die keine Schrift der Liste hat
     /// (Schritt 7, *installed font fallback*): der passende Schnitt der
-    /// ersten Familie nach gefaltetem Namen, der eine Glyphe dafür hat.
-    pub fn fallback(&self, query: &FontQuery<'_>, character: char) -> Option<FaceId> {
+    /// ersten Familie nach gefaltetem Namen, der für jedes der Zeichen eine
+    /// Glyphe hat. Ohne Zeichen `None`.
+    pub fn fallback(&self, query: &FontQuery<'_>, characters: &[char]) -> Option<FaceId> {
+        if characters.is_empty() {
+            return None;
+        }
         self.families.values().find_map(|family| {
             let id = self.best_in(family, query)?;
-            self.face(id)?.glyph_index(character).map(|_| id)
+            let face = self.face(id)?;
+            characters
+                .iter()
+                .all(|&character| face.glyph_index(character).is_some())
+                .then_some(id)
         })
     }
 

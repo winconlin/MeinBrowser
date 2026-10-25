@@ -187,7 +187,7 @@ fn fallback_searches_families_by_name() {
     let fallback = |weight: f32, character: char| {
         let query = query(&[], weight, Slope::Normal);
         library
-            .fallback(&query, character)
+            .fallback(&query, &[character])
             .map(|id| postscript(&library, id))
     };
     // Die Familien nach gefaltetem Namen: ahem, csstest basic, lato,
@@ -201,6 +201,15 @@ fn fallback_searches_families_by_name() {
     assert_eq!(fallback(400.0, '\u{122}').as_deref(), Some("Lato-Medium"));
     assert_eq!(fallback(700.0, '\u{122}').as_deref(), Some("Lato-Medium"));
     assert_eq!(fallback(400.0, 'あ'), None);
+    // Mehrere Zeichen brauchen einen Schnitt, der alle hat.
+    let query = query(&[], 400.0, Slope::Normal);
+    let both = library.fallback(&query, &['一', 'ő']);
+    assert_eq!(both, None);
+    let both = library
+        .fallback(&query, &['A', 'ő'])
+        .map(|id| postscript(&library, id));
+    assert_eq!(both.as_deref(), Some("CSSTestBasic"));
+    assert_eq!(library.fallback(&query, &[]), None);
 }
 
 #[test]
@@ -227,7 +236,7 @@ fn unreadable_files_add_nothing() {
     assert_eq!(library.face_count(), 0);
     let query = query(&[], 400.0, Slope::Normal);
     assert!(library.default_face(&query).is_none());
-    assert!(library.fallback(&query, 'a').is_none());
+    assert!(library.fallback(&query, &['a']).is_none());
 }
 
 /// Eine Sammlung, deren Kopf mehr Schnitte verspricht, als hineinpassen,
