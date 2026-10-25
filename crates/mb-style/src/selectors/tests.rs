@@ -325,3 +325,23 @@ fn pseudo_elements() {
     );
     assert_eq!(selector("::-webkit-thumb").pseudo_element(), None);
 }
+
+#[test]
+fn headings() {
+    let document = document(
+        "<h1 id=a></h1><section headingoffset=1><h1 id=b></h1>\
+         <div headingreset><h2 id=c></h2></div><h6 id=d></h6></section>\
+         <section headingoffset=20><h3 id=e></h3></section><p id=f></p>",
+    );
+    assert_eq!(select(&document, ":heading"), ["a", "b", "c", "d", "e"]);
+    assert_eq!(select(&document, ":heading(1)"), ["a"]);
+    assert_eq!(select(&document, ":heading(2)"), ["b", "c"]);
+    assert_eq!(select(&document, ":heading(7, 9)"), ["d", "e"]);
+    assert!(parse(":heading(1.5)").is_err());
+    assert!(parse(":heading()").is_err());
+    // Ohne Skript gibt es keine offenen Popover und keine modalen Dialoge.
+    assert!(select(&document, ":popover-open, :modal, :autofill").is_empty());
+    let backdrop = parse("::backdrop").expect("::backdrop");
+    let selector = backdrop.selectors().first().expect("ein Selektor");
+    assert_eq!(selector.pseudo_element(), None);
+}

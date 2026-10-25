@@ -6,12 +6,12 @@
 //! Bisher nur für `select`, `option` und `selectedcontent` (Abschnitt
 //! „Forms“): die Auswahl (*selectedness*) und das Spiegeln der gewählten
 //! `option` in `selectedcontent`. Dazu kommen Zustände, die Selektoren
-//! abfragen (*checkedness*, *actually disabled*). Noch nicht umgesetzt: die
-//! Formularzuordnung (*reset the form owner*), *process internal resource
-//! links*, die Schritte beim Verschieben (*moving steps*, es gibt noch kein
-//! `moveBefore()`), das Zurücksetzen eines Formulars, Ereignisse und die
-//! Schritte der übrigen Elemente, die der Parser beim Herausnehmen auslöst
-//! (`style`, `object`, Medienelemente, `textarea`).
+//! abfragen (*checkedness*, *actually disabled*, *heading level*). Noch nicht
+//! umgesetzt: die Formularzuordnung (*reset the form owner*), *process
+//! internal resource links*, die Schritte beim Verschieben (*moving steps*,
+//! es gibt noch kein `moveBefore()`), das Zurücksetzen eines Formulars,
+//! Ereignisse und die Schritte der übrigen Elemente, die der Parser beim
+//! Herausnehmen auslöst (`style`, `object`, Medienelemente, `textarea`).
 
 use mb_base::DomString;
 
@@ -230,6 +230,47 @@ impl Document {
             ancestor = self.parent(node);
         }
         false
+    }
+
+    /// Die Stufe einer Überschrift `h1` bis `h6` (*heading level*, „get an
+    /// element's computed heading level“), mit dem Versatz aus
+    /// `headingoffset` und höchstens 9; `None` für alle anderen Elemente.
+    pub fn heading_level(&self, element: NodeId) -> Option<u64> {
+        let level = match self.html_name(element)? {
+            "h1" => 1,
+            "h2" => 2,
+            "h3" => 3,
+            "h4" => 4,
+            "h5" => 5,
+            "h6" => 6,
+            _ => return None,
+        };
+        Some(self.heading_offset(element).saturating_add(level).min(9))
+    }
+
+    /// „Get an element's computed heading offset“. Shadow Roots gibt es noch
+    /// nicht.
+    fn heading_offset(&self, element: NodeId) -> u64 {
+        let mut offset: u64 = 0;
+        let mut current = Some(element);
+        while let Some(node) = current {
+            let Some(data) = self.element(node) else {
+                break;
+            };
+            if data.namespace == Some(Namespace::Html) {
+                if let Some(value) = data
+                    .attribute("headingoffset")
+                    .and_then(parse_non_negative_integer)
+                {
+                    offset = offset.saturating_add(value);
+                }
+                if data.attribute("headingreset").is_some() {
+                    return offset;
+                }
+            }
+            current = self.parent(node);
+        }
+        offset
     }
 
     // Die Schritte an den Algorithmen des DOM

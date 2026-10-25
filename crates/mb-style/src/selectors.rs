@@ -6,11 +6,13 @@
 //! mit Namensräumen, alle Kombinatoren, die Pseudoklassen `:is()`,
 //! `:where()`, `:not()`, `:has()`, die baumstrukturellen, `:any-link`,
 //! `:link`, `:visited`, `:target`, `:scope`, die Nutzeraktionen, `:lang()`,
-//! `:enabled`, `:disabled` und `:checked`, dazu die Pseudoelemente
-//! `::before`, `::after`, `::marker`, `::first-line`, `::first-letter` und
-//! `::slotted()` sowie unbekannte `::-webkit-…` (Anhang B). Alles andere macht
-//! einen Selektor ungültig, wie es die Spezifikation für Unbekanntes verlangt
-//! („no usable level of support“). Pseudoelemente lassen sich nicht weiter
+//! `:enabled`, `:disabled` und `:checked`, aus dem HTML Standard `:heading`,
+//! `:heading()`, `:popover-open`, `:modal` und `:autofill`, dazu die
+//! Pseudoelemente `::before`, `::after`, `::marker`, `::first-line`,
+//! `::first-letter`, `::slotted()`, `::backdrop`, `::file-selector-button`
+//! sowie unbekannte `::-webkit-…` (Anhang B). Alles andere macht einen
+//! Selektor ungültig, wie es die Spezifikation für Unbekanntes verlangt („no
+//! usable level of support“). Pseudoelemente lassen sich nicht weiter
 //! verketten (`::before::marker`), und die Verschachtelung mit `&` aus CSS
 //! Nesting kommt erst mit der Kaskade.
 
@@ -265,6 +267,14 @@ enum PseudoClass {
     Enabled,
     Disabled,
     Checked,
+    /// `:heading`: `h1` bis `h6`
+    Heading,
+    /// `:heading(⟨integer⟩#)`: Überschriften mit einer dieser Stufen
+    HeadingLevel(Vec<i64>),
+    PopoverOpen,
+    Modal,
+    /// `:autofill` und `:-webkit-autofill`
+    Autofill,
 }
 
 /// Die Pseudoelemente, die Boxen erzeugen und für die die Kaskade Stile
@@ -292,8 +302,10 @@ enum PseudoTarget {
     /// `::slotted()`. Ohne Shadow Trees gibt es keine Slots, also passt es
     /// auf nichts.
     Slotted(Compound),
-    /// Ein unbekanntes `::-webkit-…`: gültig, passt aber auf nichts.
-    UnknownWebkit,
+    /// Ein Pseudoelement, das es hier nie gibt: `::backdrop` ohne oberste
+    /// Ebene (*top layer*), `::file-selector-button` ohne gezeichnete
+    /// Formularsteuerelemente und unbekannte `::-webkit-…`.
+    Inactive,
 }
 
 impl SelectorList {
@@ -822,6 +834,10 @@ impl Parser<'_> {
             "enabled" => PseudoClass::Enabled,
             "disabled" => PseudoClass::Disabled,
             "checked" => PseudoClass::Checked,
+            "heading" => PseudoClass::Heading,
+            "popover-open" => PseudoClass::PopoverOpen,
+            "modal" => PseudoClass::Modal,
+            "autofill" | "-webkit-autofill" => PseudoClass::Autofill,
             _ => return None,
         };
         Some(class)
@@ -897,6 +913,22 @@ impl Parser<'_> {
                     .collect::<Option<Vec<DomString>>>()?;
                 Some(PseudoClass::Lang(ranges))
             }
+            "heading" => {
+                let levels = split_commas(&values)
+                    .into_iter()
+                    .map(|part| match trim(part) {
+                        [
+                            ComponentValue::Token(Token::Number {
+                                value,
+                                integer: true,
+                                ..
+                            }),
+                        ] => Some(*value as i64),
+                        _ => None,
+                    })
+                    .collect::<Option<Vec<i64>>>()?;
+                Some(PseudoClass::HeadingLevel(levels))
+            }
             _ => None,
         }
     }
@@ -918,9 +950,10 @@ impl Parser<'_> {
                 let lower = name.to_ascii_lowercase();
                 let target = match lower.as_str() {
                     "marker" => PseudoTarget::Element(PseudoElement::Marker),
+                    "backdrop" | "file-selector-button" => PseudoTarget::Inactive,
                     _ => match legacy_pseudo_element(&lower) {
                         Some(element) => PseudoTarget::Element(element),
-                        None if lower.starts_with("-webkit-") => PseudoTarget::UnknownWebkit,
+                        None if lower.starts_with("-webkit-") => PseudoTarget::Inactive,
                         None => return None,
                     },
                 };

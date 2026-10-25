@@ -455,6 +455,17 @@ impl<'c, 'd> Matcher<'c, 'd> {
                     && !self.document.is_actually_disabled(node)
             }
             PseudoClass::Disabled => self.document.is_actually_disabled(node),
+            PseudoClass::Heading => self.document.heading_level(node).is_some(),
+            PseudoClass::HeadingLevel(levels) => {
+                self.document.heading_level(node).is_some_and(|level| {
+                    levels
+                        .iter()
+                        .any(|&wanted| u64::try_from(wanted) == Ok(level))
+                })
+            }
+            // Ohne Skript zeigt sich kein Popover, und kein Dialog ist modal;
+            // ohne Formulardaten füllt nichts automatisch aus.
+            PseudoClass::PopoverOpen | PseudoClass::Modal | PseudoClass::Autofill => false,
             PseudoClass::Checked => {
                 let checkable = element.is_html("input")
                     && element.attribute("type").is_some_and(|kind| {
