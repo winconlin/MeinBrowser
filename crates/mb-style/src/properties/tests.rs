@@ -71,6 +71,18 @@ fn shorthands_and_priorities() {
     assert!(!margin.set_property("margin-top", "4px", "wichtig", ParseContext::default()));
     assert!(!margin.set_property("margin-top", "3px", "important", ParseContext::default()));
 
+    let text_align = block(&[("text-align", "match-parent")]);
+    assert_eq!(text_align.get_property_value("text-align"), "match-parent");
+    let text_align = block(&[
+        ("text-align-all", "match-parent"),
+        ("text-align-last", "auto"),
+    ]);
+    assert_eq!(text_align.get_property_value("text-align"), "");
+    assert_eq!(
+        text_align.css_text(),
+        "text-align-all: match-parent; text-align-last: auto;"
+    );
+
     let mut border = block(&[("border", "1px solid red")]);
     assert_eq!(border.css_text(), "border: 1px solid red;");
     assert_eq!(border.remove_property("border-top"), "1px solid red");
