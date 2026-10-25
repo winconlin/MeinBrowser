@@ -418,6 +418,34 @@ fn tree_construction_errors() {
     assert_eq!(errors("<!DOCTYPE html><br/><img/>"), []);
 }
 
+/// Ein CDATA-Abschnitt ganz am Anfang eines Fragments: Im Kontext `svg` ist
+/// er Text, in einem HTML-Kontext ein Kommentar mit Fehler.
+#[test]
+fn fragment_starts_with_cdata() {
+    let fragment = |context: &str| {
+        let mut document = Document::new();
+        let context = context_element(&mut document, context);
+        let options = Options {
+            scripting: ScriptingMode::Inert,
+            collect_errors: true,
+        };
+        let input = "<![CDATA[x]]>".chars().map(CodePoint::from);
+        let (fragment, errors) =
+            parse_fragment(&mut document, context, input, options).expect("Kontextelement");
+        let codes: Vec<Option<ErrorCode>> = errors.into_iter().map(|error| error.code).collect();
+        (serialize(&document, fragment), codes)
+    };
+    assert_eq!(fragment("svg svg"), (DomString::from("| \"x\""), vec![]));
+    assert_eq!(fragment("math math"), (DomString::from("| \"x\""), vec![]));
+    assert_eq!(
+        fragment("div"),
+        (
+            DomString::from("| <!-- [CDATA[x]] -->"),
+            vec![Some(ErrorCode::CdataInHtmlContent)]
+        )
+    );
+}
+
 #[test]
 fn parse_dat_like_test_js() {
     let text = "#data\n<p>One\n#errors\n(1,3): x\n#document\n| <html>\n|   \"a\n\"\n\n#data\nb\n#errors\n#document\n| \"b\"\n";

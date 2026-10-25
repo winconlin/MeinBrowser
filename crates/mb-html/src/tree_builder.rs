@@ -425,6 +425,9 @@ impl<'a> TreeBuilder<'a> {
     /// Verarbeitet Token um Token bis zum Dateiende. Jeder Einfügemodus
     /// beendet das Parsen beim Dateiende („stop parsing“).
     fn run(&mut self) {
+        // Beim Fragment-Parsen ist der Kontext schon vor dem ersten Token der
+        // angepasste aktuelle Knoten; ein `<![CDATA[` am Anfang braucht das.
+        self.update_foreign_content();
         loop {
             let token = self.tokenizer.next_token();
             let end = token == Token::Eof;
@@ -459,6 +462,12 @@ impl<'a> TreeBuilder<'a> {
                 ErrorCode::NonVoidHtmlElementStartTagWithTrailingSolidus,
             ));
         }
+        self.update_foreign_content();
+    }
+
+    /// Sagt dem Tokenizer, ob der angepasste aktuelle Knoten außerhalb des
+    /// HTML-Namensraums liegt (für CDATA-Abschnitte).
+    fn update_foreign_content(&mut self) {
         let foreign = self
             .adjusted_current_node()
             .is_some_and(|node| !self.is_html_element(node));
