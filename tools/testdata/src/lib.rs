@@ -21,7 +21,7 @@ pub struct Source {
 
 /// Alle Testsammlungen. Für einen neuen Stand den Commit ändern und
 /// `cargo run -p testdata` ausführen.
-pub const SOURCES: [Source; 4] = [
+pub const SOURCES: [Source; 5] = [
     Source {
         name: "wpt",
         repository: "https://github.com/web-platform-tests/wpt",
@@ -33,6 +33,21 @@ pub const SOURCES: [Source; 4] = [
             "/html/syntax/parsing/resources/",
             "/dom/nodes/selectors.js",
             "/dom/nodes/ParentNode-querySelector-All-content.html",
+            // Parsen und Serialisieren der Eigenschaften, siehe
+            // `crates/mb-style/src/properties/wpt.rs`.
+            "/css/css-backgrounds/parsing/",
+            "/css/css-box/parsing/",
+            "/css/css-cascade/parsing/",
+            "/css/css-color/parsing/",
+            "/css/css-display/parsing/",
+            "/css/css-fonts/parsing/",
+            "/css/css-inline/parsing/",
+            "/css/css-lists/parsing/",
+            "/css/css-logical/parsing/",
+            "/css/css-sizing/parsing/",
+            "/css/css-text/parsing/",
+            "/css/css-text-decor/parsing/",
+            "/css/css-writing-modes/parsing/",
         ],
     },
     Source {
@@ -62,6 +77,14 @@ pub const SOURCES: [Source; 4] = [
             "/stylesheet_bytes.json",
             "/An+B.json",
         ],
+    },
+    Source {
+        name: "webref",
+        repository: "https://github.com/w3c/webref",
+        commit: "85e517c8fb6271560d09c1b550c40bcfc849f580",
+        // Die aus den Editor's Drafts gelesenen CSS-Definitionen, siehe
+        // `crates/mb-style/src/properties/webref.rs`.
+        paths: &["/ed/css/"],
     },
 ];
 
