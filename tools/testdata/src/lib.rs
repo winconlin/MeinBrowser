@@ -21,7 +21,7 @@ pub struct Source {
 
 /// Alle Testsammlungen. Für einen neuen Stand den Commit ändern und
 /// `cargo run -p testdata` ausführen.
-pub const SOURCES: [Source; 6] = [
+pub const SOURCES: [Source; 7] = [
     Source {
         name: "wpt",
         repository: "https://github.com/web-platform-tests/wpt",
@@ -101,6 +101,13 @@ pub const SOURCES: [Source; 6] = [
         // Die XML-Testsuite des W3C mit einem flachen Katalog, siehe
         // `crates/mb-xml/src/conformance.rs`.
         paths: &["/packages/test-data/"],
+    },
+    Source {
+        name: "go",
+        repository: "https://github.com/golang/go",
+        commit: "0d37007fda071631fbcb520b99c85a8e4c93108a",
+        // Deflate-Daten aus Gos Kodierer, siehe `crates/mb-compress/src/tests.rs`.
+        paths: &["/src/compress/flate/testdata/"],
     },
 ];
 
