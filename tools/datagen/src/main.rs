@@ -2,7 +2,9 @@
 //! die IDNA-Zuordnungstabelle für `mb-unicode` (siehe `docs/architektur.md`,
 //! Abschnitt 4.3), die Tabellen des WHATWG Encoding Standard für
 //! `mb-encoding` und die benannten Zeichenreferenzen des HTML Standard für
-//! `mb-html` (beides Abschnitt 4.4). Die erzeugten Dateien werden eingecheckt.
+//! `mb-html` (beides Abschnitt 4.4) sowie die CSS-Regeln aus dem Abschnitt
+//! „Rendering“ des HTML Standard für `mb-style` (Abschnitt 4.6). Die
+//! erzeugten Dateien werden eingecheckt.
 //!
 //! Aufruf: `cargo run -p datagen [-- --check]`. Mit `--check` schreibt das
 //! Programm nichts, sondern prüft nur, ob die eingecheckten Dateien aktuell
@@ -13,6 +15,7 @@
 mod encoding;
 mod html;
 mod idna;
+mod rendering;
 mod ucd;
 mod unicode;
 
@@ -32,7 +35,7 @@ struct Generator {
     run: fn(Read<'_>) -> Result<String, String>,
 }
 
-const GENERATORS: [Generator; 4] = [
+const GENERATORS: [Generator; 5] = [
     Generator {
         data: unicode::DATA,
         output: unicode::OUTPUT,
@@ -52,6 +55,11 @@ const GENERATORS: [Generator; 4] = [
         data: html::DATA,
         output: html::OUTPUT,
         run: html::run,
+    },
+    Generator {
+        data: rendering::DATA,
+        output: rendering::OUTPUT,
+        run: rendering::run,
     },
 ];
 

@@ -431,7 +431,12 @@ impl<'c, 'd> Matcher<'c, 'd> {
             PseudoClass::AnyLink | PseudoClass::Link => is_link(element),
             PseudoClass::Visited => false,
             PseudoClass::Target => self.context.target == Some(node),
-            PseudoClass::Scope => self.is_scope(node),
+            PseudoClass::Scope | PseudoClass::Nesting(None) => self.is_scope(node),
+            // `&` kann wie `:is()` keine Pseudoelemente treffen.
+            PseudoClass::Nesting(Some(list)) => list
+                .selectors
+                .iter()
+                .any(|selector| selector.pseudo_element.is_none() && self.complex(selector, node)),
             // Ohne Nutzer und Fokus trifft keine Nutzeraktion zu.
             PseudoClass::Hover
             | PseudoClass::Active

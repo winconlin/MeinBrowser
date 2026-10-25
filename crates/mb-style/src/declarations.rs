@@ -1,17 +1,64 @@
 //! Deklarationsblöcke nach CSSOM („CSS Declaration Blocks“): die Methoden
 //! von `CSSStyleDeclaration` ohne die Anbindung an JavaScript und ohne
-//! *owner node* und *updating flag*.
+//! *owner node* und *updating flag*, dazu das Lesen von Deklarationen für
+//! Regeln und das Attribut `style`.
 //!
 //! Namen und Werte kommen als Text. Ein DOMString mit einzelnen Surrogaten
 //! wird vorher mit U+FFFD umgewandelt; dasselbe täte das Filtern der
 //! Codepunkte beim Parsen (CSS Syntax 3). Custom Properties fehlen noch.
 
-use mb_css::{Source, parse_component_value_list};
+use mb_css::{
+    Declaration as CssDeclaration, Source, Syntax, parse_component_value_list,
+    parse_declaration_list,
+};
 
 use crate::properties::{
     DeclaredValue, Longhand, PropertyDeclaration, PropertyId, Shorthand, serialize_shorthand,
 };
 use crate::values::{ParseContext, ToCss};
+
+/// Eine Deklaration einer Langform mit ihrem *important flag*, wie sie in
+/// Regeln und im Attribut `style` steht. Anders als in einem
+/// [`DeclarationBlock`] darf eine Langform in einer Liste davon mehrmals
+/// vorkommen; welche gilt, entscheidet die Kaskade.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Declared {
+    pub declaration: PropertyDeclaration,
+    pub important: bool,
+}
+
+/// Liest eine Deklaration aus dem Parser nach der Grammatik ihrer
+/// Eigenschaft; Kurzschreibweisen werden zerlegt. Custom Properties fehlen
+/// noch und sind wie unbekannte Eigenschaften ungültig.
+pub(crate) fn parse_declaration(
+    declaration: &CssDeclaration,
+    context: ParseContext<'_>,
+) -> Option<Vec<PropertyDeclaration>> {
+    PropertyId::from_name(&declaration.name)?.parse(declaration.value.values(), context)
+}
+
+/// Die gültigen Deklarationen einer Liste aus dem Parser, in ihrer
+/// Reihenfolge; ungültige fallen weg.
+pub(crate) fn parse_declarations(
+    declarations: &[CssDeclaration],
+    context: ParseContext<'_>,
+) -> Vec<Declared> {
+    let mut parsed = Vec::new();
+    for declaration in declarations {
+        if let Some(longhands) = parse_declaration(declaration, context) {
+            parsed.extend(longhands.into_iter().map(|longhand| Declared {
+                declaration: longhand,
+                important: declaration.important,
+            }));
+        }
+    }
+    parsed
+}
+
+/// *Parse a CSS declaration block* (CSSOM), etwa für das Attribut `style`.
+pub fn parse_declaration_block(input: &Source, context: ParseContext<'_>) -> Vec<Declared> {
+    parse_declarations(&parse_declaration_list(input, &Syntax), context)
+}
 
 /// Eine Deklaration im Block mit ihrem *important flag*.
 #[derive(Clone, Debug, PartialEq)]
