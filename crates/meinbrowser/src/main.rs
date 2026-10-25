@@ -1,8 +1,11 @@
-//! Das Programm MeinBrowser. Für Meilenstein M0 öffnet es ein Fenster mit einem
-//! selbst gezeichneten Testbild, siehe `docs/architektur.md`, Abschnitt 12.
+//! Das Programm MeinBrowser, siehe `docs/architektur.md`, Abschnitt 12.
 //!
-//! - `meinbrowser` öffnet das Fenster. Mausklicks setzen Punkte ins Bild,
-//!   Tasten und Texteingaben erscheinen auf der Standardausgabe.
+//! - `meinbrowser DATEI` zeigt eine lokale HTML- oder XHTML-Datei in der
+//!   Größe des Fensters an (M1), ein Gerätepixel je CSS-Pixel. Scrollen gibt
+//!   es noch nicht.
+//! - `meinbrowser` öffnet ein Fenster mit einem selbst gezeichneten Testbild
+//!   (M0). Mausklicks setzen Punkte ins Bild, Tasten und Texteingaben
+//!   erscheinen auf der Standardausgabe.
 //! - `meinbrowser --selbsttest [bild.ppm]` zeigt das Testbild, liest es aus
 //!   dem Fenster zurück und prüft es an festen Messpunkten. Auf Wunsch wird das
 //!   zurückgelesene Bild als PPM-Datei gespeichert.
@@ -12,15 +15,32 @@
 use std::ffi::OsString;
 use std::path::Path;
 use std::process::ExitCode;
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
+use mb_layout::Fonts;
 use mb_platform::{Capture, Event, KeyEvent, Window, WindowOptions};
 use mb_raster::{Canvas, Color, PROBES, probe_position, test_image};
+use mb_text::FontLibrary;
+use mb_url::Url;
+use mb_web::Page;
 
-const USAGE: &str = "Aufruf: meinbrowser [--selbsttest [bild.ppm] | --version | --help]";
+#[cfg(test)]
+mod tests;
+
+const USAGE: &str = "Aufruf: meinbrowser [DATEI | --selbsttest [bild.ppm] | --version | --help]";
+
+/// Der Stapel des Fadens, der die Seite lädt und zeichnet. Layout und
+/// Zeichnen arbeiten rekursiv, wie im Läufer der Referenztests.
+const STACK: usize = 64 << 20;
 
 fn main() -> ExitCode {
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
+    if let [path] = args.as_slice()
+        && !path.to_string_lossy().starts_with('-')
+    {
+        return view(Path::new(path));
+    }
     let flag = args.first().map(|arg| arg.to_str());
     match (flag, args.len()) {
         (None, _) => interactive(),
@@ -56,6 +76,127 @@ fn show(window: &mut Window, canvas: &Canvas) -> Result<(), String> {
     window
         .present(canvas.width(), canvas.height(), canvas.pixels())
         .map_err(|err| err.to_string())
+}
+
+/// Lädt und zeichnet eine Seite auf einem eigenen Faden mit großem Stapel.
+struct Renderer {
+    sizes: Sender<(u32, u32)>,
+    frames: Receiver<Result<Canvas, String>>,
+}
+
+impl Renderer {
+    /// Startet den Faden und wartet, bis die Seite geladen ist.
+    fn start(path: &Path) -> Result<Renderer, String> {
+        let url = mb_web::file_url(path)
+            .ok_or_else(|| format!("{}: kein gültiger Pfad", path.display()))?;
+        let (loaded_sender, loaded) = mpsc::channel();
+        let (sizes, requests) = mpsc::channel();
+        let (results, frames) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("Seite".into())
+            .stack_size(STACK)
+            .spawn(move || render_page(url, loaded_sender, requests, results))
+            .map_err(|err| format!("Faden: {err}"))?;
+        match loaded.recv() {
+            Ok(true) => Ok(Renderer { sizes, frames }),
+            _ => Err(format!("{}: lässt sich nicht laden", path.display())),
+        }
+    }
+
+    /// Zeichnet die Seite in einem Viewport von `width` × `height` Pixeln.
+    fn render(&self, width: u32, height: u32) -> Result<Canvas, String> {
+        let stopped = || "der Faden der Seite ist beendet".to_owned();
+        self.sizes.send((width, height)).map_err(|_| stopped())?;
+        self.frames.recv().map_err(|_| stopped())?
+    }
+}
+
+/// Der Faden eines [`Renderer`]: meldet über `loaded`, ob sich die Seite
+/// laden ließ, und zeichnet sie dann für jede Größe aus `requests`.
+fn render_page(
+    url: Url,
+    loaded: Sender<bool>,
+    requests: Receiver<(u32, u32)>,
+    results: Sender<Result<Canvas, String>>,
+) {
+    let mut library = FontLibrary::new(Box::new(|path| std::fs::read(path).ok()));
+    for file in mb_platform::fonts::font_files() {
+        library.add_file(file);
+    }
+    let fonts = Fonts::new(&library);
+    let page = Page::load(url, Box::new(mb_web::read_file));
+    if loaded.send(page.is_some()).is_err() {
+        return;
+    }
+    let Some(page) = page else {
+        return;
+    };
+    for (width, height) in requests {
+        let scene = page.render(&fonts, f64::from(width), f64::from(height));
+        let canvas = mb_raster::render(&scene).map_err(|err| err.to_string());
+        if results.send(canvas).is_err() {
+            return;
+        }
+    }
+}
+
+/// Zeigt eine lokale Datei an und zeichnet sie bei jeder Größenänderung neu.
+fn view(path: &Path) -> ExitCode {
+    let renderer = match Renderer::start(path) {
+        Ok(renderer) => renderer,
+        Err(err) => {
+            eprintln!("meinbrowser: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let name = path
+        .file_name()
+        .map_or_else(|| path.to_string_lossy(), |name| name.to_string_lossy());
+    let title = format!("{name} – MeinBrowser");
+    let options = WindowOptions {
+        title: &title,
+        width: 800,
+        height: 600,
+    };
+    let mut window = match Window::open(&options) {
+        Ok(window) => window,
+        Err(err) => {
+            eprintln!("meinbrowser: Fenster lässt sich nicht öffnen: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut frame: Option<Canvas> = None;
+    loop {
+        let event = match window.next_event(None) {
+            Ok(Some(event)) => event,
+            Ok(None) => continue,
+            Err(err) => {
+                eprintln!("meinbrowser: {err}");
+                return ExitCode::FAILURE;
+            }
+        };
+        match event {
+            Event::CloseRequested => return ExitCode::SUCCESS,
+            Event::Resized { .. } => {
+                let (width, height) = window.size();
+                match renderer.render(width, height) {
+                    Ok(canvas) => frame = Some(canvas),
+                    Err(err) => {
+                        eprintln!("meinbrowser: {err}");
+                        return ExitCode::FAILURE;
+                    }
+                }
+            }
+            Event::RedrawRequested => {}
+            _ => continue,
+        }
+        if let Some(canvas) = &frame
+            && let Err(err) = show(&mut window, canvas)
+        {
+            eprintln!("meinbrowser: {err}");
+            return ExitCode::FAILURE;
+        }
+    }
 }
 
 fn interactive() -> ExitCode {
