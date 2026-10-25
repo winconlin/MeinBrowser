@@ -48,6 +48,8 @@ pub const SOURCES: [Source; 5] = [
             "/css/css-text/parsing/",
             "/css/css-text-decor/parsing/",
             "/css/css-writing-modes/parsing/",
+            // Schriften für die Tests des Schriftlesers in `mb-text`.
+            "/fonts/",
         ],
     },
     Source {
@@ -127,6 +129,18 @@ pub fn read(source: &str, path: &str) -> String {
     let file = root().join(source).join(path);
     match std::fs::read_to_string(&file) {
         Ok(text) => text,
+        Err(error) => panic!(
+            "Externe Testdaten fehlen ({}: {error}). Bitte `cargo run -p testdata` ausführen.",
+            file.display()
+        ),
+    }
+}
+
+/// Wie [`read`], für Dateien, die kein Text sind, etwa Schriften.
+pub fn read_bytes(source: &str, path: &str) -> Vec<u8> {
+    let file = root().join(source).join(path);
+    match std::fs::read(&file) {
+        Ok(bytes) => bytes,
         Err(error) => panic!(
             "Externe Testdaten fehlen ({}: {error}). Bitte `cargo run -p testdata` ausführen.",
             file.display()
