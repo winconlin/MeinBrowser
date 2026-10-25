@@ -251,6 +251,9 @@ impl Document {
                     has_changed = true;
                 }
                 if let Some(select) = self.cached_select(element) {
+                    if has_changed && is_present {
+                        self.deselect_others(select, element);
+                    }
                     self.reset_selectedness(select, has_changed);
                 }
             }
@@ -323,12 +326,32 @@ impl Document {
         }
         let mut result = Vec::new();
         for select in [old, new].into_iter().flatten() {
+            if Some(select) == new && self.selectedness(option) {
+                self.deselect_others(select, option);
+            }
             let has_changed = self.selectedness_setting(select);
             if self.selectedness(option) || has_changed {
                 result.push(select);
             }
         }
         result
+    }
+
+    /// Ohne `multiple` bleibt nur `option` gewählt: „whenever an option
+    /// element in the select element's list of options has its selectedness
+    /// set to true, and whenever an option element with its selectedness set
+    /// to true is added to the select element's list of options, the user
+    /// agent must set the selectedness of all the other option elements in
+    /// its list of options to false.“
+    fn deselect_others(&mut self, select: NodeId, option: NodeId) {
+        if self.has_attribute(select, "multiple") {
+            return;
+        }
+        for other in self.list_of_options(select) {
+            if other != option {
+                self.set_selectedness(other, false);
+            }
+        }
     }
 
     /// „Get the list of options“
@@ -628,6 +651,50 @@ mod tests {
         append(&mut document, disabled_group, grouped);
         assert!(document.option_is_disabled(grouped));
         assert!(!document.option_is_disabled(shown));
+    }
+
+    #[test]
+    fn selected_option_deselects_the_others() {
+        let mut document = Document::new();
+        let root = document.root();
+        let select = element(&mut document, "select", &[]);
+        let button = element(&mut document, "button", &[]);
+        let selectedcontent = element(&mut document, "selectedcontent", &[]);
+        append(&mut document, root, select);
+        append(&mut document, select, button);
+        append(&mut document, button, selectedcontent);
+        let a = option(&mut document, "A", &[]);
+        let b = option(&mut document, "B", &[("selected", "")]);
+        append(&mut document, select, a);
+        append(&mut document, select, b);
+        assert_eq!(contents(&document, selectedcontent), "B");
+        // `selected` an einer früheren Option wählt sie statt der letzten.
+        document.append_attribute(
+            a,
+            Attribute::new(DomString::from("selected"), DomString::new()),
+        );
+        assert!(document.selectedness(a));
+        assert!(!document.selectedness(b));
+        assert_eq!(contents(&document, selectedcontent), "A");
+        // Ebenso eine gewählte Option, die davor eingefügt wird.
+        let c = option(&mut document, "C", &[("selected", "")]);
+        document
+            .insert_before(select, c, Some(a))
+            .expect("einfügbar");
+        assert!(document.selectedness(c));
+        assert!(!document.selectedness(a));
+        assert_eq!(contents(&document, selectedcontent), "C");
+        // Mit `multiple` bleiben alle gewählt.
+        document.append_attribute(
+            select,
+            Attribute::new(DomString::from("multiple"), DomString::new()),
+        );
+        let d = option(&mut document, "D", &[("selected", "")]);
+        document
+            .insert_before(select, d, Some(c))
+            .expect("einfügbar");
+        assert!(document.selectedness(c));
+        assert!(document.selectedness(d));
     }
 
     #[test]
