@@ -12,8 +12,12 @@ use tables::{ENTITIES, LONGEST_NAME};
 /// führende `&`): seine Länge in Zeichen und die Zeichen, für die er steht.
 pub(crate) fn longest_match(input: &[CodePoint]) -> Option<(usize, &'static str)> {
     // Namen bestehen aus ASCII-Buchstaben und -Ziffern, manche enden mit `;`.
+    // Ein Surrogat beendet den Namen wie jedes andere fremde Zeichen.
     let mut candidate = String::new();
-    for c in input.iter().filter_map(|code_point| code_point.to_char()) {
+    for code_point in input {
+        let Some(c) = code_point.to_char() else {
+            break;
+        };
         if candidate.len() == LONGEST_NAME || !(c.is_ascii_alphanumeric() || c == ';') {
             break;
         }
@@ -56,6 +60,20 @@ mod tests {
         assert_eq!(lookup("xyz;"), None);
         assert_eq!(lookup(""), None);
         assert_eq!(lookup("am"), None);
+    }
+
+    #[test]
+    fn surrogates_end_the_name() {
+        let input: Vec<CodePoint> = [0x61, 0x6D, 0x70, 0xD800, 0x3B]
+            .into_iter()
+            .filter_map(CodePoint::from_u32)
+            .collect();
+        assert_eq!(longest_match(&input), Some((3, "&")));
+        let input: Vec<CodePoint> = [0x61, 0x6D, 0xD800, 0x70, 0x3B]
+            .into_iter()
+            .filter_map(CodePoint::from_u32)
+            .collect();
+        assert_eq!(longest_match(&input), None);
     }
 
     #[test]
