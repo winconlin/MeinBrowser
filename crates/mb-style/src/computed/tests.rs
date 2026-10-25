@@ -569,3 +569,40 @@ fn urls_and_defaulting() {
     assert_eq!(page.resolved("b", "padding-top"), "0px");
     assert_eq!(page.resolved("c", "padding-top"), "5px");
 }
+
+#[test]
+fn backgrounds() {
+    let page = load(
+        "<div id=a></div><div id=b></div><div id=c></div>",
+        "#a { background: url(img.png) right 10px top / 2em no-repeat, repeat-block lime;
+              font-size: 20px }
+         #b { writing-mode: vertical-rl; background-repeat: repeat-block, repeat-inline }
+         #c { background: url(img.png) center / cover fixed content-box yellow }",
+    );
+    assert_eq!(
+        page.resolved("a", "background-image"),
+        "url(\"https://example.com/a/img.png\"), none"
+    );
+    // Ein Abstand mit Länge von rechts bräuchte `calc()` und behält die Kante.
+    assert_eq!(
+        page.resolved("a", "background-position-x"),
+        "right 10px, 0%"
+    );
+    assert_eq!(page.resolved("a", "background-position-y"), "0%, 0%");
+    assert_eq!(page.resolved("a", "background-size"), "40px auto, auto");
+    assert_eq!(page.resolved("a", "background-color"), "rgb(0, 255, 0)");
+    // `repeat-block` und `repeat-inline` nach dem Schreibmodus
+    assert_eq!(
+        page.resolved("a", "background-repeat"),
+        "no-repeat, repeat-y"
+    );
+    assert_eq!(
+        page.resolved("b", "background-repeat"),
+        "repeat-x, repeat-y"
+    );
+    assert_eq!(
+        page.resolved("c", "background"),
+        "url(\"https://example.com/a/img.png\") 50% 50% / cover fixed content-box \
+         rgb(255, 255, 0)"
+    );
+}

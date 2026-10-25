@@ -110,3 +110,26 @@ fn logical_and_physical_declarations() {
     assert_eq!(margins.item(0), Some("margin-block-start"));
     assert_eq!(margins.item(4), Some("margin-top"));
 }
+
+#[test]
+fn css_text() {
+    let mut block = block(&[("color", "red")]);
+    // Die wichtige Deklaration gilt auch vor einer späteren ohne.
+    block.set_css_text(
+        "margin-top: 1px !important; background: url(a.png) top left; margin-top: 2px",
+        ParseContext::default(),
+    );
+    assert_eq!(
+        block.css_text(),
+        "margin-top: 1px !important; background: url(\"a.png\") left top;"
+    );
+    // Nur `background-image` mit zwei Ebenen: `background` passt nicht mehr.
+    assert!(block.set_property(
+        "background-image",
+        "none, none",
+        "",
+        ParseContext::default()
+    ));
+    assert_eq!(block.get_property_value("background"), "");
+    assert_eq!(block.get_property_value("background-position"), "left top");
+}

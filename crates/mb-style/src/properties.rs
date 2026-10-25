@@ -27,14 +27,16 @@ mod wpt;
 
 pub use logical::FlowMode;
 pub use longhands::{
-    AbsoluteSize, AlignmentBaseline, BaselineShift, BaselineSource, BoxSize, BoxSizing,
-    DecorationLines, Direction, Display, DisplayInside, DisplayInternal, DisplayOutside,
-    FontFamily, FontFamilyList, FontSize, FontStyle, FontVariantCaps, FontWeight, FontWidth,
-    FontWidthKeyword, GenericFamily, LengthPercentageOrAuto, LineHeight, LineStyle, LineWidth,
-    LineWidthKeyword, ListStyleImage, ListStylePosition, ListStyleType, MaxSize, RelativeSize,
-    ScriptGenericFamily, Size, SizeKeyword, Spacing, TextAlignAll, TextAlignKeyword, TextAlignLast,
-    TextDecorationLine, TextDecorationStyle, TextDecorationThickness, TextIndent, TextOrientation,
-    TextTransform, TextTransformCase, TextWrapMode, TextWrapStyle, UnicodeBidi, Visibility,
+    AbsoluteSize, AlignmentBaseline, Attachment, BaselineShift, BaselineSource, BgClip, BgImage,
+    BgSize, BoxSize, BoxSizing, DecorationLines, Direction, Display, DisplayInside,
+    DisplayInternal, DisplayOutside, EdgeSide, FontFamily, FontFamilyList, FontSize, FontStyle,
+    FontVariantCaps, FontWeight, FontWidth, FontWidthKeyword, GenericFamily, HorizontalEdge,
+    Layers, LengthPercentageOrAuto, LineHeight, LineStyle, LineWidth, LineWidthKeyword,
+    ListStyleImage, ListStylePosition, ListStyleType, MaxSize, PositionComponent, PositionEdge,
+    RelativeSize, RepeatStyle, Repetition, ScriptGenericFamily, Size, SizeKeyword, Spacing,
+    TextAlignAll, TextAlignKeyword, TextAlignLast, TextDecorationLine, TextDecorationStyle,
+    TextDecorationThickness, TextIndent, TextOrientation, TextTransform, TextTransformCase,
+    TextWrapMode, TextWrapStyle, UnicodeBidi, VerticalEdge, Visibility, VisualBox,
     WhiteSpaceCollapse, WhiteSpaceTrim, WritingMode,
 };
 pub use shorthands::{Shorthand, ShorthandInfo};
@@ -71,6 +73,7 @@ pub enum LogicalGroup {
     Size,
     MinSize,
     MaxSize,
+    BackgroundPosition,
 }
 
 impl LogicalGroup {
@@ -85,6 +88,7 @@ impl LogicalGroup {
             LogicalGroup::Size => "size",
             LogicalGroup::MinSize => "min-size",
             LogicalGroup::MaxSize => "max-size",
+            LogicalGroup::BackgroundPosition => "background-position",
         }
     }
 }
@@ -183,6 +187,10 @@ const PADDING: &str = "<length-percentage [0,∞]>";
 const SIZE: &str = "auto | <box-size>";
 const MAX_SIZE: &str = "none | <box-size>";
 const BORDER_COLOR: &str = "<color> | <image-1D>";
+const BACKGROUND_POSITION_X: &str =
+    "[ center | [ [ left | right | x-start | x-end ]? <length-percentage>? ]! ]#";
+const BACKGROUND_POSITION_Y: &str =
+    "[ center | [ [ top | bottom | y-start | y-end ]? <length-percentage>? ]! ]#";
 
 longhands! {
     Display = info(
@@ -202,6 +210,46 @@ longhands! {
     ),
     Color = info("color", "css-color", "<color>", "CanvasText", true),
     BackgroundColor = info("background-color", "css-backgrounds-4", "<color>", "transparent", false),
+    BackgroundImage = info("background-image", "css-backgrounds-4", "<bg-image>#", "none", false),
+    BackgroundPositionX = info(
+        "background-position-x",
+        "css-backgrounds-4",
+        BACKGROUND_POSITION_X,
+        "0%",
+        false,
+    )
+    .physical(LogicalGroup::BackgroundPosition),
+    BackgroundPositionY = info(
+        "background-position-y",
+        "css-backgrounds-4",
+        BACKGROUND_POSITION_Y,
+        "0%",
+        false,
+    )
+    .physical(LogicalGroup::BackgroundPosition),
+    BackgroundSize = info("background-size", "css-backgrounds-4", "<bg-size>#", "auto", false),
+    BackgroundRepeat = info(
+        "background-repeat",
+        "css-backgrounds-4",
+        "<repeat-style>#",
+        "repeat",
+        false,
+    ),
+    BackgroundAttachment = info(
+        "background-attachment",
+        "css-backgrounds-4",
+        "<attachment>#",
+        "scroll",
+        false,
+    ),
+    BackgroundOrigin = info(
+        "background-origin",
+        "css-backgrounds-4",
+        "<visual-box>#",
+        "padding-box",
+        false,
+    ),
+    BackgroundClip = info("background-clip", "css-backgrounds-4", "<bg-clip>#", "border-box", false),
     MarginTop = info("margin-top", "css-box", MARGIN, "0", false)
         .physical(LogicalGroup::Margin)
         .quirky(),
@@ -668,6 +716,14 @@ impl Longhand {
             | Longhand::BorderInlineStartColor
             | Longhand::BorderInlineEndColor
             | Longhand::TextDecorationColor => V::Color(Color::parse(input)?),
+            Longhand::BackgroundImage => V::BackgroundImage(Layers::parse(input)?),
+            Longhand::BackgroundPositionX => V::BackgroundPositionX(Layers::parse(input)?),
+            Longhand::BackgroundPositionY => V::BackgroundPositionY(Layers::parse(input)?),
+            Longhand::BackgroundSize => V::BackgroundSize(Layers::parse(input)?),
+            Longhand::BackgroundRepeat => V::BackgroundRepeat(Layers::parse(input)?),
+            Longhand::BackgroundAttachment => V::BackgroundAttachment(Layers::parse(input)?),
+            Longhand::BackgroundOrigin => V::BackgroundOrigin(Layers::parse(input)?),
+            Longhand::BackgroundClip => V::BackgroundClip(Layers::parse(input)?),
             Longhand::MarginTop
             | Longhand::MarginRight
             | Longhand::MarginBottom
@@ -766,6 +822,14 @@ pub enum SpecifiedValue {
     Display(Display),
     Visibility(Visibility),
     Color(Color),
+    BackgroundImage(Layers<BgImage>),
+    BackgroundPositionX(Layers<PositionComponent<HorizontalEdge>>),
+    BackgroundPositionY(Layers<PositionComponent<VerticalEdge>>),
+    BackgroundSize(Layers<BgSize>),
+    BackgroundRepeat(Layers<RepeatStyle>),
+    BackgroundAttachment(Layers<Attachment>),
+    BackgroundOrigin(Layers<VisualBox>),
+    BackgroundClip(Layers<BgClip>),
     /// `margin-*`
     LengthPercentageOrAuto(LengthPercentageOrAuto),
     /// `padding-*`, nie negativ
@@ -815,6 +879,14 @@ impl ToCss for SpecifiedValue {
             SpecifiedValue::Display(value) => value.to_css(out),
             SpecifiedValue::Visibility(value) => value.to_css(out),
             SpecifiedValue::Color(value) => value.to_css(out),
+            SpecifiedValue::BackgroundImage(value) => value.to_css(out),
+            SpecifiedValue::BackgroundPositionX(value) => value.to_css(out),
+            SpecifiedValue::BackgroundPositionY(value) => value.to_css(out),
+            SpecifiedValue::BackgroundSize(value) => value.to_css(out),
+            SpecifiedValue::BackgroundRepeat(value) => value.to_css(out),
+            SpecifiedValue::BackgroundAttachment(value) => value.to_css(out),
+            SpecifiedValue::BackgroundOrigin(value) => value.to_css(out),
+            SpecifiedValue::BackgroundClip(value) => value.to_css(out),
             SpecifiedValue::LengthPercentageOrAuto(value) => value.to_css(out),
             SpecifiedValue::LengthPercentage(value) => value.to_css(out),
             SpecifiedValue::LineWidth(value) => value.to_css(out),

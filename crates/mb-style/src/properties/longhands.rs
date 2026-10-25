@@ -226,6 +226,361 @@ impl ToCss for LengthPercentageOrAuto {
     }
 }
 
+/// Ein Wert je Hintergrundebene (*background image layer*), durch Kommas
+/// getrennt: `<T>#`. Die Listen der Langformen von `background` können
+/// verschieden lang sein; welche Werte gelten, entscheidet erst die Zahl
+/// der Bilder (Backgrounds 3, „Layering Multiple Background Images“).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Layers<T>(pub Vec<T>);
+
+impl<T: Parse> Parse for Layers<T> {
+    fn parse(input: &mut Input<'_>) -> Option<Layers<T>> {
+        input.try_parse(|input| {
+            let mut layers = vec![T::parse(input)?];
+            while input.comma() {
+                layers.push(T::parse(input)?);
+            }
+            Some(Layers(layers))
+        })
+    }
+}
+
+impl<T: ToCss> ToCss for Layers<T> {
+    fn to_css(&self, out: &mut String) {
+        for (index, layer) in self.0.iter().enumerate() {
+            if index > 0 {
+                out.push_str(", ");
+            }
+            layer.to_css(out);
+        }
+    }
+}
+
+/// ⟨bg-image⟩: `<image> | none`. Von ⟨image⟩ gibt es bisher nur ⟨url⟩,
+/// Verläufe und die Bildfunktionen fehlen noch.
+#[derive(Clone, Debug, PartialEq)]
+pub enum BgImage {
+    None,
+    Url(Box<SpecifiedUrl>),
+}
+
+impl Parse for BgImage {
+    fn parse(input: &mut Input<'_>) -> Option<BgImage> {
+        if input.keyword("none") {
+            return Some(BgImage::None);
+        }
+        SpecifiedUrl::parse(input).map(|url| BgImage::Url(Box::new(url)))
+    }
+}
+
+impl ToCss for BgImage {
+    fn to_css(&self, out: &mut String) {
+        match self {
+            BgImage::None => out.push_str("none"),
+            BgImage::Url(url) => url.to_css(out),
+        }
+    }
+}
+
+/// Von welcher Seite eine Kante in `background-position-x` oder `-y` zählt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EdgeSide {
+    /// `left` oder `top`
+    Start,
+    /// `right` oder `bottom`
+    End,
+    /// `x-start`, `x-end`, `y-start` oder `y-end`: nach der Schreibrichtung
+    Flow,
+}
+
+/// Eine Kante in einer Achse von `background-position`.
+pub trait PositionEdge: Copy {
+    fn side(self) -> EdgeSide;
+}
+
+keywords! {
+    /// Die Kanten von `background-position-x`.
+    pub enum HorizontalEdge {
+        Left = "left",
+        Right = "right",
+        XStart = "x-start",
+        XEnd = "x-end",
+    }
+}
+
+impl PositionEdge for HorizontalEdge {
+    fn side(self) -> EdgeSide {
+        match self {
+            HorizontalEdge::Left => EdgeSide::Start,
+            HorizontalEdge::Right => EdgeSide::End,
+            HorizontalEdge::XStart | HorizontalEdge::XEnd => EdgeSide::Flow,
+        }
+    }
+}
+
+keywords! {
+    /// Die Kanten von `background-position-y`.
+    pub enum VerticalEdge {
+        Top = "top",
+        Bottom = "bottom",
+        YStart = "y-start",
+        YEnd = "y-end",
+    }
+}
+
+impl PositionEdge for VerticalEdge {
+    fn side(self) -> EdgeSide {
+        match self {
+            VerticalEdge::Top => EdgeSide::Start,
+            VerticalEdge::Bottom => EdgeSide::End,
+            VerticalEdge::YStart | VerticalEdge::YEnd => EdgeSide::Flow,
+        }
+    }
+}
+
+/// Ein Eintrag in `background-position-x` oder `background-position-y`:
+/// `center | [ <kante>? <length-percentage>? ]!`. Ohne Kante zählt der
+/// Abstand von `left` oder `top`, ohne Abstand ist er null.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PositionComponent<E> {
+    Center,
+    Edge(E),
+    Offset(LengthPercentage),
+    EdgeOffset(E, LengthPercentage),
+}
+
+impl<E: Parse> Parse for PositionComponent<E> {
+    fn parse(input: &mut Input<'_>) -> Option<PositionComponent<E>> {
+        if input.keyword("center") {
+            return Some(PositionComponent::Center);
+        }
+        let edge = E::parse(input);
+        let offset = LengthPercentage::parse(input);
+        Some(match (edge, offset) {
+            (Some(edge), Some(offset)) => PositionComponent::EdgeOffset(edge, offset),
+            (Some(edge), None) => PositionComponent::Edge(edge),
+            (None, Some(offset)) => PositionComponent::Offset(offset),
+            (None, None) => return None,
+        })
+    }
+}
+
+impl<E: ToCss> ToCss for PositionComponent<E> {
+    fn to_css(&self, out: &mut String) {
+        match self {
+            PositionComponent::Center => out.push_str("center"),
+            PositionComponent::Edge(edge) => edge.to_css(out),
+            PositionComponent::Offset(offset) => offset.to_css(out),
+            PositionComponent::EdgeOffset(edge, offset) => {
+                edge.to_css(out);
+                out.push(' ');
+                offset.to_css(out);
+            }
+        }
+    }
+}
+
+/// ⟨bg-size⟩: `[ <length-percentage [0,∞]> | auto ]{1,2} | cover |
+/// contain`. Eine fehlende Höhe ist `auto`. Geschrieben wird `auto auto`
+/// als `auto`, sonst stehen beide Angaben da, wie es die WPT erwarten
+/// (w3c/csswg-drafts#7802); Backgrounds 4 verlangt immer zwei.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum BgSize {
+    Cover,
+    Contain,
+    Size {
+        width: LengthPercentageOrAuto,
+        height: LengthPercentageOrAuto,
+    },
+}
+
+impl BgSize {
+    pub const AUTO: BgSize = BgSize::Size {
+        width: LengthPercentageOrAuto::Auto,
+        height: LengthPercentageOrAuto::Auto,
+    };
+}
+
+/// `<length-percentage [0,∞]> | auto`
+fn bg_size_component(input: &mut Input<'_>) -> Option<LengthPercentageOrAuto> {
+    if input.keyword("auto") {
+        return Some(LengthPercentageOrAuto::Auto);
+    }
+    non_negative_length_percentage(input).map(LengthPercentageOrAuto::LengthPercentage)
+}
+
+impl Parse for BgSize {
+    fn parse(input: &mut Input<'_>) -> Option<BgSize> {
+        if input.keyword("cover") {
+            return Some(BgSize::Cover);
+        }
+        if input.keyword("contain") {
+            return Some(BgSize::Contain);
+        }
+        let width = bg_size_component(input)?;
+        let height = bg_size_component(input).unwrap_or(LengthPercentageOrAuto::Auto);
+        Some(BgSize::Size { width, height })
+    }
+}
+
+impl ToCss for BgSize {
+    fn to_css(&self, out: &mut String) {
+        match self {
+            BgSize::Cover => out.push_str("cover"),
+            BgSize::Contain => out.push_str("contain"),
+            BgSize::Size { width, height } => {
+                width.to_css(out);
+                if *self != BgSize::AUTO {
+                    out.push(' ');
+                    height.to_css(out);
+                }
+            }
+        }
+    }
+}
+
+keywords! {
+    /// ⟨repetition⟩
+    pub enum Repetition {
+        Repeat = "repeat",
+        Space = "space",
+        Round = "round",
+        NoRepeat = "no-repeat",
+    }
+}
+
+/// ⟨repeat-style⟩: `repeat-x | repeat-y | repeat-block | repeat-inline |
+/// <repetition>{1,2}`. `repeat-x`, `repeat-y` und ein einzelnes
+/// Schlüsselwort stehen als das Paar da, zu dem sie berechnet werden;
+/// `repeat-block` und `repeat-inline` werden das erst beim Berechnen, nach
+/// dem Schreibmodus. Ein Paar wird so kurz wie möglich geschrieben.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RepeatStyle {
+    /// Waagrecht, dann senkrecht
+    Pair(Repetition, Repetition),
+    Block,
+    Inline,
+}
+
+impl RepeatStyle {
+    pub const REPEAT: RepeatStyle = RepeatStyle::Pair(Repetition::Repeat, Repetition::Repeat);
+}
+
+impl Parse for RepeatStyle {
+    fn parse(input: &mut Input<'_>) -> Option<RepeatStyle> {
+        use Repetition::{NoRepeat, Repeat};
+        if input.keyword("repeat-x") {
+            return Some(RepeatStyle::Pair(Repeat, NoRepeat));
+        }
+        if input.keyword("repeat-y") {
+            return Some(RepeatStyle::Pair(NoRepeat, Repeat));
+        }
+        if input.keyword("repeat-block") {
+            return Some(RepeatStyle::Block);
+        }
+        if input.keyword("repeat-inline") {
+            return Some(RepeatStyle::Inline);
+        }
+        let horizontal = Repetition::parse(input)?;
+        let vertical = Repetition::parse(input).unwrap_or(horizontal);
+        Some(RepeatStyle::Pair(horizontal, vertical))
+    }
+}
+
+impl ToCss for RepeatStyle {
+    fn to_css(&self, out: &mut String) {
+        use Repetition::{NoRepeat, Repeat};
+        match *self {
+            RepeatStyle::Pair(Repeat, NoRepeat) => out.push_str("repeat-x"),
+            RepeatStyle::Pair(NoRepeat, Repeat) => out.push_str("repeat-y"),
+            RepeatStyle::Pair(horizontal, vertical) => {
+                horizontal.to_css(out);
+                if vertical != horizontal {
+                    out.push(' ');
+                    vertical.to_css(out);
+                }
+            }
+            RepeatStyle::Block => out.push_str("repeat-block"),
+            RepeatStyle::Inline => out.push_str("repeat-inline"),
+        }
+    }
+}
+
+keywords! {
+    /// ⟨attachment⟩
+    pub enum Attachment {
+        Scroll = "scroll",
+        Fixed = "fixed",
+        Local = "local",
+    }
+}
+
+keywords! {
+    /// ⟨visual-box⟩
+    pub enum VisualBox {
+        ContentBox = "content-box",
+        PaddingBox = "padding-box",
+        BorderBox = "border-box",
+    }
+}
+
+/// ⟨bg-clip⟩: `<visual-box> | [ border-area || text ]`
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BgClip {
+    Box(VisualBox),
+    /// Mindestens eins von beiden ist gesetzt.
+    Area {
+        border_area: bool,
+        text: bool,
+    },
+}
+
+impl BgClip {
+    /// `border-area || text`, was nur `background-clip` kennt.
+    pub(crate) fn parse_area(input: &mut Input<'_>) -> Option<BgClip> {
+        let mut border_area = false;
+        let mut text = false;
+        loop {
+            if !border_area && input.keyword("border-area") {
+                border_area = true;
+            } else if !text && input.keyword("text") {
+                text = true;
+            } else {
+                break;
+            }
+        }
+        (border_area || text).then_some(BgClip::Area { border_area, text })
+    }
+}
+
+impl Parse for BgClip {
+    fn parse(input: &mut Input<'_>) -> Option<BgClip> {
+        if let Some(visual_box) = VisualBox::parse(input) {
+            return Some(BgClip::Box(visual_box));
+        }
+        BgClip::parse_area(input)
+    }
+}
+
+impl ToCss for BgClip {
+    fn to_css(&self, out: &mut String) {
+        match *self {
+            BgClip::Box(visual_box) => visual_box.to_css(out),
+            BgClip::Area { border_area, text } => {
+                if border_area {
+                    out.push_str("border-area");
+                }
+                if text {
+                    if border_area {
+                        out.push(' ');
+                    }
+                    out.push_str("text");
+                }
+            }
+        }
+    }
+}
+
 keywords! {
     /// Die Schlüsselwörter von ⟨line-width⟩.
     pub enum LineWidthKeyword {

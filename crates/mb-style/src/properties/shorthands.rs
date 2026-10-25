@@ -9,15 +9,16 @@
 use std::sync::OnceLock;
 
 use super::{
-    AlignmentBaseline, BaselineShift, BaselineSource, FontFamilyList, FontSize, FontStyle,
-    FontVariantCaps, FontWeight, FontWidth, FontWidthKeyword, LengthPercentageOrAuto, LineHeight,
-    LineStyle, LineWidth, ListStyleImage, ListStylePosition, ListStyleType, Longhand,
-    SpecifiedValue, TextAlignAll, TextAlignKeyword, TextAlignLast, TextDecorationLine,
-    TextDecorationStyle, TextDecorationThickness, TextWrapMode, TextWrapStyle, WhiteSpaceCollapse,
-    WhiteSpaceTrim,
+    AlignmentBaseline, Attachment, BaselineShift, BaselineSource, BgClip, BgImage, BgSize,
+    EdgeSide, FontFamilyList, FontSize, FontStyle, FontVariantCaps, FontWeight, FontWidth,
+    FontWidthKeyword, HorizontalEdge, Layers, LengthPercentageOrAuto, LineHeight, LineStyle,
+    LineWidth, ListStyleImage, ListStylePosition, ListStyleType, Longhand, PositionComponent,
+    PositionEdge, RepeatStyle, SpecifiedValue, TextAlignAll, TextAlignKeyword, TextAlignLast,
+    TextDecorationLine, TextDecorationStyle, TextDecorationThickness, TextWrapMode, TextWrapStyle,
+    VerticalEdge, VisualBox, WhiteSpaceCollapse, WhiteSpaceTrim,
 };
 use crate::values::color::Color;
-use crate::values::{Input, Parse, ToCss, non_negative_length_percentage};
+use crate::values::{Input, LengthPercentage, Parse, ToCss, non_negative_length_percentage};
 
 /// Die Definition einer Kurzschreibweise.
 #[derive(Debug)]
@@ -69,6 +70,14 @@ macro_rules! shorthands {
 const SIDE: &str = "<line-width> || <line-style> || <color>";
 
 shorthands! {
+    BackgroundPosition = "background-position", "css-backgrounds-4", "<bg-position>#",
+        [BackgroundPositionX, BackgroundPositionY];
+    Background = "background", "css-backgrounds-4", "<bg-layer>#? , <final-bg-layer>",
+        [
+            BackgroundImage, BackgroundPositionX, BackgroundPositionY, BackgroundSize,
+            BackgroundRepeat, BackgroundAttachment, BackgroundOrigin, BackgroundClip,
+            BackgroundColor
+        ];
     Margin = "margin", "css-box", "<'margin-top'>{1,4}",
         [MarginTop, MarginRight, MarginBottom, MarginLeft], quirky;
     Padding = "padding", "css-box", "<'padding-top'>{1,4}",
@@ -206,6 +215,8 @@ impl Shorthand {
             input.allow_quirky_lengths();
         }
         Some(match self {
+            Shorthand::BackgroundPosition => background_position(input)?,
+            Shorthand::Background => background(input)?,
             Shorthand::Margin => four(
                 input,
                 LengthPercentageOrAuto::parse,
@@ -272,6 +283,14 @@ impl Shorthand {
             return None;
         }
         match self {
+            Shorthand::BackgroundPosition => match values {
+                [
+                    SpecifiedValue::BackgroundPositionX(x),
+                    SpecifiedValue::BackgroundPositionY(y),
+                ] => serialize_background_position(x, y),
+                _ => None,
+            },
+            Shorthand::Background => serialize_background(values),
             Shorthand::Margin
             | Shorthand::Padding
             | Shorthand::BorderWidth
@@ -778,4 +797,415 @@ fn vertical_align(input: &mut Input<'_>) -> Option<Vec<SpecifiedValue>> {
         ],
     )?;
     with_initial(Shorthand::VerticalAlign.longhands(), found)
+}
+
+/// Ein Eintrag aus `background-position-x` und einer aus `-y`.
+type Position = (
+    PositionComponent<HorizontalEdge>,
+    PositionComponent<VerticalEdge>,
+);
+
+/// `left`, `center` oder `right`
+fn horizontal_keyword(input: &mut Input<'_>) -> Option<PositionComponent<HorizontalEdge>> {
+    if input.keyword("center") {
+        Some(PositionComponent::Center)
+    } else if input.keyword("left") {
+        Some(PositionComponent::Edge(HorizontalEdge::Left))
+    } else if input.keyword("right") {
+        Some(PositionComponent::Edge(HorizontalEdge::Right))
+    } else {
+        None
+    }
+}
+
+/// `top`, `center` oder `bottom`
+fn vertical_keyword(input: &mut Input<'_>) -> Option<PositionComponent<VerticalEdge>> {
+    if input.keyword("center") {
+        Some(PositionComponent::Center)
+    } else if input.keyword("top") {
+        Some(PositionComponent::Edge(VerticalEdge::Top))
+    } else if input.keyword("bottom") {
+        Some(PositionComponent::Edge(VerticalEdge::Bottom))
+    } else {
+        None
+    }
+}
+
+/// `[ left | right ] <length-percentage>`
+fn horizontal_edge_offset(input: &mut Input<'_>) -> Option<PositionComponent<HorizontalEdge>> {
+    input.try_parse(|input| {
+        let PositionComponent::Edge(edge) = horizontal_keyword(input)? else {
+            return None;
+        };
+        Some(PositionComponent::EdgeOffset(
+            edge,
+            LengthPercentage::parse(input)?,
+        ))
+    })
+}
+
+/// `[ top | bottom ] <length-percentage>`
+fn vertical_edge_offset(input: &mut Input<'_>) -> Option<PositionComponent<VerticalEdge>> {
+    input.try_parse(|input| {
+        let PositionComponent::Edge(edge) = vertical_keyword(input)? else {
+            return None;
+        };
+        Some(PositionComponent::EdgeOffset(
+            edge,
+            LengthPercentage::parse(input)?,
+        ))
+    })
+}
+
+fn offset<E>(input: &mut Input<'_>) -> Option<PositionComponent<E>> {
+    LengthPercentage::parse(input).map(PositionComponent::Offset)
+}
+
+/// Ein ⟨bg-position⟩: ⟨position⟩ aus Values 4 oder ⟨position-three⟩,
+/// gierig gelesen, also die längste Form zuerst. Die Schlüsselwörter nach
+/// der Schreibrichtung, die Values 5 in ⟨position⟩ aufnimmt, fehlen: Wie
+/// sie die Langformen setzen, ist offen (w3c/csswg-drafts#9690).
+fn bg_position(input: &mut Input<'_>) -> Option<Position> {
+    // Vier Werte
+    input
+        .try_parse(|input| Some((horizontal_edge_offset(input)?, vertical_edge_offset(input)?)))
+        .or_else(|| {
+            input.try_parse(|input| {
+                let y = vertical_edge_offset(input)?;
+                Some((horizontal_edge_offset(input)?, y))
+            })
+        })
+        // Drei Werte
+        .or_else(|| {
+            input
+                .try_parse(|input| Some((horizontal_edge_offset(input)?, vertical_keyword(input)?)))
+        })
+        .or_else(|| {
+            input.try_parse(|input| {
+                let y = vertical_edge_offset(input)?;
+                Some((horizontal_keyword(input)?, y))
+            })
+        })
+        .or_else(|| {
+            input
+                .try_parse(|input| Some((horizontal_keyword(input)?, vertical_edge_offset(input)?)))
+        })
+        .or_else(|| {
+            input.try_parse(|input| {
+                let y = vertical_keyword(input)?;
+                Some((horizontal_edge_offset(input)?, y))
+            })
+        })
+        // Zwei Werte
+        .or_else(|| {
+            input.try_parse(|input| {
+                let x = horizontal_keyword(input).or_else(|| offset(input))?;
+                let y = vertical_keyword(input).or_else(|| offset(input))?;
+                Some((x, y))
+            })
+        })
+        .or_else(|| {
+            input.try_parse(|input| {
+                let y = vertical_keyword(input)?;
+                Some((horizontal_keyword(input)?, y))
+            })
+        })
+        // Ein Wert, die andere Achse ist `center`.
+        .or_else(|| {
+            if let Some(x) = horizontal_keyword(input) {
+                return Some((x, PositionComponent::Center));
+            }
+            if let Some(y) = vertical_keyword(input) {
+                return Some((PositionComponent::Center, y));
+            }
+            Some((offset(input)?, PositionComponent::Center))
+        })
+}
+
+fn background_position(input: &mut Input<'_>) -> Option<Vec<SpecifiedValue>> {
+    let mut xs = Vec::new();
+    let mut ys = Vec::new();
+    loop {
+        let (x, y) = bg_position(input)?;
+        xs.push(x);
+        ys.push(y);
+        if !input.comma() {
+            break;
+        }
+    }
+    Some(vec![
+        SpecifiedValue::BackgroundPositionX(Layers(xs)),
+        SpecifiedValue::BackgroundPositionY(Layers(ys)),
+    ])
+}
+
+/// Ein ⟨bg-position⟩, waagrecht zuerst (Values 4, „Serializing
+/// <position>“). `None` für die Kanten nach der Schreibrichtung und für
+/// einen Abstand von einer Kante neben einem ohne, die keine Form von
+/// ⟨bg-position⟩ wiedergibt.
+fn write_bg_position(
+    x: &PositionComponent<HorizontalEdge>,
+    y: &PositionComponent<VerticalEdge>,
+) -> Option<String> {
+    use PositionComponent as P;
+    let flow = |side: Option<EdgeSide>| side == Some(EdgeSide::Flow);
+    let x_side = match x {
+        P::Edge(edge) | P::EdgeOffset(edge, _) => Some(edge.side()),
+        _ => None,
+    };
+    let y_side = match y {
+        P::Edge(edge) | P::EdgeOffset(edge, _) => Some(edge.side()),
+        _ => None,
+    };
+    if flow(x_side) || flow(y_side) {
+        return None;
+    }
+    if matches!(
+        (x, y),
+        (P::EdgeOffset(..), P::Offset(_)) | (P::Offset(_), P::EdgeOffset(..))
+    ) {
+        return None;
+    }
+    Some(format!("{} {}", x.to_css_string(), y.to_css_string()))
+}
+
+fn serialize_background_position(
+    x: &Layers<PositionComponent<HorizontalEdge>>,
+    y: &Layers<PositionComponent<VerticalEdge>>,
+) -> Option<String> {
+    if x.0.len() != y.0.len() {
+        return None;
+    }
+    let layers =
+        x.0.iter()
+            .zip(&y.0)
+            .map(|(x, y)| write_bg_position(x, y))
+            .collect::<Option<Vec<_>>>()?;
+    Some(layers.join(", "))
+}
+
+/// Die Anfangswerte von `background-position-x` und `-y`.
+const INITIAL_POSITION: Position = (
+    PositionComponent::Offset(LengthPercentage::Percentage(0.0)),
+    PositionComponent::Offset(LengthPercentage::Percentage(0.0)),
+);
+
+/// Eine Ebene von `background`, mit den Anfangswerten für das Fehlende.
+struct BgLayer {
+    image: BgImage,
+    position: Position,
+    size: BgSize,
+    repeat: RepeatStyle,
+    attachment: Attachment,
+    origin: VisualBox,
+    clip: BgClip,
+    color: Option<Color>,
+}
+
+/// ⟨bg-layer⟩ oder, mit Farbe, ⟨final-bg-layer⟩. Ein ⟨visual-box⟩ allein
+/// setzt `background-origin` und `background-clip`, zwei setzen sie
+/// nacheinander (Backgrounds 4). Ein Wert, den nur `background-clip` kennt,
+/// setzt `background-origin` auf `border-box`; steht ein ⟨visual-box⟩
+/// daneben, ist der `background-origin`, wie es die WPT erwarten.
+fn bg_layer(input: &mut Input<'_>) -> Option<BgLayer> {
+    let mut image = None;
+    let mut position = None;
+    let mut repeat = None;
+    let mut attachment = None;
+    let mut visual_box = None;
+    let mut clip = None;
+    let mut color = None;
+    loop {
+        if image.is_none()
+            && let Some(value) = BgImage::parse(input)
+        {
+            image = Some(value);
+        } else if position.is_none()
+            && let Some(value) = bg_position(input)
+        {
+            // `/ <bg-size>` nur gleich nach der Position
+            let size = if input.delim('/') {
+                Some(BgSize::parse(input)?)
+            } else {
+                None
+            };
+            position = Some((value, size));
+        } else if repeat.is_none()
+            && let Some(value) = RepeatStyle::parse(input)
+        {
+            repeat = Some(value);
+        } else if attachment.is_none()
+            && let Some(value) = Attachment::parse(input)
+        {
+            attachment = Some(value);
+        } else if clip.is_none()
+            && let Some(value) = BgClip::parse_area(input)
+        {
+            clip = Some(value);
+        } else if (visual_box.is_none() || clip.is_none())
+            && let Some(value) = VisualBox::parse(input)
+        {
+            if visual_box.is_none() {
+                visual_box = Some(value);
+            } else {
+                clip = Some(BgClip::Box(value));
+            }
+        } else if color.is_none()
+            && let Some(value) = Color::parse(input)
+        {
+            color = Some(value);
+        } else {
+            break;
+        }
+    }
+    let found = image.is_some()
+        || position.is_some()
+        || repeat.is_some()
+        || attachment.is_some()
+        || visual_box.is_some()
+        || clip.is_some()
+        || color.is_some();
+    if !found {
+        return None;
+    }
+    let (origin, clip) = match (visual_box, clip) {
+        (Some(origin), Some(clip)) => (origin, clip),
+        (Some(visual_box), None) => (visual_box, BgClip::Box(visual_box)),
+        (None, Some(clip)) => (VisualBox::BorderBox, clip),
+        (None, None) => (VisualBox::PaddingBox, BgClip::Box(VisualBox::BorderBox)),
+    };
+    let (position, size) = position.unwrap_or((INITIAL_POSITION, None));
+    Some(BgLayer {
+        image: image.unwrap_or(BgImage::None),
+        position,
+        size: size.unwrap_or(BgSize::AUTO),
+        repeat: repeat.unwrap_or(RepeatStyle::REPEAT),
+        attachment: attachment.unwrap_or(Attachment::Scroll),
+        origin,
+        clip,
+        color,
+    })
+}
+
+/// `background`: Ebenen durch Kommas getrennt, eine Farbe nur in der
+/// letzten.
+fn background(input: &mut Input<'_>) -> Option<Vec<SpecifiedValue>> {
+    let mut layers = Vec::new();
+    let color = loop {
+        let layer = bg_layer(input)?;
+        let color = layer.color;
+        layers.push(layer);
+        if !input.comma() {
+            break color;
+        }
+        if color.is_some() {
+            return None;
+        }
+    };
+    let color = match color {
+        Some(color) => SpecifiedValue::Color(color),
+        None => Longhand::BackgroundColor.initial_value()?,
+    };
+    Some(vec![
+        SpecifiedValue::BackgroundImage(Layers(
+            layers.iter().map(|layer| layer.image.clone()).collect(),
+        )),
+        SpecifiedValue::BackgroundPositionX(Layers(
+            layers.iter().map(|layer| layer.position.0).collect(),
+        )),
+        SpecifiedValue::BackgroundPositionY(Layers(
+            layers.iter().map(|layer| layer.position.1).collect(),
+        )),
+        SpecifiedValue::BackgroundSize(Layers(layers.iter().map(|layer| layer.size).collect())),
+        SpecifiedValue::BackgroundRepeat(Layers(layers.iter().map(|layer| layer.repeat).collect())),
+        SpecifiedValue::BackgroundAttachment(Layers(
+            layers.iter().map(|layer| layer.attachment).collect(),
+        )),
+        SpecifiedValue::BackgroundOrigin(Layers(layers.iter().map(|layer| layer.origin).collect())),
+        SpecifiedValue::BackgroundClip(Layers(layers.iter().map(|layer| layer.clip).collect())),
+        color,
+    ])
+}
+
+/// `background` in der Reihenfolge der Grammatik, wie Blink: Bild,
+/// Position mit Größe, Wiederholung, `background-attachment`,
+/// `background-origin` und `background-clip`, in der letzten Ebene die
+/// Farbe. Was dem Anfangswert gleicht, fällt weg, die Position aber nur
+/// ohne Größe; eine Ebene ganz aus Anfangswerten ist `none`. Alle Listen
+/// müssen gleich lang sein.
+fn serialize_background(values: &[&SpecifiedValue]) -> Option<String> {
+    use SpecifiedValue as V;
+    let [
+        V::BackgroundImage(images),
+        V::BackgroundPositionX(xs),
+        V::BackgroundPositionY(ys),
+        V::BackgroundSize(sizes),
+        V::BackgroundRepeat(repeats),
+        V::BackgroundAttachment(attachments),
+        V::BackgroundOrigin(origins),
+        V::BackgroundClip(clips),
+        color,
+    ] = values
+    else {
+        return None;
+    };
+    let count = images.0.len();
+    let lengths = [
+        xs.0.len(),
+        ys.0.len(),
+        sizes.0.len(),
+        repeats.0.len(),
+        attachments.0.len(),
+        origins.0.len(),
+        clips.0.len(),
+    ];
+    if count == 0 || lengths.iter().any(|&length| length != count) {
+        return None;
+    }
+    let initial_color = Longhand::BackgroundColor.initial_value();
+    let mut layers = Vec::with_capacity(count);
+    for index in 0..count {
+        let mut parts = Vec::new();
+        let image = images.0.get(index)?;
+        if *image != BgImage::None {
+            parts.push(image.to_css_string());
+        }
+        let x = xs.0.get(index)?;
+        let y = ys.0.get(index)?;
+        let size = sizes.0.get(index)?;
+        if (*x, *y) != INITIAL_POSITION || *size != BgSize::AUTO {
+            let mut position = write_bg_position(x, y)?;
+            if *size != BgSize::AUTO {
+                position.push_str(" / ");
+                size.to_css(&mut position);
+            }
+            parts.push(position);
+        }
+        let repeat = repeats.0.get(index)?;
+        if *repeat != RepeatStyle::REPEAT {
+            parts.push(repeat.to_css_string());
+        }
+        let attachment = attachments.0.get(index)?;
+        if *attachment != Attachment::Scroll {
+            parts.push(attachment.to_css_string());
+        }
+        match (*origins.0.get(index)?, *clips.0.get(index)?) {
+            (VisualBox::PaddingBox, BgClip::Box(VisualBox::BorderBox)) => {}
+            (origin, BgClip::Box(clip)) if origin == clip => parts.push(origin.to_css_string()),
+            (VisualBox::BorderBox, clip @ BgClip::Area { .. }) => parts.push(clip.to_css_string()),
+            (origin, clip) => {
+                parts.push(origin.to_css_string());
+                parts.push(clip.to_css_string());
+            }
+        }
+        if index.saturating_add(1) == count && initial_color.as_ref() != Some(*color) {
+            parts.push(color.to_css_string());
+        }
+        if parts.is_empty() {
+            layers.push("none".to_owned());
+        } else {
+            layers.push(parts.join(" "));
+        }
+    }
+    Some(layers.join(", "))
 }
