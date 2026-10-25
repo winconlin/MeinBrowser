@@ -57,6 +57,7 @@ name = "mb-html"
 version = "0.0.0"
 dependencies = [
  "mb-base",
+ "mb-dom",
  "mb-json",
  "testdata",
 ]

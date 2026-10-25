@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 mb-base = { path = "../mb-base" }
+mb-dom = { path = "../mb-dom" }
 
 [dev-dependencies]
 mb-json = { path = "../mb-json" }
