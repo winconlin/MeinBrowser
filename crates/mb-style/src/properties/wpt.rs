@@ -1,12 +1,17 @@
 //! Die WPT-Tests zum Parsen und Serialisieren der unterstützten
-//! Eigenschaften: `css/<modul>/parsing/<eigenschaft>-{valid,invalid,shorthand,alias}*.html`.
+//! Eigenschaften und zu ihren berechneten Werten:
+//! `css/<modul>/parsing/<eigenschaft>-{valid,invalid,shorthand,alias,computed}*.html`.
 //!
 //! Die Testdateien laufen unverändert im Interpreter aus [`crate::wpt_js`];
 //! das Dokument baut mb-html. testharness.js, die eingebundenen
-//! Hilfsskripte aus `css/support/`, `document`, `CSS.supports()` und
-//! `CSSStyleDeclaration` stellt dieser Test bereit. Die Hilfsskripte sind
-//! nach dem Stand der WPT in `testdata` Schritt für Schritt nachgebaut, die
-//! Namen der Tests eingeschlossen.
+//! Hilfsskripte aus `css/support/`, `document`, `CSS.supports()`,
+//! `CSSStyleDeclaration` und `getComputedStyle()` stellt dieser Test bereit.
+//! Die Hilfsskripte sind nach dem Stand der WPT in `testdata` Schritt für
+//! Schritt nachgebaut, die Namen der Tests eingeschlossen.
+//! `getComputedStyle()` kaskadiert mit dem Stylesheet der Benutzeragenten
+//! und den Elementen `style` der Seite für ein Gerät aus
+//! [`crate::computed::test_device`], ohne Schriften. Was vom Layout oder von
+//! Schriftmaßen abhängt, lässt sich nicht ausführen.
 //!
 //! Fehlgeschlagene Tests werden eingeordnet: Tests gültiger Werte mit
 //! Funktionen oder Eigenschaften, die noch fehlen ([`GAPS`]), Abweichungen
@@ -21,13 +26,18 @@ use std::rc::Rc;
 
 use mb_base::CodePoint;
 use mb_css::{Source, parse_component_value_list};
-use mb_dom::{Document, NodeKind, QuirksMode};
+use mb_dom::{Document, NodeId, NodeKind, QuirksMode};
 use mb_html::{Options, ScriptingMode, parse_document};
 use mb_url::Url;
 
 use super::PropertyId;
-use crate::declarations::DeclarationBlock;
-use crate::values::ParseContext;
+use crate::cascade::{Origin, Stylist, StylistBuilder};
+use crate::computed::{Ancestors, ComputedValues, MissingFontMetric, NoFonts, test_device};
+use crate::declarations::{DeclarationBlock, Declared, parse_declaration_block};
+use crate::selectors::MatchingContext;
+use crate::stylesheet::StyleSheet;
+use crate::ua::DocumentInfo;
+use crate::values::{ParseContext, ToCss};
 use crate::wpt_js::{
     Completion, Control, Host, Interpreter, JsString, Value, describe, get, is_truthy, js_string,
     json_quote, number_to_string, own_keys, parse_float, same_value, set, strict_equals, to_number,
@@ -53,9 +63,11 @@ const DIRECTORIES: &[&str] = &[
 
 /// Dateien, deren Name zwei unterstützte Eigenschaften nennt.
 const TWO_PROPERTY_FILES: &[&str] = &[
+    "css-logical/parsing/margin-block-inline-computed.html",
     "css-logical/parsing/margin-block-inline-invalid.html",
     "css-logical/parsing/margin-block-inline-shorthand.html",
     "css-logical/parsing/margin-block-inline-valid.html",
+    "css-logical/parsing/padding-block-inline-computed.html",
     "css-logical/parsing/padding-block-inline-invalid.html",
     "css-logical/parsing/padding-block-inline-shorthand.html",
     "css-logical/parsing/padding-block-inline-valid.html",
@@ -114,22 +126,73 @@ const GAPS: &[(&str, &str)] = &[
 ];
 
 /// Tests, die aus benannten Gründen abweichen: Datei, Name, Grund.
-const DEVIATIONS: &[(&str, &str, &str)] = &[(
-    "css-fonts/parsing/font-shorthand-variant.html",
-    "font shorthand returns only CSS2 font-variant values",
-    "Die Kurzschreibweise font-variant fehlt noch; `font` setzt nur \
-     font-variant-caps.",
-)];
-
-/// Was sich in einer Datei nicht ausführen lässt.
-const UNSUPPORTED: &[(&str, &[&str])] = &[
+const DEVIATIONS: &[(&str, &str, &str)] = &[
     (
-        "css-text/parsing/white-space-shorthand-text-wrap.html",
-        &["getComputedStyle"],
+        "css-display/parsing/display-computed.html",
+        "position absolute affects computed display",
+        POSITION_AND_FLOAT,
     ),
     (
-        "css-text/parsing/white-space-shorthand.html",
-        &["getComputedStyle"],
+        "css-display/parsing/display-computed.html",
+        "position fixed affects computed display",
+        POSITION_AND_FLOAT,
+    ),
+    (
+        "css-display/parsing/display-computed.html",
+        "float left affects computed display",
+        POSITION_AND_FLOAT,
+    ),
+    (
+        "css-display/parsing/display-computed.html",
+        "float right affects computed display",
+        POSITION_AND_FLOAT,
+    ),
+    (
+        "css-fonts/parsing/font-shorthand-variant.html",
+        "font shorthand returns only CSS2 font-variant values",
+        "Die Kurzschreibweise font-variant fehlt noch; `font` setzt nur \
+         font-variant-caps.",
+    ),
+    (
+        "css-text/parsing/text-align-last-computed.html",
+        "Property text-align-last value 'match-parent'",
+        "Nach CSS Text 4 wird match-parent berechnet wie inherit, mit start \
+         und end nach der Richtung des Elternelements; der Test erwartet das \
+         Schlüsselwort selbst.",
+    ),
+];
+
+const POSITION_AND_FLOAT: &str = "Die Eigenschaften position und float fehlen noch und \
+     damit die Blockifizierung durch sie (CSS Display 3, Abschnitt 2.7).";
+
+/// Was sich in einer Datei nicht ausführen lässt. „Layout“ steht für Werte
+/// von `getComputedStyle()`, die erst das Layout liefert (CSSOM, *resolved
+/// value*), „Element.setAttribute“ und der Operator `in` für Skripte, die
+/// das Dokument ändern.
+const UNSUPPORTED: &[(&str, &[&str])] = &[
+    ("css-box/parsing/margin-computed.html", &["Layout"]),
+    ("css-box/parsing/padding-computed.html", &["Layout"]),
+    (
+        "css-fonts/parsing/font-computed.html",
+        &["Syntax: Zeile 50: Operator „in“ wird nicht unterstützt"],
+    ),
+    (
+        "css-fonts/parsing/font-size-computed.html",
+        &["Element.setAttribute"],
+    ),
+    (
+        "css-fonts/parsing/font-style-computed.html",
+        &["Stylesheet /fonts/ahem.css"],
+    ),
+    ("css-logical/parsing/block-size-computed.html", &["Layout"]),
+    ("css-logical/parsing/inline-size-computed.html", &["Layout"]),
+    (
+        "css-logical/parsing/margin-block-inline-computed.html",
+        &["Layout"],
+    ),
+    (
+        "css-logical/parsing/padding-block-inline-computed.html",
+        &["Layout"],
     ),
 ];
 
@@ -157,23 +220,37 @@ struct Subtest {
     outcome: Outcome,
 }
 
-/// Die Seite einer Testdatei: die Elemente mit ID und die Ergebnisse.
+/// Die Seite einer Testdatei: das Dokument mit seinen Stylesheets, die
+/// Elemente mit ID und die Ergebnisse.
 struct Page {
-    elements: Vec<(String, Value)>,
+    document: Document,
+    stylist: Stylist,
+    /// Die URL der Testdatei, auch die Basis für URLs in CSS.
+    base: Rc<Url>,
+    elements: Vec<PageElement>,
     quirks_mode: bool,
     subtests: RefCell<Vec<Subtest>>,
+}
+
+/// Ein Element mit ID und sein Objekt für die Skripte.
+struct PageElement {
+    id: String,
+    node: NodeId,
+    value: Value,
+    /// Was die Skripte über `style` setzen.
+    block: Rc<RefCell<DeclarationBlock>>,
 }
 
 impl Page {
     fn element_by_id(&self, id: &str) -> Option<Value> {
         self.elements
             .iter()
-            .find(|(found, _)| found == id)
-            .map(|(_, element)| element.clone())
+            .find(|element| element.id == id)
+            .map(|element| element.value.clone())
     }
 
     fn create_element(&self) -> Value {
-        element(self.quirks_mode, false)
+        element(self.quirks_mode, &self.base, false).0
     }
 
     /// `document.getElementById('target') || document.createElement('div')`
@@ -185,17 +262,126 @@ impl Page {
     fn record(&self, subtest: Subtest) {
         self.subtests.borrow_mut().push(subtest);
     }
+
+    /// Der Knoten zum Argument von `getComputedStyle()`.
+    fn computed_style_node(&self, element: &Value) -> Completion<NodeId> {
+        if let Some(found) = self
+            .elements
+            .iter()
+            .find(|found| strict_equals(&found.value, element))
+        {
+            return Ok(found.node);
+        }
+        match element {
+            Value::Object(_) => {
+                unsupported("getComputedStyle() für ein Element außerhalb des Dokuments")
+            }
+            _ => fail("TypeError: parameter 1 is not of type 'Element'".to_owned()),
+        }
+    }
+
+    fn parse_context(&self) -> ParseContext<'_> {
+        ParseContext {
+            base_url: Some(&self.base),
+            quirks_mode: self.quirks_mode,
+        }
+    }
+
+    /// Die Deklarationen im Attribut `style` eines Elements: aus dem
+    /// Dokument, wenn es das Attribut hat, sonst was die Skripte gesetzt
+    /// haben.
+    fn style_attribute(&self, node: NodeId) -> Option<Vec<Declared>> {
+        if let Some(text) = self
+            .document
+            .element(node)
+            .and_then(|element| element.attribute("style"))
+        {
+            let source = Source::new(&text.to_string_lossy());
+            return Some(parse_declaration_block(&source, self.parse_context()));
+        }
+        let element = self.elements.iter().find(|element| element.node == node)?;
+        let block = element.block.borrow();
+        Some(
+            block
+                .declarations()
+                .map(|(declaration, important)| Declared {
+                    declaration: declaration.clone(),
+                    important,
+                })
+                .collect(),
+        )
+    }
+
+    /// Die berechneten Werte eines Elements, mit denen seiner Vorfahren
+    /// ausgerechnet.
+    fn computed_values(&self, node: NodeId) -> Result<ComputedValues, MissingFontMetric> {
+        let document = &self.document;
+        let mut chain = vec![node];
+        while let Some(&last) = chain.last()
+            && let Some(parent) = document.parent(last)
+            && document.element(parent).is_some()
+        {
+            chain.push(parent);
+        }
+        chain.reverse();
+        let context = MatchingContext::new(document);
+        let device = test_device();
+        let mut computed: Vec<ComputedValues> = Vec::new();
+        for node in chain {
+            let attribute = self.style_attribute(node);
+            let ancestors = match (computed.first(), computed.last()) {
+                (Some(root), Some(parent)) => Some(Ancestors { parent, root }),
+                _ => None,
+            };
+            let values = ComputedValues::of_element(
+                &self.stylist,
+                &context,
+                node,
+                attribute.as_deref(),
+                ancestors,
+                &device,
+                &NoFonts,
+            )?;
+            computed.push(values);
+        }
+        computed.pop().ok_or(MissingFontMetric)
+    }
+
+    /// Ein Wert von `getComputedStyle()`.
+    fn resolved_value(&self, node: NodeId, property: PropertyId) -> Completion<String> {
+        let Ok(values) = self.computed_values(node) else {
+            return unsupported("Schriftmaße");
+        };
+        let resolved = match property {
+            PropertyId::Longhand(longhand) => {
+                values.resolved(longhand).map(|value| value.to_css_string())
+            }
+            PropertyId::Shorthand(shorthand) => values.resolved_shorthand(shorthand),
+        };
+        match resolved {
+            Ok(value) => Ok(value),
+            Err(_) => unsupported("Layout"),
+        }
+    }
 }
 
-fn element(quirks_mode: bool, style_attribute: bool) -> Value {
+/// Ein Element und der Block seines Attributs `style`.
+fn element(
+    quirks_mode: bool,
+    base: &Rc<Url>,
+    style_attribute: bool,
+) -> (Value, Rc<RefCell<DeclarationBlock>>) {
+    let block = Rc::new(RefCell::new(DeclarationBlock::new()));
     let style = Value::host(Rc::new(Style {
-        block: Rc::new(RefCell::new(DeclarationBlock::new())),
+        block: block.clone(),
         quirks_mode,
+        base: base.clone(),
     }));
-    Value::host(Rc::new(Element {
+    let element = Value::host(Rc::new(Element {
         style,
         style_attribute,
-    }))
+    }));
+    (element, block)
 }
 
 fn argument(arguments: &[Value], index: usize) -> Value {
@@ -291,14 +477,14 @@ fn legacy_null_to_empty(value: &Value) -> Completion<String> {
 struct Style {
     block: Rc<RefCell<DeclarationBlock>>,
     quirks_mode: bool,
+    /// Die Basis für URLs: die URL des Dokuments.
+    base: Rc<Url>,
 }
 
-impl Style {
-    fn context(quirks_mode: bool) -> ParseContext<'static> {
-        ParseContext {
-            base_url: None,
-            quirks_mode,
-        }
+fn style_context(quirks_mode: bool, base: &Url) -> ParseContext<'_> {
+    ParseContext {
+        base_url: Some(base),
+        quirks_mode,
     }
 }
 
@@ -306,6 +492,7 @@ impl Host for Style {
     fn get(&self, key: &str) -> Completion<Option<Value>> {
         let block = self.block.clone();
         let quirks_mode = self.quirks_mode;
+        let base = self.base.clone();
         Ok(Some(match key {
             "getPropertyValue" => Value::native(move |_, _, arguments| {
                 let property = text(&argument(&arguments, 0))?;
@@ -328,7 +515,7 @@ impl Host for Style {
                     &property,
                     &value,
                     &priority,
-                    Style::context(quirks_mode),
+                    style_context(quirks_mode, &base),
                 );
                 Ok(Value::Undefined)
             }),
@@ -375,10 +562,78 @@ impl Host for Style {
             &property,
             &value,
             "",
-            Style::context(self.quirks_mode),
+            style_context(self.quirks_mode, &self.base),
         );
         Ok(true)
     }
+}
+
+/// Ein Attribut des Ergebnisses von `getComputedStyle()`.
+fn computed_attribute(page: &Page, node: NodeId, key: &str) -> Completion<Option<Value>> {
+    let Some(property) = attribute_property(key).and_then(|name| PropertyId::from_name(&name))
+    else {
+        return Ok(None);
+    };
+    Ok(Some(Value::string(&page.resolved_value(node, property)?)))
+}
+
+/// Das Ergebnis von `getComputedStyle()`. Es liest die Werte bei jedem
+/// Zugriff neu, wie die lebendige `CSSStyleDeclaration`.
+struct ComputedStyle {
+    page: Rc<Page>,
+    node: NodeId,
+}
+
+impl Host for ComputedStyle {
+    fn get(&self, key: &str) -> Completion<Option<Value>> {
+        if key == "getPropertyValue" {
+            let page = self.page.clone();
+            let node = self.node;
+            return Ok(Some(Value::native(move |_, _, arguments| {
+                let property = text(&argument(&arguments, 0))?;
+                match PropertyId::from_name(&property) {
+                    Some(property) => Ok(Value::string(&page.resolved_value(node, property)?)),
+                    None if property.starts_with("--") => unsupported("eigene Eigenschaften"),
+                    None => Ok(empty()),
+                }
+            })));
+        }
+        let index = !key.is_empty() && key.bytes().all(|byte| byte.is_ascii_digit());
+        if index
+            || matches!(
+                key,
+                "length"
+                    | "item"
+                    | "cssText"
+                    | "cssFloat"
+                    | "parentRule"
+                    | "getPropertyPriority"
+                    | "setProperty"
+                    | "removeProperty"
+            )
+        {
+            return unsupported(format!("getComputedStyle().{key}"));
+        }
+        computed_attribute(&self.page, self.node, key)
+    }
+
+    fn set(&self, key: &str, _: &Value) -> Completion<bool> {
+        unsupported(format!("getComputedStyle().{key} setzen"))
+    }
+}
+
+/// `getComputedStyle(element, pseudoElement)`
+fn get_computed_style(page: &Rc<Page>, arguments: &[Value]) -> Completion<Value> {
+    let node = page.computed_style_node(&argument(arguments, 0))?;
+    match argument(arguments, 1) {
+        Value::Undefined | Value::Null => {}
+        Value::String(units) if units.is_empty() => {}
+        _ => return unsupported("getComputedStyle() für ein Pseudoelement"),
+    }
+    Ok(Value::host(Rc::new(ComputedStyle {
+        page: page.clone(),
+        node,
+    })))
 }
 
 /// `CSS.supports(property, value)`
@@ -478,6 +733,26 @@ fn assert_bool(actual: &Value, expected: bool, description: &str) -> Completion<
     ))
 }
 
+fn assert_less_than_equal(actual: &Value, expected: &Value, description: &str) -> Completion<()> {
+    let Value::Number(number) = actual else {
+        return fail(format!(
+            "assert_less_than_equal: {description} expected a number but got a {}",
+            describe(actual)
+        ));
+    };
+    let Value::Number(limit) = expected else {
+        return unsupported("assert_less_than_equal() mit einer Grenze, die keine Zahl ist");
+    };
+    if number <= limit {
+        return Ok(());
+    }
+    fail(format!(
+        "assert_less_than_equal: {description} expected a number less than or equal to {} but got {}",
+        format_value(expected),
+        format_value(actual)
+    ))
+}
+
 fn assert_in_array(actual: &Value, expected: &Value, description: &str) -> Completion<()> {
     let Some(items) = expected.array_items() else {
         return unsupported("assert_in_array() ohne Liste");
@@ -566,7 +841,7 @@ fn define_testharness(interpreter: &mut Interpreter, page: &Rc<Page>) {
             Ok(Value::Undefined)
         }),
     );
-    let assertions: [(&str, Assertion); 5] = [
+    let assertions: [(&str, Assertion); 6] = [
         ("assert_equals", |arguments| {
             assert_equals(
                 &argument(arguments, 0),
@@ -589,6 +864,13 @@ fn define_testharness(interpreter: &mut Interpreter, page: &Rc<Page>) {
         }),
         ("assert_in_array", |arguments| {
             assert_in_array(
+                &argument(arguments, 0),
+                &argument(arguments, 1),
+                &description(arguments, 2)?,
+            )
+        }),
+        ("assert_less_than_equal", |arguments| {
+            assert_less_than_equal(
                 &argument(arguments, 0),
                 &argument(arguments, 1),
                 &description(arguments, 2)?,
@@ -1056,25 +1338,179 @@ fn fuzzy_test_valid_color(
     )
 }
 
-/// `test_computed_value()` aus `computed-testcommon.js`. Berechnete Werte
-/// gibt es noch nicht; der Test fragt als Erstes `getComputedStyle()`.
-fn test_computed_value(_: &mut Interpreter, page: &Page, arguments: &[Value]) -> Completion<()> {
-    let extra = match argument(arguments, 3) {
-        extra if is_truthy(&extra) => format!(" {}", text(&extra)?),
-        _ => String::new(),
+/// Der Zusatz zum Namen eines Tests aus `titleExtra`.
+fn title_extra(value: &Value) -> Completion<String> {
+    if is_truthy(value) {
+        Ok(format!(" {}", text(value)?))
+    } else {
+        Ok(String::new())
+    }
+}
+
+/// `test_computed_value()` aus `computed-testcommon.js`
+fn test_computed_value(
+    interpreter: &mut Interpreter,
+    page: &Page,
+    arguments: &[Value],
+) -> Completion<()> {
+    let specified = argument(arguments, 1);
+    let computed = match argument(arguments, 2) {
+        computed if is_truthy(&computed) => computed,
+        _ => specified.clone(),
     };
-    let name = format!(
-        "Property {} value '{}'{extra}",
-        text(&argument(arguments, 0))?,
-        text(&argument(arguments, 1))?
-    );
+    let comparison = match argument(arguments, 4) {
+        Value::Undefined => Comparison::Exact,
+        options => {
+            let function = get(&options, &js_string("comparisonFunction"))?;
+            if is_truthy(&function) {
+                Comparison::Function(function)
+            } else {
+                Comparison::Exact
+            }
+        }
+    };
+    computed_value(
+        interpreter,
+        page,
+        &argument(arguments, 0),
+        &specified,
+        &computed,
+        &title_extra(&argument(arguments, 3))?,
+        &comparison,
+    )
+}
+
+/// `getComputedStyle(element)[key]`
+fn read_computed(page: &Page, element: &Value, key: &JsString) -> Completion<Value> {
+    let node = page.computed_style_node(element)?;
+    Ok(computed_attribute(page, node, &lossy(key))?.unwrap_or(Value::Undefined))
+}
+
+/// Der Test aus `test_computed_value()`.
+fn computed_value(
+    interpreter: &mut Interpreter,
+    page: &Page,
+    property: &Value,
+    specified: &Value,
+    computed: &Value,
+    extra: &str,
+    comparison: &Comparison,
+) -> Completion<()> {
+    let property_name = text(property)?;
+    let specified_text = text(specified)?;
+    let name = format!("Property {property_name} value '{specified_text}'{extra}");
+    let outcome = run_test(interpreter, |interpreter| {
+        let target = page.element_by_id("target").unwrap_or(Value::Null);
+        let key = to_string(property)?;
+        // `property in getComputedStyle(target)`
+        page.computed_style_node(&target)?;
+        let known = attribute_property(&property_name).is_some();
+        assert_bool(
+            &Value::Bool(known),
+            true,
+            &format!("{property_name} doesn't seem to be supported in the computed style"),
+        )?;
+        assert_bool(
+            &Value::Bool(supports(property, specified)?),
+            true,
+            &format!("'{specified_text}' is a supported value for {property_name}."),
+        )?;
+        let style = style_of(&target)?;
+        set(&style, &key, empty())?;
+        set(&style, &key, specified.clone())?;
+        let read = read_computed(page, &target, &key)?;
+        match comparison {
+            Comparison::Function(function) => {
+                interpreter.call(
+                    function,
+                    Value::Undefined,
+                    vec![read.clone(), computed.clone()],
+                )?;
+            }
+            Comparison::FuzzyColor(epsilon) => fuzzy_compare_colors(&read, computed, *epsilon)?,
+            Comparison::Exact if computed.array_items().is_some() => {
+                assert_in_array(&read, computed, "")?;
+            }
+            Comparison::Exact => assert_equals(&read, computed, "")?,
+        }
+        if !strict_equals(&read, specified) {
+            set(&style, &key, empty())?;
+            set(&style, &key, read.clone())?;
+            assert_equals(
+                &read_computed(page, &target, &key)?,
+                &read,
+                "computed value should round-trip",
+            )?;
+        }
+        Ok(())
+    });
     page.record(Subtest {
         name,
-        kind: TestKind::Script,
-        inputs: Vec::new(),
-        outcome: Outcome::Unsupported("getComputedStyle".to_owned()),
+        kind: TestKind::Valid,
+        inputs: inputs(&[property, specified, computed]),
+        outcome,
     });
     Ok(())
+}
+
+/// `fuzzy_test_computed_color()` und `fuzzy_test_computed_color_property()`
+/// aus `color-testcommon.js`, ohne das erste Argument der zweiten.
+fn fuzzy_computed_color(
+    interpreter: &mut Interpreter,
+    page: &Page,
+    property: &Value,
+    arguments: &[Value],
+) -> Completion<()> {
+    let specified = argument(arguments, 0);
+    let computed = argument(arguments, 1);
+    let extra = title_extra(&argument(arguments, 3))?;
+    if !is_truthy(&computed) {
+        return computed_value(
+            interpreter,
+            page,
+            property,
+            &specified,
+            &specified,
+            &extra,
+            &Comparison::Exact,
+        );
+    }
+    let epsilon = match argument(arguments, 2) {
+        epsilon if is_truthy(&epsilon) => to_number(&epsilon)?,
+        _ => 0.01,
+    };
+    computed_value(
+        interpreter,
+        page,
+        property,
+        &specified,
+        &computed,
+        &extra,
+        &Comparison::FuzzyColor(epsilon),
+    )
+}
+
+/// `fuzzy_test_computed_color()` aus `color-testcommon.js`
+fn fuzzy_test_computed_color(
+    interpreter: &mut Interpreter,
+    page: &Page,
+    arguments: &[Value],
+) -> Completion<()> {
+    fuzzy_computed_color(interpreter, page, &Value::string("color"), arguments)
+}
+
+/// `fuzzy_test_computed_color_property()` aus `color-testcommon.js`
+fn fuzzy_test_computed_color_property(
+    interpreter: &mut Interpreter,
+    page: &Page,
+    arguments: &[Value],
+) -> Completion<()> {
+    fuzzy_computed_color(
+        interpreter,
+        page,
+        &argument(arguments, 0),
+        arguments.get(1..).unwrap_or_default(),
+    )
 }
 
 type Helper = fn(&mut Interpreter, &Page, &[Value]) -> Completion<()>;
@@ -1091,7 +1527,14 @@ fn helpers(script: &str) -> Option<&'static [(&'static str, Helper)]> {
             ("test_shorthand_value", test_shorthand_value),
             ("test_is_legacy_name_alias", test_is_legacy_name_alias),
         ],
-        "/css/support/color-testcommon.js" => &[("fuzzy_test_valid_color", fuzzy_test_valid_color)],
+        "/css/support/color-testcommon.js" => &[
+            ("fuzzy_test_valid_color", fuzzy_test_valid_color),
+            ("fuzzy_test_computed_color", fuzzy_test_computed_color),
+            (
+                "fuzzy_test_computed_color_property",
+                fuzzy_test_computed_color_property,
+            ),
+        ],
         "/css/support/computed-testcommon.js" => &[("test_computed_value", test_computed_value)],
         _ => return None,
     })
@@ -1114,6 +1557,19 @@ struct FileResult {
     unsupported: Vec<String>,
     /// Fehler der Datei selbst, etwa eine Ausnahme außerhalb von `test()`.
     errors: Vec<String>,
+}
+
+/// Der Text der Kinder eines Elements, etwa eines Skripts.
+fn text_content(document: &Document, node: NodeId) -> String {
+    let mut text = String::new();
+    for child in document.children(node) {
+        if document.kind(child) == Some(NodeKind::Text)
+            && let Some(data) = document.data(child)
+        {
+            text.push_str(&data.to_string_lossy());
+        }
+    }
+    text
 }
 
 fn run_file(path: &str) -> FileResult {
@@ -1140,7 +1596,9 @@ fn run_file(path: &str) -> FileResult {
         .expect("URL der Testdatei");
 
     let mut scripts = Vec::new();
-    let mut elements: Vec<(String, Value)> = Vec::new();
+    let mut elements: Vec<(String, NodeId, bool)> = Vec::new();
+    let mut style_sheets = Vec::new();
+    let mut unsupported_reasons = Vec::new();
     let root = document.root();
     let mut current = document.first_child(root);
     while let Some(node) = current {
@@ -1150,10 +1608,31 @@ fn run_file(path: &str) -> FileResult {
         };
         if let Some(id) = element_data.attribute("id").map(|id| id.to_string_lossy())
             && !id.is_empty()
-            && !elements.iter().any(|(found, _)| *found == id)
+            && !elements.iter().any(|(found, _, _)| *found == id)
         {
             let style_attribute = element_data.attribute("style").is_some();
-            elements.push((id, element(quirks_mode, style_attribute)));
+            elements.push((id, node, style_attribute));
+        }
+        if element_data.is_html("style") {
+            style_sheets.push(text_content(&document, node));
+            continue;
+        }
+        if element_data.is_html("link")
+            && element_data.attribute("rel").is_some_and(|rel| {
+                rel.to_string_lossy()
+                    .split_ascii_whitespace()
+                    .any(|token| token.eq_ignore_ascii_case("stylesheet"))
+            })
+        {
+            let href = element_data
+                .attribute("href")
+                .map(|href| href.to_string_lossy())
+                .unwrap_or_default();
+            match Url::parse(&href, Some(&base)) {
+                Ok(url) => unsupported_reasons.push(format!("Stylesheet {}", url.pathname())),
+                Err(_) => errors.push("ungültige URL eines Stylesheets".to_owned()),
+            }
+            continue;
         }
         if !element_data.is_html("script") {
             continue;
@@ -1164,19 +1643,41 @@ fn run_file(path: &str) -> FileResult {
                 Err(_) => errors.push("ungültige URL eines Skripts".to_owned()),
             }
         } else {
-            let mut source = String::new();
-            for child in document.children(node) {
-                if document.kind(child) == Some(NodeKind::Text)
-                    && let Some(data) = document.data(child)
-                {
-                    source.push_str(&data.to_string_lossy());
-                }
-            }
-            scripts.push(Script::Inline(source));
+            scripts.push(Script::Inline(text_content(&document, node)));
         }
     }
 
+    let mut builder = StylistBuilder::new();
+    builder.add_user_agent_sheets(DocumentInfo {
+        quirks_mode: document.quirks_mode(),
+        html_document: true,
+        iso_8859_8: false,
+    });
+    let context = ParseContext {
+        base_url: Some(&base),
+        quirks_mode,
+    };
+    for text in &style_sheets {
+        builder.add(Origin::Author, &StyleSheet::parse(text, context));
+    }
+    let stylist = builder.build();
+    let base = Rc::new(base);
+    let elements = elements
+        .into_iter()
+        .map(|(id, node, style_attribute)| {
+            let (value, block) = element(quirks_mode, &base, style_attribute);
+            PageElement {
+                id,
+                node,
+                value,
+                block,
+            }
+        })
+        .collect();
     let page = Rc::new(Page {
+        document,
+        stylist,
+        base,
         elements,
         quirks_mode,
         subtests: RefCell::new(Vec::new()),
@@ -1187,11 +1688,18 @@ fn run_file(path: &str) -> FileResult {
         Value::host(Rc::new(DocumentObject { page: page.clone() })),
     );
     interpreter.define("CSS", Value::host(Rc::new(CssNamespace)));
+    let computed_style_page = page.clone();
     interpreter.define(
         "getComputedStyle",
-        Value::native(|_, _, _| unsupported("getComputedStyle")),
+        Value::native(move |_, _, arguments| get_computed_style(&computed_style_page, &arguments)),
     );
-    let mut unsupported_reasons = Vec::new();
+    interpreter.define(
+        "Number",
+        Value::native(|_, _, arguments| match arguments.first() {
+            Some(value) => Ok(Value::Number(to_number(value)?)),
+            None => Ok(Value::Number(0.0)),
+        }),
+    );
     for script in scripts {
         match script {
             Script::External(script) if script == "/resources/testharness.js" => {
@@ -1240,19 +1748,20 @@ fn run_file(path: &str) -> FileResult {
 
 /// Die Eigenschaft, die eine Testdatei nach ihrem Namen prüft: der längste
 /// Anfang, der eine unterstützte Eigenschaft ist und auf den `-valid`,
-/// `-invalid`, `-shorthand` oder `-alias` folgt.
+/// `-invalid`, `-shorthand`, `-alias` oder `-computed` folgt.
 fn tested_property(stem: &str) -> Option<&str> {
     stem.match_indices('-').rev().find_map(|(index, _)| {
         let name = stem.get(..index)?;
         let kind = stem.get(index.saturating_add(1)..)?.split('-').next()?;
-        (matches!(kind, "valid" | "invalid" | "shorthand" | "alias")
-            && PropertyId::from_name(name).is_some())
+        (matches!(
+            kind,
+            "valid" | "invalid" | "shorthand" | "alias" | "computed"
+        ) && PropertyId::from_name(name).is_some())
         .then_some(name)
     })
 }
 
-/// Die Testdateien, als Pfad unter `css/`. Dateien zu berechneten Werten
-/// prüft erst die Kaskade.
+/// Die Testdateien, als Pfad unter `css/`.
 fn test_files() -> Vec<String> {
     let mut paths = Vec::new();
     for directory in DIRECTORIES {
@@ -1261,9 +1770,7 @@ fn test_files() -> Vec<String> {
             let path = format!("{folder}/{name}");
             let stem = name.strip_suffix(".html").unwrap_or(&name);
             let stem = stem.strip_suffix(".sub").unwrap_or(stem);
-            if !name.contains("computed")
-                && (tested_property(stem).is_some() || TWO_PROPERTY_FILES.contains(&&*path))
-            {
+            if tested_property(stem).is_some() || TWO_PROPERTY_FILES.contains(&&*path) {
                 paths.push(path);
             }
         }
