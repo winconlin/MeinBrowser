@@ -14,6 +14,7 @@
 //! noch `var()` und die mathematischen Funktionen (siehe [`crate::values`])
 //! sowie die Werte, die die Kommentare der Typen nennen.
 
+mod logical;
 mod longhands;
 mod shorthands;
 
@@ -24,6 +25,7 @@ mod webref;
 #[cfg(test)]
 mod wpt;
 
+pub use logical::FlowMode;
 pub use longhands::{
     AbsoluteSize, AlignmentBaseline, BaselineShift, BaselineSource, BoxSize, BoxSizing,
     DecorationLines, Direction, Display, DisplayInside, DisplayInternal, DisplayOutside,

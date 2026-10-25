@@ -1,6 +1,6 @@
 [package]
 name = "datagen"
-description = "Erzeugt Tabellen aus den Rohdaten unter data/: Unicode für mb-unicode, WHATWG Encoding für mb-encoding, Zeichenreferenzen für mb-html"
+description = "Erzeugt Tabellen aus den Rohdaten unter data/: Unicode für mb-unicode, WHATWG Encoding für mb-encoding, Zeichenreferenzen für mb-html, UA-Stylesheet für mb-style"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

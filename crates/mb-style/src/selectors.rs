@@ -10,11 +10,10 @@
 //! `:heading()`, `:popover-open`, `:modal` und `:autofill`, dazu die
 //! Pseudoelemente `::before`, `::after`, `::marker`, `::first-line`,
 //! `::first-letter`, `::slotted()`, `::backdrop`, `::file-selector-button`
-//! sowie unbekannte `::-webkit-…` (Anhang B). Alles andere macht einen
-//! Selektor ungültig, wie es die Spezifikation für Unbekanntes verlangt („no
-//! usable level of support“). Pseudoelemente lassen sich nicht weiter
-//! verketten (`::before::marker`), und die Verschachtelung mit `&` aus CSS
-//! Nesting kommt erst mit der Kaskade.
+//! sowie unbekannte `::-webkit-…` (Anhang B) und der Verschachtelungsselektor
+//! `&` aus CSS Nesting. Alles andere macht einen Selektor ungültig, wie es die
+//! Spezifikation für Unbekanntes verlangt („no usable level of support“).
+//! Pseudoelemente lassen sich nicht weiter verketten (`::before::marker`).
 
 mod lang;
 mod matching;
@@ -24,7 +23,9 @@ mod tests;
 #[cfg(test)]
 mod wpt;
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use mb_base::DomString;
 use mb_css::{
@@ -145,6 +146,11 @@ impl std::error::Error for InvalidSelector {}
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SelectorList {
     selectors: Vec<Selector>,
+    /// Wie tief der Abgleich höchstens absteigt: Pseudoklassen mit
+    /// Selektoren als Argument und `&` zählen je eine Ebene, `&` dazu die
+    /// Tiefe der Liste, für die es steht. Nur bei Listen, die die Einstiege
+    /// liefern; die Argumente von Pseudoklassen haben 0.
+    depth: usize,
 }
 
 /// Ein komplexer Selektor (*complex selector*), höchstens mit einem
@@ -275,6 +281,9 @@ enum PseudoClass {
     Modal,
     /// `:autofill` und `:-webkit-autofill`
     Autofill,
+    /// `&` (CSS Nesting): in einer verschachtelten Stilregel die Elemente,
+    /// die die Selektoren der Elternregel treffen, sonst wie `:scope`.
+    Nesting(Option<Arc<SelectorList>>),
 }
 
 /// Die Pseudoelemente, die Boxen erzeugen und für die die Kaskade Stile
@@ -317,21 +326,44 @@ impl SelectorList {
     }
 
     /// Liest eine ⟨selector-list⟩ aus Komponentenwerten, etwa aus dem
-    /// Prelude einer Stilregel.
+    /// Prelude einer Stilregel. `&` steht hier für `:scope`.
     pub fn from_values(
         values: Values<'_>,
         namespaces: &Namespaces,
     ) -> Result<SelectorList, InvalidSelector> {
         let values: Vec<ComponentValue<'_>> = values.iter().collect();
-        let parser = Parser { namespaces };
-        let rules = Rules {
-            pseudo_elements: true,
-            in_has: false,
-            subject_namespace: true,
-            pseudo_states: false,
+        let parser = Parser::new(namespaces, None);
+        let list = parser.list(&values, Rules::TOP).ok_or(InvalidSelector)?;
+        Ok(parser.finish(list))
+    }
+
+    /// Liest das Prelude einer verschachtelten Stilregel (CSS Nesting): eine
+    /// ⟨relative-selector-list⟩, deren relative Selektoren an `&` hängen,
+    /// also an den Elementen, die `parent` trifft. Ein Selektor ohne
+    /// Kombinator am Anfang, der `&` enthält, ist nicht relativ.
+    pub fn from_values_nested(
+        values: Values<'_>,
+        namespaces: &Namespaces,
+        parent: &Arc<SelectorList>,
+    ) -> Result<SelectorList, InvalidSelector> {
+        let values: Vec<ComponentValue<'_>> = values.iter().collect();
+        let parser = Parser::new(namespaces, Some(parent));
+        let rules = Rules::TOP;
+        let anchor = parser.nesting(rules).ok_or(InvalidSelector)?;
+        let selectors = split_commas(&values)
+            .into_iter()
+            .map(|part| {
+                let part = trim(part);
+                let relative = combinator(token(part, 0)).is_some() || !contains_nesting(part);
+                let anchor = relative.then(|| anchor.clone());
+                parser.complex(part, rules, anchor)
+            })
+            .collect::<Option<Vec<Selector>>>()
+            .ok_or(InvalidSelector)?;
+        Ok(parser.finish(SelectorList {
+            selectors,
             depth: 0,
-        };
-        parser.list(&values, rules).ok_or(InvalidSelector)
+        }))
     }
 
     pub fn selectors(&self) -> &[Selector] {
@@ -348,9 +380,84 @@ impl SelectorList {
     }
 }
 
+/// Ob ein Selektor `&` enthält (*contain the nesting selector*): ob irgendwo
+/// darin, auch in Funktionen und Blöcken, ein ⟨delim-token⟩ `&` steht. Das
+/// schließt Argumente unbekannter Pseudoklassen ein, wie es CSS Nesting
+/// verlangt. Ohne Rekursion, die Werte können beliebig tief verschachtelt
+/// sein.
+fn contains_nesting(input: &[ComponentValue<'_>]) -> bool {
+    let is_nesting =
+        |value: &ComponentValue<'_>| matches!(value, ComponentValue::Token(Token::Delim('&')));
+    if input.iter().any(is_nesting) {
+        return true;
+    }
+    let mut stack: Vec<Values<'_>> = input
+        .iter()
+        .filter_map(|value| match value {
+            ComponentValue::Function { value, .. } | ComponentValue::Block { value, .. } => {
+                Some(*value)
+            }
+            ComponentValue::Token(_) => None,
+        })
+        .collect();
+    while let Some(values) = stack.pop() {
+        for value in values {
+            match value {
+                ComponentValue::Token(Token::Delim('&')) => return true,
+                ComponentValue::Token(_) => {}
+                ComponentValue::Function { value, .. } | ComponentValue::Block { value, .. } => {
+                    stack.push(value);
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Ein Merkmal, das jedes Element hat, das ein Selektor trifft. Danach
+/// sortiert die Kaskade ihre Regeln vor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Key<'a> {
+    Id(&'a DomString),
+    Class(&'a DomString),
+    /// Der lokale Name in ASCII-Kleinbuchstaben.
+    LocalName(&'a DomString),
+    Any,
+}
+
 impl Selector {
     pub fn specificity(&self) -> Specificity {
         self.specificity
+    }
+
+    /// Das Merkmal des Subjekts, das am seltensten vorkommen dürfte: die ID,
+    /// sonst eine Klasse, sonst der Name aus dem Typselektor. Groß- und
+    /// Kleinschreibung können beim Abgleich anders gelten; wer vorsortiert,
+    /// vergleicht deshalb ohne Unterschied zwischen ASCII-Groß- und
+    /// -Kleinbuchstaben.
+    pub(crate) fn key(&self) -> Key<'_> {
+        let Some(subject) = self.compounds.last() else {
+            return Key::Any;
+        };
+        let id = subject.iter().find_map(|simple| match simple {
+            Simple::Id(id) => Some(Key::Id(id)),
+            _ => None,
+        });
+        let class = || {
+            subject.iter().find_map(|simple| match simple {
+                Simple::Class(class) => Some(Key::Class(class)),
+                _ => None,
+            })
+        };
+        let name = || {
+            subject.iter().find_map(|simple| match simple {
+                Simple::Type {
+                    name: Some(name), ..
+                } => Some(Key::LocalName(&name.lower)),
+                _ => None,
+            })
+        };
+        id.or_else(class).or_else(name).unwrap_or(Key::Any)
     }
 
     /// Das Pseudoelement, für das der Selektor gilt, falls er für eines gilt,
@@ -382,6 +489,15 @@ struct Rules {
 }
 
 impl Rules {
+    /// Die Einschränkungen auf oberster Ebene einer Liste.
+    const TOP: Rules = Rules {
+        pseudo_elements: true,
+        in_has: false,
+        subject_namespace: true,
+        pseudo_states: false,
+        depth: 0,
+    };
+
     /// Die Einschränkungen für die Argumente einer Pseudoklasse.
     fn nested(self) -> Option<Rules> {
         let depth = self
@@ -398,6 +514,11 @@ impl Rules {
 
 struct Parser<'n> {
     namespaces: &'n Namespaces,
+    /// Die Selektoren der Elternregel, für die `&` steht; ohne sie steht es
+    /// für `:scope`.
+    parent: Option<&'n Arc<SelectorList>>,
+    /// Die größte Tiefe des Abgleichs bisher, siehe [`SelectorList`].
+    depth: Cell<usize>,
 }
 
 /// Das Token an einer Stelle, falls dort ein Token steht.
@@ -473,9 +594,46 @@ fn starts_pseudo_element(input: &[ComponentValue<'_>], position: usize) -> bool 
     }
 }
 
-impl Parser<'_> {
-    /// Ein Präfix aus `@namespace`; ein unbekanntes macht den Selektor
+impl<'n> Parser<'n> {
+    fn new(namespaces: &'n Namespaces, parent: Option<&'n Arc<SelectorList>>) -> Parser<'n> {
+        Parser {
+            namespaces,
+            parent,
+            depth: Cell::new(0),
+        }
+    }
+
+    /// Merkt sich die Tiefe einer Stelle; tiefer als [`MAX_NESTING`] ist
     /// ungültig.
+    fn reach(&self, depth: usize) -> Option<()> {
+        if depth > MAX_NESTING {
+            return None;
+        }
+        self.depth.set(self.depth.get().max(depth));
+        Some(())
+    }
+
+    /// Die fertige Liste mit der erreichten Tiefe.
+    fn finish(&self, list: SelectorList) -> SelectorList {
+        SelectorList {
+            depth: self.depth.get(),
+            ..list
+        }
+    }
+
+    /// `&` an einer Stelle mit diesen Einschränkungen.
+    fn nesting(&self, rules: Rules) -> Option<Simple> {
+        let parent = match self.parent {
+            Some(parent) => {
+                let depth = rules.depth.checked_add(1)?.checked_add(parent.depth)?;
+                self.reach(depth)?;
+                Some(Arc::clone(parent))
+            }
+            None => None,
+        };
+        Some(Simple::PseudoClass(PseudoClass::Nesting(parent)))
+    }
+
     fn prefix(&self, prefix: &str) -> Option<NamespaceConstraint> {
         self.namespaces.prefixes.get(prefix).cloned()
     }
@@ -492,9 +650,12 @@ impl Parser<'_> {
     fn list(&self, input: &[ComponentValue<'_>], rules: Rules) -> Option<SelectorList> {
         let selectors = split_commas(input)
             .into_iter()
-            .map(|part| self.complex(part, rules, false))
+            .map(|part| self.complex(part, rules, None))
             .collect::<Option<Vec<Selector>>>()?;
-        Some(SelectorList { selectors })
+        Some(SelectorList {
+            selectors,
+            depth: 0,
+        })
     }
 
     /// *Parse as a forgiving selector list*: Ungültige Selektoren fallen
@@ -502,26 +663,34 @@ impl Parser<'_> {
     fn forgiving_list(&self, input: &[ComponentValue<'_>], rules: Rules) -> SelectorList {
         let selectors = split_commas(input)
             .into_iter()
-            .filter_map(|part| self.complex(part, rules, false))
+            .filter_map(|part| self.complex(part, rules, None))
             .collect();
-        SelectorList { selectors }
+        SelectorList {
+            selectors,
+            depth: 0,
+        }
     }
 
     /// ⟨relative-selector-list⟩ für `:has()`
     fn relative_list(&self, input: &[ComponentValue<'_>], rules: Rules) -> Option<SelectorList> {
         let selectors = split_commas(input)
             .into_iter()
-            .map(|part| self.complex(part, rules, true))
+            .map(|part| self.complex(part, rules, Some(Simple::Anchor)))
             .collect::<Option<Vec<Selector>>>()?;
-        Some(SelectorList { selectors })
+        Some(SelectorList {
+            selectors,
+            depth: 0,
+        })
     }
 
-    /// Ein komplexer Selektor, mit `relative` ein relativer.
+    /// Ein komplexer Selektor, mit `anchor` ein relativer, der an diesem
+    /// einfachen Selektor hängt: [`Simple::Anchor`] in `:has()`, `&` in
+    /// verschachtelten Stilregeln.
     fn complex(
         &self,
         input: &[ComponentValue<'_>],
         rules: Rules,
-        relative: bool,
+        anchor: Option<Simple>,
     ) -> Option<Selector> {
         let input = trim(input);
         let mut position = 0;
@@ -529,7 +698,7 @@ impl Parser<'_> {
         let mut combinators = Vec::new();
         // Ob ein Verbundselektor einen Typ- oder Universalselektor enthält.
         let mut explicit = Vec::new();
-        if relative {
+        if let Some(anchor) = anchor {
             let first = match combinator(token(input, position)) {
                 Some(first) => {
                     position = position.saturating_add(1);
@@ -538,7 +707,7 @@ impl Parser<'_> {
                 }
                 None => Combinator::Descendant,
             };
-            compounds.push(vec![Simple::Anchor]);
+            compounds.push(vec![anchor]);
             explicit.push(true);
             combinators.push(first);
         }
@@ -654,6 +823,12 @@ impl Parser<'_> {
                     };
                     *position = next.saturating_add(1);
                     Simple::Class(DomString::from(name.as_str()))
+                }
+                // Hinter einem Pseudoelement ist `&` keine erlaubte
+                // Pseudoklasse.
+                Some(ComponentValue::Token(Token::Delim('&'))) if !rules.pseudo_states => {
+                    *position = next;
+                    self.nesting(rules)?
                 }
                 Some(ComponentValue::Block {
                     kind: BlockKind::Bracket,
@@ -852,6 +1027,7 @@ impl Parser<'_> {
     ) -> Option<PseudoClass> {
         let values: Vec<ComponentValue<'_>> = value.iter().collect();
         let inner = rules.nested()?;
+        self.reach(inner.depth)?;
         let name = name.to_ascii_lowercase();
         // Logische Kombinationen geben die Einschränkungen weiter.
         let logical = Rules {
@@ -967,7 +1143,9 @@ impl Parser<'_> {
                 let values: Vec<ComponentValue<'_>> = value.iter().collect();
                 let argument = trim(&values);
                 let mut inner = 0;
-                let (compound, _) = self.compound(argument, &mut inner, rules.nested()?)?;
+                let nested = rules.nested()?;
+                self.reach(nested.depth)?;
+                let (compound, _) = self.compound(argument, &mut inner, nested)?;
                 if inner < argument.len() || compound.is_empty() {
                     return None;
                 }
@@ -1021,6 +1199,12 @@ impl Simple {
                 PseudoClass::NthChild { of: Some(list), .. } => {
                     Specificity::CLASS.add(list.max_specificity())
                 }
+                // Die größte Spezifität der Selektoren der Elternregel, so
+                // steht es in CSS Nesting, auch wenn darunter welche mit
+                // Pseudoelement sind, die `&` nicht treffen kann. Ohne
+                // Elternregel null.
+                PseudoClass::Nesting(Some(list)) => list.max_specificity(),
+                PseudoClass::Nesting(None) => Specificity::default(),
                 _ => Specificity::CLASS,
             },
         }

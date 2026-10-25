@@ -2,7 +2,7 @@
 //! in `wpt.rs`.
 
 use mb_base::{CodePoint, DomString};
-use mb_css::Source;
+use mb_css::{Source, parse_component_value_list};
 use mb_dom::Document;
 use mb_html::{Options, ScriptingMode, parse_document};
 
@@ -355,4 +355,60 @@ fn headings() {
     let backdrop = parse("::backdrop").expect("::backdrop");
     let selector = backdrop.selectors().first().expect("ein Selektor");
     assert_eq!(selector.pseudo_element(), None);
+}
+
+#[test]
+fn nesting_selector() {
+    let specificities = |list: &SelectorList| -> Vec<(u32, u32, u32)> {
+        list.selectors()
+            .iter()
+            .map(|selector| {
+                let specificity = selector.specificity();
+                (specificity.ids, specificity.classes, specificity.types)
+            })
+            .collect()
+    };
+    // Ganz oben steht `&` für `:scope`, mit der Spezifität null.
+    let top = parse("& > p, &").expect("gültig");
+    assert_eq!(specificities(&top), [(0, 0, 1), (0, 0, 0)]);
+
+    let nested = |text: &str, parent: &Arc<SelectorList>| {
+        let values = parse_component_value_list(&Source::new(text));
+        SelectorList::from_values_nested(values.values(), &Namespaces::default(), parent)
+    };
+    let document =
+        document("<div class=a id=a><p id=p><span id=s></span></p></div><b id=b><i id=i></i></b>");
+    // `&` hat die größte Spezifität der Liste darüber. Ohne Kombinator am
+    // Anfang und ohne `&` ist ein Selektor relativ zu `&`.
+    let parent = Arc::new(parse(".a, #b").expect("gültig"));
+    for (text, expected, specificity) in [
+        ("span", &["s"][..], (1, 0, 1)),
+        ("> p", &["p"], (1, 0, 1)),
+        ("& > i", &["i"], (1, 0, 1)),
+        ("&.a", &["a"], (1, 1, 0)),
+        ("body &", &["a", "b"], (1, 0, 1)),
+        ("p &", &[], (1, 0, 1)),
+        (":where(&) span", &["s"], (0, 0, 1)),
+    ] {
+        let list = nested(text, &parent).unwrap_or_else(|_| panic!("ungültig: {text}"));
+        assert_eq!(ids(&document, &list), expected, "{text}");
+        assert_eq!(specificities(&list), [specificity], "{text}");
+    }
+    // Selektoren mit Pseudoelement in der Liste darüber treffen über `&`
+    // nichts.
+    let parent = Arc::new(parse(".a::before, #b").expect("gültig"));
+    assert_eq!(
+        ids(&document, &nested("i", &parent).expect("gültig")),
+        ["i"]
+    );
+    assert!(ids(&document, &nested("span", &parent).expect("gültig")).is_empty());
+
+    // Jede Ebene zählt für die Grenze der Verschachtelung.
+    let mut list = Arc::new(parse("a").expect("gültig"));
+    for level in 1..=MAX_NESTING {
+        let next = nested("& a", &list).unwrap_or_else(|_| panic!("Ebene {level}"));
+        list = Arc::new(next);
+    }
+    assert!(nested("& a", &list).is_err());
+    assert!(ids(&document, &list).is_empty());
 }

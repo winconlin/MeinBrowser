@@ -583,6 +583,8 @@ fn serialize_text_align(values: &[&SpecifiedValue]) -> Option<String> {
         return None;
     };
     match (all, last) {
+        // `match-parent` setzt beide Langformen; mit `auto` passt es nicht.
+        (TextAlignAll::Keyword(TextAlignKeyword::MatchParent), TextAlignLast::Auto) => None,
         (all, TextAlignLast::Auto) => Some(all.to_css_string()),
         (TextAlignAll::Keyword(TextAlignKeyword::Justify), TextAlignLast::Justify) => {
             Some("justify-all".to_owned())
