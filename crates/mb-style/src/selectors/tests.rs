@@ -263,6 +263,17 @@ fn structural_pseudo_classes() {
 }
 
 #[test]
+fn links() {
+    let document = document(
+        "<a id=a href=x></a><a id=b></a><area id=c href=''><link id=d href=x>\
+         <svg><a id=e href=x></a><a id=f xlink:href=x></a><a id=g></a></svg>",
+    );
+    assert_eq!(select(&document, ":any-link"), ["a", "c", "e", "f"]);
+    assert_eq!(select(&document, ":link"), ["a", "c", "e", "f"]);
+    assert!(select(&document, ":visited").is_empty());
+}
+
+#[test]
 fn has() {
     let document =
         document("<div id=a><p id=b><span id=c></span></p><p id=d></p><em id=e></em></div>");

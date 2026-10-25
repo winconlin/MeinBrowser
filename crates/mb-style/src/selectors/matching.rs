@@ -428,10 +428,7 @@ impl<'c, 'd> Matcher<'c, 'd> {
                 self.index(node, false, same) == 1 && self.index(node, true, same) == 1
             }
             // Ohne Verlauf ist jeder Verweis unbesucht.
-            PseudoClass::AnyLink | PseudoClass::Link => {
-                (element.is_html("a") || element.is_html("area"))
-                    && element.attribute("href").is_some()
-            }
+            PseudoClass::AnyLink | PseudoClass::Link => is_link(element),
             PseudoClass::Visited => false,
             PseudoClass::Target => self.context.target == Some(node),
             PseudoClass::Scope => self.is_scope(node),
@@ -606,6 +603,20 @@ impl<'c, 'd> Matcher<'c, 'd> {
         }
         self.context.default_language
     }
+}
+
+/// Ob das Element ein Verweis ist: `a` und `area` mit `href` (HTML,
+/// „Pseudo-classes“) und `a` aus SVG mit `href` oder `xlink:href` (SVG 2,
+/// „Links out of SVG content“).
+fn is_link(element: &Element) -> bool {
+    if element.is_html("a") || element.is_html("area") {
+        return element.attribute("href").is_some();
+    }
+    element.is(Namespace::Svg, "a")
+        && element.attributes.iter().any(|attribute| {
+            matches!(attribute.namespace, None | Some(Namespace::XLink))
+                && attribute.local_name == "href"
+        })
 }
 
 fn namespace_matches(constraint: &NamespaceConstraint, namespace: Option<Namespace>) -> bool {
