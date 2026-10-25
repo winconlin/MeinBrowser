@@ -193,6 +193,8 @@ pub struct Document {
     next_sibling: Vec<u32>,
     payload: Vec<Payload>,
     mode: QuirksMode,
+    /// DOM: *type* „html“ statt „xml“.
+    html: bool,
     journal: Vec<Change>,
     /// Mikroaufgaben aus den Schritten in `html.rs`. Bis es eine
     /// Ereignisschleife gibt, liegen sie hier, bis jemand
@@ -218,6 +220,7 @@ impl Document {
             next_sibling: Vec::new(),
             payload: Vec::new(),
             mode: QuirksMode::NoQuirks,
+            html: true,
             journal: Vec::new(),
             microtasks: VecDeque::new(),
         };
@@ -239,6 +242,17 @@ impl Document {
 
     pub fn set_quirks_mode(&mut self, mode: QuirksMode) {
         self.mode = mode;
+    }
+
+    /// Ob es ein HTML-Dokument ist (DOM: *type* „html“). Ein neues Dokument
+    /// ist eines, denn bisher füllt nur der HTML-Parser Dokumente; wer ein
+    /// XML-Dokument anlegt, ruft [`Document::set_html_document`] mit `false`.
+    pub fn is_html_document(&self) -> bool {
+        self.html
+    }
+
+    pub fn set_html_document(&mut self, html: bool) {
+        self.html = html;
     }
 
     /// Die Zahl der angelegten Knoten.
@@ -477,7 +491,7 @@ impl Document {
 
     /// Der nächste Knoten nach `node` in Baumreihenfolge, der noch zu
     /// `root` gehört (ohne Template-Inhalte).
-    fn following(&self, node: NodeId, root: NodeId) -> Option<NodeId> {
+    pub fn following(&self, node: NodeId, root: NodeId) -> Option<NodeId> {
         self.first_child(node)
             .or_else(|| self.following_skipping_children(node, root))
     }

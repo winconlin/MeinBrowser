@@ -2,19 +2,21 @@
 //!
 //! Siehe `docs/architektur.md`, Abschnitt 4.4. Grundlage ist der Editor's
 //! Draft von CSS Syntax Level 3 (Stand 23.10.2026). Bisher gibt es das
-//! Dekodieren von Stylesheets, den Tokenizer und den Parser mit allen
-//! Einstiegen. Es fehlen noch das An+B-Format, das Serialisieren und die
+//! Dekodieren von Stylesheets, den Tokenizer, den Parser mit allen
+//! Einstiegen und das An+B-Format. Es fehlen noch das Serialisieren und die
 //! Grammatiken der Eigenschaften. Parse-Fehler ändern das Ergebnis nicht und
 //! werden nicht gemeldet.
 
 #![forbid(unsafe_code)]
 
+mod anb;
 mod parser;
 mod tokenizer;
 
 #[cfg(test)]
 mod tests;
 
+pub use anb::{AnPlusB, parse_an_plus_b};
 pub use parser::{
     AtRule, BlockKind, ComponentValue, ComponentValues, Context, Declaration, Iter, QualifiedRule,
     Rule, RuleId, RuleTree, Syntax, SyntaxError, Values,

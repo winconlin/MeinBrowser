@@ -28,7 +28,12 @@ pub const SOURCES: [Source; 4] = [
         commit: "c7902c0b13fb010a78126eb9d951e1f22c421013",
         // Die Tests für den HTML-Baumaufbau aus html5lib-tests werden seit
         // einiger Zeit in den WPT gepflegt.
-        paths: &["/url/resources/", "/html/syntax/parsing/resources/"],
+        paths: &[
+            "/url/resources/",
+            "/html/syntax/parsing/resources/",
+            "/dom/nodes/selectors.js",
+            "/dom/nodes/ParentNode-querySelector-All-content.html",
+        ],
     },
     Source {
         name: "html5lib-tests",
@@ -55,6 +60,7 @@ pub const SOURCES: [Source; 4] = [
             "/component_value_list.json",
             "/one_component_value.json",
             "/stylesheet_bytes.json",
+            "/An+B.json",
         ],
     },
 ];

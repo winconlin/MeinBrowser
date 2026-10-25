@@ -5,12 +5,13 @@
 //!
 //! Bisher nur für `select`, `option` und `selectedcontent` (Abschnitt
 //! „Forms“): die Auswahl (*selectedness*) und das Spiegeln der gewählten
-//! `option` in `selectedcontent`. Noch nicht umgesetzt: die Formularzuordnung
-//! (*reset the form owner*), *process internal resource links*, die Schritte
-//! beim Verschieben (*moving steps*, es gibt noch kein `moveBefore()`), das
-//! Zurücksetzen eines Formulars, Ereignisse und die Schritte der übrigen
-//! Elemente, die der Parser beim Herausnehmen auslöst (`style`, `object`,
-//! Medienelemente, `textarea`).
+//! `option` in `selectedcontent`. Dazu kommen Zustände, die Selektoren
+//! abfragen (*checkedness*, *actually disabled*). Noch nicht umgesetzt: die
+//! Formularzuordnung (*reset the form owner*), *process internal resource
+//! links*, die Schritte beim Verschieben (*moving steps*, es gibt noch kein
+//! `moveBefore()`), das Zurücksetzen eines Formulars, Ereignisse und die
+//! Schritte der übrigen Elemente, die der Parser beim Herausnehmen auslöst
+//! (`style`, `object`, Medienelemente, `textarea`).
 
 use mb_base::DomString;
 
@@ -134,7 +135,7 @@ impl Document {
     // Der Zustand von `option` und `selectedcontent`
 
     /// *selectedness* einer `option`; `false` für alles andere.
-    fn selectedness(&self, option: NodeId) -> bool {
+    pub fn selectedness(&self, option: NodeId) -> bool {
         matches!(
             self.state(option),
             Some(State::Option { selected: true, .. })
@@ -176,6 +177,59 @@ impl Document {
         if let Some(State::SelectedContent { disabled }) = self.state_mut(node) {
             *disabled = value;
         }
+    }
+
+    // Zustände für Selektoren
+
+    /// *checkedness* eines `input`; `false` für alles andere. Solange weder
+    /// Skripte noch Nutzer Steuerelemente ändern können, ist sie die
+    /// Voreinstellung aus dem Attribut `checked`. Radiogruppen fehlen noch,
+    /// denn sie hängen an der Formularzuordnung.
+    pub fn checkedness(&self, input: NodeId) -> bool {
+        self.html_name(input) == Some("input") && self.has_attribute(input, "checked")
+    }
+
+    /// Ob das Element *actually disabled* ist („Disabled elements“).
+    /// Formularzugeordnete Custom Elements gibt es noch nicht.
+    pub fn is_actually_disabled(&self, element: NodeId) -> bool {
+        let select_disabled = || {
+            self.nearest_ancestor_select(element)
+                .is_some_and(|select| self.form_control_disabled(select))
+        };
+        match self.html_name(element) {
+            // Ein `fieldset` ist ein *disabled fieldset* unter denselben
+            // Bedingungen.
+            Some("button" | "input" | "select" | "textarea" | "fieldset") => {
+                self.form_control_disabled(element)
+            }
+            Some("optgroup") => self.has_attribute(element, "disabled") || select_disabled(),
+            Some("option") => self.option_is_disabled(element) || select_disabled(),
+            _ => false,
+        }
+    }
+
+    /// Ob ein Formularsteuerelement *disabled* ist: Es hat das Attribut
+    /// `disabled`, oder es liegt in einem `fieldset` mit diesem Attribut, aber
+    /// nicht im ersten `legend`-Kind dieses `fieldset`.
+    fn form_control_disabled(&self, element: NodeId) -> bool {
+        if self.has_attribute(element, "disabled") {
+            return true;
+        }
+        let mut child = element;
+        let mut ancestor = self.parent(element);
+        while let Some(node) = ancestor {
+            if self.html_name(node) == Some("fieldset") && self.has_attribute(node, "disabled") {
+                let legend = self
+                    .children(node)
+                    .find(|&candidate| self.html_name(candidate) == Some("legend"));
+                if legend != Some(child) {
+                    return true;
+                }
+            }
+            child = node;
+            ancestor = self.parent(node);
+        }
+        false
     }
 
     // Die Schritte an den Algorithmen des DOM
@@ -695,6 +749,39 @@ mod tests {
             .expect("einfügbar");
         assert!(document.selectedness(c));
         assert!(document.selectedness(d));
+    }
+
+    #[test]
+    fn disabled_controls() {
+        let mut document = Document::new();
+        let fieldset = element(&mut document, "fieldset", &[("disabled", "")]);
+        let legend = element(&mut document, "legend", &[]);
+        let in_legend = element(&mut document, "input", &[]);
+        let second = element(&mut document, "legend", &[]);
+        let in_second = element(&mut document, "button", &[]);
+        let outside = element(&mut document, "textarea", &[]);
+        append(&mut document, fieldset, legend);
+        append(&mut document, legend, in_legend);
+        append(&mut document, fieldset, second);
+        append(&mut document, second, in_second);
+        let select = element(&mut document, "select", &[]);
+        let group = element(&mut document, "optgroup", &[]);
+        let grouped = option(&mut document, "A", &[]);
+        append(&mut document, fieldset, select);
+        append(&mut document, select, group);
+        append(&mut document, group, grouped);
+        assert!(document.is_actually_disabled(fieldset));
+        // Nur das erste `legend` nimmt sich aus.
+        assert!(!document.is_actually_disabled(in_legend));
+        assert!(document.is_actually_disabled(in_second));
+        assert!(!document.is_actually_disabled(outside));
+        // Das `select` ist abgeschaltet, also auch seine Gruppen und Optionen.
+        assert!(document.is_actually_disabled(group));
+        assert!(document.is_actually_disabled(grouped));
+        assert!(!document.is_actually_disabled(legend));
+        let checked = element(&mut document, "input", &[("checked", "")]);
+        assert!(document.checkedness(checked));
+        assert!(!document.checkedness(outside));
     }
 
     #[test]
