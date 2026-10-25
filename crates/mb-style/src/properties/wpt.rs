@@ -58,6 +58,7 @@ const DIRECTORIES: &[&str] = &[
     "css-sizing",
     "css-text",
     "css-text-decor",
+    "css-ui",
     "css-writing-modes",
 ];
 
@@ -177,7 +178,20 @@ const DEVIATIONS: &[(&str, &str, &str)] = &[
          und end nach der Richtung des Elternelements; der Test erwartet das \
          Schlüsselwort selbst.",
     ),
+    (
+        "css-ui/parsing/outline-offset-computed.html",
+        "Property outline-offset value 'inset'",
+        OUTLINE_OFFSET_INSET,
+    ),
+    (
+        "css-ui/parsing/outline-offset-valid.html",
+        "e.style['outline-offset'] = \"inset\" should set the property value",
+        OUTLINE_OFFSET_INSET,
+    ),
 ];
+
+const OUTLINE_OFFSET_INSET: &str = "Die Datei erwartet das Schlüsselwort inset; CSS UI 4, \
+     auch im aktuellen Entwurf, und webref erlauben nur ⟨length⟩.";
 
 const X_START: &str = "Allein erwartet die Datei x-start und x-end (y-start und y-end) als \
      berechneten Wert, in der Liste aber 0% und 100%. Der berechnete Wert behält die \
@@ -1635,6 +1649,7 @@ fn run_file(path: &str) -> FileResult {
 
     let mut scripts = Vec::new();
     let mut elements: Vec<(String, NodeId, bool)> = Vec::new();
+    let mut shared_ids: Vec<String> = Vec::new();
     let mut style_sheets = Vec::new();
     let mut unsupported_reasons = Vec::new();
     let root = document.root();
@@ -1646,10 +1661,13 @@ fn run_file(path: &str) -> FileResult {
         };
         if let Some(id) = element_data.attribute("id").map(|id| id.to_string_lossy())
             && !id.is_empty()
-            && !elements.iter().any(|(found, _, _)| *found == id)
         {
-            let style_attribute = element_data.attribute("style").is_some();
-            elements.push((id, node, style_attribute));
+            if elements.iter().any(|(found, _, _)| *found == id) {
+                shared_ids.push(id);
+            } else {
+                let style_attribute = element_data.attribute("style").is_some();
+                elements.push((id, node, style_attribute));
+            }
         }
         if element_data.is_html("style") {
             style_sheets.push(text_content(&document, node));
@@ -1726,6 +1744,15 @@ fn run_file(path: &str) -> FileResult {
         Value::host(Rc::new(DocumentObject { page: page.clone() })),
     );
     interpreter.define("CSS", Value::host(Rc::new(CssNamespace)));
+    // *Named access on the Window object*, nur für IDs. Teilen sich mehrere
+    // Elemente eine ID, wäre der Wert eine HTMLCollection; die fehlt.
+    let named_page = page.clone();
+    interpreter.define_named(move |name| {
+        if shared_ids.iter().any(|id| id == name) {
+            return None;
+        }
+        named_page.element_by_id(name)
+    });
     let computed_style_page = page.clone();
     interpreter.define(
         "getComputedStyle",

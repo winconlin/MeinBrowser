@@ -617,3 +617,36 @@ fn background_position_with_one_edge_offset() {
         "right 10px top 0%"
     );
 }
+
+#[test]
+fn outlines() {
+    let page = load(
+        "<div id=a></div><div id=b></div>",
+        "#a { outline: auto; outline-offset: 0.5em; font-size: 20px }
+         #b { outline: 2.5px solid; color: lime }",
+    );
+    // `auto` bleibt nur bei `outline-style: auto` stehen.
+    assert_eq!(page.resolved("a", "outline-color"), "auto");
+    assert_eq!(page.resolved("a", "outline-offset"), "10px");
+    assert_eq!(page.resolved("b", "outline-color"), "rgb(0, 255, 0)");
+    assert_eq!(page.resolved("b", "outline-width"), "2px");
+    assert_eq!(page.resolved("b", "outline"), "2px solid rgb(0, 255, 0)");
+}
+
+#[test]
+fn dimension_attributes() {
+    // `display: none`, damit `width` und `height` ohne Layout berechnet
+    // werden.
+    let page = load(
+        "<img id=a width=' 50.5%x' height=20><img id=b width=30 height=0>\
+         <div id=c width=10></div><svg><image id=d width=10 /></svg>",
+        "img, div, image { display: none } #b { width: 40px }",
+    );
+    assert_eq!(page.resolved("a", "width"), "50.5%");
+    assert_eq!(page.resolved("a", "height"), "20px");
+    // Autorenregeln gewinnen über die Hinweise.
+    assert_eq!(page.resolved("b", "width"), "40px");
+    assert_eq!(page.resolved("b", "height"), "0px");
+    assert_eq!(page.resolved("c", "width"), "auto");
+    assert_eq!(page.resolved("d", "width"), "auto");
+}

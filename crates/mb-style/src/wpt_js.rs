@@ -1798,8 +1798,14 @@ enum Reference {
     Property(Value, JsString),
 }
 
+/// Die Namen des Wirts für [`Interpreter::define_named`].
+type NamedProperties = Box<dyn Fn(&str) -> Option<Value>>;
+
 pub(crate) struct Interpreter {
     global: Rc<Scope>,
+    /// Was ein Name bedeutet, der keine Variable ist (siehe
+    /// [`Interpreter::define_named`]).
+    named: Option<NamedProperties>,
     steps: usize,
     depth: usize,
     strict: bool,
@@ -1817,6 +1823,7 @@ impl Interpreter {
         }
         Interpreter {
             global,
+            named: None,
             steps: 0,
             depth: 0,
             strict: false,
@@ -1826,6 +1833,17 @@ impl Interpreter {
     /// Legt eine globale Variable an.
     pub(crate) fn define(&mut self, name: &str, value: Value) {
         self.global.declare(&Rc::from(name), value, true);
+    }
+
+    /// Legt fest, was ein Name bedeutet, der keine Variable ist, wie die
+    /// *named properties* von `Window`. Variablen verdecken diese Namen.
+    pub(crate) fn define_named(&mut self, named: impl Fn(&str) -> Option<Value> + 'static) {
+        self.named = Some(Box::new(named));
+    }
+
+    /// Der Wert eines Namens: eine Variable, sonst ein Name des Wirts.
+    fn resolve(&self, scope: &Rc<Scope>, name: &str) -> Option<Value> {
+        lookup(scope, name).or_else(|| self.named.as_ref().and_then(|named| named(name)))
     }
 
     /// Führt ein Skript aus. Ein Syntaxfehler, auch für nicht unterstützte
@@ -2092,7 +2110,7 @@ impl Interpreter {
                 source: source.clone(),
                 flags: flags.clone(),
             }),
-            Expression::Identifier(name) => match lookup(scope, name) {
+            Expression::Identifier(name) => match self.resolve(scope, name) {
                 Some(value) => value,
                 None => return unsupported(format!("unbekannter Name {name}")),
             },
@@ -2110,7 +2128,7 @@ impl Interpreter {
                 UnaryOperator::Typeof => {
                     let value = match &**operand {
                         Expression::Identifier(name) => {
-                            lookup(scope, name).unwrap_or(Value::Undefined)
+                            self.resolve(scope, name).unwrap_or(Value::Undefined)
                         }
                         other => self.eval(other, scope)?,
                     };
@@ -2245,7 +2263,7 @@ impl Interpreter {
 
     fn read(&mut self, reference: &Reference, scope: &Rc<Scope>) -> Completion<Value> {
         match reference {
-            Reference::Variable(name) => match lookup(scope, name) {
+            Reference::Variable(name) => match self.resolve(scope, name) {
                 Some(value) => Ok(value),
                 None => unsupported(format!("unbekannter Name {name}")),
             },

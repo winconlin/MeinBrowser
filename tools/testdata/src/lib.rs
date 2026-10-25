@@ -47,6 +47,7 @@ pub const SOURCES: [Source; 8] = [
             "/css/css-sizing/parsing/",
             "/css/css-text/parsing/",
             "/css/css-text-decor/parsing/",
+            "/css/css-ui/parsing/",
             "/css/css-writing-modes/parsing/",
             // Schriften für die Tests des Schriftlesers in `mb-text`.
             "/fonts/",

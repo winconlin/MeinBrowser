@@ -131,6 +131,10 @@ struct Priority {
 /// Die Regel des Attributs `style` in [`Priority::rule`].
 const STYLE_ATTRIBUTE: u32 = u32::MAX;
 
+/// Die Regel der *presentational hints* eines Elements in
+/// [`Priority::rule`], nach den Blöcken des Standards.
+const ELEMENT_HINTS: u32 = u32::MAX - 1;
+
 /// Die Ebenen eines Ursprungs als Baum (*layer names*). Knoten 0 ist die
 /// äußere Ebene für alles ohne `@layer`.
 #[derive(Debug)]
@@ -403,14 +407,16 @@ fn is_whitespace(unit: u16) -> bool {
 
 impl Stylist {
     /// Die Deklarationen, die für ein Element oder eines seiner
-    /// Pseudoelemente gelten, sortiert. `style_attribute` sind die
-    /// Deklarationen aus dem Attribut `style`; für Pseudoelemente gelten sie
-    /// nicht.
+    /// Pseudoelemente gelten, sortiert. `hints` sind die *presentational
+    /// hints* aus den Attributen des Elements, die nicht als Regeln in den
+    /// Stylesheets stehen, `style_attribute` die Deklarationen aus dem
+    /// Attribut `style`; für Pseudoelemente gilt beides nicht.
     pub fn matching<'a>(
         &'a self,
         context: &MatchingContext<'_>,
         element: NodeId,
         pseudo_element: Option<PseudoElement>,
+        hints: &'a [Declared],
         style_attribute: Option<&'a [Declared]>,
     ) -> MatchedDeclarations<'a> {
         let mut declarations = Vec::new();
@@ -501,6 +507,24 @@ impl Stylist {
                 });
             }
         }
+        if pseudo_element.is_none() {
+            for (index, declared) in hints.iter().enumerate() {
+                declarations.push(Matched {
+                    priority: Priority {
+                        // Die Hinweise sind nie wichtig.
+                        tier: Tier::PresentationalHint,
+                        attached: false,
+                        // Außerhalb jeder Ebene; die äußere hat den höchsten
+                        // Rang.
+                        layer: u32::MAX,
+                        specificity: Specificity::default(),
+                        rule: ELEMENT_HINTS,
+                        index: u32::try_from(index).unwrap_or(u32::MAX),
+                    },
+                    declaration: &declared.declaration,
+                });
+            }
+        }
         if pseudo_element.is_none()
             && let Some(attribute) = style_attribute
         {
@@ -535,8 +559,9 @@ struct Matched<'a> {
 }
 
 /// Die Deklarationen für ein Element, die stärkste zuerst (*output of the
-/// cascade*, für alle Langformen zusammen).
-#[derive(Clone, Debug)]
+/// cascade*, für alle Langformen zusammen). Leer ergibt die Kaskade nur
+/// Anfangswerte und geerbte, wie bei anonymen Kästen.
+#[derive(Clone, Debug, Default)]
 pub struct MatchedDeclarations<'a> {
     declarations: Vec<Matched<'a>>,
 }
