@@ -1023,11 +1023,14 @@ impl<'a> TreeBuilder<'a> {
                         && attribute.local_name == *local_name
                 })
             };
-            if xmlns(None, "xmlns").is_some_and(|attribute| attribute.value != *namespace.url()) {
+            let differs = |attribute: &dom::Attribute, namespace: Namespace| {
+                namespace.url().is_some_and(|url| attribute.value != *url)
+            };
+            if xmlns(None, "xmlns").is_some_and(|attribute| differs(attribute, namespace)) {
                 errors += 1;
             }
             if xmlns(Some("xmlns"), "xlink")
-                .is_some_and(|attribute| attribute.value != *Namespace::XLink.url())
+                .is_some_and(|attribute| differs(attribute, Namespace::XLink))
             {
                 errors += 1;
             }

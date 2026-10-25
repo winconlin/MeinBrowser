@@ -41,11 +41,17 @@ pub enum NodeKind {
     DocumentFragment,
     Element,
     Text,
+    /// Ein `CDATASection`. Im DOM ist das auch ein Textknoten; hier hat er
+    /// eine eigene Art, damit niemand ihn versehentlich mit einem
+    /// benachbarten `Text` zusammenlegt.
+    CdataSection,
     Comment,
     ProcessingInstruction,
 }
 
-/// Die Namensräume, die der HTML-Parser kennt (Infra, „Namespaces“).
+/// Ein Namensraum: die aus Infra („Namespaces“) mit eigenem Namen, alle
+/// anderen als Nummer in der Tabelle des Dokuments
+/// ([`Document::intern_namespace`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Namespace {
     Html,
@@ -54,17 +60,31 @@ pub enum Namespace {
     XLink,
     Xml,
     Xmlns,
+    /// Gilt nur im Dokument, das die Nummer vergeben hat.
+    Other(u32),
 }
 
 impl Namespace {
-    pub const fn url(self) -> &'static str {
+    const KNOWN: [Namespace; 6] = [
+        Namespace::Html,
+        Namespace::MathMl,
+        Namespace::Svg,
+        Namespace::XLink,
+        Namespace::Xml,
+        Namespace::Xmlns,
+    ];
+
+    /// Die URL eines Namensraums aus Infra, sonst `None`; die übrigen
+    /// kennt [`Document::namespace_url`].
+    pub const fn url(self) -> Option<&'static str> {
         match self {
-            Namespace::Html => "http://www.w3.org/1999/xhtml",
-            Namespace::MathMl => "http://www.w3.org/1998/Math/MathML",
-            Namespace::Svg => "http://www.w3.org/2000/svg",
-            Namespace::XLink => "http://www.w3.org/1999/xlink",
-            Namespace::Xml => "http://www.w3.org/XML/1998/namespace",
-            Namespace::Xmlns => "http://www.w3.org/2000/xmlns/",
+            Namespace::Html => Some("http://www.w3.org/1999/xhtml"),
+            Namespace::MathMl => Some("http://www.w3.org/1998/Math/MathML"),
+            Namespace::Svg => Some("http://www.w3.org/2000/svg"),
+            Namespace::XLink => Some("http://www.w3.org/1999/xlink"),
+            Namespace::Xml => Some("http://www.w3.org/XML/1998/namespace"),
+            Namespace::Xmlns => Some("http://www.w3.org/2000/xmlns/"),
+            Namespace::Other(_) => None,
         }
     }
 }
@@ -138,6 +158,7 @@ enum Payload {
     },
     Element(Element),
     Text(DomString),
+    CdataSection(DomString),
     Comment(DomString),
     ProcessingInstruction {
         target: DomString,
@@ -195,6 +216,8 @@ pub struct Document {
     mode: QuirksMode,
     /// DOM: *type* „html“ statt „xml“.
     html: bool,
+    /// Die URLs der Namensräume [`Namespace::Other`], nach Nummer.
+    namespaces: Vec<String>,
     journal: Vec<Change>,
     /// Mikroaufgaben aus den Schritten in `html.rs`. Bis es eine
     /// Ereignisschleife gibt, liegen sie hier, bis jemand
@@ -221,6 +244,7 @@ impl Document {
             payload: Vec::new(),
             mode: QuirksMode::NoQuirks,
             html: true,
+            namespaces: Vec::new(),
             journal: Vec::new(),
             microtasks: VecDeque::new(),
         };
@@ -253,6 +277,38 @@ impl Document {
 
     pub fn set_html_document(&mut self, html: bool) {
         self.html = html;
+    }
+
+    /// Der Namensraum mit dieser URL. Für eine URL außerhalb von Infra
+    /// vergibt das Dokument beim ersten Mal eine Nummer.
+    pub fn intern_namespace(&mut self, url: &str) -> Namespace {
+        if let Some(known) = Namespace::KNOWN
+            .into_iter()
+            .find(|namespace| namespace.url() == Some(url))
+        {
+            return known;
+        }
+        let index = match self.namespaces.iter().position(|entry| entry == url) {
+            Some(index) => index,
+            None => {
+                self.namespaces.push(url.to_owned());
+                self.namespaces.len().saturating_sub(1)
+            }
+        };
+        // So viele verschiedene Namensräume passen nicht in den Speicher.
+        Namespace::Other(u32::try_from(index).expect("Tabelle der Namensräume voll"))
+    }
+
+    /// Die URL eines Namensraums; `None` für eine Nummer, die dieses
+    /// Dokument nicht vergeben hat.
+    pub fn namespace_url(&self, namespace: Namespace) -> Option<&str> {
+        match namespace {
+            Namespace::Other(index) => self
+                .namespaces
+                .get(usize::try_from(index).ok()?)
+                .map(String::as_str),
+            known => known.url(),
+        }
     }
 
     /// Die Zahl der angelegten Knoten.
@@ -313,10 +369,22 @@ impl Document {
 
     // Knoten anlegen
 
-    /// Ein Element. Ein HTML-`template` bekommt gleich seinen Inhalt.
+    /// Ein Element ohne Präfix. Ein HTML-`template` bekommt gleich seinen
+    /// Inhalt.
     pub fn create_element(
         &mut self,
         namespace: Option<Namespace>,
+        local_name: DomString,
+        attributes: Vec<Attribute>,
+    ) -> NodeId {
+        self.create_element_ns(namespace, None, local_name, attributes)
+    }
+
+    /// Wie [`Document::create_element`], mit Präfix.
+    pub fn create_element_ns(
+        &mut self,
+        namespace: Option<Namespace>,
+        prefix: Option<DomString>,
         local_name: DomString,
         attributes: Vec<Attribute>,
     ) -> NodeId {
@@ -324,7 +392,7 @@ impl Document {
         let state = html::State::new(namespace, &local_name, &attributes);
         let element = self.push(Payload::Element(Element {
             namespace,
-            prefix: None,
+            prefix,
             local_name,
             attributes,
             template_contents: None,
@@ -346,6 +414,10 @@ impl Document {
 
     pub fn create_text(&mut self, data: DomString) -> NodeId {
         self.push(Payload::Text(data))
+    }
+
+    pub fn create_cdata_section(&mut self, data: DomString) -> NodeId {
+        self.push(Payload::CdataSection(data))
     }
 
     pub fn create_comment(&mut self, data: DomString) -> NodeId {
@@ -377,6 +449,7 @@ impl Document {
             Payload::Fragment { .. } => NodeKind::DocumentFragment,
             Payload::Element(_) => NodeKind::Element,
             Payload::Text(_) => NodeKind::Text,
+            Payload::CdataSection(_) => NodeKind::CdataSection,
             Payload::Comment(_) => NodeKind::Comment,
             Payload::ProcessingInstruction { .. } => NodeKind::ProcessingInstruction,
         })
@@ -396,11 +469,13 @@ impl Document {
         }
     }
 
-    /// Die Daten eines Text- oder Kommentarknotens oder einer
+    /// Die Daten eines Text-, CDATA- oder Kommentarknotens oder einer
     /// Verarbeitungsanweisung.
     pub fn data(&self, node: NodeId) -> Option<&DomString> {
         match self.payload(node)? {
-            Payload::Text(data) | Payload::Comment(data) => Some(data),
+            Payload::Text(data) | Payload::CdataSection(data) | Payload::Comment(data) => {
+                Some(data)
+            }
             Payload::ProcessingInstruction { data, .. } => Some(data),
             _ => None,
         }
@@ -794,17 +869,14 @@ impl Document {
             Payload::Document => return None,
             Payload::Doctype(doctype) => self.create_doctype(doctype),
             Payload::Fragment { .. } => self.create_fragment(),
-            Payload::Element(element) => {
-                let copy =
-                    self.create_element(element.namespace, element.local_name, element.attributes);
-                if let Some(Payload::Element(data)) =
-                    self.slot(copy).and_then(|slot| self.payload.get_mut(slot))
-                {
-                    data.prefix = element.prefix;
-                }
-                copy
-            }
+            Payload::Element(element) => self.create_element_ns(
+                element.namespace,
+                element.prefix,
+                element.local_name,
+                element.attributes,
+            ),
             Payload::Text(data) => self.create_text(data),
+            Payload::CdataSection(data) => self.create_cdata_section(data),
             Payload::Comment(data) => self.create_comment(data),
             Payload::ProcessingInstruction { target, data } => {
                 self.create_processing_instruction(target, data)
@@ -985,6 +1057,47 @@ mod tests {
         assert!(!document.is_connected(inner));
         document.remove(html);
         assert!(!document.is_connected(template));
+    }
+
+    #[test]
+    fn namespaces_and_cdata_sections() {
+        let mut document = Document::new();
+        assert_eq!(
+            document.intern_namespace("http://www.w3.org/2000/svg"),
+            Namespace::Svg
+        );
+        let first = document.intern_namespace("urn:a");
+        let second = document.intern_namespace("urn:b");
+        assert_eq!(first, Namespace::Other(0));
+        assert_eq!(second, Namespace::Other(1));
+        assert_eq!(document.intern_namespace("urn:a"), first);
+        assert_eq!(document.namespace_url(second), Some("urn:b"));
+        assert_eq!(
+            document.namespace_url(Namespace::Xml),
+            Some("http://www.w3.org/XML/1998/namespace")
+        );
+        assert_eq!(document.namespace_url(Namespace::Other(7)), None);
+
+        let element = document.create_element_ns(
+            Some(first),
+            Some(DomString::from("a")),
+            DomString::from("x"),
+            Vec::new(),
+        );
+        let cdata = document.create_cdata_section(DomString::from("<&>"));
+        document.append(element, cdata).expect("einfügbar");
+        assert_eq!(document.kind(cdata), Some(NodeKind::CdataSection));
+        let copy = document.clone_node(element, true).expect("Kopie");
+        assert_eq!(
+            document.element(copy).and_then(|e| e.prefix.clone()),
+            Some(DomString::from("a"))
+        );
+        let inner = document.first_child(copy).expect("Kind");
+        assert_eq!(document.kind(inner), Some(NodeKind::CdataSection));
+        assert_eq!(
+            document.data(inner).map(DomString::to_string_lossy),
+            Some("<&>".to_owned())
+        );
     }
 
     #[test]

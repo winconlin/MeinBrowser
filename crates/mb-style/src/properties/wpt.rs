@@ -1563,8 +1563,10 @@ struct FileResult {
 fn text_content(document: &Document, node: NodeId) -> String {
     let mut text = String::new();
     for child in document.children(node) {
-        if document.kind(child) == Some(NodeKind::Text)
-            && let Some(data) = document.data(child)
+        if matches!(
+            document.kind(child),
+            Some(NodeKind::Text | NodeKind::CdataSection)
+        ) && let Some(data) = document.data(child)
         {
             text.push_str(&data.to_string_lossy());
         }

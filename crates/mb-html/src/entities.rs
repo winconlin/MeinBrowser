@@ -37,6 +37,16 @@ pub(crate) fn longest_match(input: &[CodePoint]) -> Option<(usize, &'static str)
     })
 }
 
+/// Die Zeichen, für die der Name `name` (ohne das führende `&`) genau steht.
+/// Der XML-Parser schlägt so die Entitäten nach, die der HTML Standard für
+/// XHTML-Dokumente vorsieht; dort enden alle Namen mit `;`.
+pub fn named_character_reference(name: &str) -> Option<&'static str> {
+    let index = ENTITIES
+        .binary_search_by(|&(entry, _)| entry.cmp(name))
+        .ok()?;
+    ENTITIES.get(index).map(|&(_, characters)| characters)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -60,6 +70,14 @@ mod tests {
         assert_eq!(lookup("xyz;"), None);
         assert_eq!(lookup(""), None);
         assert_eq!(lookup("am"), None);
+    }
+
+    #[test]
+    fn exact_names() {
+        assert_eq!(named_character_reference("nbsp;"), Some("\u{A0}"));
+        assert_eq!(named_character_reference("nbsp"), Some("\u{A0}"));
+        assert_eq!(named_character_reference("nbs"), None);
+        assert_eq!(named_character_reference("notin;"), Some("\u{2209}"));
     }
 
     #[test]

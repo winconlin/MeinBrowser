@@ -7,5 +7,14 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[dependencies]
+mb-base = { path = "../mb-base" }
+mb-dom = { path = "../mb-dom" }
+mb-encoding = { path = "../mb-encoding" }
+mb-html = { path = "../mb-html" }
+
+[dev-dependencies]
+testdata = { path = "../../tools/testdata" }
+
 [lints]
 workspace = true
