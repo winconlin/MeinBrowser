@@ -9,12 +9,16 @@
 
 #![forbid(unsafe_code)]
 
+pub mod case_folding;
 pub mod idna;
+pub mod line_breaking;
 pub mod normalization;
 #[rustfmt::skip]
 mod tables;
 
-pub use tables::{BidiClass, GeneralCategory, JoiningType, UNICODE_VERSION};
+pub use tables::{
+    BidiClass, EastAsianWidth, GeneralCategory, JoiningType, LineBreak, UNICODE_VERSION,
+};
 
 /// Der größte Codepunkt.
 pub const MAX_CODE_POINT: u32 = 0x10_FFFF;
@@ -41,6 +45,26 @@ pub fn bidi_class(code_point: u32) -> BidiClass {
 /// genannten.
 pub fn joining_type(code_point: u32) -> JoiningType {
     lookup(&tables::JOINING_TYPE, code_point).unwrap_or(JoiningType::NonJoining)
+}
+
+/// Die Zeilenumbruchklasse eines Codepunkts, wie sie in `LineBreak.txt`
+/// steht, also vor der Auflösung nach LB1 (siehe [`line_breaking`]). Nicht
+/// vergebene Codepunkte haben die Vorgaben der Datei, Werte über U+10FFFF
+/// gelten als `XX`.
+pub fn line_break(code_point: u32) -> LineBreak {
+    lookup(&tables::LINE_BREAK, code_point).unwrap_or(LineBreak::Unknown)
+}
+
+/// Die East_Asian_Width eines Codepunkts. Nicht vergebene Codepunkte haben
+/// die Vorgaben aus `EastAsianWidth.txt`, Werte über U+10FFFF gelten als `N`.
+pub fn east_asian_width(code_point: u32) -> EastAsianWidth {
+    lookup(&tables::EAST_ASIAN_WIDTH, code_point).unwrap_or(EastAsianWidth::Neutral)
+}
+
+/// Ob ein Codepunkt Extended_Pictographic ist (UTS #51). Das gilt auch für
+/// manche noch nicht vergebene Codepunkte.
+pub fn is_extended_pictographic(code_point: u32) -> bool {
+    lookup(&tables::EXTENDED_PICTOGRAPHIC, code_point).unwrap_or(false)
 }
 
 /// Sucht den Abschnitt, in dem der Codepunkt liegt. Die Tabellen beginnen
@@ -180,6 +204,144 @@ mod tests {
             assert_eq!(joining_type(code_point), joining, "{code_point:#X}");
         }
         assert_eq!(J::DualJoining.short_name(), "D");
+    }
+
+    #[test]
+    fn known_line_break_classes() {
+        use LineBreak as L;
+        let cases = [
+            (0x0009, L::BreakAfter),
+            (0x000A, L::LineFeed),
+            (0x0020, L::Space),
+            (0x0021, L::Exclamation),
+            (0x0022, L::Quotation),
+            (0x0028, L::OpenPunctuation),
+            (0x0029, L::CloseParenthesis),
+            (0x002D, L::Hyphen),
+            (0x0030, L::Numeric),
+            (0x0041, L::Alphabetic),
+            (0x00A0, L::Glue),
+            (0x00A7, L::Ambiguous),
+            (0x05D0, L::HebrewLetter),
+            (0x0E01, L::ComplexContext),
+            (0x200B, L::ZWSpace),
+            (0x200D, L::ZWJ),
+            (0x2060, L::WordJoiner),
+            (0x3041, L::ConditionalJapaneseStarter),
+            (0x4E00, L::Ideographic),
+            (0xAC00, L::H2),
+            (0xD800, L::Surrogate),
+            (0x1F1E6, L::RegionalIndicator),
+            (0x1F466, L::EBase),
+            (0x1F3FB, L::EModifier),
+            // Vorgaben für nicht vergebene Codepunkte.
+            (0x0378, L::Unknown),
+            (0x20CF, L::PrefixNumeric),
+            (0x2FFFD, L::Ideographic),
+            (0x11_0000, L::Unknown),
+        ];
+        for (code_point, class) in cases {
+            assert_eq!(line_break(code_point), class, "{code_point:#X}");
+        }
+        assert_eq!(L::ZWSpace.short_name(), "ZW");
+        assert_eq!(L::CloseParenthesis.long_name(), "Close_Parenthesis");
+    }
+
+    #[test]
+    fn known_east_asian_widths() {
+        use EastAsianWidth as E;
+        let cases = [
+            (0x0000, E::Neutral),
+            (0x0041, E::Narrow),
+            (0x00A1, E::Ambiguous),
+            (0x1100, E::Wide),
+            (0x20A9, E::Halfwidth),
+            (0x3000, E::Fullwidth),
+            (0x4E00, E::Wide),
+            (0xFF61, E::Halfwidth),
+            (0x1F600, E::Wide),
+            // Vorgaben für nicht vergebene Codepunkte.
+            (0x0378, E::Neutral),
+            (0x3FFFD, E::Wide),
+            (0x11_0000, E::Neutral),
+        ];
+        for (code_point, width) in cases {
+            assert_eq!(east_asian_width(code_point), width, "{code_point:#X}");
+        }
+    }
+
+    #[test]
+    fn known_extended_pictographic() {
+        assert!(is_extended_pictographic(0x00A9));
+        assert!(is_extended_pictographic(0x1F600));
+        assert!(!is_extended_pictographic(0x0023));
+        assert!(!is_extended_pictographic(0x0041));
+        assert!(!is_extended_pictographic(0x1F1E6));
+        assert!(!is_extended_pictographic(0x11_0000));
+    }
+
+    /// Liest eine Eigenschaftsdatei unabhängig vom Generator: `default` für
+    /// alle Codepunkte, darüber die Werte aus den Datenzeilen.
+    fn property_file(text: &str, default: &'static str) -> Vec<String> {
+        let mut values = vec![default.to_owned(); 0x11_0000];
+        for line in text.lines() {
+            let data = line.split('#').next().unwrap_or_default();
+            if data.trim().is_empty() {
+                continue;
+            }
+            let (range, value) = data.split_once(';').expect("zwei Felder");
+            let (first, last) = range
+                .trim()
+                .split_once("..")
+                .unwrap_or((range.trim(), range.trim()));
+            let first = usize::from_str_radix(first, 16).expect("Codepunkt");
+            let last = usize::from_str_radix(last, 16).expect("Codepunkt");
+            for slot in &mut values[first..=last] {
+                value.trim().clone_into(slot);
+            }
+        }
+        values
+    }
+
+    /// Vergleicht jeden Codepunkt mit `LineBreak.txt`, `EastAsianWidth.txt`
+    /// und `emoji-data.txt`, gelesen unabhängig vom Generator. Beide Dateien
+    /// haben nur eine `@missing`-Zeile für den ganzen Coderaum, die
+    /// übrigen Vorgaben stehen als Datenzeilen darin.
+    #[test]
+    fn tables_match_property_files() {
+        let line_breaks = include_str!("../../../data/unicode/LineBreak.txt");
+        assert!(line_breaks.contains("\n# @missing: 0000..10FFFF; XX\n"));
+        assert_eq!(line_breaks.matches("@missing").count(), 1);
+        let widths = include_str!("../../../data/unicode/EastAsianWidth.txt");
+        assert!(widths.contains("\n# @missing: 0000..10FFFF; N\n"));
+        assert_eq!(widths.matches("@missing").count(), 1);
+        let line_breaks = property_file(line_breaks, "XX");
+        let widths = property_file(widths, "N");
+        let emoji = include_str!("../../../data/unicode/emoji-data.txt");
+        let pictographic: String = emoji
+            .lines()
+            .filter(|line| line.contains("; Extended_Pictographic"))
+            .map(|line| format!("{line}\n"))
+            .collect();
+        let pictographic = property_file(&pictographic, "");
+        for code_point in 0..=MAX_CODE_POINT {
+            let index = code_point as usize;
+            assert_eq!(
+                line_break(code_point).short_name(),
+                line_breaks[index],
+                "{code_point:#X}"
+            );
+            assert_eq!(
+                east_asian_width(code_point).short_name(),
+                widths[index],
+                "{code_point:#X}"
+            );
+            assert_eq!(
+                is_extended_pictographic(code_point),
+                !pictographic[index].is_empty(),
+                "{code_point:#X}"
+            );
+        }
     }
 
     /// Vergleicht jeden Codepunkt mit `UnicodeData.txt`, gelesen unabhängig
