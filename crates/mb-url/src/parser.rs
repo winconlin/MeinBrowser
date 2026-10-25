@@ -755,7 +755,7 @@ impl Parser<'_, '_> {
             } else {
                 QUERY
             };
-            let encoded = percent_encode_after_encoding(self.encoding, &self.buffer, set);
+            let encoded = percent_encode_after_encoding(self.encoding, &self.buffer, set, false);
             self.url.query.get_or_insert_default().push_str(&encoded);
             self.buffer.clear();
             if c == Some('#') {

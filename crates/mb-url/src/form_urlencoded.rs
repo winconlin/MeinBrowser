@@ -51,12 +51,14 @@ pub fn serialize<'a>(
             encoding,
             name,
             FORM_URLENCODED,
+            true,
         ));
         output.push('=');
         output.push_str(&percent_encode_after_encoding(
             encoding,
             value,
             FORM_URLENCODED,
+            true,
         ));
     }
     output

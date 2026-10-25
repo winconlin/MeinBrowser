@@ -103,9 +103,15 @@ pub fn contains_percent_encoded_byte(text: &str) -> bool {
 
 /// `#string-percent-encode-after-encoding`: kodiert `input` mit `encoding`
 /// und prozentkodiert jedes Byte aus `set`. Was die Kodierung nicht darstellen
-/// kann, wird zu `%26%23…%3B`.
-pub fn percent_encode_after_encoding(encoding: Encoding, input: &str, set: EncodeSet) -> String {
-    let space_as_plus = set == FORM_URLENCODED;
+/// kann, wird zu `%26%23…%3B`. Mit `space_as_plus` (*spaceAsPlus*) wird das
+/// Leerzeichen zu `+`; das will nur der Serialisierer für
+/// `application/x-www-form-urlencoded`.
+pub fn percent_encode_after_encoding(
+    encoding: Encoding,
+    input: &str,
+    set: EncodeSet,
+    space_as_plus: bool,
+) -> String {
     let mut output = String::with_capacity(input.len());
     // UTF-8 kann alles darstellen und braucht keinen Kodierer.
     if encoding == Encoding::Utf8 {
@@ -185,16 +191,16 @@ mod tests {
             [0xE2, 0x80, 0xBD, 0x25, 0x2E]
         );
         let shift_jis =
-            |input| percent_encode_after_encoding(Encoding::ShiftJis, input, SPECIAL_QUERY);
+            |input| percent_encode_after_encoding(Encoding::ShiftJis, input, SPECIAL_QUERY, false);
         assert_eq!(shift_jis(" "), "%20");
         assert_eq!(shift_jis("≡"), "%81%DF");
         assert_eq!(shift_jis("‽"), "%26%238253%3B");
         assert_eq!(
-            percent_encode_after_encoding(Encoding::Iso2022Jp, "¥", SPECIAL_QUERY),
+            percent_encode_after_encoding(Encoding::Iso2022Jp, "¥", SPECIAL_QUERY, false),
             "%1B(J\\%1B(B"
         );
         assert_eq!(
-            percent_encode_after_encoding(Encoding::ShiftJis, "1+1 ≡ 2%20‽", FORM_URLENCODED),
+            percent_encode_after_encoding(Encoding::ShiftJis, "1+1 ≡ 2%20‽", FORM_URLENCODED, true),
             "1%2B1+%81%DF+2%2520%26%238253%3B"
         );
         assert_eq!(utf8_percent_encode("≡", USERINFO), "%E2%89%A1");
@@ -202,6 +208,17 @@ mod tests {
         assert_eq!(
             utf8_percent_encode("Say what‽", USERINFO),
             "Say%20what%E2%80%BD"
+        );
+        // UTF-8 percent-encode ruft percent-encode after encoding ohne
+        // spaceAsPlus auf, also bleibt es auch bei dieser Menge bei `%20`.
+        assert_eq!(utf8_percent_encode("a b", FORM_URLENCODED), "a%20b");
+        assert_eq!(
+            percent_encode_after_encoding(Encoding::Utf8, "a b", FORM_URLENCODED, false),
+            "a%20b"
+        );
+        assert_eq!(
+            percent_encode_after_encoding(Encoding::Utf8, "a b", FORM_URLENCODED, true),
+            "a+b"
         );
     }
 
