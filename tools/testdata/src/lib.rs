@@ -21,12 +21,20 @@ pub struct Source {
 
 /// Alle Testsammlungen. Für einen neuen Stand den Commit ändern und
 /// `cargo run -p testdata` ausführen.
-pub const SOURCES: [Source; 2] = [
+pub const SOURCES: [Source; 3] = [
     Source {
         name: "wpt",
         repository: "https://github.com/web-platform-tests/wpt",
         commit: "c7902c0b13fb010a78126eb9d951e1f22c421013",
-        paths: &["/url/resources/"],
+        // Die Tests für den HTML-Baumaufbau aus html5lib-tests werden seit
+        // einiger Zeit in den WPT gepflegt.
+        paths: &["/url/resources/", "/html/syntax/parsing/resources/"],
+    },
+    Source {
+        name: "html5lib-tests",
+        repository: "https://github.com/html5lib/html5lib-tests",
+        commit: "c777c408b61078ea2eb4acefc2535f54dbc8b28a",
+        paths: &["/tokenizer/"],
     },
     Source {
         name: "unicodetools",
@@ -47,6 +55,28 @@ pub fn root() -> PathBuf {
         .join("..")
         .join("target")
         .join("testdata")
+}
+
+/// Die Namen der Dateien mit der Endung `extension` in einem Ordner einer
+/// Testsammlung, sortiert, zum Beispiel
+/// `files("html5lib-tests", "tokenizer", "test")`.
+pub fn files(source: &str, directory: &str, extension: &str) -> Vec<String> {
+    let path = root().join(source).join(directory);
+    let entries = match std::fs::read_dir(&path) {
+        Ok(entries) => entries,
+        Err(error) => panic!(
+            "Externe Testdaten fehlen ({}: {error}). Bitte `cargo run -p testdata` ausführen.",
+            path.display()
+        ),
+    };
+    let mut names: Vec<String> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|found| found == extension))
+        .filter_map(|path| path.file_name()?.to_str().map(str::to_owned))
+        .collect();
+    names.sort();
+    names
 }
 
 /// Liest eine Datei einer Testsammlung, zum Beispiel

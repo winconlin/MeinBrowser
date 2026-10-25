@@ -1,7 +1,8 @@
 //! Erzeugt Tabellen aus den Rohdaten unter `data/`: die Unicode-Tabellen und
 //! die IDNA-Zuordnungstabelle für `mb-unicode` (siehe `docs/architektur.md`,
-//! Abschnitt 4.3) und die Tabellen des WHATWG Encoding Standard für
-//! `mb-encoding` (Abschnitt 4.4). Die erzeugten Dateien werden eingecheckt.
+//! Abschnitt 4.3), die Tabellen des WHATWG Encoding Standard für
+//! `mb-encoding` und die benannten Zeichenreferenzen des HTML Standard für
+//! `mb-html` (beides Abschnitt 4.4). Die erzeugten Dateien werden eingecheckt.
 //!
 //! Aufruf: `cargo run -p datagen [-- --check]`. Mit `--check` schreibt das
 //! Programm nichts, sondern prüft nur, ob die eingecheckten Dateien aktuell
@@ -10,6 +11,7 @@
 #![forbid(unsafe_code)]
 
 mod encoding;
+mod html;
 mod idna;
 mod ucd;
 mod unicode;
@@ -30,7 +32,7 @@ struct Generator {
     run: fn(Read<'_>) -> Result<String, String>,
 }
 
-const GENERATORS: [Generator; 3] = [
+const GENERATORS: [Generator; 4] = [
     Generator {
         data: unicode::DATA,
         output: unicode::OUTPUT,
@@ -45,6 +47,11 @@ const GENERATORS: [Generator; 3] = [
         data: encoding::DATA,
         output: encoding::OUTPUT,
         run: encoding::run,
+    },
+    Generator {
+        data: html::DATA,
+        output: html::OUTPUT,
+        run: html::run,
     },
 ];
 
