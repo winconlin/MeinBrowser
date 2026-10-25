@@ -1,0 +1,11 @@
+[package]
+name = "mb-json"
+description = "JSON-Leser (RFC 8259) für Rohdaten, Testdaten und später Manifeste"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

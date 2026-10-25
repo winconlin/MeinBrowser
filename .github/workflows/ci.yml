@@ -51,6 +51,9 @@ jobs:
       - name: Lints
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
+      - name: Externe Testdaten holen
+        run: cargo run --locked -p testdata
+
       - name: Tests
         run: cargo test --locked --workspace
 

@@ -14,6 +14,7 @@ cargo run -p deps-guard                                # keine externen Abhängi
 cargo run -p datagen -- --check                        # generierte Tabellen passen zu data/
 cargo fmt --all --check                                # Formatierung
 cargo clippy --workspace --all-targets -- -D warnings  # Lints
+cargo run -p testdata                                  # externe Testdaten holen (einmal vor den Tests)
 cargo test --workspace                                 # Tests
 cargo run -p meinbrowser                               # Fenster mit Testbild (Meilenstein M0)
 cargo run -p meinbrowser -- --selbsttest               # zeigt das Testbild und prüft es
@@ -24,3 +25,5 @@ Unter Linux braucht das Fenster einen X-Server (unter Wayland über XWayland). O
 Fremde Crates sind nicht erlaubt, auch nicht als dev- oder build-dependency.
 
 Tabellen aus Rohdaten unter `data/` (zurzeit die Unicode-Zeichendatenbank und die Daten des WHATWG Encoding Standard) erzeugt `cargo run -p datagen`. Die erzeugten Dateien werden eingecheckt.
+
+Externe Testsammlungen (zurzeit die URL-Testdaten der WPT und Testdateien von Unicode) liegen nicht im Repository. `cargo run -p testdata` holt sie mit `git` in der Version, die `tools/testdata/src/lib.rs` festlegt, nach `target/testdata/`.

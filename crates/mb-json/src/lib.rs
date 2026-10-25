@@ -1,8 +1,13 @@
-//! Ein kleiner JSON-Leser (RFC 8259) für Rohdaten wie `encodings.json`.
+//! Ein kleiner JSON-Leser (RFC 8259) für Rohdaten wie `encodings.json`, für
+//! Testdaten und später für Manifeste.
 //!
 //! Die Verschachtelungstiefe ist begrenzt (RS-8), Fehler nennen die Stelle.
+//! Einzelne Surrogate in `\u`-Escapes werden zu U+FFFD, wie bei der
+//! Umwandlung in einen `USVString` in WebIDL.
 
-/// Ein JSON-Wert. Zahlen bleiben Text, weil die Rohdaten sie kaum brauchen.
+#![forbid(unsafe_code)]
+
+/// Ein JSON-Wert. Zahlen bleiben Text, so wie sie dastehen.
 #[derive(Debug, PartialEq)]
 pub enum Value {
     Null,
@@ -14,7 +19,8 @@ pub enum Value {
 }
 
 impl Value {
-    /// Der Wert zu einem Schlüssel, falls `self` ein Objekt ist.
+    /// Der Wert zu einem Schlüssel, falls `self` ein Objekt ist. Kommt der
+    /// Schlüssel mehrfach vor, gilt der erste.
     pub fn get(&self, key: &str) -> Option<&Value> {
         match self {
             Value::Object(members) => members
@@ -38,13 +44,39 @@ impl Value {
             _ => None,
         }
     }
+
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            Value::Bool(value) => Some(*value),
+            _ => None,
+        }
+    }
+
+    pub fn is_null(&self) -> bool {
+        matches!(self, Value::Null)
+    }
 }
+
+/// Ein Fehler beim Lesen, mit der Stelle in Bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Error {
+    pub position: usize,
+    pub message: &'static str,
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "JSON, Byte {}: {}", self.position, self.message)
+    }
+}
+
+impl std::error::Error for Error {}
 
 /// Die größte erlaubte Verschachtelungstiefe.
 const MAX_DEPTH: usize = 64;
 
 /// Liest einen JSON-Text.
-pub fn parse(text: &str) -> Result<Value, String> {
+pub fn parse(text: &str) -> Result<Value, Error> {
     let mut parser = Parser {
         bytes: text.as_bytes(),
         position: 0,
@@ -63,8 +95,11 @@ struct Parser<'a> {
 }
 
 impl Parser<'_> {
-    fn error(&self, message: &str) -> String {
-        format!("JSON, Byte {}: {message}", self.position)
+    fn error(&self, message: &'static str) -> Error {
+        Error {
+            position: self.position,
+            message,
+        }
     }
 
     fn peek(&self) -> Option<u8> {
@@ -83,12 +118,14 @@ impl Parser<'_> {
         }
     }
 
-    fn expect(&mut self, expected: &[u8]) -> Result<(), String> {
-        if self
-            .bytes
+    fn starts_with(&self, expected: &[u8]) -> bool {
+        self.bytes
             .get(self.position..)
             .is_some_and(|rest| rest.starts_with(expected))
-        {
+    }
+
+    fn expect(&mut self, expected: &[u8]) -> Result<(), Error> {
+        if self.starts_with(expected) {
             self.position += expected.len();
             Ok(())
         } else {
@@ -96,7 +133,7 @@ impl Parser<'_> {
         }
     }
 
-    fn value(&mut self, depth: usize) -> Result<Value, String> {
+    fn value(&mut self, depth: usize) -> Result<Value, Error> {
         if depth > MAX_DEPTH {
             return Err(self.error("zu tief verschachtelt"));
         }
@@ -114,7 +151,7 @@ impl Parser<'_> {
         }
     }
 
-    fn object(&mut self, depth: usize) -> Result<Value, String> {
+    fn object(&mut self, depth: usize) -> Result<Value, Error> {
         self.expect(b"{")?;
         let mut members = Vec::new();
         self.skip_whitespace();
@@ -141,7 +178,7 @@ impl Parser<'_> {
         }
     }
 
-    fn array(&mut self, depth: usize) -> Result<Value, String> {
+    fn array(&mut self, depth: usize) -> Result<Value, Error> {
         self.expect(b"[")?;
         let mut items = Vec::new();
         self.skip_whitespace();
@@ -160,7 +197,7 @@ impl Parser<'_> {
         }
     }
 
-    fn number(&mut self) -> Result<String, String> {
+    fn number(&mut self) -> Result<String, Error> {
         let start = self.position;
         if self.peek() == Some(b'-') {
             self.position += 1;
@@ -187,7 +224,7 @@ impl Parser<'_> {
         Ok(String::from_utf8_lossy(text).into_owned())
     }
 
-    fn digit(&mut self) -> Result<(), String> {
+    fn digit(&mut self) -> Result<(), Error> {
         match self.next() {
             Some(b'0'..=b'9') => Ok(()),
             _ => Err(self.error("Ziffer erwartet")),
@@ -200,7 +237,7 @@ impl Parser<'_> {
         }
     }
 
-    fn string(&mut self) -> Result<String, String> {
+    fn string(&mut self) -> Result<String, Error> {
         self.expect(b"\"")?;
         let mut text = String::new();
         loop {
@@ -221,7 +258,7 @@ impl Parser<'_> {
         }
     }
 
-    fn escape(&mut self) -> Result<char, String> {
+    fn escape(&mut self) -> Result<char, Error> {
         Ok(match self.next() {
             Some(b'"') => '"',
             Some(b'\\') => '\\',
@@ -233,23 +270,25 @@ impl Parser<'_> {
             Some(b't') => '\t',
             Some(b'u') => {
                 let unit = self.hex4()?;
-                if (0xD800..0xDC00).contains(&unit) {
-                    self.expect(b"\\u")?;
+                if (0xD800..0xDC00).contains(&unit) && self.starts_with(b"\\u") {
+                    // Nur ein folgendes niedriges Surrogat gehört dazu, sonst
+                    // wird das nächste Escape für sich gelesen.
+                    let saved = self.position;
+                    self.position += 2;
                     let low = self.hex4()?;
-                    char::decode_utf16([unit, low])
-                        .next()
-                        .and_then(Result::ok)
-                        .ok_or_else(|| self.error("ungültiges Surrogatpaar"))?
-                } else {
-                    char::from_u32(u32::from(unit))
-                        .ok_or_else(|| self.error("einzelnes Surrogat"))?
+                    if (0xDC00..0xE000).contains(&low) {
+                        let pair = char::decode_utf16([unit, low]).next();
+                        return Ok(pair.and_then(Result::ok).unwrap_or('\u{FFFD}'));
+                    }
+                    self.position = saved;
                 }
+                char::from_u32(u32::from(unit)).unwrap_or('\u{FFFD}')
             }
             _ => return Err(self.error("ungültige Escape-Sequenz")),
         })
     }
 
-    fn hex4(&mut self) -> Result<u16, String> {
+    fn hex4(&mut self) -> Result<u16, Error> {
         let digits = self
             .bytes
             .get(self.position..self.position + 4)
@@ -291,6 +330,22 @@ mod tests {
     }
 
     #[test]
+    fn lone_surrogates_become_replacement_characters() {
+        let string = |text: &str| {
+            parse(text)
+                .ok()
+                .and_then(|value| value.as_str().map(str::to_owned))
+        };
+        assert_eq!(string(r#""\ud800""#).as_deref(), Some("\u{FFFD}"));
+        assert_eq!(string(r#""\udc00a""#).as_deref(), Some("\u{FFFD}a"));
+        assert_eq!(string(r#""\ud800\u0041""#).as_deref(), Some("\u{FFFD}A"));
+        assert_eq!(
+            string(r#""\ud800\ud83d\ude00""#).as_deref(),
+            Some("\u{FFFD}😀")
+        );
+    }
+
+    #[test]
     fn rejects_broken_json() {
         for text in [
             "",
@@ -303,8 +358,7 @@ mod tests {
             "-",
             "\"a",
             "\"\\x\"",
-            "\"\\ud800\"",
-            "\"\\ud800\\u0041\"",
+            "\"\\ud800\\u12\"",
             "\"\t\"",
             "[1] 2",
             "tru",
@@ -314,5 +368,9 @@ mod tests {
         }
         let deep = "[".repeat(100) + &"]".repeat(100);
         assert!(parse(&deep).is_err());
+        assert_eq!(
+            parse("[1,]").map_err(|error| error.to_string()),
+            Err("JSON, Byte 3: unerwartetes Zeichen".to_owned())
+        );
     }
 }
