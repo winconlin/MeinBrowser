@@ -191,7 +191,7 @@ impl Canvas {
 
     /// Zeichnet `color` mit zusätzlicher Deckkraft `alpha` über das Pixel
     /// (Porter-Duff „source over“, vormultipliziert).
-    fn blend(&mut self, x: u32, y: u32, color: Color, alpha: u8) {
+    pub(crate) fn blend(&mut self, x: u32, y: u32, color: Color, alpha: u8) {
         let index = self.index(x, y);
         let Some(dst) = self.pixels.get_mut(index) else {
             return;
