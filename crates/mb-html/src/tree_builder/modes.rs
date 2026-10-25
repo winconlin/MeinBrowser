@@ -345,14 +345,14 @@ impl TreeBuilder<'_> {
                 "html" => return self.in_body(Token::StartTag(tag)),
                 "base" | "basefont" | "bgsound" | "link" => {
                     self.insert_html_element(&tag);
-                    self.open.pop();
+                    self.pop();
                     self.acknowledge_self_closing();
                 }
                 "meta" => {
                     // Die Eingabe ist schon dekodiert; einen Wechsel der
                     // Kodierung durch `charset` gibt es noch nicht.
                     self.insert_html_element(&tag);
-                    self.open.pop();
+                    self.pop();
                     self.acknowledge_self_closing();
                 }
                 "title" => self.parse_text_element(&tag, TokenizerState::Rcdata),
@@ -380,7 +380,7 @@ impl TreeBuilder<'_> {
             },
             Token::EndTag(tag) => match name(&tag) {
                 "head" => {
-                    self.open.pop();
+                    self.pop();
                     self.mode = Mode::AfterHead;
                 }
                 "body" | "html" | "br" => return self.in_head_anything_else(Token::EndTag(tag)),
@@ -393,7 +393,7 @@ impl TreeBuilder<'_> {
     }
 
     fn in_head_anything_else(&mut self, token: Token) -> Flow {
-        self.open.pop();
+        self.pop();
         self.mode = Mode::AfterHead;
         Flow::Reprocess(token)
     }
@@ -438,7 +438,7 @@ impl TreeBuilder<'_> {
                 return self.in_body(Token::StartTag(tag));
             }
             Token::EndTag(tag) if name(&tag) == "noscript" => {
-                self.open.pop();
+                self.pop();
                 self.mode = Mode::InHead;
             }
             Token::Character(c) if is_whitespace(c) => return self.in_head(token),
@@ -463,7 +463,7 @@ impl TreeBuilder<'_> {
 
     fn in_head_noscript_anything_else(&mut self, token: Token) -> Flow {
         self.parse_error();
-        self.open.pop();
+        self.pop();
         self.mode = Mode::InHead;
         Flow::Reprocess(token)
     }
@@ -602,7 +602,7 @@ impl TreeBuilder<'_> {
                     return Flow::Done;
                 }
                 self.document.remove(body);
-                self.open.truncate(1);
+                self.pop_to(1);
                 self.insert_html_element(&tag);
                 self.mode = Mode::InFrameset;
             }
@@ -618,7 +618,7 @@ impl TreeBuilder<'_> {
                     .is_some_and(|current| HEADINGS.contains(&current))
                 {
                     self.parse_error();
-                    self.open.pop();
+                    self.pop();
                 }
                 self.insert_html_element(&tag);
             }
@@ -733,7 +733,7 @@ impl TreeBuilder<'_> {
                 }
                 self.reconstruct_formatting();
                 self.insert_html_element(&tag);
-                self.open.pop();
+                self.pop();
                 self.acknowledge_self_closing();
                 if !is_hidden_input(&tag) {
                     self.frameset_ok = false;
@@ -741,7 +741,7 @@ impl TreeBuilder<'_> {
             }
             "param" | "source" | "track" => {
                 self.insert_html_element(&tag);
-                self.open.pop();
+                self.pop();
                 self.acknowledge_self_closing();
             }
             "hr" => {
@@ -755,7 +755,7 @@ impl TreeBuilder<'_> {
                     }
                 }
                 self.insert_html_element(&tag);
-                self.open.pop();
+                self.pop();
                 self.acknowledge_self_closing();
                 self.frameset_ok = false;
             }
@@ -805,7 +805,7 @@ impl TreeBuilder<'_> {
                         self.parse_error();
                     }
                 } else if self.current_is_html("option") {
-                    self.open.pop();
+                    self.pop();
                 }
                 self.reconstruct_formatting();
                 self.insert_html_element(&tag);
@@ -819,7 +819,7 @@ impl TreeBuilder<'_> {
                         self.parse_error();
                     }
                 } else if self.current_is_html("option") {
-                    self.open.pop();
+                    self.pop();
                 }
                 self.reconstruct_formatting();
                 self.insert_html_element(&tag);
@@ -847,7 +847,7 @@ impl TreeBuilder<'_> {
                 super::foreign::adjust_mathml_attributes(&mut tag);
                 self.insert_foreign_element(&tag, Namespace::MathMl, true);
                 if tag.self_closing {
-                    self.open.pop();
+                    self.pop();
                     self.acknowledge_self_closing();
                 }
             }
@@ -856,7 +856,7 @@ impl TreeBuilder<'_> {
                 super::foreign::adjust_svg_attributes(&mut tag);
                 self.insert_foreign_element(&tag, Namespace::Svg, true);
                 if tag.self_closing {
-                    self.open.pop();
+                    self.pop();
                     self.acknowledge_self_closing();
                 }
             }
@@ -903,7 +903,7 @@ impl TreeBuilder<'_> {
     fn void_element(&mut self, tag: &Tag) {
         self.reconstruct_formatting();
         self.insert_html_element(tag);
-        self.open.pop();
+        self.pop();
         self.acknowledge_self_closing();
         self.frameset_ok = false;
     }
@@ -1039,14 +1039,14 @@ impl TreeBuilder<'_> {
             Token::Character(c) => self.insert_character(c),
             Token::Eof => {
                 self.parse_error();
-                self.open.pop();
+                self.pop();
                 self.mode = self.original_mode;
                 return Flow::Reprocess(Token::Eof);
             }
             // Ohne Skriptanbindung sind `</script>` und jedes andere
             // End-Tag gleich.
             Token::EndTag(_) => {
-                self.open.pop();
+                self.pop();
                 self.mode = self.original_mode;
             }
             // Im RCDATA-, RAWTEXT- und Skriptzustand liefert der Tokenizer
@@ -1073,7 +1073,7 @@ impl TreeBuilder<'_> {
                 .html_name(node)
                 .is_some_and(|name| names.contains(&name))
         {
-            self.open.pop();
+            self.pop();
         }
     }
 
@@ -1144,7 +1144,7 @@ impl TreeBuilder<'_> {
                 "input" if is_hidden_input(&tag) => {
                     self.parse_error();
                     self.insert_html_element(&tag);
-                    self.open.pop();
+                    self.pop();
                     self.acknowledge_self_closing();
                 }
                 "form" => {
@@ -1157,7 +1157,7 @@ impl TreeBuilder<'_> {
                     if !in_template {
                         self.form = Some(form);
                     }
-                    self.open.pop();
+                    self.pop();
                 }
                 _ => return self.in_table_anything_else(Token::StartTag(tag)),
             },
@@ -1283,14 +1283,14 @@ impl TreeBuilder<'_> {
             Token::StartTag(ref tag) if name(tag) == "html" => return self.in_body(token),
             Token::StartTag(ref tag) if name(tag) == "col" => {
                 self.insert_html_element(tag);
-                self.open.pop();
+                self.pop();
                 self.acknowledge_self_closing();
             }
             Token::EndTag(ref tag) if name(tag) == "colgroup" => {
                 if !self.current_is_html("colgroup") {
                     self.parse_error();
                 } else {
-                    self.open.pop();
+                    self.pop();
                     self.mode = Mode::InTable;
                 }
             }
@@ -1304,7 +1304,7 @@ impl TreeBuilder<'_> {
                     self.parse_error();
                     return Flow::Done;
                 }
-                self.open.pop();
+                self.pop();
                 self.mode = Mode::InTable;
                 return Flow::Reprocess(token);
             }
@@ -1333,7 +1333,7 @@ impl TreeBuilder<'_> {
                     return Flow::Done;
                 }
                 self.clear_to_table_body_context();
-                self.open.pop();
+                self.pop();
                 self.mode = Mode::InTable;
             }
             Token::StartTag(ref tag)
@@ -1370,7 +1370,7 @@ impl TreeBuilder<'_> {
             return Flow::Done;
         }
         self.clear_to_table_body_context();
-        self.open.pop();
+        self.pop();
         self.mode = Mode::InTable;
         Flow::Reprocess(token)
     }
@@ -1413,7 +1413,7 @@ impl TreeBuilder<'_> {
                     return Flow::Done;
                 }
                 self.clear_to_table_row_context();
-                self.open.pop();
+                self.pop();
                 self.mode = Mode::InTableBody;
                 return Flow::Reprocess(token);
             }
@@ -1437,7 +1437,7 @@ impl TreeBuilder<'_> {
             return false;
         }
         self.clear_to_table_row_context();
-        self.open.pop();
+        self.pop();
         self.mode = Mode::InTableBody;
         true
     }
@@ -1614,14 +1614,14 @@ impl TreeBuilder<'_> {
                     self.parse_error();
                     return Flow::Done;
                 }
-                self.open.pop();
+                self.pop();
                 if self.context.is_none() && !self.current_is_html("frameset") {
                     self.mode = Mode::AfterFrameset;
                 }
             }
             Token::StartTag(ref tag) if name(tag) == "frame" => {
                 self.insert_html_element(tag);
-                self.open.pop();
+                self.pop();
                 self.acknowledge_self_closing();
             }
             Token::StartTag(ref tag) if name(tag) == "noframes" => return self.in_head(token),

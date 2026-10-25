@@ -266,7 +266,7 @@ impl TreeBuilder<'_> {
                         .is_some_and(|node| self.is_element(node, Namespace::Svg, "script"))
                 {
                     // Ohne SVG-Skripte bleibt nur das Entfernen vom Stapel.
-                    self.open.pop();
+                    self.pop();
                 } else {
                     return self.foreign_end_tag(tag);
                 }
@@ -286,7 +286,7 @@ impl TreeBuilder<'_> {
             && !self.is_html_integration_point(node)
             && !self.is_html_element(node)
         {
-            self.open.pop();
+            self.pop();
         }
         self.html_content(token)
     }
@@ -313,7 +313,7 @@ impl TreeBuilder<'_> {
             // nicht: Beides nimmt den Knoten ohne Skriptanbindung nur vom
             // Stapel.
             self.acknowledge_self_closing();
-            self.open.pop();
+            self.pop();
         }
     }
 
@@ -341,7 +341,7 @@ impl TreeBuilder<'_> {
                 return Flow::Done;
             }
             if lowercase_matches(self, node) {
-                self.open.truncate(index);
+                self.pop_to(index);
                 return Flow::Done;
             }
             index = index.saturating_sub(1);
