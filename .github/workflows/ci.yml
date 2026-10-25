@@ -57,6 +57,13 @@ jobs:
       - name: Tests
         run: cargo test --locked --workspace
 
+      # M1: die Referenztests aus tools/testrunner/m1-referenztests.txt, mit
+      # den Schriften des Systems. Vorerst nur unter Linux, wo die Liste
+      # geprüft ist.
+      - name: Referenztests für M1
+        if: runner.os == 'Linux'
+        run: cargo run --locked --release -p testrunner
+
       # M0: Ein Fenster zeigt das selbst gezeichnete Testbild. Der Selbsttest
       # liest es aus dem Fenster zurück und prüft feste Messpunkte.
       - name: Selbsttest mit Fenster (Xvfb)

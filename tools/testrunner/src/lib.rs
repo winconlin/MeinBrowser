@@ -1,11 +1,19 @@
 //! Läufer für die WPT (siehe `docs/architektur.md`, Abschnitt 10).
 //!
-//! Bisher gibt es nur die Liste der Referenztests für M1 und ihren Leser;
-//! der Läufer selbst kommt mit Layout und CPU-Renderer.
+//! Bisher gibt es die Liste der Referenztests für M1, ihren Leser und den
+//! Läufer für Referenztests: Test und Referenz werden in einem Viewport von
+//! 800 × 600 CSS-Pixeln mit einem Gerätepixel je CSS-Pixel gezeichnet und
+//! Pixel für Pixel verglichen, ohne Toleranz. `cargo run -p testrunner
+//! --release` lässt die Liste für M1 laufen; die Schriften sind die des
+//! Systems.
 
 #![forbid(unsafe_code)]
 
 use std::fmt;
+use std::path::Path;
+
+use mb_layout::Fonts;
+use mb_raster::Canvas;
 
 #[cfg(test)]
 mod tests;
@@ -77,4 +85,42 @@ pub fn parse_list(text: &str) -> Result<Vec<RefTest>, ListError> {
         });
     }
     Ok(tests)
+}
+
+/// Breite und Höhe des Viewports der WPT.
+pub const VIEWPORT: (f64, f64) = (800.0, 600.0);
+
+/// Zeichnet eine Datei; `None`, wenn sie sich nicht laden lässt.
+pub fn render(path: &Path, fonts: &Fonts<'_>) -> Option<Canvas> {
+    let url = mb_web::file_url(path)?;
+    let page = mb_web::Page::load(url, Box::new(mb_web::read_file))?;
+    let scene = page.render(fonts, VIEWPORT.0, VIEWPORT.1);
+    mb_raster::render(&scene).ok()
+}
+
+/// Wie viele Pixel verschieden sind; Flächen verschiedener Größe sind ganz
+/// verschieden.
+pub fn differing_pixels(first: &Canvas, second: &Canvas) -> usize {
+    if (first.width(), first.height()) != (second.width(), second.height()) {
+        return first.pixels().len().max(second.pixels().len());
+    }
+    first
+        .pixels()
+        .iter()
+        .zip(second.pixels())
+        .filter(|(a, b)| a != b)
+        .count()
+}
+
+/// Die Zeichenfläche als Bild im Format PPM (P6), etwa zum Ansehen von
+/// Unterschieden. Die Pixel werden über Weiß gelegt.
+pub fn to_ppm(canvas: &Canvas) -> Vec<u8> {
+    let mut output = format!("P6\n{} {}\n255\n", canvas.width(), canvas.height()).into_bytes();
+    for &pixel in canvas.pixels() {
+        let [alpha, red, green, blue] = pixel.to_be_bytes();
+        // Vormultipliziert: Weiß scheint mit 255 − Alpha durch.
+        let white = 255 - alpha;
+        output.extend([red, green, blue].map(|channel| channel.saturating_add(white)));
+    }
+    output
 }

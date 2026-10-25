@@ -16,6 +16,7 @@ cargo fmt --all --check                                # Formatierung
 cargo clippy --workspace --all-targets -- -D warnings  # Lints
 cargo run -p testdata                                  # externe Testdaten holen (einmal vor den Tests)
 cargo test --workspace                                 # Tests
+cargo run --release -p testrunner                      # Referenztests für M1 (WPT, normal-flow)
 cargo run -p meinbrowser                               # Fenster mit Testbild (Meilenstein M0)
 cargo run -p meinbrowser -- --selbsttest               # zeigt das Testbild und prüft es
 ```
