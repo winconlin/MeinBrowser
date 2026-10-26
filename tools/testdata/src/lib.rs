@@ -50,6 +50,12 @@ pub const SOURCES: [Source; 5] = [
             "/css/css-writing-modes/parsing/",
             // Schriften für die Tests des Schriftlesers in `mb-text`.
             "/fonts/",
+            // Die Referenztests für M1 mit ihren Referenzen und Bildern,
+            // siehe `tools/testrunner/m1-referenztests.txt`.
+            "/css/CSS2/normal-flow/",
+            "/css/CSS2/reference/",
+            "/css/CSS2/support/",
+            "/css/reference/",
         ],
     },
     Source {
