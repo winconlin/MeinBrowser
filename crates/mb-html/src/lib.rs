@@ -12,6 +12,7 @@ pub mod error;
 pub mod tokenizer;
 pub mod tree_builder;
 
+pub use entities::named_character_reference;
 pub use error::{ErrorCode, ParseError};
 pub use tokenizer::{Attribute, Doctype, Tag, Token, Tokenizer, TokenizerState};
 pub use tree_builder::{Options, ScriptingMode, parse_document, parse_fragment};

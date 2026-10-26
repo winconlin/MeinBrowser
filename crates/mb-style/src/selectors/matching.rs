@@ -355,7 +355,7 @@ impl<'c, 'd> Matcher<'c, 'd> {
     fn simple(self, simple: &Simple, node: NodeId, element: &Element) -> bool {
         match simple {
             Simple::Type { namespace, name } => {
-                namespace_matches(namespace, element.namespace)
+                namespace_matches(self.document, namespace, element.namespace)
                     && name
                         .as_ref()
                         .is_none_or(|name| element.local_name == *self.name(name, element))
@@ -397,7 +397,7 @@ impl<'c, 'd> Matcher<'c, 'd> {
                 &selector.name.original
             };
             if attribute.local_name != *name
-                || !namespace_matches(&selector.namespace, attribute.namespace)
+                || !namespace_matches(self.document, &selector.namespace, attribute.namespace)
             {
                 return false;
             }
@@ -500,7 +500,9 @@ impl<'c, 'd> Matcher<'c, 'd> {
         self.document
             .children(node)
             .all(|child| match self.document.kind(child) {
-                Some(NodeKind::Text) => self.document.data(child).is_none_or(DomString::is_empty),
+                Some(NodeKind::Text | NodeKind::CdataSection) => {
+                    self.document.data(child).is_none_or(DomString::is_empty)
+                }
                 Some(NodeKind::Comment | NodeKind::ProcessingInstruction) => true,
                 _ => false,
             })
@@ -648,11 +650,17 @@ fn is_link(element: &Element) -> bool {
         })
 }
 
-fn namespace_matches(constraint: &NamespaceConstraint, namespace: Option<Namespace>) -> bool {
+fn namespace_matches(
+    document: &Document,
+    constraint: &NamespaceConstraint,
+    namespace: Option<Namespace>,
+) -> bool {
     match constraint {
         NamespaceConstraint::Any => true,
         NamespaceConstraint::None => namespace.is_none(),
-        NamespaceConstraint::Url(url) => namespace.is_some_and(|namespace| namespace.url() == url),
+        NamespaceConstraint::Url(url) => namespace
+            .and_then(|namespace| document.namespace_url(namespace))
+            .is_some_and(|found| found == url),
     }
 }
 

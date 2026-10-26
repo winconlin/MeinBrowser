@@ -172,6 +172,13 @@ version = "0.0.0"
 [[package]]
 name = "mb-xml"
 version = "0.0.0"
+dependencies = [
+ "mb-base",
+ "mb-dom",
+ "mb-encoding",
+ "mb-html",
+ "testdata",
+]
 
 [[package]]
 name = "meinbrowser"

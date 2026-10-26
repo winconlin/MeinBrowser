@@ -21,7 +21,7 @@ pub struct Source {
 
 /// Alle Testsammlungen. Für einen neuen Stand den Commit ändern und
 /// `cargo run -p testdata` ausführen.
-pub const SOURCES: [Source; 5] = [
+pub const SOURCES: [Source; 6] = [
     Source {
         name: "wpt",
         repository: "https://github.com/web-platform-tests/wpt",
@@ -93,6 +93,14 @@ pub const SOURCES: [Source; 5] = [
         // Die aus den Editor's Drafts gelesenen CSS-Definitionen, siehe
         // `crates/mb-style/src/properties/webref.rs`.
         paths: &["/ed/css/"],
+    },
+    Source {
+        name: "xml-conformance-suite",
+        repository: "https://github.com/lddubeau/xml-conformance-suite",
+        commit: "3fb4516daedd0ac736249a383733883b95fcdbb2",
+        // Die XML-Testsuite des W3C mit einem flachen Katalog, siehe
+        // `crates/mb-xml/src/conformance.rs`.
+        paths: &["/packages/test-data/"],
     },
 ];
 
