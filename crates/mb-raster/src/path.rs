@@ -29,14 +29,6 @@ impl Line {
     fn is_finite(&self) -> bool {
         self.x0.is_finite() && self.y0.is_finite() && self.x1.is_finite() && self.y1.is_finite()
     }
-
-    /// Der Punkt beim Parameter `t` zwischen 0 und 1.
-    fn at(&self, t: f32) -> (f32, f32) {
-        (
-            self.x0 + (self.x1 - self.x0) * t,
-            self.y0 + (self.y1 - self.y0) * t,
-        )
-    }
 }
 
 /// Ein Pfad aus Konturen, die y-Achse nach unten. Beim Füllen gilt jede
@@ -239,38 +231,80 @@ fn pixel_span(min: f32, max: f32, limit: u32) -> (u32, u32) {
     (begin.min(limit), end.min(limit))
 }
 
-/// Trägt eine Strecke ein. Teile links von 0 und rechts von `width` werden
-/// zu senkrechten Strecken auf dem Rand: Links tragen sie ihre ganze
-/// Abdeckung in die erste Spalte ein, rechts liegen sie außerhalb.
+/// Trägt eine Strecke ein. Teile über und unter der Fläche fallen weg,
+/// Teile links von 0 und rechts von `width` werden zu senkrechten Strecken
+/// auf dem Rand: Links tragen sie ihre ganze Abdeckung in die erste Spalte
+/// ein, rechts liegen sie außerhalb.
 fn add_line(cells: &mut [f32], stride: usize, width: usize, height: usize, line: Line) {
-    let limit = width as f32;
-    // Die Parameter der Schnitte mit den Rändern, dazu Anfang und Ende.
-    let mut cuts = [0.0_f32, 1.0, 1.0, 1.0];
-    let mut count = 2;
-    for border in [0.0, limit] {
-        let t = (border - line.x0) / (line.x1 - line.x0);
-        if t > 0.0
-            && t < 1.0
-            && let Some(slot) = cuts.get_mut(count)
+    let (limit_x, limit_y) = (width as f32, height as f32);
+    let (start, end) = ((line.x0, line.y0), (line.x1, line.y1));
+    if start.1.max(end.1) <= 0.0 || start.1.min(end.1) >= limit_y {
+        return;
+    }
+    let flip = |(x, y): (f32, f32)| (y, x);
+    let clip_y = |(x, y): (f32, f32)| {
+        let clipped = y.clamp(0.0, limit_y);
+        if clipped == y {
+            (x, y)
+        } else {
+            (crossing(flip(start), flip(end), clipped), clipped)
+        }
+    };
+    let (a, b) = (clip_y(start), clip_y(end));
+    // Anfang, die Schnitte mit dem linken und rechten Rand in Richtung der
+    // Strecke, Ende.
+    let mut points = [a; 4];
+    let mut count = 1;
+    let borders = if a.0 <= b.0 {
+        [0.0, limit_x]
+    } else {
+        [limit_x, 0.0]
+    };
+    for border in borders {
+        if a.0.min(b.0) < border
+            && border < a.0.max(b.0)
+            && let Some(slot) = points.get_mut(count)
         {
-            *slot = t;
+            let y = crossing(start, end, border).clamp(a.1.min(b.1), a.1.max(b.1));
+            *slot = (border, y);
             count += 1;
         }
     }
-    let used = cuts.get_mut(..count).unwrap_or_default();
-    used.sort_by(f32::total_cmp);
-    for pair in used.windows(2) {
-        let &[from, to] = pair else { continue };
-        let (xa, ya) = line.at(from);
-        let (xb, yb) = line.at(to);
+    if let Some(slot) = points.get_mut(count) {
+        *slot = b;
+        count += 1;
+    }
+    for pair in points.get(..count).unwrap_or_default().windows(2) {
+        let &[(xa, ya), (xb, yb)] = pair else {
+            continue;
+        };
         add_segment(
             cells,
             stride,
             height,
-            (xa.clamp(0.0, limit), ya),
-            (xb.clamp(0.0, limit), yb),
+            (xa.clamp(0.0, limit_x), ya),
+            (xb.clamp(0.0, limit_x), yb),
         );
     }
+}
+
+/// Auf der Strecke von `a` nach `b` die zweite Koordinate dort, wo die
+/// erste `at` ist; `at` liegt zwischen den ersten Koordinaten von `a` und
+/// `b`. Gerechnet wird vom näheren Endpunkt aus und mit `f64`, damit ein
+/// weit entfernter Endpunkt nicht die Genauigkeit kostet und die
+/// Differenzen nicht überlaufen.
+fn crossing(a: (f32, f32), b: (f32, f32), at: f32) -> f32 {
+    let (a0, a1) = (f64::from(a.0), f64::from(a.1));
+    let (b0, b1) = (f64::from(b.0), f64::from(b.1));
+    let at = f64::from(at);
+    let slope = (b1 - a1) / (b0 - a0);
+    let value = if (at - a0).abs() <= (b0 - at).abs() {
+        a1 + (at - a0) * slope
+    } else {
+        b1 + (at - b0) * slope
+    };
+    // Auf `f32` gerundet, in den Grenzen der Strecke.
+    (value as f32).clamp(a.1.min(b.1), a.1.max(b.1))
 }
 
 /// Trägt eine Strecke ein, deren x-Koordinaten in `[0, Breite]` liegen.
@@ -469,6 +503,46 @@ mod tests {
                 .all(|&alpha| alpha == 1.0)
         );
         assert_eq!(area(&Path::rect(5.0, 0.0, 2.0, 2.0), 4, 4), 0.0);
+    }
+
+    #[test]
+    fn far_endpoints_keep_their_precision() {
+        // Die Kante von (10⁸, 0) nach (1, 3) liegt fast ganz rechts der
+        // Fläche, die Spalten 1 und 2 sind also bis auf weniger als 10⁻⁶
+        // bedeckt; an der Diagonale gespiegelt die Zeilen 1 und 2.
+        let mut right = Path::new();
+        right.move_to(1e8, 0.0);
+        right.line_to(1.0, 3.0);
+        right.line_to(1.0, 0.0);
+        let mut below = Path::new();
+        below.move_to(0.0, 1e8);
+        below.line_to(3.0, 1.0);
+        below.line_to(0.0, 1.0);
+        // Beide Koordinaten weit weg: Bedeckt ist alles über der Diagonale.
+        let mut diagonal = Path::new();
+        diagonal.move_to(-1e8, -1e8);
+        diagonal.line_to(3.0, 3.0);
+        diagonal.line_to(3.0, -1e8);
+        let check = |path: &Path, expected: fn(usize, usize) -> f32| {
+            let coverage = alphas(path, 3, 3);
+            for y in 0..3 {
+                for x in 0..3 {
+                    let value = coverage.get(y * 3 + x).copied().unwrap_or(-1.0);
+                    let expected = expected(x, y);
+                    assert!(
+                        (value - expected).abs() <= 0.5 / 255.0 + 1e-6,
+                        "{path:?} ({x}, {y}): {value}"
+                    );
+                }
+            }
+        };
+        check(&right, |x, _| if x > 0 { 1.0 } else { 0.0 });
+        check(&below, |_, y| if y > 0 { 1.0 } else { 0.0 });
+        check(&diagonal, |x, y| match x.cmp(&y) {
+            std::cmp::Ordering::Greater => 1.0,
+            std::cmp::Ordering::Equal => 0.5,
+            std::cmp::Ordering::Less => 0.0,
+        });
     }
 
     /// Die Fläche der Strecken nach der Gaußschen Trapezformel.
