@@ -1003,26 +1003,25 @@ fn place_line(
                 .is_some_and(Char::is_word_separator)
         })
         .count();
-    let (offset, extra) = if !free.is_finite() || free <= 0.0 {
+    // Am Zeilenanfang ausgerichtet; eine zu lange Zeile läuft so über das
+    // Ende hinaus (CSS Text 3, Abschnitt 6.1).
+    let start_offset =
+        if container.align_keyword(mb_style::properties::TextAlignKeyword::Start) == Align::Right {
+            free
+        } else {
+            0.0
+        };
+    let (offset, extra) = if !free.is_finite() {
         (0.0, 0.0)
+    } else if free <= 0.0 {
+        (start_offset, 0.0)
     } else {
         match align {
             Align::Left => (0.0, 0.0),
             Align::Right => (free, 0.0),
             Align::Center => (free / 2.0, 0.0),
             Align::Justify if separators > 0 => (0.0, free / separators as f64),
-            Align::Justify => {
-                let start_align =
-                    container.align_keyword(mb_style::properties::TextAlignKeyword::Start);
-                (
-                    if start_align == Align::Right {
-                        free
-                    } else {
-                        0.0
-                    },
-                    0.0,
-                )
-            }
+            Align::Justify => (start_offset, 0.0),
         }
     };
 
@@ -1217,7 +1216,9 @@ fn place_line(
         let above = layout.baseline;
         let below = layout.margin_height() - layout.baseline;
         let metrics = parent_aligned.metrics;
-        let line_height = layout.margin_height();
+        // Die Grundlage für Prozente in `vertical-align` (CSS 2, Abschnitt
+        // 10.8.1); zur Zeile trägt der Kasten seine Höhe bei.
+        let line_height = inline_bounds(context, &style).line_height;
         let result = align_child(
             &parent_aligned,
             parent_style,

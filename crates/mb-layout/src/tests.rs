@@ -394,3 +394,66 @@ fn deep_nesting_fits_on_the_stack() {
     let page = load(&html, "");
     assert!(page.tree.root.is_some());
 }
+
+#[test]
+fn overflowing_lines_are_start_aligned() {
+    // Eine zu lange Zeile beginnt am Zeilenanfang und läuft über das Ende
+    // hinaus, wie `text-align` auch steht (CSS Text 3, Abschnitt 6.1).
+    let page = load(
+        "<div>xxxxx</div><div style='direction: rtl'>xxxxx</div>",
+        "body { margin: 0 } div { width: 30px; font-size: 10px; text-align: center }",
+    );
+    let starts: Vec<Option<f64>> = page
+        .texts()
+        .iter()
+        .map(|(_, glyphs)| glyphs.first().copied())
+        .collect();
+    assert_eq!(starts, [Some(0.0), Some(-20.0)]);
+}
+
+#[test]
+fn vertical_align_percentages_of_atomic_inlines() {
+    // Prozente beziehen sich auf die eigene `line-height`, nicht auf die
+    // Höhe des Kastens: 50 % von 20 px sind 10 px.
+    let page = load(
+        "<div id=a><img id=b src=x style='vertical-align: 50%'></div>\
+         <div id=c><img id=d src=x style='vertical-align: 10px'></div>",
+        "body { margin: 0 } div { font-size: 10px; line-height: 20px }",
+    );
+    let (a, b, c, d) = (
+        page.rect("a"),
+        page.rect("b"),
+        page.rect("c"),
+        page.rect("d"),
+    );
+    assert_eq!(b.y - a.y, d.y - c.y);
+    assert_eq!(a.height, c.height);
+}
+
+#[test]
+fn transparent_sides_keep_slanted_corners() {
+    // Neben einer durchsichtigen Seite endet ein Rahmen schräg in der Ecke:
+    // Hier wird der untere Rahmen ein Dreieck.
+    let page = load(
+        "<div></div>",
+        "body { margin: 0 } div { width: 0; height: 0; border: 10px solid transparent; \
+         border-bottom-color: red }",
+    );
+    let scene = page.tree.paint(&image);
+    let red = Color::rgb(255, 0, 0);
+    let painted: Vec<Option<&[(f32, f32)]>> = scene
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Rect { color, .. } if *color == red => Some(None),
+            Item::Polygon { points, color } if *color == red => Some(Some(points.as_slice())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        painted,
+        [Some(
+            [(20.0, 20.0), (0.0, 20.0), (10.0, 10.0), (10.0, 10.0)].as_slice()
+        )]
+    );
+}

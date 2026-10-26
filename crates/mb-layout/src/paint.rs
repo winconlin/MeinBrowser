@@ -263,8 +263,16 @@ impl Painter<'_> {
         let [top, right, bottom, left] = colors;
         let outer = *rect;
         let inner = rect.deflate(border);
-        let shown: Vec<Color> = colors.iter().flatten().copied().collect();
-        if shown.windows(2).all(|pair| pair.first() == pair.get(1)) {
+        // Rechtecke nur, wenn alle Seiten mit einer Breite dieselbe sichtbare
+        // Farbe haben; neben einer durchsichtigen Seite endet ein Rahmen
+        // schräg in der Ecke.
+        let mut sides = [border.top, border.right, border.bottom, border.left]
+            .into_iter()
+            .zip(colors)
+            .filter(|(width, _)| *width > 0.0)
+            .map(|(_, color)| color);
+        let first = sides.next().flatten();
+        if first.is_some() && sides.all(|color| color == first) {
             // Eine Farbe: Oben und unten reichen über die Ecken.
             let rects = [
                 (top, Rect::new(outer.x, outer.y, outer.width, border.top)),
