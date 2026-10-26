@@ -408,6 +408,35 @@ fn display_blockification() {
     }
 }
 
+#[test]
+fn display_with_other_writing_mode() {
+    let page = load(
+        "<div id=parent>\
+           <span id=inline style='writing-mode: vertical-rl'></span>\
+           <div id=block style='writing-mode: vertical-rl'></div>\
+           <li id=item style='writing-mode: vertical-lr'></li>\
+           <span id=flex style='display: flex; writing-mode: vertical-rl'></span>\
+           <span id=same></span>\
+           <span id=contents style='display: contents; writing-mode: vertical-rl'>\
+             <span id=inside></span>\
+           </span>\
+         </div>",
+        "",
+    );
+    for (id, expected) in [
+        ("inline", "inline-block"),
+        ("block", "flow-root"),
+        ("item", "flow-root list-item"),
+        ("flex", "flex"),
+        ("same", "inline"),
+        ("contents", "contents"),
+        // Der Elternkasten ist der von `#parent`.
+        ("inside", "inline-block"),
+    ] {
+        assert_eq!(page.resolved(id, "display"), expected, "#{id}");
+    }
+}
+
 /// `display` des Wurzelelements.
 fn resolved_root(page: &Page) -> String {
     let document = &page.document;

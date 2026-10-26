@@ -131,6 +131,10 @@ dependencies = [
 [[package]]
 name = "mb-text"
 version = "0.0.0"
+dependencies = [
+ "mb-encoding",
+ "testdata",
+]
 
 [[package]]
 name = "mb-ui"
