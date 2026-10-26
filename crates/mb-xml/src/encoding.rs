@@ -9,6 +9,17 @@ const MISMATCH: &str = "die Zeichenkodierung passt nicht zur Kodierungsdeklarati
 const INVALID: &str = "ungültige Bytefolge für die Zeichenkodierung";
 const NAME: &str = "ungültiger Name der Zeichenkodierung";
 
+/// Die Bezeichnungen für UTF-16 aus dem Encoding Standard, die keine
+/// Bytereihenfolge nennen. `utf-16le`, `utf-16be`, `unicodefeff` und
+/// `unicodefffe` nennen eine.
+const UTF16_WITHOUT_BYTE_ORDER: [&[u8]; 5] = [
+    b"utf-16",
+    b"unicode",
+    b"ucs-2",
+    b"csunicode",
+    b"iso-10646-ucs-2",
+];
+
 /// `EncName`
 pub(crate) fn is_encoding_name(name: &[u8]) -> bool {
     name.first().is_some_and(u8::is_ascii_alphabetic)
@@ -50,11 +61,13 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<(String, Encoding), &'static str> {
         match declared_label(text.as_bytes()) {
             Some(label) => {
                 let declared = declared_encoding(label)?;
-                let fits = if bom.is_some() {
-                    matches!(declared, Encoding::Utf16Le | Encoding::Utf16Be)
-                } else {
-                    declared == encoding
-                };
+                // Mit Byte-Order-Mark passt auch eine Bezeichnung ohne
+                // Bytereihenfolge, die der Encoding Standard UTF-16LE zuordnet.
+                let fits = declared == encoding
+                    || (bom.is_some()
+                        && UTF16_WITHOUT_BYTE_ORDER
+                            .iter()
+                            .any(|name| label.eq_ignore_ascii_case(name)));
                 if !fits {
                     return Err(MISMATCH);
                 }

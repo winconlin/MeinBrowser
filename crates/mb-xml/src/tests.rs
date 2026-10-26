@@ -337,3 +337,38 @@ fn encoding_is_reported() {
     assert_eq!(parsed.encoding, None);
     assert!(parsed.error.is_some());
 }
+
+/// Mit Byte-Order-Mark passt jede Bezeichnung für UTF-16 ohne
+/// Bytereihenfolge, eine mit Bytereihenfolge nur, wenn sie stimmt.
+#[test]
+fn utf16_byte_order_and_declaration() {
+    use mb_encoding::Encoding::{Utf16Be, Utf16Le};
+    fn utf16(text: &str, encoding: mb_encoding::Encoding) -> Vec<u8> {
+        std::iter::once(0xFEFF)
+            .chain(text.encode_utf16())
+            .flat_map(|unit| match encoding {
+                Utf16Be => unit.to_be_bytes(),
+                _ => unit.to_le_bytes(),
+            })
+            .collect()
+    }
+    for (encoding, label, fits) in [
+        (Utf16Le, "UTF-16", true),
+        (Utf16Be, "UTF-16", true),
+        (Utf16Be, "ucs-2", true),
+        (Utf16Le, "UTF-16LE", true),
+        (Utf16Be, "unicodeFFFE", true),
+        (Utf16Le, "UTF-16BE", false),
+        (Utf16Be, "UTF-16LE", false),
+        (Utf16Be, "unicodeFEFF", false),
+    ] {
+        let text = format!("<?xml version='1.0' encoding='{label}'?><a/>");
+        let parsed = parse(&utf16(&text, encoding), &Options::default());
+        if fits {
+            assert_eq!(parsed.error, None, "{encoding:?}, {label}");
+            assert_eq!(parsed.encoding, Some(encoding), "{label}");
+        } else {
+            assert!(parsed.error.is_some(), "{encoding:?}, {label}");
+        }
+    }
+}
