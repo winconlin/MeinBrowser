@@ -20,6 +20,9 @@ version = "0.0.0"
 [[package]]
 name = "mb-compress"
 version = "0.0.0"
+dependencies = [
+ "testdata",
+]
 
 [[package]]
 name = "mb-crypto"
