@@ -21,7 +21,7 @@ pub struct Source {
 
 /// Alle Testsammlungen. Für einen neuen Stand den Commit ändern und
 /// `cargo run -p testdata` ausführen.
-pub const SOURCES: [Source; 7] = [
+pub const SOURCES: [Source; 8] = [
     Source {
         name: "wpt",
         repository: "https://github.com/web-platform-tests/wpt",
@@ -108,6 +108,20 @@ pub const SOURCES: [Source; 7] = [
         commit: "0d37007fda071631fbcb520b99c85a8e4c93108a",
         // Deflate-Daten aus Gos Kodierer, siehe `crates/mb-compress/src/tests.rs`.
         paths: &["/src/compress/flate/testdata/"],
+    },
+    Source {
+        name: "image-png",
+        repository: "https://github.com/image-rs/image-png",
+        commit: "b2f10c6a7e3127d4aaf231f3eae731a33e6eb0bc",
+        // PngSuite und weitere Bilder mit den Prüfsummen von image-png, siehe
+        // `crates/mb-image/src/png/tests.rs`.
+        paths: &[
+            "/tests/pngsuite/",
+            "/tests/pngsuite-extra/",
+            "/tests/bugfixes/",
+            "/tests/results.txt",
+            "/tests/results_identity.txt",
+        ],
     },
 ];
 

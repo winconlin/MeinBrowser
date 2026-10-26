@@ -73,6 +73,10 @@ dependencies = [
 [[package]]
 name = "mb-image"
 version = "0.0.0"
+dependencies = [
+ "mb-compress",
+ "testdata",
+]
 
 [[package]]
 name = "mb-ipc"
