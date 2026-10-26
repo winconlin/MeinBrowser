@@ -2,6 +2,8 @@
 
 use std::fmt;
 
+use crate::path::{self, Path};
+
 /// Größte erlaubte Kantenlänge einer Zeichenfläche in Pixeln.
 pub const MAX_DIMENSION: u32 = 32_767;
 
@@ -153,6 +155,30 @@ impl Canvas {
                 let alpha = (coverage.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
                 if alpha > 0 {
                     self.blend(px, py, color, alpha);
+                }
+            }
+        }
+    }
+
+    /// Füllt einen Pfad mit geglätteten Kanten (Regel *nonzero*). Teile
+    /// außerhalb der Fläche werden abgeschnitten, Pfade mit nicht endlichen
+    /// Koordinaten zeichnen nichts.
+    pub fn fill_path(&mut self, path: &Path, color: Color) {
+        let Some(coverage) = path::coverage(path, self.width, self.height) else {
+            return;
+        };
+        let Ok(width) = usize::try_from(coverage.width) else {
+            return;
+        };
+        if width == 0 {
+            return;
+        }
+        for (y, row) in (coverage.y..).zip(coverage.values.chunks_exact(width)) {
+            for (x, &value) in (coverage.x..).zip(row) {
+                // Abdeckung 0.0 bis 1.0 als Alpha 0 bis 255, gerundet.
+                let alpha = (value * 255.0 + 0.5) as u8;
+                if alpha > 0 {
+                    self.blend(x, y, color, alpha);
                 }
             }
         }
