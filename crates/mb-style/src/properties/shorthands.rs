@@ -940,9 +940,10 @@ fn background_position(input: &mut Input<'_>) -> Option<Vec<SpecifiedValue>> {
 }
 
 /// Ein ⟨bg-position⟩, waagrecht zuerst (Values 4, „Serializing
-/// <position>“). `None` für die Kanten nach der Schreibrichtung und für
-/// einen Abstand von einer Kante neben einem ohne, die keine Form von
-/// ⟨bg-position⟩ wiedergibt.
+/// <position>“). Steht ein Abstand von einer Kante neben einem ohne, bekommt
+/// dieser seine Kante `left` oder `top` dazu, denn nur die Form mit vier
+/// Teilen erlaubt Abstände an beiden Achsen. `None` für die Kanten nach der
+/// Schreibrichtung.
 fn write_bg_position(
     x: &PositionComponent<HorizontalEdge>,
     y: &PositionComponent<VerticalEdge>,
@@ -960,13 +961,15 @@ fn write_bg_position(
     if flow(x_side) || flow(y_side) {
         return None;
     }
-    if matches!(
-        (x, y),
-        (P::EdgeOffset(..), P::Offset(_)) | (P::Offset(_), P::EdgeOffset(..))
-    ) {
-        return None;
-    }
-    Some(format!("{} {}", x.to_css_string(), y.to_css_string()))
+    Some(match (x, y) {
+        (P::EdgeOffset(..), P::Offset(offset)) => {
+            format!("{} top {}", x.to_css_string(), offset.to_css_string())
+        }
+        (P::Offset(offset), P::EdgeOffset(..)) => {
+            format!("left {} {}", offset.to_css_string(), y.to_css_string())
+        }
+        _ => format!("{} {}", x.to_css_string(), y.to_css_string()),
+    })
 }
 
 fn serialize_background_position(

@@ -606,3 +606,14 @@ fn backgrounds() {
          rgb(255, 255, 0)"
     );
 }
+
+#[test]
+fn background_position_with_one_edge_offset() {
+    // Berechnet behält `right 10px` die Kante, `top` wird 0 %; der
+    // Kurzschreibweise fehlt dann nichts.
+    let page = load("<div id=a></div>", "#a { background: right 10px top }");
+    assert_eq!(
+        page.resolved("a", "background-position"),
+        "right 10px top 0%"
+    );
+}
