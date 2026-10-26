@@ -128,6 +128,23 @@ const GAPS: &[(&str, &str)] = &[
 /// Tests, die aus benannten Gründen abweichen: Datei, Name, Grund.
 const DEVIATIONS: &[(&str, &str, &str)] = &[
     (
+        "css-backgrounds/parsing/background-valid.html",
+        "e.style['background'] = \"none\" should set background-color",
+        "Für die weggelassene Farbe erwartet die Datei hier rgba(0, 0, 0, 0), bei den \
+         drei übrigen Werten ohne Farbe aber transparent. Der Anfangswert transparent \
+         wird als transparent geschrieben.",
+    ),
+    (
+        "css-backgrounds/parsing/background-position-x-computed.html",
+        "Property background-position-x value '0.5em, x-start, x-end'",
+        X_START,
+    ),
+    (
+        "css-backgrounds/parsing/background-position-y-computed.html",
+        "Property background-position-y value '0.5em, y-start, y-end'",
+        X_START,
+    ),
+    (
         "css-display/parsing/display-computed.html",
         "position absolute affects computed display",
         POSITION_AND_FLOAT,
@@ -161,6 +178,10 @@ const DEVIATIONS: &[(&str, &str, &str)] = &[
          Schlüsselwort selbst.",
     ),
 ];
+
+const X_START: &str = "Allein erwartet die Datei x-start und x-end (y-start und y-end) als \
+     berechneten Wert, in der Liste aber 0% und 100%. Der berechnete Wert behält die \
+     Kante wie im Einzeltest; Backgrounds 4 nennt dafür einen Abstand mit seiner Kante.";
 
 const POSITION_AND_FLOAT: &str = "Die Eigenschaften position und float fehlen noch und \
      damit die Blockifizierung durch sie (CSS Display 3, Abschnitt 2.7).";
@@ -435,8 +456,16 @@ impl Host for Element {
         }
     }
 
-    fn set(&self, key: &str, _: &Value) -> Completion<bool> {
-        unsupported(format!("Element.{key} setzen"))
+    fn set(&self, key: &str, value: &Value) -> Completion<bool> {
+        match key {
+            // `[PutForwards=cssText]`
+            "style" if !self.style_attribute => {
+                set(&self.style, &js_string("cssText"), value.clone())?;
+                Ok(true)
+            }
+            "style" => unsupported("Attribut style"),
+            _ => unsupported(format!("Element.{key} setzen")),
+        }
     }
 }
 
@@ -551,7 +580,14 @@ impl Host for Style {
     }
 
     fn set(&self, key: &str, value: &Value) -> Completion<bool> {
-        if matches!(key, "cssText" | "length" | "parentRule" | "cssFloat") {
+        if key == "cssText" {
+            let text = legacy_null_to_empty(value)?;
+            self.block
+                .borrow_mut()
+                .set_css_text(&text, style_context(self.quirks_mode, &self.base));
+            return Ok(true);
+        }
+        if matches!(key, "length" | "parentRule" | "cssFloat") {
             return unsupported(format!("CSSStyleDeclaration.{key} setzen"));
         }
         let Some(property) = attribute_property(key) else {

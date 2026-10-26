@@ -110,3 +110,55 @@ fn logical_and_physical_declarations() {
     assert_eq!(margins.item(0), Some("margin-block-start"));
     assert_eq!(margins.item(4), Some("margin-top"));
 }
+
+#[test]
+fn css_text() {
+    let mut block = block(&[("color", "red")]);
+    // Die wichtige Deklaration gilt auch vor einer späteren ohne.
+    block.set_css_text(
+        "margin-top: 1px !important; background: url(a.png) top left; margin-top: 2px",
+        ParseContext::default(),
+    );
+    assert_eq!(
+        block.css_text(),
+        "margin-top: 1px !important; background: url(\"a.png\") left top;"
+    );
+    // Nur `background-image` mit zwei Ebenen: `background` passt nicht mehr.
+    assert!(block.set_property(
+        "background-image",
+        "none, none",
+        "",
+        ParseContext::default()
+    ));
+    assert_eq!(block.get_property_value("background"), "");
+    assert_eq!(block.get_property_value("background-position"), "left top");
+}
+
+#[test]
+fn edge_offset_next_to_bare_offset() {
+    // Ein Abstand ohne Kante gilt von links oder oben; neben einem Abstand
+    // mit Kante wird die Kante ausgeschrieben, denn `right 10px 20px` ist
+    // ungültig.
+    let block = block(&[
+        ("background", "none"),
+        ("background-position-x", "right 10px"),
+        ("background-position-y", "20px"),
+    ]);
+    assert_eq!(
+        block.get_property_value("background-position"),
+        "right 10px top 20px"
+    );
+    assert_eq!(
+        block.get_property_value("background"),
+        "right 10px top 20px"
+    );
+    let block = block_with_position("10px, center", "bottom 5%, top 1em");
+    assert_eq!(
+        block.get_property_value("background-position"),
+        "left 10px bottom 5%, center top 1em"
+    );
+}
+
+fn block_with_position(x: &str, y: &str) -> DeclarationBlock {
+    block(&[("background-position-x", x), ("background-position-y", y)])
+}

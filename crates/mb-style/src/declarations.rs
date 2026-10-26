@@ -226,6 +226,22 @@ impl DeclarationBlock {
         true
     }
 
+    /// `cssText` beim Setzen: leert den Block und übernimmt die
+    /// Deklarationen aus dem Text in ihrer Reihenfolge. Kommt eine Langform
+    /// mehrmals vor, bleibt die, die in der Kaskade gälte: die letzte, aber
+    /// eine wichtige vor späteren ohne `!important` (Cascade 5).
+    pub fn set_css_text(&mut self, text: &str, context: ParseContext<'_>) {
+        self.entries.clear();
+        for declared in parse_declaration_block(&Source::new(text), context) {
+            let longhand = declared.declaration.longhand;
+            let overridden =
+                !declared.important && self.entry(longhand).is_some_and(|entry| entry.important);
+            if !overridden {
+                self.set_declaration(declared.declaration, declared.important);
+            }
+        }
+    }
+
     /// `removeProperty()`: entfernt die Eigenschaft und liefert ihren
     /// bisherigen Wert.
     pub fn remove_property(&mut self, property: &str) -> String {

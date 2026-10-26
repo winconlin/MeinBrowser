@@ -50,11 +50,12 @@ use mb_dom::NodeId;
 use crate::cascade::{Cascaded, CascadedValue, CascadedValues, Stylist};
 use crate::declarations::Declared;
 use crate::properties::{
-    AbsoluteSize, BaselineShift, BoxSize, DeclaredValue, Direction, Display, DisplayInside,
-    DisplayOutside, FlowMode, FontFamily, FontFamilyList, FontSize, FontStyle, FontVariantCaps,
-    FontWeight, FontWidth, FontWidthKeyword, GenericFamily, LengthPercentageOrAuto, LineHeight,
-    LineStyle, LineWidth, LineWidthKeyword, ListStyleImage, Longhand, Mapping, MaxSize,
-    RelativeSize, Shorthand, Size, Spacing, SpecifiedValue, TextAlignAll, TextAlignKeyword,
+    AbsoluteSize, BaselineShift, BgImage, BgSize, BoxSize, DeclaredValue, Direction, Display,
+    DisplayInside, DisplayOutside, EdgeSide, FlowMode, FontFamily, FontFamilyList, FontSize,
+    FontStyle, FontVariantCaps, FontWeight, FontWidth, FontWidthKeyword, GenericFamily, Layers,
+    LengthPercentageOrAuto, LineHeight, LineStyle, LineWidth, LineWidthKeyword, ListStyleImage,
+    Longhand, Mapping, MaxSize, PositionComponent, PositionEdge, RelativeSize, RepeatStyle,
+    Repetition, Shorthand, Size, Spacing, SpecifiedValue, TextAlignAll, TextAlignKeyword,
     TextAlignLast, TextDecorationThickness, TextIndent, TextOrientation, WritingMode,
     serialize_shorthand,
 };
@@ -467,6 +468,18 @@ impl Units<'_> {
         })
     }
 
+    fn length_percentage_or_auto(
+        &self,
+        value: LengthPercentageOrAuto,
+    ) -> Result<LengthPercentageOrAuto, MissingFontMetric> {
+        Ok(match value {
+            LengthPercentageOrAuto::LengthPercentage(value) => {
+                LengthPercentageOrAuto::LengthPercentage(self.length_percentage(value)?)
+            }
+            LengthPercentageOrAuto::Auto => LengthPercentageOrAuto::Auto,
+        })
+    }
+
     fn box_size(&self, size: BoxSize) -> Result<BoxSize, MissingFontMetric> {
         Ok(match size {
             BoxSize::LengthPercentage(value) => {
@@ -671,6 +684,64 @@ fn absolute_url(url: &SpecifiedUrl) -> SpecifiedUrl {
     }
 }
 
+/// Ein Eintrag aus `background-position-x` oder `-y` als Abstand von
+/// `left` oder `top`, wo das ohne `calc()` geht: `center` ist 50 %, eine
+/// Kante allein 0 % oder 100 %, `right 10%` 90 %. So erwarten es die WPT;
+/// Backgrounds 4 nennt als berechneten Wert einen Abstand mit seiner Kante.
+/// Ein Abstand mit Länge von `right` oder `bottom` behält daher die Kante,
+/// ebenso die Kanten nach der Schreibrichtung.
+fn computed_position<E: PositionEdge>(
+    component: PositionComponent<E>,
+    units: &Units<'_>,
+) -> Result<PositionComponent<E>, MissingFontMetric> {
+    use PositionComponent as P;
+    let percentage = |value| P::Offset(LengthPercentage::Percentage(value));
+    Ok(match component {
+        P::Center => percentage(50.0),
+        P::Edge(edge) => match edge.side() {
+            EdgeSide::Start => percentage(0.0),
+            EdgeSide::End => percentage(100.0),
+            EdgeSide::Flow => P::Edge(edge),
+        },
+        P::Offset(offset) => P::Offset(units.length_percentage(offset)?),
+        P::EdgeOffset(edge, offset) => {
+            let offset = units.length_percentage(offset)?;
+            match (edge.side(), offset) {
+                (EdgeSide::Start, offset) => P::Offset(offset),
+                (EdgeSide::End, LengthPercentage::Percentage(value)) => {
+                    percentage(clamp(100.0 - value))
+                }
+                _ => P::EdgeOffset(edge, offset),
+            }
+        }
+    })
+}
+
+fn computed_positions<E: PositionEdge>(
+    layers: &Layers<PositionComponent<E>>,
+    units: &Units<'_>,
+) -> Result<Layers<PositionComponent<E>>, MissingFontMetric> {
+    let layers = layers
+        .0
+        .iter()
+        .map(|&component| computed_position(component, units))
+        .collect::<Result<_, _>>()?;
+    Ok(Layers(layers))
+}
+
+/// `repeat-block` und `repeat-inline` werden zum Paar für waagrecht und
+/// senkrecht; `horizontal` sagt, ob die Inline-Achse waagrecht ist.
+fn computed_repeat(repeat: RepeatStyle, horizontal: bool) -> RepeatStyle {
+    use Repetition::{NoRepeat, Repeat};
+    let repeat_x = RepeatStyle::Pair(Repeat, NoRepeat);
+    let repeat_y = RepeatStyle::Pair(NoRepeat, Repeat);
+    match (repeat, horizontal) {
+        (RepeatStyle::Inline, true) | (RepeatStyle::Block, false) => repeat_x,
+        (RepeatStyle::Inline, false) | (RepeatStyle::Block, true) => repeat_y,
+        (pair, _) => pair,
+    }
+}
+
 /// Die Langformen, deren Wert ein ⟨color⟩ ist.
 fn is_color(longhand: Longhand) -> bool {
     use Longhand as L;
@@ -784,6 +855,45 @@ fn compute_value(
         V::ListStyleImage(ListStyleImage::Url(url)) => {
             V::ListStyleImage(ListStyleImage::Url(Box::new(absolute_url(url))))
         }
+        V::BackgroundImage(images) => V::BackgroundImage(Layers(
+            images
+                .0
+                .iter()
+                .map(|image| match image {
+                    BgImage::Url(url) => BgImage::Url(Box::new(absolute_url(url))),
+                    BgImage::None => BgImage::None,
+                })
+                .collect(),
+        )),
+        V::BackgroundPositionX(layers) => {
+            V::BackgroundPositionX(computed_positions(layers, units)?)
+        }
+        V::BackgroundPositionY(layers) => {
+            V::BackgroundPositionY(computed_positions(layers, units)?)
+        }
+        V::BackgroundSize(sizes) => {
+            let sizes = sizes
+                .0
+                .iter()
+                .map(|&size| {
+                    Ok(match size {
+                        BgSize::Size { width, height } => BgSize::Size {
+                            width: units.length_percentage_or_auto(width)?,
+                            height: units.length_percentage_or_auto(height)?,
+                        },
+                        keyword => keyword,
+                    })
+                })
+                .collect::<Result<_, MissingFontMetric>>()?;
+            V::BackgroundSize(Layers(sizes))
+        }
+        V::BackgroundRepeat(repeats) => V::BackgroundRepeat(Layers(
+            repeats
+                .0
+                .iter()
+                .map(|&repeat| computed_repeat(repeat, units.horizontal))
+                .collect(),
+        )),
         other => other.clone(),
     })
 }
