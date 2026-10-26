@@ -164,7 +164,8 @@ pub fn parse_property_file(file: &str, text: &str) -> Result<PropertyFile, Strin
     Ok((missing, data))
 }
 
-fn parse_code_point(text: &str) -> Result<u32, String> {
+/// Ein Codepunkt aus vier bis sechs Hexadezimalziffern.
+pub fn parse_code_point(text: &str) -> Result<u32, String> {
     let valid = (4..=6).contains(&text.len()) && text.bytes().all(|b| b.is_ascii_hexdigit());
     let value = if valid {
         u32::from_str_radix(text, 16).ok()

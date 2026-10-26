@@ -1,7 +1,10 @@
 //! Die Unicode-Tabellen für `mb-unicode`: allgemeine Kategorie, kanonische
 //! Kombinationsklasse und kanonische Zerlegungen aus `UnicodeData.txt`,
 //! Ausnahmen der Komposition aus `CompositionExclusions.txt`, Bidi-Klasse und
-//! Joining-Type aus den abgeleiteten Dateien, Namen der Werte aus
+//! Joining-Type aus den abgeleiteten Dateien, Zeilenumbruchklasse aus
+//! `LineBreak.txt`, East_Asian_Width aus `EastAsianWidth.txt`,
+//! Extended_Pictographic aus `emoji-data.txt`, die Faltung der Groß- und
+//! Kleinschreibung aus `CaseFolding.txt`, Namen der Werte aus
 //! `PropertyValueAliases.txt`.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -38,6 +41,10 @@ pub struct Sources<'a> {
     pub composition_exclusions: &'a str,
     pub bidi_classes: &'a str,
     pub joining_types: &'a str,
+    pub line_breaks: &'a str,
+    pub east_asian_widths: &'a str,
+    pub emoji_data: &'a str,
+    pub case_folding: &'a str,
 }
 
 /// Eine Eigenschaft mit Aufzählungswerten, wie sie in `tables.rs` landet.
@@ -58,6 +65,10 @@ pub fn run(read: &dyn Fn(&str) -> Result<String, String>) -> Result<String, Stri
         composition_exclusions: &read("CompositionExclusions.txt")?,
         bidi_classes: &read("DerivedBidiClass.txt")?,
         joining_types: &read("DerivedJoiningType.txt")?,
+        line_breaks: &read("LineBreak.txt")?,
+        east_asian_widths: &read("EastAsianWidth.txt")?,
+        emoji_data: &read("emoji-data.txt")?,
+        case_folding: &read("CaseFolding.txt")?,
     })
 }
 
@@ -68,6 +79,8 @@ pub fn generate(sources: &Sources<'_>) -> Result<String, String> {
     let (categories, groups) = general_categories(&aliases)?;
     let bidi_values = property_values(&aliases, "bc")?;
     let joining_values = property_values(&aliases, "jt")?;
+    let line_break_values = property_values(&aliases, "lb")?;
+    let east_asian_values = property_values(&aliases, "ea")?;
     let unassigned = find(&categories, "Cn")?;
     let count = index(MAX_CODE_POINT)? + 1;
     let mut category_of = vec![unassigned; count];
@@ -104,13 +117,35 @@ pub fn generate(sources: &Sources<'_>) -> Result<String, String> {
         &joining_values,
         count,
     )?;
+    let line_break_of = fill(
+        "LineBreak.txt",
+        sources.line_breaks,
+        &line_break_values,
+        count,
+    )?;
+    let east_asian_of = fill(
+        "EastAsianWidth.txt",
+        sources.east_asian_widths,
+        &east_asian_values,
+        count,
+    )?;
+    let pictographic_of = flags(
+        "emoji-data.txt",
+        sources.emoji_data,
+        "Extended_Pictographic",
+        count,
+    )?;
     let tables = Tables {
         general: runs(&category_of),
         classes: runs(&class_of),
         bidi: runs(&bidi_of),
         joining: runs(&joining_of),
+        line_break: runs(&line_break_of),
+        east_asian: runs(&east_asian_of),
+        pictographic: runs(&pictographic_of),
         decompositions,
         compositions,
+        case_folding: case_folding(sources.case_folding)?,
     };
     emit(
         version,
@@ -135,6 +170,20 @@ pub fn generate(sources: &Sources<'_>) -> Result<String, String> {
                 doc: "Wie ein Zeichen in Schriften wie Arabisch verbunden wird (Joining_Type).",
                 example: ("D", "Dual_Joining"),
                 values: &joining_values,
+            },
+            Enumeration {
+                name: "LineBreak",
+                alias: "L",
+                doc: "Zeilenumbruchklasse eines Codepunkts (Line_Break, UAX #14).",
+                example: ("AL", "Alphabetic"),
+                values: &line_break_values,
+            },
+            Enumeration {
+                name: "EastAsianWidth",
+                alias: "E",
+                doc: "Breite eines Codepunkts in ostasiatischen Texten (East_Asian_Width, UAX #11).",
+                example: ("W", "Wide"),
+                values: &east_asian_values,
             },
         ],
         &groups,
@@ -253,6 +302,64 @@ fn fill(
         .collect()
 }
 
+/// Liest eine binäre Eigenschaft aus einer Datei, die mehrere Eigenschaften
+/// nennt, wie `emoji-data.txt`. Nicht genannte Codepunkte haben sie nicht.
+fn flags(file: &str, text: &str, property: &str, count: usize) -> Result<Vec<bool>, String> {
+    let (_, data) = ucd::parse_property_file(file, text)?;
+    let mut flag_of = vec![false; count];
+    let mut found = false;
+    for line in data.iter().filter(|line| line.value() == property) {
+        flag_of
+            .get_mut(index(line.first)?..=index(line.last)?)
+            .ok_or_else(|| format!("{file}: Bereich außerhalb des Coderaums"))?
+            .fill(true);
+        found = true;
+    }
+    if !found {
+        return Err(format!("{file} nennt {property} nicht"));
+    }
+    Ok(flag_of)
+}
+
+/// Die vollständige Faltung aus `CaseFolding.txt`: die Einträge mit Status
+/// `C` und `F`. Die einfachen (`S`) und die türkischen (`T`) bleiben weg.
+fn case_folding(text: &str) -> Result<BTreeMap<u32, Vec<u32>>, String> {
+    let file = "CaseFolding.txt";
+    let (_, data) = ucd::parse_property_file(file, text)?;
+    let mut folding = BTreeMap::new();
+    for line in &data {
+        let code_point = line.first;
+        let [status, mapping, ..] = line.fields.as_slice() else {
+            return Err(format!("{file}: U+{code_point:04X} ohne Abbildung"));
+        };
+        if line.last != code_point {
+            return Err(format!(
+                "{file}: unerwarteter Bereich ab U+{code_point:04X}"
+            ));
+        }
+        match status.as_str() {
+            "C" | "F" => {}
+            "S" | "T" => continue,
+            _ => return Err(format!("{file}: unbekannter Status {status:?}")),
+        }
+        let mapping = mapping
+            .split_whitespace()
+            .map(ucd::parse_code_point)
+            .collect::<Result<Vec<u32>, String>>()
+            .map_err(|message| format!("{file}: {message}"))?;
+        if mapping.is_empty() {
+            return Err(format!("{file}: leere Abbildung für U+{code_point:04X}"));
+        }
+        if folding.insert(code_point, mapping).is_some() {
+            return Err(format!("{file}: U+{code_point:04X} doppelt"));
+        }
+    }
+    if folding.is_empty() {
+        return Err(format!("{file} enthält keine Faltung"));
+    }
+    Ok(folding)
+}
+
 /// Die vollständigen kanonischen Zerlegungen: Jede Zerlegung wird so lange
 /// weiter zerlegt, bis kein Teil mehr eine Zerlegung hat.
 fn full_decompositions(
@@ -356,13 +463,17 @@ struct Tables {
     classes: Vec<(u32, u8)>,
     bidi: Vec<(u32, usize)>,
     joining: Vec<(u32, usize)>,
+    line_break: Vec<(u32, usize)>,
+    east_asian: Vec<(u32, usize)>,
+    pictographic: Vec<(u32, bool)>,
     decompositions: BTreeMap<u32, Vec<u32>>,
     compositions: Vec<(u32, u32, u32)>,
+    case_folding: BTreeMap<u32, Vec<u32>>,
 }
 
 fn emit(
     version: Version,
-    enumerations: [Enumeration<'_>; 3],
+    enumerations: [Enumeration<'_>; 5],
     groups: &[Group],
     tables: &Tables,
 ) -> Result<String, std::fmt::Error> {
@@ -391,7 +502,7 @@ fn emit(
         "pub const UNICODE_VERSION: (u8, u8, u8) = ({}, {}, {});",
         version.major, version.minor, version.update
     )?;
-    let [general, bidi, joining] = &enumerations;
+    let [general, bidi, joining, line_break, east_asian] = &enumerations;
     emit_enumeration(&mut out, general)?;
     let categories = general.values;
     for group in groups {
@@ -424,8 +535,10 @@ fn emit(
     writeln!(out, "}}")?;
     emit_enumeration(&mut out, bidi)?;
     writeln!(out, "}}")?;
-    emit_enumeration(&mut out, joining)?;
-    writeln!(out, "}}")?;
+    for enumeration in [joining, line_break, east_asian] {
+        emit_enumeration(&mut out, enumeration)?;
+        writeln!(out, "}}")?;
+    }
     writeln!(out)?;
     writeln!(
         out,
@@ -464,25 +577,38 @@ fn emit(
     writeln!(out)?;
     writeln!(
         out,
+        "/// Zeilenumbruchklasse mit den Vorgaben für nicht vergebene Codepunkte,"
+    )?;
+    writeln!(out, "/// aufgebaut wie oben.")?;
+    emit_enumeration_runs(&mut out, "LINE_BREAK", line_break, &tables.line_break)?;
+    writeln!(out)?;
+    writeln!(out, "/// East_Asian_Width, aufgebaut wie oben.")?;
+    emit_enumeration_runs(&mut out, "EAST_ASIAN_WIDTH", east_asian, &tables.east_asian)?;
+    writeln!(out)?;
+    writeln!(
+        out,
+        "/// Extended_Pictographic (UTS #51): Anfang jedes Abschnitts und ob seine"
+    )?;
+    writeln!(out, "/// Codepunkte die Eigenschaft haben.")?;
+    writeln!(
+        out,
+        "pub static EXTENDED_PICTOGRAPHIC: [(u32, bool); {}] = [",
+        tables.pictographic.len()
+    )?;
+    for &(start, flag) in &tables.pictographic {
+        writeln!(out, "    (0x{start:04X}, {flag}),")?;
+    }
+    writeln!(out, "];")?;
+    writeln!(out)?;
+    writeln!(
+        out,
         "/// Vollständige kanonische Zerlegung jedes zerlegbaren Zeichens, nach"
     )?;
     writeln!(
         out,
         "/// Codepunkt sortiert. Hangul-Silben fehlen, sie werden berechnet."
     )?;
-    writeln!(
-        out,
-        "pub static CANONICAL_DECOMPOSITION: [(u32, &[u32]); {}] = [",
-        tables.decompositions.len()
-    )?;
-    for (code_point, decomposition) in &tables.decompositions {
-        let parts: Vec<String> = decomposition
-            .iter()
-            .map(|part| format!("0x{part:04X}"))
-            .collect();
-        writeln!(out, "    (0x{code_point:04X}, &[{}]),", parts.join(", "))?;
-    }
-    writeln!(out, "];")?;
+    emit_sequences(&mut out, "CANONICAL_DECOMPOSITION", &tables.decompositions)?;
     writeln!(out)?;
     writeln!(
         out,
@@ -504,7 +630,39 @@ fn emit(
         )?;
     }
     writeln!(out, "];")?;
+    writeln!(out)?;
+    writeln!(
+        out,
+        "/// Vollständige Faltung der Groß- und Kleinschreibung (Status C und F in"
+    )?;
+    writeln!(
+        out,
+        "/// `CaseFolding.txt`), nach Codepunkt sortiert. Alle anderen Codepunkte"
+    )?;
+    writeln!(out, "/// bleiben, wie sie sind.")?;
+    emit_sequences(&mut out, "CASE_FOLDING", &tables.case_folding)?;
     Ok(out)
+}
+
+/// Schreibt eine Tabelle, die Codepunkten Folgen von Codepunkten zuordnet.
+fn emit_sequences(
+    out: &mut String,
+    table: &str,
+    sequences: &BTreeMap<u32, Vec<u32>>,
+) -> std::fmt::Result {
+    writeln!(
+        out,
+        "pub static {table}: [(u32, &[u32]); {}] = [",
+        sequences.len()
+    )?;
+    for (code_point, sequence) in sequences {
+        let parts: Vec<String> = sequence
+            .iter()
+            .map(|part| format!("0x{part:04X}"))
+            .collect();
+        writeln!(out, "    (0x{code_point:04X}, &[{}]),", parts.join(", "))?;
+    }
+    writeln!(out, "];")
 }
 
 /// Schreibt das Aufzählungsobjekt mit Kurz- und Langnamen. Der `impl`-Block
@@ -592,13 +750,18 @@ mod tests {
                                  bc ; L  ; Left_To_Right\n\
                                  bc ; NSM ; Nonspacing_Mark\n\
                                  bc ; R  ; Right_To_Left\n\
+                                 ea ; N  ; Neutral\n\
+                                 ea ; W  ; Wide\n\
                                  gc ; Cn ; Unassigned\n\
                                  gc ; L  ; Letter  # Lu\n\
                                  gc ; Lo ; Other_Letter\n\
                                  gc ; Lu ; Uppercase_Letter\n\
                                  gc ; Mn ; Nonspacing_Mark\n\
                                  jt ; T ; Transparent\n\
-                                 jt ; U ; Non_Joining\n";
+                                 jt ; U ; Non_Joining\n\
+                                 lb ; AL ; Alphabetic\n\
+                                 lb ; CM ; Combining_Mark\n\
+                                 lb ; XX ; Unknown\n";
 
     const EXCLUSIONS: &str = "0958    #  DEVANAGARI LETTER QA\n";
 
@@ -609,6 +772,23 @@ mod tests {
     const JOINING: &str = "# @missing: 0000..10FFFF; Non_Joining\n\
                            0300..0340 ; T\n";
 
+    const LINE_BREAKS: &str = "# @missing: 0000..10FFFF; XX\n\
+                               0041..0042     ; AL # Lu\n\
+                               0300           ; CM # Mn\n";
+
+    const EAST_ASIAN: &str = "# @missing: 0000..10FFFF; N\n\
+                              1100..115F     ; W  # Lo\n";
+
+    const EMOJI: &str = "0023          ; Emoji                # E0.0   [1] (#)\n\
+                         00A9          ; Extended_Pictographic# E0.6   [1] (©)\n\
+                         1F000..1F0FF  ; Extended_Pictographic# E0.0 [256]\n";
+
+    const CASE_FOLDING: &str = "0041; C; 0061; # LATIN CAPITAL LETTER A\n\
+                                0049; T; 0131; # LATIN CAPITAL LETTER I\n\
+                                00DF; F; 0073 0073; # LATIN SMALL LETTER SHARP S\n\
+                                1E9E; F; 0073 0073; # LATIN CAPITAL LETTER SHARP S\n\
+                                1E9E; S; 00DF; # LATIN CAPITAL LETTER SHARP S\n";
+
     fn sources<'a>(unicode_data: &'a str, value_aliases: &'a str) -> Sources<'a> {
         Sources {
             unicode_data,
@@ -616,6 +796,10 @@ mod tests {
             composition_exclusions: EXCLUSIONS,
             bidi_classes: BIDI,
             joining_types: JOINING,
+            line_breaks: LINE_BREAKS,
+            east_asian_widths: EAST_ASIAN,
+            emoji_data: EMOJI,
+            case_folding: CASE_FOLDING,
         }
     }
 
@@ -688,6 +872,28 @@ mod tests {
              (0x0041, 0x0300, 0x00C0),\n    (0x0041, 0x0302, 0x00C2),\n    \
              (0x00C2, 0x0300, 0x1EA6),\n];\n"
         ));
+        assert!(source.contains(
+            "pub static LINE_BREAK: [(u32, LineBreak); 5] = [\n    \
+             (0x0000, L::Unknown),\n    (0x0041, L::Alphabetic),\n    \
+             (0x0043, L::Unknown),\n    (0x0300, L::CombiningMark),\n    \
+             (0x0301, L::Unknown),\n];\n"
+        ));
+        assert!(source.contains(
+            "pub static EAST_ASIAN_WIDTH: [(u32, EastAsianWidth); 3] = [\n    \
+             (0x0000, E::Neutral),\n    (0x1100, E::Wide),\n    \
+             (0x1160, E::Neutral),\n];\n"
+        ));
+        assert!(source.contains(
+            "pub static EXTENDED_PICTOGRAPHIC: [(u32, bool); 5] = [\n    \
+             (0x0000, false),\n    (0x00A9, true),\n    (0x00AA, false),\n    \
+             (0x1F000, true),\n    (0x1F100, false),\n];\n"
+        ));
+        // Ohne die einfache und die türkische Faltung.
+        assert!(source.contains(
+            "pub static CASE_FOLDING: [(u32, &[u32]); 3] = [\n    \
+             (0x0041, &[0x0061]),\n    (0x00DF, &[0x0073, 0x0073]),\n    \
+             (0x1E9E, &[0x0073, 0x0073]),\n];\n"
+        ));
     }
 
     #[test]
@@ -703,6 +909,21 @@ mod tests {
         let mut broken = sources(UNICODE_DATA, VALUE_ALIASES);
         broken.joining_types = "0300 ; T\n";
         assert!(generate(&broken).is_err(), "Codepunkte ohne Wert");
+        let mut broken = sources(UNICODE_DATA, VALUE_ALIASES);
+        broken.emoji_data = "0023 ; Emoji\n";
+        assert!(generate(&broken).is_err(), "ohne Extended_Pictographic");
+        for case_folding in [
+            "0041; X; 0061;\n",
+            "0041; C;\n",
+            "0041; C; ;\n",
+            "0041..0042; C; 0061;\n",
+            "0041; C; 0061;\n0041; F; 0061;\n",
+            "0041; S; 0061;\n",
+        ] {
+            let mut broken = sources(UNICODE_DATA, VALUE_ALIASES);
+            broken.case_folding = case_folding;
+            assert!(generate(&broken).is_err(), "{case_folding:?}");
+        }
     }
 
     #[test]

@@ -70,6 +70,7 @@ pub const SOURCES: [Source; 8] = [
         commit: "578f6c0516f5f268292ebda50b51848407a06478",
         paths: &[
             "/unicodetools/data/ucd/18.0.0/NormalizationTest.txt",
+            "/unicodetools/data/ucd/18.0.0/auxiliary/LineBreakTest.txt",
             "/unicodetools/data/idna/18.0.0/IdnaTestV2.txt",
         ],
     },
