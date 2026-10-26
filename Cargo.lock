@@ -93,6 +93,18 @@ version = "0.0.0"
 [[package]]
 name = "mb-layout"
 version = "0.0.0"
+dependencies = [
+ "mb-base",
+ "mb-css",
+ "mb-dom",
+ "mb-html",
+ "mb-scene",
+ "mb-style",
+ "mb-text",
+ "mb-unicode",
+ "mb-url",
+ "testdata",
+]
 
 [[package]]
 name = "mb-media"
@@ -109,10 +121,18 @@ version = "0.0.0"
 [[package]]
 name = "mb-raster"
 version = "0.0.0"
+dependencies = [
+ "mb-scene",
+ "mb-text",
+ "testdata",
+]
 
 [[package]]
 name = "mb-scene"
 version = "0.0.0"
+dependencies = [
+ "mb-text",
+]
 
 [[package]]
 name = "mb-shader"

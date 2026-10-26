@@ -7,5 +7,12 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[dependencies]
+mb-scene = { path = "../mb-scene" }
+mb-text = { path = "../mb-text" }
+
+[dev-dependencies]
+testdata = { path = "../../tools/testdata" }
+
 [lints]
 workspace = true
