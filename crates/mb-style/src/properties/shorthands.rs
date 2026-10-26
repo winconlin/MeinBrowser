@@ -12,10 +12,11 @@ use super::{
     AlignmentBaseline, Attachment, BaselineShift, BaselineSource, BgClip, BgImage, BgSize,
     EdgeSide, FontFamilyList, FontSize, FontStyle, FontVariantCaps, FontWeight, FontWidth,
     FontWidthKeyword, HorizontalEdge, Layers, LengthPercentageOrAuto, LineHeight, LineStyle,
-    LineWidth, ListStyleImage, ListStylePosition, ListStyleType, Longhand, PositionComponent,
-    PositionEdge, RepeatStyle, SpecifiedValue, TextAlignAll, TextAlignKeyword, TextAlignLast,
-    TextDecorationLine, TextDecorationStyle, TextDecorationThickness, TextWrapMode, TextWrapStyle,
-    VerticalEdge, VisualBox, WhiteSpaceCollapse, WhiteSpaceTrim,
+    LineWidth, ListStyleImage, ListStylePosition, ListStyleType, Longhand, OutlineColor,
+    OutlineStyle, PositionComponent, PositionEdge, RepeatStyle, SpecifiedValue, TextAlignAll,
+    TextAlignKeyword, TextAlignLast, TextDecorationLine, TextDecorationStyle,
+    TextDecorationThickness, TextWrapMode, TextWrapStyle, VerticalEdge, VisualBox,
+    WhiteSpaceCollapse, WhiteSpaceTrim,
 };
 use crate::values::color::Color;
 use crate::values::{Input, LengthPercentage, Parse, ToCss, non_negative_length_percentage};
@@ -140,6 +141,8 @@ shorthands! {
             BorderTopStyle, BorderRightStyle, BorderBottomStyle, BorderLeftStyle,
             BorderTopColor, BorderRightColor, BorderBottomColor, BorderLeftColor
         ];
+    Outline = "outline", "css-ui", "<'outline-width'> || <'outline-style'> || <'outline-color'>",
+        [OutlineWidth, OutlineStyle, OutlineColor];
     Font = "font", "css-fonts",
         "[ [ <'font-style'> || <font-variant-css2> || <'font-weight'> || <font-width-css3> ]? \
          <'font-size'> [ / <'line-height'> ]? <'font-family'># ] | <system-font-family-name>",
@@ -262,6 +265,7 @@ impl Shorthand {
                     .flat_map(|value| std::iter::repeat_n(value, 4))
                     .collect()
             }
+            Shorthand::Outline => outline(input)?,
             Shorthand::Font => font(input)?,
             Shorthand::TextAlign => text_align(input)?,
             Shorthand::WhiteSpace => white_space(input)?,
@@ -343,6 +347,9 @@ impl Shorthand {
                 ];
                 non_initial(&side_longhands, &sides, "medium")
             }
+            // Gleichen alle Teile dem Anfangswert, lassen die WPT
+            // `currentcolor`, `none` oder `medium` zu.
+            Shorthand::Outline => non_initial(longhands, values, "none"),
             Shorthand::Font => serialize_font(values),
             Shorthand::TextAlign => serialize_text_align(values),
             Shorthand::WhiteSpace => serialize_white_space(longhands, values),
@@ -475,6 +482,50 @@ fn border_side(input: &mut Input<'_>) -> Option<[SpecifiedValue; 3]> {
     ];
     let values = with_initial(&longhands, found)?;
     values.try_into().ok()
+}
+
+/// `outline`. `auto` passt zu `outline-style` und zu `outline-color`; erst
+/// die übrigen Angaben zeigen, welche Teile es füllt, den Stil zuerst. Ein
+/// `auto` allein oder nur mit einer Breite setzt so den Stil auf `auto`, die
+/// Farbe behält ihren Anfangswert `auto`, wie es CSS UI 4 verlangt.
+fn outline(input: &mut Input<'_>) -> Option<Vec<SpecifiedValue>> {
+    let mut autos = 0_usize;
+    let mut width = None;
+    let mut style = None;
+    let mut color = None;
+    loop {
+        if input.keyword("auto") {
+            autos = autos.checked_add(1)?;
+        } else if width.is_none()
+            && let Some(value) = LineWidth::parse(input)
+        {
+            width = Some(SpecifiedValue::LineWidth(value));
+        } else if style.is_none()
+            && let Some(value) = OutlineStyle::parse(input)
+        {
+            style = Some(SpecifiedValue::OutlineStyle(value));
+        } else if color.is_none()
+            && let Some(value) = OutlineColor::parse(input)
+        {
+            color = Some(SpecifiedValue::OutlineColor(value));
+        } else {
+            break;
+        }
+    }
+    for _ in 0..autos {
+        if style.is_none() {
+            style = Some(SpecifiedValue::OutlineStyle(OutlineStyle::Auto));
+        } else if color.is_none() {
+            color = Some(SpecifiedValue::OutlineColor(OutlineColor::Auto));
+        } else {
+            return None;
+        }
+    }
+    let found = [width, style, color];
+    if found.iter().all(Option::is_none) {
+        return None;
+    }
+    with_initial(Shorthand::Outline.longhands(), found)
 }
 
 /// `font` ohne die Systemschriften: bis zu vier Angaben aus Stil,

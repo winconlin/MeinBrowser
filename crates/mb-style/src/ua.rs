@@ -8,8 +8,10 @@
 //! ISO-8859-8 sowie die *presentational hints*. Es fehlen die Stile im
 //! Shadow Tree von `details` (es gibt noch keine Shadow Trees) und die für
 //! die Darstellungsarten von `select`. Die Zuordnung von Attributen zu
-//! Eigenschaften, die der Standard in Prosa beschreibt, fehlt ebenfalls.
+//! Eigenschaften, die der Standard in Prosa beschreibt, steht in [`hints`],
+//! bisher nur für `width` und `height`.
 
+mod hints;
 mod tables;
 
 use std::sync::OnceLock;
@@ -19,6 +21,8 @@ use mb_dom::QuirksMode;
 use crate::cascade::Origin;
 use crate::stylesheet::StyleSheet;
 use crate::values::ParseContext;
+
+pub(crate) use hints::presentational_hints;
 
 /// Wann die Regeln eines Blocks gelten, wie der Absatz davor es sagt.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

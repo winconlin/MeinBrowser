@@ -54,12 +54,13 @@ use crate::properties::{
     DisplayInside, DisplayOutside, EdgeSide, FlowMode, FontFamily, FontFamilyList, FontSize,
     FontStyle, FontVariantCaps, FontWeight, FontWidth, FontWidthKeyword, GenericFamily, Layers,
     LengthPercentageOrAuto, LineHeight, LineStyle, LineWidth, LineWidthKeyword, ListStyleImage,
-    Longhand, Mapping, MaxSize, PositionComponent, PositionEdge, RelativeSize, RepeatStyle,
-    Repetition, Shorthand, Size, Spacing, SpecifiedValue, TextAlignAll, TextAlignKeyword,
-    TextAlignLast, TextDecorationThickness, TextIndent, TextOrientation, WritingMode,
-    serialize_shorthand,
+    Longhand, Mapping, MaxSize, OutlineColor, OutlineStyle, PositionComponent, PositionEdge,
+    RelativeSize, RepeatStyle, Repetition, Shorthand, Size, Spacing, SpecifiedValue, TextAlignAll,
+    TextAlignKeyword, TextAlignLast, TextDecorationThickness, TextIndent, TextOrientation,
+    WritingMode, serialize_shorthand,
 };
 use crate::selectors::MatchingContext;
+use crate::ua::presentational_hints;
 use crate::values::color::{Color, Rgba, SystemColor};
 use crate::values::{
     Angle, AngleUnit, FontMetric, Length, LengthPercentage, LengthUnit, SpecifiedUrl, ViewportAxis,
@@ -812,6 +813,10 @@ fn compute_value(
     use SpecifiedValue as V;
     Ok(match value {
         V::Color(color) => V::Color(computed_color(*color, units.device)),
+        V::OutlineColor(OutlineColor::Color(color)) => {
+            V::OutlineColor(OutlineColor::Color(computed_color(*color, units.device)))
+        }
+        V::Length(length) => V::Length(units.length(*length)?),
         V::LengthPercentageOrAuto(LengthPercentageOrAuto::LengthPercentage(value)) => {
             V::LengthPercentageOrAuto(LengthPercentageOrAuto::LengthPercentage(
                 units.length_percentage(*value)?,
@@ -899,9 +904,10 @@ fn compute_value(
 }
 
 impl ComputedValues {
-    /// Kaskadiert und berechnet die Werte eines Elements. `style_attribute`
-    /// sind die Deklarationen seines Attributs `style`, `ancestors` fehlt
-    /// beim Wurzelelement.
+    /// Kaskadiert und berechnet die Werte eines Elements, mit den
+    /// *presentational hints* aus seinen Attributen. `style_attribute` sind
+    /// die Deklarationen seines Attributs `style`, `ancestors` fehlt beim
+    /// Wurzelelement.
     pub fn of_element(
         stylist: &Stylist,
         context: &MatchingContext<'_>,
@@ -912,7 +918,12 @@ impl ComputedValues {
         fonts: &dyn FontMetricsSource,
     ) -> Result<ComputedValues, MissingFontMetric> {
         let parent = ancestors.map(|ancestors| ancestors.parent);
-        let matched = stylist.matching(context, element, None, style_attribute);
+        let hints = context
+            .document
+            .element(element)
+            .map(presentational_hints)
+            .unwrap_or_default();
+        let matched = stylist.matching(context, element, None, &hints, style_attribute);
         let cascaded = matched.cascade(|values| flow_mode(values, parent));
         ComputedValues::compute(&cascaded, ancestors, device, fonts)
     }
@@ -1151,6 +1162,22 @@ impl ComputedValues {
             );
         }
 
+        // `outline-color: auto` bleibt nur bei `outline-style: auto` stehen,
+        // sonst wird es `currentcolor` (CSS UI 4).
+        let outline_auto = matches!(
+            computer.as_specified(L::OutlineStyle),
+            V::OutlineStyle(OutlineStyle::Auto)
+        );
+        if !outline_auto
+            && let Specified::Value(V::OutlineColor(OutlineColor::Auto)) =
+                computer.specified(L::OutlineColor)
+        {
+            computer.set(
+                L::OutlineColor,
+                V::OutlineColor(OutlineColor::Color(Color::CurrentColor)),
+            );
+        }
+
         for &longhand in Longhand::ALL {
             if is_logical(longhand) || computer.is_set(longhand) {
                 continue;
@@ -1301,6 +1328,9 @@ impl ComputedValues {
         let generates_box = !matches!(self.display(), Display::None | Display::Contents);
         Ok(match (longhand, value) {
             (_, V::Color(Color::CurrentColor)) => V::Color(self.color()),
+            (_, V::OutlineColor(OutlineColor::Color(Color::CurrentColor))) => {
+                V::OutlineColor(OutlineColor::Color(self.color()))
+            }
             (L::LineHeight, V::LineHeight(LineHeight::Number(number))) => {
                 V::LineHeight(LineHeight::LengthPercentage(LengthPercentage::Length(
                     Length::px(clamp(number * self.font_size())),

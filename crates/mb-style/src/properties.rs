@@ -32,12 +32,12 @@ pub use longhands::{
     DisplayInternal, DisplayOutside, EdgeSide, FontFamily, FontFamilyList, FontSize, FontStyle,
     FontVariantCaps, FontWeight, FontWidth, FontWidthKeyword, GenericFamily, HorizontalEdge,
     Layers, LengthPercentageOrAuto, LineHeight, LineStyle, LineWidth, LineWidthKeyword,
-    ListStyleImage, ListStylePosition, ListStyleType, MaxSize, PositionComponent, PositionEdge,
-    RelativeSize, RepeatStyle, Repetition, ScriptGenericFamily, Size, SizeKeyword, Spacing,
-    TextAlignAll, TextAlignKeyword, TextAlignLast, TextDecorationLine, TextDecorationStyle,
-    TextDecorationThickness, TextIndent, TextOrientation, TextTransform, TextTransformCase,
-    TextWrapMode, TextWrapStyle, UnicodeBidi, VerticalEdge, Visibility, VisualBox,
-    WhiteSpaceCollapse, WhiteSpaceTrim, WritingMode,
+    ListStyleImage, ListStylePosition, ListStyleType, MaxSize, OutlineColor, OutlineStyle,
+    PositionComponent, PositionEdge, RelativeSize, RepeatStyle, Repetition, ScriptGenericFamily,
+    Size, SizeKeyword, Spacing, TextAlignAll, TextAlignKeyword, TextAlignLast, TextDecorationLine,
+    TextDecorationStyle, TextDecorationThickness, TextIndent, TextOrientation, TextTransform,
+    TextTransformCase, TextWrapMode, TextWrapStyle, UnicodeBidi, VerticalEdge, Visibility,
+    VisualBox, WhiteSpaceCollapse, WhiteSpaceTrim, WritingMode,
 };
 pub use shorthands::{Shorthand, ShorthandInfo};
 
@@ -45,7 +45,8 @@ use mb_css::{Source, Values, parse_component_value_list};
 
 use crate::values::color::Color;
 use crate::values::{
-    Input, LengthPercentage, Parse, ParseContext, ToCss, keywords, non_negative_length_percentage,
+    Input, Length, LengthPercentage, Parse, ParseContext, ToCss, keywords,
+    non_negative_length_percentage,
 };
 
 keywords! {
@@ -426,6 +427,10 @@ longhands! {
         false,
     )
     .logical(LogicalGroup::BorderColor),
+    OutlineColor = info("outline-color", "css-ui", "auto | <'border-top-color'>", "auto", false),
+    OutlineStyle = info("outline-style", "css-ui", "auto | <outline-line-style>", "none", false),
+    OutlineWidth = info("outline-width", "css-ui", "<line-width>", "medium", false),
+    OutlineOffset = info("outline-offset", "css-ui", "<length>", "0", false),
     Width = info("width", "css-sizing", SIZE, "auto", false)
         .physical(LogicalGroup::Size)
         .quirky(),
@@ -751,7 +756,8 @@ impl Longhand {
             | Longhand::BorderBlockStartWidth
             | Longhand::BorderBlockEndWidth
             | Longhand::BorderInlineStartWidth
-            | Longhand::BorderInlineEndWidth => V::LineWidth(LineWidth::parse(input)?),
+            | Longhand::BorderInlineEndWidth
+            | Longhand::OutlineWidth => V::LineWidth(LineWidth::parse(input)?),
             Longhand::BorderTopStyle
             | Longhand::BorderRightStyle
             | Longhand::BorderBottomStyle
@@ -760,6 +766,9 @@ impl Longhand {
             | Longhand::BorderBlockEndStyle
             | Longhand::BorderInlineStartStyle
             | Longhand::BorderInlineEndStyle => V::LineStyle(LineStyle::parse(input)?),
+            Longhand::OutlineColor => V::OutlineColor(OutlineColor::parse(input)?),
+            Longhand::OutlineStyle => V::OutlineStyle(OutlineStyle::parse(input)?),
+            Longhand::OutlineOffset => V::Length(Length::parse(input)?),
             Longhand::Width
             | Longhand::Height
             | Longhand::MinWidth
@@ -834,8 +843,13 @@ pub enum SpecifiedValue {
     LengthPercentageOrAuto(LengthPercentageOrAuto),
     /// `padding-*`, nie negativ
     LengthPercentage(LengthPercentage),
+    /// Die Rahmenbreiten und `outline-width`
     LineWidth(LineWidth),
     LineStyle(LineStyle),
+    OutlineColor(OutlineColor),
+    OutlineStyle(OutlineStyle),
+    /// `outline-offset`
+    Length(Length),
     /// `width`, `height` und die Mindestgrößen
     Size(Size),
     /// die Höchstgrößen
@@ -891,6 +905,9 @@ impl ToCss for SpecifiedValue {
             SpecifiedValue::LengthPercentage(value) => value.to_css(out),
             SpecifiedValue::LineWidth(value) => value.to_css(out),
             SpecifiedValue::LineStyle(value) => value.to_css(out),
+            SpecifiedValue::OutlineColor(value) => value.to_css(out),
+            SpecifiedValue::OutlineStyle(value) => value.to_css(out),
+            SpecifiedValue::Length(value) => value.to_css(out),
             SpecifiedValue::Size(value) => value.to_css(out),
             SpecifiedValue::MaxSize(value) => value.to_css(out),
             SpecifiedValue::BoxSizing(value) => value.to_css(out),

@@ -162,3 +162,26 @@ fn edge_offset_next_to_bare_offset() {
 fn block_with_position(x: &str, y: &str) -> DeclarationBlock {
     block(&[("background-position-x", x), ("background-position-y", y)])
 }
+
+#[test]
+fn outline_with_auto() {
+    // `auto` passt zu Stil und Farbe und füllt, was die übrigen Angaben frei
+    // lassen, den Stil zuerst.
+    let longhands = |value: &str| {
+        let outline = block(&[("outline", value)]);
+        ["outline-width", "outline-style", "outline-color"]
+            .map(|longhand| outline.get_property_value(longhand))
+    };
+    assert_eq!(longhands("auto solid"), ["medium", "solid", "auto"]);
+    assert_eq!(longhands("2px auto dashed"), ["2px", "dashed", "auto"]);
+    assert_eq!(longhands("auto 2px red"), ["2px", "auto", "red"]);
+    assert_eq!(longhands("2px auto"), ["2px", "auto", "auto"]);
+    assert_eq!(longhands("auto auto"), ["medium", "auto", "auto"]);
+    for invalid in ["solid red auto", "auto auto auto", "auto solid auto red"] {
+        let mut outline = DeclarationBlock::new();
+        assert!(
+            !outline.set_property("outline", invalid, "", ParseContext::default()),
+            "{invalid}"
+        );
+    }
+}

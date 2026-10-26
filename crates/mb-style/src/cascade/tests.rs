@@ -142,7 +142,7 @@ impl Page {
         let context = MatchingContext::new(&self.document);
         let matched =
             self.stylist
-                .matching(&context, element, pseudo_element, attribute.as_deref());
+                .matching(&context, element, pseudo_element, &[], attribute.as_deref());
         f(&matched.cascade(flow))
     }
 

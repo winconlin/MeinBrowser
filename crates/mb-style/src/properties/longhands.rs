@@ -3,6 +3,7 @@
 //! value“). Schreibweisen mit `||` werden in der Reihenfolge der Grammatik
 //! geschrieben, Weglassbares fehlt.
 
+use crate::values::color::Color;
 use crate::values::{
     Angle, Input, Length, LengthPercentage, Parse, SpecifiedUrl, ToCss, custom_ident,
     is_css_wide_keyword, keywords, non_negative_length, non_negative_length_percentage,
@@ -629,6 +630,60 @@ keywords! {
         Ridge = "ridge",
         Inset = "inset",
         Outset = "outset",
+    }
+}
+
+/// `outline-style`: `auto | <outline-line-style>`. ⟨outline-line-style⟩ ist
+/// nach dem Text von CSS UI 4 ⟨line-style⟩ ohne `hidden`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum OutlineStyle {
+    Auto,
+    Line(LineStyle),
+}
+
+impl Parse for OutlineStyle {
+    fn parse(input: &mut Input<'_>) -> Option<OutlineStyle> {
+        if input.keyword("auto") {
+            return Some(OutlineStyle::Auto);
+        }
+        input
+            .try_parse(|input| LineStyle::parse(input).filter(|style| *style != LineStyle::Hidden))
+            .map(OutlineStyle::Line)
+    }
+}
+
+impl ToCss for OutlineStyle {
+    fn to_css(&self, out: &mut String) {
+        match self {
+            OutlineStyle::Auto => out.push_str("auto"),
+            OutlineStyle::Line(style) => style.to_css(out),
+        }
+    }
+}
+
+/// `outline-color`: `auto | <'border-top-color'>`. Wie bei den Rahmenfarben
+/// fehlt ⟨image-1D⟩.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum OutlineColor {
+    Auto,
+    Color(Color),
+}
+
+impl Parse for OutlineColor {
+    fn parse(input: &mut Input<'_>) -> Option<OutlineColor> {
+        if input.keyword("auto") {
+            return Some(OutlineColor::Auto);
+        }
+        Color::parse(input).map(OutlineColor::Color)
+    }
+}
+
+impl ToCss for OutlineColor {
+    fn to_css(&self, out: &mut String) {
+        match self {
+            OutlineColor::Auto => out.push_str("auto"),
+            OutlineColor::Color(color) => color.to_css(out),
+        }
     }
 }
 
