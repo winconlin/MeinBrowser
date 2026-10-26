@@ -59,15 +59,21 @@ pub fn read_file(url: &Url) -> Option<Vec<u8>> {
 /// nicht absolut ist.
 pub fn file_url(path: &Path) -> Option<Url> {
     let path = std::path::absolute(path).ok()?;
-    let mut text = path.to_str()?.replace('\\', "/");
+    let text = path.to_str()?;
+    // Unter Windows trennt `\` die Teile des Pfads, sonst gehört es zum Namen.
+    let mut text = if cfg!(windows) {
+        text.replace('\\', "/")
+    } else {
+        text.to_owned()
+    };
     if !text.starts_with('/') {
         text.insert(0, '/');
     }
-    // Was der URL-Parser anders läse, wird vorher kodiert.
-    let text = text
-        .replace('%', "%25")
-        .replace('#', "%23")
-        .replace('?', "%3F");
+    // Was der URL-Parser anders läse oder entfernte, wird vorher kodiert:
+    // `%` und `\` selbst, dann die Menge für Pfade, mit `#`, `?` und den
+    // Steuerzeichen wie Tabulator und Zeilenumbruch.
+    let text = text.replace('%', "%25").replace('\\', "%5C");
+    let text = mb_url::percent::utf8_percent_encode(&text, mb_url::percent::PATH);
     Url::parse(&format!("file://{text}"), None).ok()
 }
 

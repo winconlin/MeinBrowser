@@ -97,3 +97,22 @@ fn file_urls() {
         assert_eq!(url.href(), "file:///a%20b/c%23d.html");
     }
 }
+
+#[test]
+fn file_urls_keep_literal_characters() {
+    // Tabulator, Zeilenumbruch, `%` und `?` gehören zum Namen, unter Unix
+    // auch `\`; der Pfad der URL ergibt dekodiert wieder den Namen.
+    let name = if cfg!(windows) {
+        "/a\tb\n%?.html"
+    } else {
+        "/a\\b\tc\n%?.html"
+    };
+    let url = file_url(Path::new(name)).expect("URL");
+    let path = String::from_utf8(mb_url::percent::percent_decode(url.pathname().as_bytes()))
+        .expect("UTF-8");
+    if cfg!(windows) {
+        assert!(path.ends_with(name), "{path:?}");
+    } else {
+        assert_eq!(path, name);
+    }
+}
