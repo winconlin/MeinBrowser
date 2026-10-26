@@ -5,12 +5,20 @@
 //! Kopfdaten, Metriken, Namen, die Zuordnung von Zeichen zu Glyphen und die
 //! Umrisse aus `glyf`. Umrisse aus `CFF ` und `CFF2`, variable Schriften,
 //! Farbschriften und WOFF fehlen noch.
+//!
+//! Dazu kommt die Bibliothek der installierten Schriften mit der
+//! Schriftauswahl nach CSS Fonts 4 ([`FontLibrary`]); welche Dateien
+//! installiert sind, weiß die Plattformschicht.
 
 #![forbid(unsafe_code)]
 
+mod library;
+mod matching;
 mod opentype;
 mod outline;
 
+pub use library::{FaceId, Family, FontLibrary, FontQuery, GenericFamily, Loader};
+pub use matching::Slope;
 pub use opentype::{
     Face, FaceMetrics, FaceStyle, FontData, FontError, GlyphId, NameRecord, Tag, face_count,
 };
