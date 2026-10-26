@@ -484,19 +484,47 @@ fn border_side(input: &mut Input<'_>) -> Option<[SpecifiedValue; 3]> {
     values.try_into().ok()
 }
 
-/// `outline`. Ein `auto` allein oder nur mit einer Breite setzt
-/// `outline-style` und `outline-color` auf `auto` (CSS UI 4); da `auto` der
-/// Anfangswert von `outline-color` ist, genügt es, das erste `auto` als Stil
-/// zu lesen.
+/// `outline`. `auto` passt zu `outline-style` und zu `outline-color`; erst
+/// die übrigen Angaben zeigen, welche Teile es füllt, den Stil zuerst. Ein
+/// `auto` allein oder nur mit einer Breite setzt so den Stil auf `auto`, die
+/// Farbe behält ihren Anfangswert `auto`, wie es CSS UI 4 verlangt.
 fn outline(input: &mut Input<'_>) -> Option<Vec<SpecifiedValue>> {
-    let found = any_order(
-        input,
-        [
-            &|input| LineWidth::parse(input).map(SpecifiedValue::LineWidth),
-            &|input| OutlineStyle::parse(input).map(SpecifiedValue::OutlineStyle),
-            &|input| OutlineColor::parse(input).map(SpecifiedValue::OutlineColor),
-        ],
-    )?;
+    let mut autos = 0_usize;
+    let mut width = None;
+    let mut style = None;
+    let mut color = None;
+    loop {
+        if input.keyword("auto") {
+            autos = autos.checked_add(1)?;
+        } else if width.is_none()
+            && let Some(value) = LineWidth::parse(input)
+        {
+            width = Some(SpecifiedValue::LineWidth(value));
+        } else if style.is_none()
+            && let Some(value) = OutlineStyle::parse(input)
+        {
+            style = Some(SpecifiedValue::OutlineStyle(value));
+        } else if color.is_none()
+            && let Some(value) = OutlineColor::parse(input)
+        {
+            color = Some(SpecifiedValue::OutlineColor(value));
+        } else {
+            break;
+        }
+    }
+    for _ in 0..autos {
+        if style.is_none() {
+            style = Some(SpecifiedValue::OutlineStyle(OutlineStyle::Auto));
+        } else if color.is_none() {
+            color = Some(SpecifiedValue::OutlineColor(OutlineColor::Auto));
+        } else {
+            return None;
+        }
+    }
+    let found = [width, style, color];
+    if found.iter().all(Option::is_none) {
+        return None;
+    }
     with_initial(Shorthand::Outline.longhands(), found)
 }
 
