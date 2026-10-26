@@ -650,3 +650,29 @@ fn dimension_attributes() {
     assert_eq!(page.resolved("c", "width"), "auto");
     assert_eq!(page.resolved("d", "width"), "auto");
 }
+
+#[test]
+fn body_margins() {
+    let margins = |page: &Page| {
+        let values = page.computed("body");
+        [
+            Longhand::MarginTop,
+            Longhand::MarginRight,
+            Longhand::MarginBottom,
+            Longhand::MarginLeft,
+        ]
+        .map(|longhand| values.get(longhand).to_css_string())
+        .join(" ")
+    };
+    assert_eq!(margins(&load("", "")), "8px 8px 8px 8px");
+    // Der zweite Tag `body` ergänzt die Attribute des ersten. Ein Attribut,
+    // das sich nicht lesen lässt, ergibt 8 px, auch wenn ein späteres der
+    // Liste es könnte.
+    let page = load("<body marginheight=' 5x' leftmargin=7 marginwidth=y>", "");
+    assert_eq!(margins(&page), "5px 8px 5px 8px");
+    let page = load(
+        "<body topmargin=3 leftmargin=+4>",
+        "body { margin-left: 1px }",
+    );
+    assert_eq!(margins(&page), "3px 4px 3px 1px");
+}

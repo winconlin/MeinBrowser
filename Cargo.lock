@@ -192,6 +192,21 @@ version = "0.0.0"
 [[package]]
 name = "mb-web"
 version = "0.0.0"
+dependencies = [
+ "mb-base",
+ "mb-css",
+ "mb-dom",
+ "mb-encoding",
+ "mb-html",
+ "mb-image",
+ "mb-layout",
+ "mb-scene",
+ "mb-style",
+ "mb-text",
+ "mb-url",
+ "mb-xml",
+ "testdata",
+]
 
 [[package]]
 name = "mb-webidl"
@@ -224,5 +239,10 @@ version = "0.0.0"
 name = "testrunner"
 version = "0.0.0"
 dependencies = [
+ "mb-layout",
+ "mb-platform",
+ "mb-raster",
+ "mb-text",
+ "mb-web",
  "testdata",
 ]

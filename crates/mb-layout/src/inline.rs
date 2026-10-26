@@ -23,8 +23,10 @@
 //!   `top` und `bottom` werden wie in WebKit eingeordnet: Ist ein so
 //!   ausgerichteter Teilbaum höher als die übrige Zeile, wächst sie nach
 //!   unten (`top`) oder oben (`bottom`). Zeilen ohne Text, ohne Kästen auf
-//!   Atomebene, ohne erzwungenen Umbruch und ohne Inline-Kasten mit Rand,
-//!   Innen- oder Außenabstand gibt es nicht (Abschnitt 9.4.2).
+//!   Atomebene, ohne erzwungenen Umbruch und ohne Inline-Kasten, der auf
+//!   der Zeile links oder rechts Rand, Innen- oder Außenabstand hat, gibt es
+//!   nicht (*phantom line boxes*, CSS Inline 3; CSS 2, Abschnitt 9.4.2,
+//!   zählt auch oben und unten, die WPT folgen CSS Inline 3).
 //! - Fehlt noch: Bidi, `text-transform`, Silbentrennung, `overflow-wrap`,
 //!   `word-break`, `line-break`, Tabstopps (ein erhaltener Tabulator ist acht
 //!   Leerzeichen breit), `letter-spacing` am Zeilenende wird nicht entfernt.
@@ -47,6 +49,22 @@ const SPACE: u32 = 0x20;
 const ZERO_WIDTH_SPACE: u32 = 0x200B;
 const NO_BREAK_SPACE: u32 = 0xA0;
 const OBJECT_REPLACEMENT: u32 = 0xFFFC;
+
+/// Der Blockcontainer eines Inline-Formatierungskontexts.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Container<'a> {
+    pub(crate) style: &'a StyleRef,
+    /// Die Breite des Inhaltsbereichs für Prozente; bei den Größen aus dem
+    /// Inhalt null.
+    pub(crate) width: f64,
+    /// Die Höhe des Inhaltsbereichs, wenn sie feststeht.
+    pub(crate) height: Option<f64>,
+    /// Ob die erste Zeile die erste formatierte Zeile eines Elements ist;
+    /// nur dann gilt `text-indent` für sie. Die erste Zeile eines anonymen
+    /// Blocks ist es nur, wenn er das erste Kind ist (CSS 2, Abschnitt
+    /// 16.1).
+    pub(crate) first_formatted_line: bool,
+}
 
 /// Wofür die Zeilen gebrochen werden.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -180,13 +198,14 @@ impl BoxEdges {
         self.margin.right + self.border.right + self.padding.right
     }
 
-    /// Ob ein Rand, Innen- oder Außenabstand nicht null ist.
-    fn is_nonzero(&self) -> bool {
-        [self.margin, self.border, self.padding]
-            .iter()
-            .any(|sides| {
-                sides.top != 0.0 || sides.right != 0.0 || sides.bottom != 0.0 || sides.left != 0.0
-            })
+    /// Ob am Anfang Rand, Innen- oder Außenabstand nicht null ist.
+    fn starts_nonzero(&self) -> bool {
+        self.margin.left != 0.0 || self.border.left != 0.0 || self.padding.left != 0.0
+    }
+
+    /// Ob am Ende Rand, Innen- oder Außenabstand nicht null ist.
+    fn ends_nonzero(&self) -> bool {
+        self.margin.right != 0.0 || self.border.right != 0.0 || self.padding.right != 0.0
     }
 }
 
@@ -227,14 +246,14 @@ impl<'a> Prepared<'a> {
     fn new(
         context: &LayoutContext<'_>,
         content: &'a InlineContent,
-        container: &'a StyleRef,
-        containing_width: f64,
+        container: Container<'a>,
         sizing: Sizing,
         depth: usize,
     ) -> Prepared<'a> {
+        let containing_width = container.width;
         let mut prepared = Prepared {
             content,
-            container,
+            container: container.style,
             chars: Vec::new(),
             sequence: Vec::new(),
             positions: Vec::new(),
@@ -255,7 +274,14 @@ impl<'a> Prepared<'a> {
         prepared.shape(context);
         for (index, item) in content.items.iter().enumerate() {
             if let InlineItem::Atomic { atomic, .. } = item {
-                let layout = layout_atomic(context, atomic, containing_width, sizing, depth);
+                let layout = layout_atomic(
+                    context,
+                    atomic,
+                    containing_width,
+                    container.height,
+                    sizing,
+                    depth,
+                );
                 prepared.atomics.push((index, layout));
             }
         }
@@ -794,20 +820,19 @@ fn inline_bounds(context: &LayoutContext<'_>, style: &StyleRef) -> Bounds {
 pub(crate) fn layout(
     context: &LayoutContext<'_>,
     content: &InlineContent,
-    container: &StyleRef,
-    containing_width: f64,
+    container: Container<'_>,
     sizing: Sizing,
     depth: usize,
 ) -> InlineLayout {
-    let prepared = Prepared::new(context, content, container, containing_width, sizing, depth);
+    let prepared = Prepared::new(context, content, container, sizing, depth);
     let opportunities = prepared.opportunities();
     let available = sizing.width();
-    let indent = container.text_indent();
-    let indent_px = indent.map_or(0.0, |indent| resolve(indent.length, containing_width));
+    let indent = container.style.text_indent();
+    let indent_px = indent.map_or(0.0, |indent| resolve(indent.length, container.width));
 
     let mut result = InlineLayout::default();
     let mut start = 0;
-    let mut first_line = true;
+    let mut first_line = container.first_formatted_line;
     let mut after_forced = false;
     let mut open: Vec<usize> = Vec::new();
     let mut y = 0.0;
@@ -951,26 +976,36 @@ fn place_line(
     let (first, last_kept) = prepared.trimmed(start, end);
 
     // Gibt es die Zeile?
-    let mut boxes_on_line: Vec<usize> = open.to_vec();
-    let mut has_content = false;
-    for position in start..end {
-        match prepared.sequence.get(position) {
-            Some(Piece::Char(index)) => {
-                if !prepared.is_trimmed(position, first, last_kept)
-                    || prepared.chars.get(*index).is_some_and(|c| c.forced)
-                {
-                    has_content = true;
-                }
-            }
-            Some(Piece::Start(data)) => boxes_on_line.push(*data),
-            _ => {}
+    let has_content = (start..end).any(|position| match prepared.sequence.get(position) {
+        Some(Piece::Char(index)) => {
+            !prepared.is_trimmed(position, first, last_kept)
+                || prepared.chars.get(*index).is_some_and(|c| c.forced)
         }
-    }
-    if !has_content
-        && !boxes_on_line
-            .iter()
-            .any(|&data| prepared.edges.get(data).is_some_and(BoxEdges::is_nonzero))
-    {
+        Some(Piece::Start(data)) => {
+            prepared
+                .content
+                .boxes
+                .get(*data)
+                .is_some_and(|b| b.start_edge)
+                && prepared
+                    .edges
+                    .get(*data)
+                    .is_some_and(BoxEdges::starts_nonzero)
+        }
+        Some(Piece::End(data)) => {
+            prepared
+                .content
+                .boxes
+                .get(*data)
+                .is_some_and(|b| b.end_edge)
+                && prepared
+                    .edges
+                    .get(*data)
+                    .is_some_and(BoxEdges::ends_nonzero)
+        }
+        None => false,
+    });
+    if !has_content {
         return None;
     }
 

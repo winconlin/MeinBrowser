@@ -1,13 +1,18 @@
 [package]
 name = "testrunner"
-description = "Läufer für die WPT, bisher mit der Liste der Referenztests für M1"
+description = "Läufer für die WPT, bisher für die Referenztests für M1"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
-[dev-dependencies]
+[dependencies]
+mb-layout = { path = "../../crates/mb-layout" }
+mb-platform = { path = "../../crates/mb-platform" }
+mb-raster = { path = "../../crates/mb-raster" }
+mb-text = { path = "../../crates/mb-text" }
+mb-web = { path = "../../crates/mb-web" }
 testdata = { path = "../testdata" }
 
 [lints]

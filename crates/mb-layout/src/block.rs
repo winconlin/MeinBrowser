@@ -6,13 +6,15 @@
 //!   positiver und kleinster negativer Wert gesammelt. Der untere Abstand
 //!   eines Blocks fällt mit dem seines letzten Kindes nur zusammen, wenn
 //!   `height` `auto` ist, unten Rand und Innenabstand fehlen und
-//!   `min-height` und `max-height` die Höhe nicht ändern. Die
-//!   Außenabstände des Wurzelelements fallen nicht zusammen.
+//!   `min-height` und `max-height` die Höhe nicht ändern; ändern sie sie,
+//!   geht der Abstand des Kindes verloren (so die WPT; CSS 2 nennt die
+//!   Grenzen hier nicht). Die Außenabstände des Wurzelelements fallen nicht
+//!   zusammen.
 //! - Prozente bei Höhen gelten nur, wenn die Höhe des umgebenden Blocks
 //!   feststeht (der anfängliche umgebende Block hat die des Viewports);
 //!   sonst sind sie `auto`, bei `min-height` null und bei `max-height`
-//!   `none`. Inline-Blöcke kennen die Höhe ihres umgebenden Blocks noch
-//!   nicht; für sie gilt das immer.
+//!   `none`. Eine Höhe steht fest, wenn `height` eine Länge ist oder ein
+//!   Prozentwert einer festen Höhe, nach `min-height` und `max-height`.
 //! - Die Breite eines Inline-Blocks mit `width: auto` passt sich dem Inhalt
 //!   an (*shrink-to-fit*): min(max(kleinste Breite, verfügbare Breite),
 //!   bevorzugte Breite). Für die Größen aus dem Inhalt sind Prozente, die
@@ -169,7 +171,13 @@ pub(crate) fn intrinsic_width(
 ) -> f64 {
     match &block.contents {
         BlockContents::Inline(content) => {
-            inline::layout(context, content, &block.style, 0.0, which.sizing(), depth).width
+            let container = inline::Container {
+                style: &block.style,
+                width: 0.0,
+                height: None,
+                first_formatted_line: block.first_formatted_line,
+            };
+            inline::layout(context, content, container, which.sizing(), depth).width
         }
         BlockContents::Blocks(children) => children
             .iter()
@@ -466,14 +474,14 @@ fn layout_block_contents(
             layout_children(context, children, &children_cb, start_collapses, depth)
         }
         BlockContents::Inline(content) => {
-            let inline = inline::layout(
-                context,
-                content,
+            let container = inline::Container {
                 style,
                 width,
-                Sizing::Available(width),
-                depth,
-            );
+                height: children_cb.height,
+                first_formatted_line: block.first_formatted_line,
+            };
+            let inline =
+                inline::layout(context, content, container, Sizing::Available(width), depth);
             Flow {
                 fragments: inline.fragments,
                 height: inline.height,
@@ -495,15 +503,24 @@ fn layout_block_contents(
             children_margins.end = CollapsedMargin::default();
         }
     }
+    // Ändern `min-height` oder `max-height` die Höhe, fällt der untere
+    // Abstand des letzten Kindes nicht mit dem des Blocks zusammen und zählt
+    // auch nicht zur Höhe.
     let collapsed = flow.height;
-    let separate = flow.height + children_margins.end.solve();
     let used_height = match height {
         Some(height) => clamp(height, min_height, max_height),
-        None if end_collapses && clamp(collapsed, min_height, max_height) == collapsed => {
-            margins.end = margins.end.adjoin(&children_margins.end);
-            collapsed
+        None if end_collapses => {
+            let clamped = clamp(collapsed, min_height, max_height);
+            if clamped == collapsed {
+                margins.end = margins.end.adjoin(&children_margins.end);
+            }
+            clamped
         }
-        None => clamp(separate, min_height, max_height),
+        None => clamp(
+            flow.height + children_margins.end.solve(),
+            min_height,
+            max_height,
+        ),
     };
     margins.collapsed_through = children_margins.collapsed_through
         && !independent
@@ -789,6 +806,7 @@ pub(crate) fn layout_atomic(
     context: &LayoutContext<'_>,
     atomic: &Atomic,
     containing_width: f64,
+    containing_height: Option<f64>,
     sizing: Sizing,
     depth: usize,
 ) -> AtomicLayout {
@@ -832,7 +850,7 @@ pub(crate) fn layout_atomic(
     }
     let cb = ContainingBlock {
         width: containing_width,
-        height: None,
+        height: containing_height,
         ltr: style.ltr(),
     };
     let (mut fragment, baseline) = match atomic {
@@ -870,7 +888,7 @@ pub(crate) fn layout_atomic(
                 style,
                 replaced.image.as_deref(),
                 Some(containing_width),
-                None,
+                containing_height,
                 padding_border,
                 padding.vertical() + border.vertical(),
             );

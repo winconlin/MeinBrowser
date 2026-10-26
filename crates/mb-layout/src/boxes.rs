@@ -48,6 +48,9 @@ pub(crate) struct BlockBox {
     pub(crate) contents: BlockContents,
     /// Ob der Kasten einen eigenen Blockformatierungskontext begründet.
     pub(crate) independent: bool,
+    /// Ob seine erste Zeile die erste formatierte Zeile eines Elements ist:
+    /// nicht bei einem anonymen Block, der nicht das erste Kind ist.
+    pub(crate) first_formatted_line: bool,
 }
 
 #[derive(Debug)]
@@ -216,6 +219,7 @@ impl<'a> Builder<'a> {
             node: Some(root),
             contents,
             independent: true,
+            first_formatted_line: true,
         })
     }
 
@@ -361,6 +365,7 @@ impl<'a> Builder<'a> {
                     node: Some(node),
                     contents,
                     independent: true,
+                    first_formatted_line: true,
                 }));
             }
             (false, inside) => {
@@ -371,6 +376,7 @@ impl<'a> Builder<'a> {
                         node: Some(node),
                         contents,
                         independent: inside != DisplayInside::Flow,
+                        first_formatted_line: true,
                     }),
                     self,
                 );
@@ -478,6 +484,7 @@ impl Container {
             node: None,
             contents: BlockContents::Inline(inline),
             independent: false,
+            first_formatted_line: self.blocks.is_empty(),
         }));
     }
 
