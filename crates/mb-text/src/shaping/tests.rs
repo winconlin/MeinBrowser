@@ -253,3 +253,42 @@ fn without_fonts_nothing_is_shaped() {
     assert!(shaped(&library, &names(&["Ahem"]), 10.0, "abc").is_empty());
     assert!(shaped(&library, &[], 10.0, "").is_empty());
 }
+
+#[test]
+fn composition_and_selectors_when_falling_back() {
+    let library = library(&["Ahem.ttf"]);
+    let ahem = family_of(&library, "Ahem");
+    // Schritt 3 prüft Anfänge wie Schritt 1, also auch das kanonisch gleiche
+    // Zeichen: é aus Ahem, nur der zweite Akut bleibt *.notdef*.
+    let glyphs = shaped(&library, &names(&["Ahem"]), 10.0, "e\u{301}\u{301}");
+    assert_eq!(
+        glyphs
+            .iter()
+            .map(|glyph| (glyph.face, glyph.id, glyph.cluster))
+            .collect::<Vec<_>>(),
+        [(ahem, GlyphId(111), 0), (ahem, GlyphId(0), 2)]
+    );
+    // Weitere Variantenselektoren sind ein Kodierungsfehler und fallen weg;
+    // andere Zeichen danach behalten ihren Index.
+    let glyphs = shaped(&library, &names(&["Ahem"]), 10.0, "A\u{FE0F}\u{FE0F}B");
+    assert_eq!(
+        glyphs
+            .iter()
+            .map(|glyph| (glyph.id, glyph.cluster))
+            .collect::<Vec<_>>(),
+        [(GlyphId(35), 0), (GlyphId(36), 3)]
+    );
+    let glyphs = shaped(
+        &library,
+        &names(&["Ahem"]),
+        10.0,
+        "A\u{FE0F}\u{FE0E}\u{301}",
+    );
+    assert_eq!(
+        glyphs
+            .iter()
+            .map(|glyph| (glyph.id, glyph.cluster))
+            .collect::<Vec<_>>(),
+        [(GlyphId(35), 0), (GlyphId(0), 3)]
+    );
+}

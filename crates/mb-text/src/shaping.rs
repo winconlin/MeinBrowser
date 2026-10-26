@@ -108,32 +108,23 @@ impl Shaper<'_> {
             self.single(*base, start, glyphs);
             return;
         }
-        // Schritt 1: die erste Schrift der Liste, die alle Zeichen hat oder
-        // das eine Zeichen, das kanonisch gleich ist.
-        let composed: Vec<char> = normalization::compose(cluster.iter().map(|&c| u32::from(c)))
-            .into_iter()
-            .filter_map(char::from_u32)
-            .collect();
-        for (id, face) in &self.list {
-            if supports(face, cluster) {
-                self.emit(*id, face, cluster, start, glyphs);
-                return;
-            }
-            if let [single] = composed.as_slice()
-                && let Some(glyph) = face.glyph_index(*single)
-            {
-                glyphs.push(self.glyph(*id, face, glyph, start));
-                return;
-            }
+        // Schritt 1, siehe `match_in_list`.
+        if self.match_in_list(cluster, start, glyphs) {
+            return;
         }
-        // Schritt 2: Mit Variantenselektor nur das Grundzeichen, sonst eine
+        // Schritt 2: Mit Variantenselektor nur das Grundzeichen; weitere
+        // Selektoren sind ein Kodierungsfehler und fallen weg. Sonst eine
         // Ersatzschrift für den ganzen Cluster.
         if let [selector, rest @ ..] = marks
             && is_variation_selector(*selector)
         {
             self.single(*base, start, glyphs);
             let after = start.saturating_add(2);
-            self.marks_separately(rest, after, glyphs);
+            for (offset, &mark) in rest.iter().enumerate() {
+                if !is_variation_selector(mark) {
+                    self.single(mark, after.saturating_add(offset), glyphs);
+                }
+            }
             return;
         }
         if let Some(id) = self.library.fallback(self.query, cluster)
@@ -142,14 +133,13 @@ impl Shaper<'_> {
             self.emit(id, &face, cluster, start, glyphs);
             return;
         }
-        // Schritt 3: der längste Anfang, den eine Schrift der Liste hat, die
-        // übrigen Zeichen einzeln.
+        // Schritt 3: der längste Anfang, den eine Schrift der Liste nach
+        // Schritt 1 darstellt, die übrigen Zeichen einzeln.
         for length in (1..cluster.len()).rev() {
             let Some(prefix) = cluster.get(..length) else {
                 continue;
             };
-            if let Some((id, face)) = self.list.iter().find(|(_, face)| supports(face, prefix)) {
-                self.emit(*id, face, prefix, start, glyphs);
+            if self.match_in_list(prefix, start, glyphs) {
                 let rest = cluster.get(length..).unwrap_or_default();
                 self.marks_separately(rest, start.saturating_add(length), glyphs);
                 return;
@@ -157,6 +147,30 @@ impl Shaper<'_> {
         }
         self.single(*base, start, glyphs);
         self.marks_separately(marks, start.saturating_add(1), glyphs);
+    }
+
+    /// Schritt 1 für eine Folge ab dem Codepunkt `start`: die erste Schrift
+    /// der Liste, die alle Zeichen hat oder das eine Zeichen, das kanonisch
+    /// gleich ist. `false`, wenn es keine gibt.
+    fn match_in_list(&self, sequence: &[char], start: usize, glyphs: &mut Vec<Glyph>) -> bool {
+        let composed = normalization::compose(sequence.iter().map(|&c| u32::from(c)));
+        let single = match composed.as_slice() {
+            [single] => char::from_u32(*single),
+            _ => None,
+        };
+        for (id, face) in &self.list {
+            if supports(face, sequence) {
+                self.emit(*id, face, sequence, start, glyphs);
+                return true;
+            }
+            if let Some(single) = single
+                && let Some(glyph) = face.glyph_index(single)
+            {
+                glyphs.push(self.glyph(*id, face, glyph, start));
+                return true;
+            }
+        }
+        false
     }
 
     fn marks_separately(&self, marks: &[char], start: usize, glyphs: &mut Vec<Glyph>) {
