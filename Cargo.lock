@@ -227,8 +227,12 @@ dependencies = [
 name = "meinbrowser"
 version = "0.0.0"
 dependencies = [
+ "mb-layout",
  "mb-platform",
  "mb-raster",
+ "mb-text",
+ "mb-url",
+ "mb-web",
 ]
 
 [[package]]

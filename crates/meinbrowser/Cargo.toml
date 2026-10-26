@@ -8,8 +8,12 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+mb-layout = { path = "../mb-layout" }
 mb-platform = { path = "../mb-platform" }
 mb-raster = { path = "../mb-raster" }
+mb-text = { path = "../mb-text" }
+mb-url = { path = "../mb-url" }
+mb-web = { path = "../mb-web" }
 
 [lints]
 workspace = true
