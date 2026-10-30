@@ -1,0 +1,84 @@
+name: Fuzzing
+
+on:
+  schedule:
+    - cron: "15 2 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "crates/**"
+      - "fuzz/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/fuzz.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  fuzz:
+    name: ${{ matrix.target }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        target: [html, css, url, xml, png, gif, deflate, font, json, encoding, unicode]
+    env:
+      CARGO_TERM_COLOR: never
+      CARGO_BUILD_JOBS: 2
+      FUZZ_TARGET: ${{ matrix.target }}
+      FUZZ_SECONDS: ${{ github.event_name == 'pull_request' && '30' || '600' }}
+    steps:
+      # Wie in ci.yml: keine fremden Actions, nur der genaue Commit.
+      - name: Quelltext holen
+        run: |
+          git init -q .
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          git fetch -q --no-tags --depth=1 origin "$GITHUB_SHA"
+          git checkout -q FETCH_HEAD
+          git log -1 --format='Commit %H'
+
+      - name: Vertrauliche Fehlerausgabe und Fehlerstatus des Läufers prüfen
+        if: matrix.target == 'html'
+        run: python3 -m unittest discover -s fuzz -p test_run.py
+
+      - name: Festgelegte Fuzzing-Werkzeuge installieren
+        run: |
+          rustup toolchain install nightly-2026-10-27 --profile minimal --no-self-update
+          cargo install cargo-fuzz --version 0.13.2 --locked
+
+      - name: Fuzz-Ziel mit AddressSanitizer bauen
+        run: |
+          cargo fetch --locked --manifest-path fuzz/Cargo.toml
+          lock_checksum=$(mktemp)
+          sha256sum fuzz/Cargo.lock > "$lock_checksum"
+          CARGO_NET_OFFLINE=true cargo +nightly-2026-10-27 fuzz build "$FUZZ_TARGET"
+          sha256sum --check "$lock_checksum"
+          rm "$lock_checksum"
+
+      - name: Startkorpora und Harness-Einstiege prüfen
+        if: matrix.target == 'html'
+        run: cargo test --locked --offline --manifest-path fuzz/Cargo.toml --lib
+
+      # SECURITY.md: Rohlogs und Fehlerdateien können unveröffentlichte
+      # Schwachstellen enthalten. run.py veröffentlicht nur Laufstatistiken.
+      # Keine öffentlich abrufbaren Crash-Artefakte hochladen; Dateien und
+      # neu erzeugte Korpora gehen beim Entfernen des Runners verloren.
+      - name: Begrenzten Fuzzing-Lauf ausführen
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            fuzz_seed=1
+          else
+            fuzz_seed=$((GITHUB_RUN_ID % 4294967295 + 1))
+          fi
+          python3 fuzz/run.py "$FUZZ_TARGET" --seconds "$FUZZ_SECONDS" --seed "$fuzz_seed"
