@@ -169,6 +169,9 @@ pub(crate) fn intrinsic_width(
     which: Intrinsic,
     depth: usize,
 ) -> f64 {
+    if !context.budget.spend(1) {
+        return 0.0;
+    }
     match &block.contents {
         BlockContents::Inline(content) => {
             let container = inline::Container {
@@ -469,7 +472,15 @@ fn layout_block_contents(
     let end_collapses =
         !independent && border.bottom == 0.0 && padding.bottom == 0.0 && height.is_none();
 
+    // Ist das Budget verbraucht, steigt das Layout nicht weiter ab.
     let flow = match &block.contents {
+        _ if !context.budget.spend(1) => Flow {
+            fragments: Vec::new(),
+            height: 0.0,
+            margins: CollapsedBlockMargins::default(),
+            first_baseline: None,
+            last_baseline: None,
+        },
         BlockContents::Blocks(children) => {
             layout_children(context, children, &children_cb, start_collapses, depth)
         }
@@ -584,6 +595,9 @@ fn layout_children(
     let mut first_baseline = None;
     let mut last_baseline = None;
     for child in children {
+        if !context.budget.spend(1) {
+            break;
+        }
         let layout = layout_block_level(context, child, cb, depth.saturating_add(1));
         let BlockLayout {
             mut fragment,

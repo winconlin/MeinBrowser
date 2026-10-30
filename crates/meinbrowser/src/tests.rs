@@ -26,3 +26,24 @@ fn missing_files_are_reported() {
     let error = Renderer::start(&path).err().unwrap();
     assert!(error.ends_with("lässt sich nicht laden"), "{error}");
 }
+
+#[test]
+fn requests_can_be_cancelled_without_waiting() {
+    let path =
+        std::env::temp_dir().join(format!("meinbrowser-{}-auftraege.html", std::process::id()));
+    std::fs::write(&path, "<!DOCTYPE html><body style='background: #00ff00'>").unwrap();
+    let renderer = Renderer::start(&path);
+    std::fs::remove_file(&path).unwrap();
+    let renderer = renderer.unwrap();
+    let first = renderer.request(40, 30).unwrap();
+    first.cancel.cancel();
+    let second = renderer.request(12, 8).unwrap();
+    let canvas = loop {
+        if let Some(result) = renderer.poll(&second) {
+            break result.unwrap();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    };
+    assert_eq!((canvas.width(), canvas.height()), (12, 8));
+    assert_eq!(canvas.pixel(0, 0), Some(0xff00_ff00));
+}

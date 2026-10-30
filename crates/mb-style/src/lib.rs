@@ -31,8 +31,8 @@ pub use computed::{
 };
 pub use declarations::{DeclarationBlock, Declared, parse_declaration_block};
 pub use selectors::{
-    InvalidSelector, MatchingContext, Namespaces, PseudoElement, Selector, SelectorList,
-    Specificity,
+    InvalidSelector, MatchingContext, MatchingPass, Namespaces, PseudoElement, Selector,
+    SelectorList, Specificity,
 };
 pub use stylesheet::StyleSheet;
 pub use ua::DocumentInfo;

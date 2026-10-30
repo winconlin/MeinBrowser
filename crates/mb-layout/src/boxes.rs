@@ -19,14 +19,15 @@
 
 use std::sync::Arc;
 
+use mb_base::Budget;
 use mb_css::Source;
 use mb_dom::{Document, NodeId, NodeKind};
 use mb_scene::Image;
 use mb_style::properties::{Display, DisplayInside, DisplayOutside, WhiteSpaceCollapse};
 use mb_style::values::ParseContext;
 use mb_style::{
-    Ancestors, ComputedValues, Device, MatchedDeclarations, MatchingContext, Stylist, flow_mode,
-    parse_declaration_block,
+    Ancestors, ComputedValues, Device, MatchedDeclarations, MatchingContext, MatchingPass, Stylist,
+    flow_mode, parse_declaration_block,
 };
 use mb_url::Url;
 
@@ -36,6 +37,10 @@ use crate::style::Style;
 /// So tief dürfen Elemente verschachtelt sein, damit Aufbau und Layout, die
 /// rekursiv arbeiten, mit 2 MiB Stapel auskommen.
 pub(crate) const MAX_DEPTH: usize = 200;
+
+/// Was Kaskade und berechnete Werte eines Elements das Budget kosten, über
+/// den Abgleich der Selektoren hinaus, den `mb-style` selbst bezahlt.
+const STYLE_STEPS: u64 = 32;
 
 pub(crate) type StyleRef = Arc<ComputedValues>;
 
@@ -155,6 +160,8 @@ pub(crate) struct Builder<'a> {
     pub(crate) document: &'a Document,
     pub(crate) stylist: &'a Stylist,
     pub(crate) matching: MatchingContext<'a>,
+    /// Das Budget des Auftrags; der Aufbau zahlt einen Schritt je Knoten.
+    pub(crate) budget: &'a Budget,
     pub(crate) device: &'a Device,
     pub(crate) fonts: &'a Fonts<'a>,
     /// Die Basis für URLs in Attributen.
@@ -175,11 +182,16 @@ impl<'a> Builder<'a> {
         fonts: &'a Fonts<'a>,
         base: &'a Url,
         images: &'a dyn Fn(&Url) -> Option<Arc<Image>>,
+        pass: &'a MatchingPass<'a>,
     ) -> Builder<'a> {
         Builder {
             document,
             stylist,
-            matching: MatchingContext::new(document),
+            matching: MatchingContext {
+                pass: Some(pass),
+                ..MatchingContext::new(document)
+            },
+            budget: pass.budget(),
             device,
             fonts,
             base,
@@ -227,6 +239,10 @@ impl<'a> Builder<'a> {
     /// das es keinen Ersatz gibt, erbt das Element nur; beim Wurzelelement
     /// gibt es dann keinen Stil.
     fn element_style(&self, node: NodeId, parent: Option<&StyleRef>) -> Option<StyleRef> {
+        // Kaskade und berechnete Werte kosten je Element ungefähr so viel wie
+        // 32 Schritte beim Abgleich. Ist das Budget danach verbraucht,
+        // bricht der Aufbau beim nächsten Knoten ab.
+        self.budget.spend(STYLE_STEPS);
         let attribute = self
             .document
             .element(node)
@@ -287,6 +303,9 @@ impl<'a> Builder<'a> {
     ) {
         let document = self.document;
         for child in document.children(node) {
+            if !self.budget.spend(1) {
+                return;
+            }
             self.node(child, style, container, depth);
         }
     }

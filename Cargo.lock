@@ -227,6 +227,7 @@ dependencies = [
 name = "meinbrowser"
 version = "0.0.0"
 dependencies = [
+ "mb-base",
  "mb-layout",
  "mb-platform",
  "mb-raster",
@@ -243,6 +244,7 @@ version = "0.0.0"
 name = "testrunner"
 version = "0.0.0"
 dependencies = [
+ "mb-base",
  "mb-layout",
  "mb-platform",
  "mb-raster",

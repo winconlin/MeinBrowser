@@ -816,6 +816,19 @@ fn inline_bounds(context: &LayoutContext<'_>, style: &StyleRef) -> Bounds {
     }
 }
 
+/// Was das Layout eines Inline-Formatierungskontexts ungefähr kostet, in
+/// Schritten des Budgets: ein fester Teil für Schriftwahl und
+/// Umbruchstellen, einer je Eintrag und einer je 16 Zeichen. So kostet ein
+/// Schritt hier ungefähr so viel wie beim Abgleich der Selektoren.
+fn work(content: &InlineContent) -> u64 {
+    let items = content.items.iter().map(|item| match item {
+        InlineItem::Text { text, .. } => text.len() / 16 + 1,
+        _ => 1,
+    });
+    let total = items.fold(32_usize, usize::saturating_add);
+    u64::try_from(total).unwrap_or(u64::MAX)
+}
+
 /// Lays out an inline formatting context.
 pub(crate) fn layout(
     context: &LayoutContext<'_>,
@@ -824,6 +837,9 @@ pub(crate) fn layout(
     sizing: Sizing,
     depth: usize,
 ) -> InlineLayout {
+    if !context.budget.spend(work(content)) {
+        return InlineLayout::default();
+    }
     let prepared = Prepared::new(context, content, container, sizing, depth);
     let opportunities = prepared.opportunities();
     let available = sizing.width();

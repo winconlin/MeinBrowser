@@ -12,6 +12,7 @@
 use std::fmt;
 use std::path::Path;
 
+use mb_base::Budget;
 use mb_layout::Fonts;
 use mb_raster::Canvas;
 
@@ -90,11 +91,15 @@ pub fn parse_list(text: &str) -> Result<Vec<RefTest>, ListError> {
 /// Breite und Höhe des Viewports der WPT.
 pub const VIEWPORT: (f64, f64) = (800.0, 600.0);
 
-/// Zeichnet eine Datei; `None`, wenn sie sich nicht laden lässt.
+/// Zeichnet eine Datei mit dem Budget, das auch das Programm hat; `None`,
+/// wenn sie sich nicht laden lässt oder das Budget nicht reicht.
 pub fn render(path: &Path, fonts: &Fonts<'_>) -> Option<Canvas> {
     let url = mb_web::file_url(path)?;
     let page = mb_web::Page::load(url, Box::new(mb_web::read_file))?;
-    let scene = page.render(fonts, VIEWPORT.0, VIEWPORT.1);
+    let budget = Budget::new(mb_web::RENDER_STEPS);
+    let scene = page
+        .render_within(fonts, VIEWPORT.0, VIEWPORT.1, &budget)
+        .ok()?;
     mb_raster::render(&scene).ok()
 }
 

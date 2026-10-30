@@ -33,7 +33,7 @@ use mb_css::{
     parse_component_value_list,
 };
 
-pub use matching::MatchingContext;
+pub use matching::{MatchingContext, MatchingPass};
 
 /// Wie tief Selektoren in Pseudoklassen wie `:is()` verschachtelt sein
 /// dürfen; tiefer verschachtelte sind ungültig. Parser und Abgleich steigen

@@ -23,7 +23,7 @@
 mod tests;
 
 use std::cmp::Reverse;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use mb_base::DomString;
@@ -434,11 +434,15 @@ impl Stylist {
             lookup(&self.index.ids, lower(id));
         }
         if let Some(classes) = data.attribute("class") {
+            // Den Wert zu lesen kostet je 64 Codeeinheiten einen Schritt.
+            if let Some(pass) = context.pass {
+                pass.budget()
+                    .spend(u64::try_from(classes.len() / 64).unwrap_or(u64::MAX));
+            }
             let classes = lower(classes);
-            let mut seen: Vec<&[u16]> = Vec::new();
+            let mut seen: BTreeSet<&[u16]> = BTreeSet::new();
             for class in classes.split(|&unit| is_whitespace(unit)) {
-                if !class.is_empty() && !seen.contains(&class) {
-                    seen.push(class);
+                if !class.is_empty() && seen.insert(class) {
                     lookup(&self.index.classes, class.to_vec());
                 }
             }

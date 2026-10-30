@@ -2,7 +2,11 @@
 //!
 //! - `meinbrowser DATEI` zeigt eine lokale HTML- oder XHTML-Datei in der
 //!   Größe des Fensters an (M1), ein Gerätepixel je CSS-Pixel. Scrollen gibt
-//!   es noch nicht.
+//!   es noch nicht. Gezeichnet wird auf einem eigenen Faden, das Fenster
+//!   bleibt dabei bedienbar: Eine neue Größe bricht den laufenden Auftrag
+//!   ab, und für Stil und Layout gilt das Budget [`mb_web::RENDER_STEPS`].
+//!   Ist es verbraucht, bleibt das letzte Bild stehen, und der Fehler
+//!   erscheint auf der Standardfehlerausgabe.
 //! - `meinbrowser` öffnet ein Fenster mit einem selbst gezeichneten Testbild
 //!   (M0). Mausklicks setzen Punkte ins Bild, Tasten und Texteingaben
 //!   erscheinen auf der Standardausgabe.
@@ -12,12 +16,14 @@
 
 #![forbid(unsafe_code)]
 
+use std::cell::Cell;
 use std::ffi::OsString;
 use std::path::Path;
 use std::process::ExitCode;
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::time::{Duration, Instant};
 
+use mb_base::{Budget, Cancel, Exhausted};
 use mb_layout::Fonts;
 use mb_platform::{Capture, Event, KeyEvent, Window, WindowOptions};
 use mb_raster::{Canvas, Color, PROBES, probe_position, test_image};
@@ -33,6 +39,10 @@ const USAGE: &str = "Aufruf: meinbrowser [DATEI | --selbsttest [bild.ppm] | --ve
 /// Der Stapel des Fadens, der die Seite lädt und zeichnet. Layout und
 /// Zeichnen arbeiten rekursiv, wie im Läufer der Referenztests.
 const STACK: usize = 64 << 20;
+
+/// So oft schaut das Fenster nach, ob ein Bild fertig ist, solange eins
+/// aussteht. Sonst wartet es nur auf Ereignisse.
+const POLL: Duration = Duration::from_millis(50);
 
 fn main() -> ExitCode {
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
@@ -78,10 +88,25 @@ fn show(window: &mut Window, canvas: &Canvas) -> Result<(), String> {
         .map_err(|err| err.to_string())
 }
 
+/// Ein Auftrag an den Faden der Seite: zeichnen in dieser Größe.
+struct Job {
+    id: u64,
+    width: u32,
+    height: u32,
+    cancel: Cancel,
+}
+
+/// Ein Bild, das der Faden der Seite noch zeichnet.
+struct Pending {
+    id: u64,
+    cancel: Cancel,
+}
+
 /// Lädt und zeichnet eine Seite auf einem eigenen Faden mit großem Stapel.
 struct Renderer {
-    sizes: Sender<(u32, u32)>,
-    frames: Receiver<Result<Canvas, String>>,
+    jobs: Sender<Job>,
+    frames: Receiver<(u64, Result<Canvas, String>)>,
+    next_id: Cell<u64>,
 }
 
 impl Renderer {
@@ -90,7 +115,7 @@ impl Renderer {
         let url = mb_web::file_url(path)
             .ok_or_else(|| format!("{}: kein gültiger Pfad", path.display()))?;
         let (loaded_sender, loaded) = mpsc::channel();
-        let (sizes, requests) = mpsc::channel();
+        let (jobs, requests) = mpsc::channel();
         let (results, frames) = mpsc::channel();
         std::thread::Builder::new()
             .name("Seite".into())
@@ -98,26 +123,71 @@ impl Renderer {
             .spawn(move || render_page(url, loaded_sender, requests, results))
             .map_err(|err| format!("Faden: {err}"))?;
         match loaded.recv() {
-            Ok(true) => Ok(Renderer { sizes, frames }),
+            Ok(true) => Ok(Renderer {
+                jobs,
+                frames,
+                next_id: Cell::new(0),
+            }),
             _ => Err(format!("{}: lässt sich nicht laden", path.display())),
         }
     }
 
-    /// Zeichnet die Seite in einem Viewport von `width` × `height` Pixeln.
+    /// Zeichnet die Seite in einem Viewport von `width` × `height` Pixeln
+    /// und wartet auf das Bild. Das Fenster wartet nicht, es nimmt
+    /// [`Renderer::request`].
+    #[cfg(test)]
     fn render(&self, width: u32, height: u32) -> Result<Canvas, String> {
-        let stopped = || "der Faden der Seite ist beendet".to_owned();
-        self.sizes.send((width, height)).map_err(|_| stopped())?;
-        self.frames.recv().map_err(|_| stopped())?
+        let pending = self.request(width, height)?;
+        loop {
+            let (id, result) = self.frames.recv().map_err(|_| stopped())?;
+            if id == pending.id {
+                return result;
+            }
+        }
+    }
+
+    /// Gibt ein Bild in Auftrag, ohne zu warten.
+    fn request(&self, width: u32, height: u32) -> Result<Pending, String> {
+        let id = self.next_id.get();
+        self.next_id.set(id.wrapping_add(1));
+        let cancel = Cancel::new();
+        let job = Job {
+            id,
+            width,
+            height,
+            cancel: cancel.clone(),
+        };
+        self.jobs.send(job).map_err(|_| stopped())?;
+        Ok(Pending { id, cancel })
+    }
+
+    /// Das Bild zu `pending`, falls es fertig ist, ohne zu warten. Ältere
+    /// Bilder werden verworfen.
+    fn poll(&self, pending: &Pending) -> Option<Result<Canvas, String>> {
+        loop {
+            match self.frames.try_recv() {
+                Ok((id, result)) if id == pending.id => return Some(result),
+                Ok(_) => {}
+                Err(TryRecvError::Empty) => return None,
+                Err(TryRecvError::Disconnected) => return Some(Err(stopped())),
+            }
+        }
     }
 }
 
+fn stopped() -> String {
+    "der Faden der Seite ist beendet".to_owned()
+}
+
 /// Der Faden eines [`Renderer`]: meldet über `loaded`, ob sich die Seite
-/// laden ließ, und zeichnet sie dann für jede Größe aus `requests`.
+/// laden ließ, und zeichnet sie dann für jeden Auftrag aus `requests`. Von
+/// mehreren wartenden Aufträgen zählt nur der neueste; die anderen enden
+/// als abgebrochen.
 fn render_page(
     url: Url,
     loaded: Sender<bool>,
-    requests: Receiver<(u32, u32)>,
-    results: Sender<Result<Canvas, String>>,
+    requests: Receiver<Job>,
+    results: Sender<(u64, Result<Canvas, String>)>,
 ) {
     let mut library = FontLibrary::new(Box::new(|path| std::fs::read(path).ok()));
     for file in mb_platform::fonts::font_files() {
@@ -131,10 +201,20 @@ fn render_page(
     let Some(page) = page else {
         return;
     };
-    for (width, height) in requests {
-        let scene = page.render(&fonts, f64::from(width), f64::from(height));
-        let canvas = mb_raster::render(&scene).map_err(|err| err.to_string());
-        if results.send(canvas).is_err() {
+    while let Ok(mut job) = requests.recv() {
+        while let Ok(newer) = requests.try_recv() {
+            let skipped = std::mem::replace(&mut job, newer);
+            let cancelled = Err(Exhausted::Cancelled.to_string());
+            if results.send((skipped.id, cancelled)).is_err() {
+                return;
+            }
+        }
+        let budget = Budget::with_cancel(mb_web::RENDER_STEPS, job.cancel);
+        let canvas = page
+            .render_within(&fonts, f64::from(job.width), f64::from(job.height), &budget)
+            .map_err(|err| format!("Stil und Layout: {err}"))
+            .and_then(|scene| mb_raster::render(&scene).map_err(|err| err.to_string()));
+        if results.send((job.id, canvas)).is_err() {
             return;
         }
     }
@@ -166,31 +246,60 @@ fn view(path: &Path) -> ExitCode {
         }
     };
     let mut frame: Option<Canvas> = None;
+    let mut pending: Option<Pending> = None;
     loop {
-        let event = match window.next_event(None) {
-            Ok(Some(event)) => event,
-            Ok(None) => continue,
+        // Solange ein Bild aussteht, kommt die Schleife regelmäßig zurück.
+        let timeout = pending.as_ref().map(|_| POLL);
+        let event = match window.next_event(timeout) {
+            Ok(event) => event,
             Err(err) => {
                 eprintln!("meinbrowser: {err}");
                 return ExitCode::FAILURE;
             }
         };
+        let mut redraw = false;
         match event {
-            Event::CloseRequested => return ExitCode::SUCCESS,
-            Event::Resized { .. } => {
+            Some(Event::CloseRequested) => {
+                if let Some(pending) = &pending {
+                    pending.cancel.cancel();
+                }
+                return ExitCode::SUCCESS;
+            }
+            Some(Event::Resized { .. }) => {
+                if let Some(pending) = pending.take() {
+                    pending.cancel.cancel();
+                }
                 let (width, height) = window.size();
-                match renderer.render(width, height) {
-                    Ok(canvas) => frame = Some(canvas),
+                match renderer.request(width, height) {
+                    Ok(next) => pending = Some(next),
                     Err(err) => {
                         eprintln!("meinbrowser: {err}");
                         return ExitCode::FAILURE;
                     }
                 }
             }
-            Event::RedrawRequested => {}
-            _ => continue,
+            Some(Event::RedrawRequested) => redraw = true,
+            _ => {}
         }
-        if let Some(canvas) = &frame
+        if let Some(waiting) = &pending
+            && let Some(result) = renderer.poll(waiting)
+        {
+            pending = None;
+            redraw = true;
+            match result {
+                Ok(canvas) => frame = Some(canvas),
+                Err(err) => {
+                    eprintln!("meinbrowser: {err}");
+                    // Ohne ein früheres Bild bleibt das Fenster weiß.
+                    if frame.is_none() {
+                        let (width, height) = window.size();
+                        frame = Canvas::new(width, height, Color::WHITE).ok();
+                    }
+                }
+            }
+        }
+        if redraw
+            && let Some(canvas) = &frame
             && let Err(err) = show(&mut window, canvas)
         {
             eprintln!("meinbrowser: {err}");

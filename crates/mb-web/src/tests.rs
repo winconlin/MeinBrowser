@@ -3,12 +3,13 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use mb_base::{Budget, Cancel, Exhausted};
 use mb_layout::Fonts;
 use mb_scene::{Color, Item, Rect};
 use mb_text::FontLibrary;
 use mb_url::Url;
 
-use crate::{Page, file_url};
+use crate::{Page, RENDER_STEPS, file_url};
 
 /// Eine Seite aus Dateien unter `file:///t/`.
 fn load(name: &str, files: &[(&str, Vec<u8>)]) -> Page {
@@ -115,4 +116,58 @@ fn file_urls_keep_literal_characters() {
     } else {
         assert_eq!(path, name);
     }
+}
+
+#[test]
+fn nested_nth_child_of_renders_quickly() {
+    // Die kleine Datei, mit der sich der Abgleich früher festlief.
+    let mut selector = "*".to_owned();
+    for _ in 0..20 {
+        selector = format!(":nth-child(n of {selector})");
+    }
+    let html = format!(
+        "<!DOCTYPE html><style>body {{ margin: 0 }} div {{ height: 1px }} \
+         div{selector} {{ background: green }}</style><body>{}",
+        "<div></div>".repeat(30)
+    );
+    let page = load("a.html", &[("a.html", html.into_bytes())]);
+    let library = FontLibrary::new(Box::new(|_| None));
+    let fonts = Fonts::new(&library);
+    let budget = Budget::new(100_000);
+    let scene = page
+        .render_within(&fonts, 800.0, 600.0, &budget)
+        .expect("Szene");
+    let green = scene
+        .items
+        .iter()
+        .filter(|item| matches!(item, Item::Rect { color, .. } if *color == GREEN))
+        .count();
+    assert_eq!(green, 30);
+}
+
+#[test]
+fn render_within_stops_when_the_budget_runs_out() {
+    let page = load(
+        "a.html",
+        &[(
+            "a.html",
+            "<!DOCTYPE html><p>Text</p>".repeat(100).into_bytes(),
+        )],
+    );
+    let library = FontLibrary::new(Box::new(|_| None));
+    let fonts = Fonts::new(&library);
+    let budget = Budget::new(1_000);
+    assert_eq!(
+        page.render_within(&fonts, 800.0, 600.0, &budget).err(),
+        Some(Exhausted::Steps)
+    );
+    let cancel = Cancel::new();
+    cancel.cancel();
+    let budget = Budget::with_cancel(RENDER_STEPS, cancel);
+    assert_eq!(
+        page.render_within(&fonts, 800.0, 600.0, &budget).err(),
+        Some(Exhausted::Cancelled)
+    );
+    let budget = Budget::new(RENDER_STEPS);
+    assert!(page.render_within(&fonts, 800.0, 600.0, &budget).is_ok());
 }

@@ -1,7 +1,7 @@
 //! Eigene Tests für Selektoren. Die WPT-Tests zu `querySelectorAll()` stehen
 //! in `wpt.rs`.
 
-use mb_base::{CodePoint, DomString};
+use mb_base::{Budget, Cancel, CodePoint, DomString, Exhausted};
 use mb_css::{Source, parse_component_value_list};
 use mb_dom::Document;
 use mb_html::{Options, ScriptingMode, parse_document};
@@ -411,4 +411,102 @@ fn nesting_selector() {
     }
     assert!(nested("& a", &list).is_err());
     assert!(ids(&document, &list).is_empty());
+}
+
+/// Wie [`select`], aber in einem Durchgang mit diesem Budget.
+fn select_within(document: &Document, selector: &str, budget: &Budget) -> Vec<String> {
+    let list = parse(selector).unwrap_or_else(|_| panic!("ungültig: {selector}"));
+    let pass = MatchingPass::new(budget);
+    let context = MatchingContext {
+        pass: Some(&pass),
+        ..MatchingContext::new(document)
+    };
+    list.scope_match(document.root(), &context)
+        .into_iter()
+        .map(|node| {
+            document
+                .element(node)
+                .and_then(|element| element.attribute("id"))
+                .map_or_else(|| "-".to_owned(), DomString::to_string_lossy)
+        })
+        .collect()
+}
+
+#[test]
+fn nested_nth_child_of_stays_linear() {
+    // Ohne gemerkte Stellen wüchse die Arbeit mit jeder Ebene um den Faktor
+    // der Geschwister; 20 Ebenen über 30 Geschwister wären nie fertig.
+    let document = document(&format!(
+        "<!DOCTYPE html><body>{}",
+        "<div></div>".repeat(30)
+    ));
+    let mut selector = "*".to_owned();
+    for _ in 0..20 {
+        selector = format!(":nth-child(n of {selector})");
+    }
+    let budget = Budget::new(20_000);
+    // `html`, `head`, `body` und die 30 `div`.
+    assert_eq!(select_within(&document, &selector, &budget).len(), 33);
+    assert_eq!(budget.exhausted(), None);
+}
+
+#[test]
+fn nested_is_with_combinators_stays_linear() {
+    let document = document(&format!(
+        "<!DOCTYPE html><body>{}<p id=t></p>{}",
+        "<div>".repeat(150),
+        "</div>".repeat(150)
+    ));
+    let mut selector = "div".to_owned();
+    for _ in 0..10 {
+        selector = format!(":is({selector} div)");
+    }
+    let budget = Budget::new(100_000);
+    assert_eq!(
+        select_within(&document, &format!("{selector} p"), &budget),
+        ["t"]
+    );
+    assert_eq!(budget.exhausted(), None);
+}
+
+#[test]
+fn positions_are_counted_per_parent() {
+    let document = document(
+        "<ul><li id=a></li><li id=b class=k></li><li id=c class=k></li></ul>\
+         <ol><li id=d class=k></li><li id=e></li><p id=f></p><li id=g class=k></li></ol>",
+    );
+    let budget = Budget::unlimited();
+    assert_eq!(
+        select_within(&document, ":nth-child(1 of .k)", &budget),
+        ["b", "d"]
+    );
+    assert_eq!(
+        select_within(&document, ":nth-last-child(1 of .k)", &budget),
+        ["c", "g"]
+    );
+    assert_eq!(
+        select_within(&document, "li:nth-last-of-type(1), p:only-of-type", &budget),
+        ["c", "f", "g"]
+    );
+    assert_eq!(
+        select_within(&document, "li:nth-child(2), li:nth-child(4)", &budget),
+        ["b", "e", "g"]
+    );
+}
+
+#[test]
+fn spent_budget_stops_matching() {
+    let document = document(&format!(
+        "<!DOCTYPE html><body>{}",
+        "<div></div>".repeat(100)
+    ));
+    let budget = Budget::new(50);
+    select_within(&document, "div:nth-child(odd)", &budget);
+    assert_eq!(budget.exhausted(), Some(Exhausted::Steps));
+
+    let cancel = Cancel::new();
+    cancel.cancel();
+    let budget = Budget::with_cancel(u64::MAX, cancel);
+    assert!(select_within(&document, "div", &budget).is_empty());
+    assert_eq!(budget.exhausted(), Some(Exhausted::Cancelled));
 }

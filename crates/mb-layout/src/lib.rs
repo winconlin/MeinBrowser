@@ -7,6 +7,12 @@
 //! Bilder als ersetzte Elemente und das Zeichnen des Fragmentbaums in eine
 //! Szene. Es fehlen noch Floats, Positionierung, Überlauf, Tabellen, Flex,
 //! Grid, Listen, generierter Inhalt, Bidi und senkrechte Schreibmodi.
+//!
+//! Stil und Layout eines Dokuments sind ein Auftrag mit einem gemeinsamen
+//! [`Budget`] ([`layout_within`]). Den Abgleich der Selektoren bezahlt
+//! `mb-style`; das Layout zahlt je Knoten im Aufbau, je Blockcontainer und
+//! je Berechnung einer Größe aus dem Inhalt. Ist das Budget verbraucht,
+//! steigt es nicht weiter ab, und das Ergebnis wird verworfen.
 
 #![forbid(unsafe_code)]
 
@@ -23,10 +29,11 @@ mod tests;
 
 use std::sync::Arc;
 
+use mb_base::{Budget, Exhausted};
 use mb_dom::{Document, NodeId};
 use mb_scene::{Image, Scene};
 use mb_style::properties::{BgImage, Layers, Longhand, SpecifiedValue};
-use mb_style::{Device, Stylist};
+use mb_style::{Device, MatchingPass, Stylist};
 use mb_url::Url;
 
 pub use fonts::Fonts;
@@ -39,6 +46,7 @@ use crate::style::Style;
 /// Was das Layout überall braucht.
 pub(crate) struct LayoutContext<'a> {
     pub(crate) fonts: &'a Fonts<'a>,
+    pub(crate) budget: &'a Budget,
 }
 
 /// Was das Layout eines Dokuments braucht.
@@ -82,8 +90,27 @@ fn has_background(style: &StyleRef) -> bool {
     color || image
 }
 
-/// Lays out a document in its viewport.
+/// Das Layout eines Dokuments in seinem Viewport, ohne Grenze für die
+/// Arbeit. Für fremde Inhalte gibt es [`layout_within`].
 pub fn layout(input: &LayoutInput<'_>) -> FragmentTree {
+    let budget = Budget::unlimited();
+    match layout_within(input, &budget) {
+        Ok(tree) => tree,
+        // Ein Budget ohne Grenze und ohne Abbruch geht nicht aus.
+        Err(_) => FragmentTree {
+            root: None,
+            canvas: None,
+            propagated_from: None,
+            width: input.device.viewport_width,
+            height: input.device.viewport_height,
+        },
+    }
+}
+
+/// Stil und Layout eines Dokuments, bezahlt aus `budget`. `Err`, wenn es
+/// verbraucht ist oder der Auftrag abgebrochen wurde.
+pub fn layout_within(input: &LayoutInput<'_>, budget: &Budget) -> Result<FragmentTree, Exhausted> {
+    let pass = MatchingPass::new(budget);
     let mut builder = Builder::new(
         input.document,
         input.stylist,
@@ -91,9 +118,14 @@ pub fn layout(input: &LayoutInput<'_>) -> FragmentTree {
         input.fonts,
         input.base,
         input.images,
+        &pass,
     );
     let root = builder.build();
-    let context = LayoutContext { fonts: input.fonts };
+    budget.check()?;
+    let context = LayoutContext {
+        fonts: input.fonts,
+        budget,
+    };
     let width = input.device.viewport_width;
     let height = input.device.viewport_height;
     let fragment = root.as_ref().map(|root| {
@@ -110,18 +142,19 @@ pub fn layout(input: &LayoutInput<'_>) -> FragmentTree {
     });
     // Ohne eigenen Hintergrund der Wurzel trägt die Leinwand den von
     // `body` (Backgrounds 3, Abschnitt 2.11.2).
+    budget.check()?;
     let root_style = builder.root_style.clone();
     let (canvas, propagated_from) = match (&root_style, &builder.body_style) {
         (Some(root), Some(body)) if !has_background(root) => (Some(body.clone()), builder.body),
         (root, _) => (root.clone(), None),
     };
-    FragmentTree {
+    Ok(FragmentTree {
         root: fragment,
         canvas,
         propagated_from,
         width,
         height,
-    }
+    })
 }
 
 impl FragmentTree {
