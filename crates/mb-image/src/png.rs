@@ -31,7 +31,17 @@ mod pixels;
 #[cfg(test)]
 mod tests;
 
-use mb_compress::{Crc32, zlib_decompress};
+use mb_compress::{Crc32, zlib_decompress_sized};
+
+/// So viele Bytes belegt [`decode`] höchstens je Pixel, dazu höchstens so
+/// viele, wie die Eingabe lang ist, für die gesammelten Bilddaten und
+/// Tabellen fester Größe für die Huffman-Codes. Je Pixel gleichzeitig: die
+/// entpackten Daten mit den Filterbytes (bis zu 9 Bytes), das Bild (bis zu
+/// 8 Bytes bei 16 Bit RGBA) und zwei Zeilen zum Umkehren der Filter, die bei
+/// einem Bild aus einer Zeile zusammen doppelt so groß sind wie das Bild
+/// (bis zu 16 Bytes). [`Png::to_rgba8`] braucht mit dem Bild zusammen
+/// höchstens 12 Bytes je Pixel.
+pub const DECODE_BYTES_PER_PIXEL: u64 = 33;
 
 const SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
 
@@ -336,7 +346,8 @@ pub fn decode(input: &[u8], max_pixels: u64) -> Result<Png, Error> {
 
     let mut palette: Option<Vec<[u8; 3]>> = None;
     let mut transparency: Option<Transparency> = None;
-    let mut image_data = Vec::new();
+    // Die Bilddaten sind ein Teil der Eingabe; so wächst der Puffer nicht nach.
+    let mut image_data = Vec::with_capacity(input.len());
     let mut position = Position::Before;
     loop {
         let (length, kind) = chunks.header()?;
@@ -394,7 +405,7 @@ pub fn decode(input: &[u8], max_pixels: u64) -> Result<Png, Error> {
     if position == Position::Before {
         return Err(Error::MissingImageData);
     }
-    let raw = zlib_decompress(&image_data, layout.raw_size).map_err(|error| match error {
+    let raw = zlib_decompress_sized(&image_data, layout.raw_size).map_err(|error| match error {
         mb_compress::Error::TooLarge => Error::ImageDataLength,
         error => Error::Compression(error),
     })?;

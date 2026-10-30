@@ -49,6 +49,15 @@ fn last_error(function: &'static str) -> Error {
     }
 }
 
+/// Ob eine offene Datei auf einem Datenträger liegt, also kein Gerät und
+/// keine Pipe ist (`GetFileType`).
+pub(crate) fn is_disk_file(file: &std::fs::File) -> bool {
+    use std::os::windows::io::AsRawHandle;
+    // SAFETY: Das Handle gehört zu `file`, das für die Dauer des Aufrufs
+    // offen bleibt.
+    unsafe { GetFileType(file.as_raw_handle()) == FILE_TYPE_DISK }
+}
+
 fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(Some(0)).collect()
 }

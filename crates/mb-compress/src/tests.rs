@@ -96,6 +96,31 @@ fn zlib_format() {
     );
 }
 
+#[test]
+fn sized_output_is_allocated_once() {
+    // Ein Block mit festen Codes (Abschnitt 3.2.6): das Literal 0, dann
+    // viermal 258 Bytes ab dem Abstand 1, die Byte für Byte dazukommen.
+    let mut writer = BitWriter::default();
+    writer.value(1, 1); // BFINAL
+    writer.value(1, 2); // feste Codes
+    writer.code(0x30, 8); // Literal 0
+    for _ in 0..4 {
+        writer.code(0xC5, 8); // Symbol 285: Länge 258
+        writer.code(0, 5); // Abstand 1
+    }
+    writer.code(0, 7); // Blockende
+    let expected = vec![0_u8; 1033];
+    let mut input = vec![0x78, 0x01];
+    input.extend_from_slice(&writer.bytes());
+    input.extend_from_slice(&adler32(&expected).to_be_bytes());
+    assert_eq!(zlib_decompress(&input, 1033).as_ref(), Ok(&expected));
+    let data = zlib_decompress_sized(&input, 1033).expect("1033 Bytes");
+    assert_eq!(data, expected);
+    // Wäre der Puffer gewachsen, hätte er mehr Platz.
+    assert_eq!(data.capacity(), Vec::<u8>::with_capacity(1033).capacity());
+    assert_eq!(zlib_decompress_sized(&input, 1032), Err(Error::TooLarge));
+}
+
 /// Schreibt Bits wie ein Kodierer: Zahlen vom niederwertigsten Bit an,
 /// Huffman-Codes vom höchstwertigen an.
 #[derive(Default)]
