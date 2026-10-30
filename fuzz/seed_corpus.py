@@ -23,8 +23,10 @@ def font():
     struct.pack_into(">hh", hhea, 4, 800, -200)
     struct.pack_into(">H", hhea, 34, 1)
     cmap = struct.pack(">6H", 0, 1, 3, 1, 0, 12)
-    # Printable ASCII maps to glyph 1, then the final segment for U+FFFF.
-    cmap += struct.pack(">16H", 4, 32, 0, 4, 4, 1, 0, 0x7E, 0xFFFF, 0, 0x20, 0xFFFF, 0xFFE1, 1, 0, 0)
+    # Printable ASCII maps to glyph 1 through the glyph ID array right after
+    # idRangeOffset, then the final segment for U+FFFF.
+    cmap += struct.pack(">16H", 4, 32 + 2 * 95, 0, 4, 4, 1, 0, 0x7E, 0xFFFF, 0, 0x20, 0xFFFF, 0, 1, 4, 0)
+    cmap += struct.pack(">95H", *[1] * 95)
     glyph = struct.pack(">5h2H", 1, 0, 0, 10, 10, 3, 0)
     glyph += bytes([0x31, 0x33, 0x35, 0x23, 10, 10, 10, 0])
     # A family name, so the page target's font library selects this face.

@@ -325,6 +325,11 @@ mod tests {
     #[test]
     fn page_seeds_reach_resources_and_glyphs() {
         assert_eq!(font_library().face_count(), 1);
+        let face = mb_text::Face::parse(FONT.into(), 0).expect("synthetic font");
+        for character in [' ', 'A', 'T', 'x', '~'] {
+            assert_eq!(face.glyph_index(character), Some(mb_text::GlyphId(1)));
+        }
+        assert_eq!(face.glyph_index('\u{e9}'), None);
         let data = include_bytes!("../seeds/page/resources");
         assert_eq!(parts(data).len(), 4);
         let page = load_page(data);
@@ -346,12 +351,12 @@ mod tests {
                 .iter()
                 .any(|item| matches!(item, mb_scene::Item::Image { .. }))
         );
-        assert!(
-            scene
-                .items
-                .iter()
-                .any(|item| matches!(item, mb_scene::Item::Glyphs(_)))
-        );
+        // Text glyphs from the font, not only the missing glyph 0.
+        assert!(scene.items.iter().any(|item| matches!(
+            item,
+            mb_scene::Item::Glyphs(run)
+                if run.glyphs.iter().any(|glyph| glyph.id == mb_text::GlyphId(1))
+        )));
     }
 
     #[test]
