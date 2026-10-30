@@ -22,6 +22,10 @@ impl Window {
         match self.never {}
     }
 
+    pub fn scale(&self) -> f64 {
+        match self.never {}
+    }
+
     pub fn present(&mut self, _width: u32, _height: u32, _pixels: &[u32]) -> Result<(), Error> {
         match self.never {}
     }

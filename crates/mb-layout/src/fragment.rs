@@ -52,6 +52,15 @@ impl Rect {
         }
     }
 
+    /// Das kleinste Rechteck, das beide enthält.
+    pub(crate) fn union(&self, other: &Rect) -> Rect {
+        let x = self.x.min(other.x);
+        let y = self.y.min(other.y);
+        let right = (self.x + self.width).max(other.x + other.width);
+        let bottom = (self.y + self.height).max(other.y + other.height);
+        Rect::new(x, y, right - x, bottom - y)
+    }
+
     pub(crate) fn inflate(&self, amount: f64) -> Rect {
         Rect {
             x: self.x - amount,
@@ -83,6 +92,10 @@ pub(crate) struct BoxFragment {
     pub(crate) border: Sides,
     pub(crate) padding: Sides,
     pub(crate) children: Vec<Fragment>,
+    /// Die Zeilen, die der Kasten direkt enthält, zusammengefasst und mit
+    /// ihrem Inhalt, auch wo er über sie hinausragt; relativ zum
+    /// Inhaltsbereich. `None` ohne Zeilen.
+    pub(crate) lines: Option<Rect>,
     /// Ein Kasten auf Atomebene in einer Zeile; er wird wie ein eigener
     /// Stapelkontext gezeichnet (CSS 2, Anhang E).
     pub(crate) atomic: bool,

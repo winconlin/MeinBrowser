@@ -46,6 +46,7 @@ pub const INFINITE: DWORD = 0xFFFF_FFFF;
 pub const WAIT_FAILED: DWORD = 0xFFFF_FFFF;
 pub const SIZE_MINIMIZED: WPARAM = 1;
 pub const TME_LEAVE: DWORD = 0x0000_0002;
+pub const SWP_NOMOVE: UINT = 0x0002;
 pub const SWP_NOZORDER: UINT = 0x0004;
 pub const SWP_NOACTIVATE: UINT = 0x0010;
 /// `ToUnicodeEx`: Bit 2 von `wFlags` lässt den Tastaturzustand unverändert
@@ -285,6 +286,14 @@ unsafe extern "system" {
         dwhkl: HKL,
     ) -> c_int;
     pub fn SetProcessDpiAwarenessContext(value: HANDLE) -> BOOL;
+    pub fn GetDpiForWindow(hwnd: HWND) -> UINT;
+    pub fn AdjustWindowRectExForDpi(
+        lpRect: *mut RECT,
+        dwStyle: DWORD,
+        bMenu: BOOL,
+        dwExStyle: DWORD,
+        dpi: UINT,
+    ) -> BOOL;
     #[cfg(target_pointer_width = "64")]
     pub fn GetWindowLongPtrW(hWnd: HWND, nIndex: c_int) -> isize;
     #[cfg(target_pointer_width = "64")]

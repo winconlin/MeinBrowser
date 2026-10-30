@@ -99,6 +99,8 @@ pub(crate) struct InlineLayout {
     pub(crate) last_baseline: Option<f64>,
     /// Die breiteste Zeile, für die Größen aus dem Inhalt.
     pub(crate) width: f64,
+    /// Die Zeilen mit ihrem Inhalt, zusammengefasst; `None` ohne Zeilen.
+    pub(crate) lines: Option<Rect>,
 }
 
 /// Ein Zeichen nach Phase I.
@@ -936,6 +938,19 @@ pub(crate) fn layout(
             result.last_baseline = Some(line.baseline);
             result.has_lines = true;
             result.fragments.extend(line.fragments);
+            // Die Zeile reicht über den Inhaltsbereich und so weit, wie ihr
+            // Inhalt über ihn hinausragt.
+            let (left, right) = line.extent;
+            let left = left.min(0.0);
+            let right = if available.is_finite() {
+                right.max(available)
+            } else {
+                right
+            };
+            if line.height > 0.0 && right > left {
+                let rect = Rect::new(left, y, right - left, line.height);
+                result.lines = Some(result.lines.map_or(rect, |lines| lines.union(&rect)));
+            }
             y += line.height;
         }
         first_line = false;
@@ -963,6 +978,8 @@ struct Line {
     height: f64,
     baseline: f64,
     width: f64,
+    /// Wo der Inhalt waagrecht beginnt und endet.
+    extent: (f64, f64),
 }
 
 /// Ein Inline-Kasten auf der Zeile, waagrecht.
@@ -1078,6 +1095,9 @@ fn place_line(
 
     // Waagrechte Stellen der Teile.
     let mut x = indent + offset;
+    // Negative Abstände führen zurück; der Inhalt reicht so weit, wie `x`
+    // irgendwo kam, nicht nur bis zum Zeilenende.
+    let mut extent = (x, x);
     let mut positions: Vec<f64> = Vec::with_capacity(end.saturating_sub(start));
     let mut placed: Vec<PlacedBox> = open
         .iter()
@@ -1142,6 +1162,7 @@ fn place_line(
             }
             None => {}
         }
+        extent = (extent.0.min(x), extent.1.max(x));
     }
     let line_end = x;
     for placed_box in placed.iter_mut() {
@@ -1534,5 +1555,6 @@ fn place_line(
         height: line_height,
         baseline: root_baseline,
         width,
+        extent,
     })
 }

@@ -4,9 +4,11 @@
 //! Kastenbaum aus Dokument und Stilen, Blockformatierungskontexte mit
 //! zusammenfallenden Außenabständen, Inline-Formatierungskontexte mit
 //! Leerraum, Zeilenumbruch und senkrechter Ausrichtung, Inline-Blöcke,
-//! Bilder als ersetzte Elemente und das Zeichnen des Fragmentbaums in eine
-//! Szene. Es fehlen noch Floats, Positionierung, Überlauf, Tabellen, Flex,
-//! Grid, Listen, generierter Inhalt, Bidi und senkrechte Schreibmodi.
+//! Bilder als ersetzte Elemente, der Bereich, über den der Viewport scrollt,
+//! und das Zeichnen des Fragmentbaums in eine Szene an einer Scrollposition.
+//! Es fehlen noch Floats, Positionierung, die Eigenschaft `overflow`,
+//! Tabellen, Flex, Grid, Listen, generierter Inhalt, Bidi und senkrechte
+//! Schreibmodi.
 //!
 //! Stil und Layout eines Dokuments sind ein Auftrag mit einem gemeinsamen
 //! [`Budget`] ([`layout_within`]). Den Abgleich der Selektoren bezahlt
@@ -21,6 +23,7 @@ mod boxes;
 mod fonts;
 mod fragment;
 mod inline;
+mod overflow;
 mod paint;
 mod style;
 
@@ -167,14 +170,34 @@ pub fn layout_within(input: &LayoutInput<'_>, budget: &Budget) -> Result<Fragmen
 }
 
 impl FragmentTree {
-    /// Zeichnet das Dokument; `images` lädt die Hintergrundbilder.
+    /// Zeichnet das Dokument, wie der Viewport es ungescrollt zeigt;
+    /// `images` lädt die Hintergrundbilder.
     pub fn paint(&self, images: &dyn Fn(&Url) -> Option<Arc<Image>>) -> Scene {
+        self.paint_scrolled(images, (0.0, 0.0))
+    }
+
+    /// Zeichnet, was der Viewport zeigt, wenn er um `scroll` CSS-Pixel nach
+    /// rechts und unten gescrollt ist. Die Szene hat die Größe des Viewports.
+    pub fn paint_scrolled(
+        &self,
+        images: &dyn Fn(&Url) -> Option<Arc<Image>>,
+        scroll: (f64, f64),
+    ) -> Scene {
         let canvas = paint::Canvas {
             width: self.width,
             height: self.height,
             background: self.canvas.as_ref(),
             propagated_from: self.propagated_from,
+            scroll,
         };
         paint::paint(self.root.as_ref(), &canvas, images)
+    }
+
+    /// Breite und Höhe des Bereichs, über den der Viewport scrollt, in
+    /// CSS-Pixeln ab der oberen linken Ecke, mindestens die Größe des
+    /// Viewports. Die größte Scrollposition ist diese Größe minus die des
+    /// Viewports.
+    pub fn scroll_size(&self) -> (f64, f64) {
+        overflow::scroll_size(self.root.as_ref(), self.width, self.height)
     }
 }

@@ -14,6 +14,12 @@
 //! Ein Fenster liefert seine Ereignisse über [`Window::next_event`]. Das erste
 //! Ereignis ist immer [`Event::Resized`] mit der tatsächlichen Größe.
 //!
+//! Die Zeichenfläche, Bilder und Ereignisse rechnen in Gerätepixeln. Wie
+//! viele davon auf einen logischen Pixel kommen, sagt [`Window::scale`]:
+//! unter X11 aus `Xft.dpi`, unter Windows die DPI des Monitors, unter macOS
+//! der Faktor des Bildschirms (*backing scale factor*). Die gewünschte Größe
+//! eines neuen Fensters ist in logischen Pixeln.
+//!
 //! Dazu kommen die Verzeichnisse der Systemschriften ([`fonts`]) und das
 //! sichere Lesen lokaler Dateien ([`files`]).
 
@@ -113,9 +119,9 @@ impl From<std::io::Error> for Error {
 #[derive(Clone, Debug)]
 pub struct WindowOptions<'a> {
     pub title: &'a str,
-    /// Gewünschte Breite der Zeichenfläche in Gerätepixeln.
+    /// Gewünschte Breite der Zeichenfläche in logischen Pixeln.
     pub width: u32,
-    /// Gewünschte Höhe der Zeichenfläche in Gerätepixeln.
+    /// Gewünschte Höhe der Zeichenfläche in logischen Pixeln.
     pub height: u32,
 }
 
@@ -173,6 +179,18 @@ impl Window {
     /// Größe der Zeichenfläche in Gerätepixeln.
     pub fn size(&self) -> (u32, u32) {
         self.inner.size()
+    }
+
+    /// Gerätepixel je logischem Pixel, für Webseiten `devicePixelRatio`;
+    /// immer endlich und größer als null. Ändert sich der Wert, etwa auf
+    /// einem anderen Bildschirm, kommt [`Event::Resized`].
+    pub fn scale(&self) -> f64 {
+        let scale = self.inner.scale();
+        if scale.is_finite() && scale > 0.0 {
+            scale
+        } else {
+            1.0
+        }
     }
 
     /// Zeigt ein Bild in der linken oberen Ecke der Zeichenfläche an.

@@ -3,6 +3,9 @@
 //! eigenen Core-Animation-Ebene (`CALayer`), die die Inhaltsansicht des
 //! Fensters trägt.
 //!
+//! AppKit rechnet Größen in Punkten. Die Zeichenfläche und die Ereignisse
+//! sind in Gerätepixeln, umgerechnet mit `backingScaleFactor` des Fensters.
+//!
 //! AppKit muss auf dem Hauptthread laufen. Die Ereignisschleife holt sich die
 //! Ereignisse selbst mit `nextEventMatchingMask:…`, statt `[NSApp run]` zu
 //! übergeben. Tasten wertet sie selbst aus; Eingabemethoden und Tottasten
@@ -182,23 +185,12 @@ impl Window {
                 let _: () = send(app, c"finishLaunching", ());
             }
 
-            // Die gewünschte Größe ist in Gerätepixeln, AppKit rechnet in Punkten.
-            let screen: Id = send(class(c"NSScreen"), c"mainScreen", ());
-            let screen_scale: CGFloat = if screen.is_null() {
-                1.0
-            } else {
-                send(screen, c"backingScaleFactor", ())
-            };
-            let screen_scale = if screen_scale > 0.0 {
-                screen_scale
-            } else {
-                1.0
-            };
+            // Die gewünschte Größe ist in logischen Pixeln, also in Punkten.
             let content = NSRect {
                 origin: NSPoint { x: 0.0, y: 0.0 },
                 size: NSSize {
-                    width: f64::from(options.width) / screen_scale,
-                    height: f64::from(options.height) / screen_scale,
+                    width: f64::from(options.width),
+                    height: f64::from(options.height),
                 },
             };
             let style = NS_WINDOW_STYLE_TITLED
@@ -289,6 +281,10 @@ impl Window {
 
     pub fn size(&self) -> (u32, u32) {
         (self.width, self.height)
+    }
+
+    pub fn scale(&self) -> f64 {
+        self.scale
     }
 
     pub fn present(&mut self, width: u32, height: u32, pixels: &[u32]) -> Result<(), Error> {

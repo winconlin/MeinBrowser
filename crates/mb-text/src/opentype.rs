@@ -64,6 +64,9 @@ pub struct GlyphId(pub u16);
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FaceMetrics {
     pub units_per_em: u16,
+    /// Das Rechteck um alle Glyphen aus `head`: `xMin`, `yMin`, `xMax` und
+    /// `yMax`.
+    pub bounds: (i16, i16, i16, i16),
     /// Ober- und Unterlänge und Zeilenabstand aus `hhea`.
     pub ascender: i16,
     pub descender: i16,
@@ -198,6 +201,7 @@ impl Face {
             horizontal_metrics: 0,
             metrics: FaceMetrics {
                 units_per_em: 0,
+                bounds: (0, 0, 0, 0),
                 ascender: 0,
                 descender: 0,
                 line_gap: 0,
@@ -237,6 +241,8 @@ impl Face {
         if !(16..=16384).contains(&units_per_em) {
             return Err(FontError::Malformed("head: unitsPerEm"));
         }
+        let mut reader = Reader::at(head, 36)?;
+        let bounds = (reader.i16()?, reader.i16()?, reader.i16()?, reader.i16()?);
         let mac_style = u16_at(head, 44)?;
         let long_offsets = match u16_at(head, 50)? {
             0 => false,
@@ -276,6 +282,7 @@ impl Face {
 
         let mut metrics = FaceMetrics {
             units_per_em,
+            bounds,
             ascender,
             descender,
             line_gap,

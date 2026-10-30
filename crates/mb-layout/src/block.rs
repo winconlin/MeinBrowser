@@ -495,6 +495,7 @@ fn layout_block_contents(
     let flow = match &block.contents {
         _ if !context.budget.spend(1) => Flow {
             fragments: Vec::new(),
+            lines: None,
             height: 0.0,
             margins: CollapsedBlockMargins::default(),
             first_baseline: None,
@@ -514,6 +515,7 @@ fn layout_block_contents(
                 inline::layout(context, content, container, Sizing::Available(width), depth);
             Flow {
                 fragments: inline.fragments,
+                lines: inline.lines,
                 height: inline.height,
                 margins: CollapsedBlockMargins {
                     collapsed_through: !inline.has_lines,
@@ -575,6 +577,7 @@ fn layout_block_contents(
         border,
         padding,
         children: flow.fragments,
+        lines: flow.lines,
         atomic: false,
     };
     BlockLayout {
@@ -588,6 +591,8 @@ fn layout_block_contents(
 /// Die Kinder eines Blockcontainers nach dem Layout.
 struct Flow {
     fragments: Vec<Fragment>,
+    /// Die Zeilen eines Inline-Formatierungskontexts.
+    lines: Option<Rect>,
     /// Bis zur unteren Kante des letzten Kindes, ohne dessen unteren
     /// Außenabstand.
     height: f64,
@@ -657,6 +662,7 @@ fn layout_children(
     }
     Flow {
         fragments,
+        lines: None,
         height: position,
         margins: CollapsedBlockMargins {
             collapsed_through: with_start,
@@ -801,6 +807,7 @@ fn replaced_fragment(
         border,
         padding,
         children,
+        lines: None,
         atomic: false,
     }
 }
@@ -875,6 +882,7 @@ pub(crate) fn layout_atomic(
                 border,
                 padding,
                 children: Vec::new(),
+                lines: None,
                 atomic: true,
             },
             margin,

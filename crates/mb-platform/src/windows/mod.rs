@@ -2,7 +2,9 @@
 //!
 //! Das Programm erklärt sich für hohe Auflösungen zuständig (pro Monitor),
 //! damit Windows das Bild nicht unscharf hochskaliert. Alle Größen sind daher
-//! echte Gerätepixel.
+//! echte Gerätepixel; 96 DPI des Monitors sind ein Gerätepixel je logischem
+//! Pixel. Wechselt das Fenster auf einen Monitor mit anderer DPI, nimmt es
+//! die Größe an, die Windows vorschlägt (`WM_DPICHANGED`).
 
 mod ffi;
 mod keys;
@@ -27,6 +29,10 @@ const CLASS_NAME: &str = "MeinBrowserFenster";
 
 /// Ein Mausrad meldet je Raste 120 Einheiten (`WHEEL_DELTA`).
 const WHEEL_DELTA: f64 = 120.0;
+
+/// Die DPI, bei der ein Gerätepixel ein logischer Pixel ist
+/// (`USER_DEFAULT_SCREEN_DPI`).
+const DEFAULT_DPI: u32 = 96;
 
 thread_local! {
     /// Eine Panic in der Fensterprozedur, die nach `DispatchMessageW`
@@ -134,6 +140,8 @@ struct State {
     image_height: u32,
     high_surrogate: Option<u16>,
     tracking_leave: bool,
+    /// Die DPI des Monitors, auf dem das Fenster liegt.
+    dpi: u32,
 }
 
 pub struct Window {
@@ -167,6 +175,7 @@ impl Window {
             image_height: 0,
             high_surrogate: None,
             tracking_leave: false,
+            dpi: DEFAULT_DPI,
         }));
         let class_name = wide(CLASS_NAME);
         let title = wide(options.title);
@@ -195,6 +204,40 @@ impl Window {
             return Err(last_error("CreateWindowExW"));
         }
         let window = Window { hwnd, state };
+        // Erst jetzt steht fest, auf welchem Monitor das Fenster liegt: Die
+        // gewünschte Größe ist in logischen Pixeln.
+        // SAFETY: `hwnd` ist das eben erzeugte, gültige Fenster.
+        let dpi = match unsafe { GetDpiForWindow(hwnd) } {
+            0 => DEFAULT_DPI,
+            dpi => dpi,
+        };
+        window.state.borrow_mut().dpi = dpi;
+        let device = |value: u32| {
+            let pixels = u64::from(value) * u64::from(dpi) / u64::from(DEFAULT_DPI);
+            i32::try_from(pixels).map_err(|_| too_large())
+        };
+        let mut rect = RECT {
+            left: 0,
+            top: 0,
+            right: device(options.width)?,
+            bottom: device(options.height)?,
+        };
+        // SAFETY: Gültiges Fenster und gültiger Zeiger auf ein RECT. Scheitert
+        // ein Aufruf, behält das Fenster seine bisherige Größe.
+        unsafe {
+            if AdjustWindowRectExForDpi(&mut rect, WS_OVERLAPPEDWINDOW, FALSE, 0, dpi) != 0 {
+                SetWindowPos(
+                    hwnd,
+                    ptr::null_mut(),
+                    0,
+                    0,
+                    rect.right.saturating_sub(rect.left),
+                    rect.bottom.saturating_sub(rect.top),
+                    SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+                );
+            }
+        }
+        resume_panic();
         // SAFETY: `hwnd` ist das eben erzeugte, gültige Fenster.
         unsafe {
             ShowWindow(hwnd, SW_SHOWNORMAL);
@@ -226,6 +269,10 @@ impl Window {
     pub fn size(&self) -> (u32, u32) {
         let state = self.state.borrow();
         (state.width, state.height)
+    }
+
+    pub fn scale(&self) -> f64 {
+        f64::from(self.state.borrow().dpi) / f64::from(DEFAULT_DPI)
     }
 
     pub fn present(&mut self, width: u32, height: u32, pixels: &[u32]) -> Result<(), Error> {
@@ -700,9 +747,18 @@ unsafe fn handle_message(hwnd: HWND, message: UINT, wparam: WPARAM, lparam: LPAR
             0
         }
         WM_DPICHANGED => {
+            // Das niedrige Wort ist die waagrechte DPI; sie ist gleich der
+            // senkrechten.
+            let dpi = u32::from(loword(wparam)).max(1);
+            let before = {
+                let mut state = state.borrow_mut();
+                let before = (state.width, state.height, state.dpi);
+                state.dpi = dpi;
+                before
+            };
             let suggested = lparam as *const RECT;
             // SAFETY: Bei WM_DPICHANGED zeigt lparam auf das vorgeschlagene
-            // Fensterrechteck.
+            // Fensterrechteck. Während SetWindowPos hält niemand einen Borrow.
             unsafe {
                 let rect = *suggested;
                 SetWindowPos(
@@ -714,6 +770,12 @@ unsafe fn handle_message(hwnd: HWND, message: UINT, wparam: WPARAM, lparam: LPAR
                     rect.bottom.saturating_sub(rect.top),
                     SWP_NOZORDER | SWP_NOACTIVATE,
                 );
+            }
+            // Ohne neue Größe meldet WM_SIZE nichts, die Skalierung ist aber neu.
+            let mut state = state.borrow_mut();
+            if before.2 != dpi && (state.width, state.height) == (before.0, before.1) {
+                let (width, height) = (state.width, state.height);
+                state.events.push_back(Event::Resized { width, height });
             }
             0
         }

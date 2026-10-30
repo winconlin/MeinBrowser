@@ -20,6 +20,11 @@
 //! - Stil und Layout fremder Seiten bezahlt [`Page::render_within`] aus
 //!   einem Budget ([`RENDER_STEPS`]); ist es verbraucht, gibt es kein Bild,
 //!   sondern einen Fehler.
+//! - Zum Scrollen wird einmal gesetzt ([`Page::layout_within`]) und an jeder
+//!   Scrollposition neu gezeichnet ([`Page::paint`]). Der Viewport kennt die
+//!   Gerätepixel je CSS-Pixel ([`Viewport`]); Media Queries, die danach
+//!   fragen, fehlen noch, aber die Breite von Rahmen fällt auf ganze
+//!   Gerätepixel.
 //! - Die Systemfarben sind die eines hellen Farbschemas, festgelegt von
 //!   diesem Browser (CSS Color 4 überlässt sie dem Benutzeragenten), bis es
 //!   Farbschemata und die Werte der Plattformen gibt.
@@ -33,12 +38,21 @@ use mb_base::{Budget, CodePoint, Exhausted};
 use mb_dom::{Document, NodeId, NodeKind, QuirksMode};
 use mb_encoding::Encoding;
 use mb_html::{Options, ScriptingMode, parse_document};
-use mb_layout::{Fonts, LayoutInput};
+use mb_layout::{Fonts, FragmentTree, LayoutInput};
 use mb_scene::{Image, Scene};
 use mb_style::values::ParseContext;
 use mb_style::values::color::{Rgba, SystemColor};
 use mb_style::{Device, DocumentInfo, Origin, StyleSheet, Stylist, StylistBuilder};
 use mb_url::Url;
+
+/// Ein Viewport: seine Größe in CSS-Pixeln und wie viele Gerätepixel auf
+/// einen CSS-Pixel kommen (`devicePixelRatio`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Viewport {
+    pub width: f64,
+    pub height: f64,
+    pub device_pixel_ratio: f64,
+}
 
 /// Holt die Bytes hinter einer URL; `None`, wenn das nicht geht.
 pub type Fetch = Box<dyn Fn(&Url) -> Option<Vec<u8>> + Send + Sync>;
@@ -291,7 +305,12 @@ impl Page {
     /// Pixeln, ein Gerätepixel je CSS-Pixel, ohne Grenze für die Arbeit.
     /// Für fremde Seiten gibt es [`Page::render_within`].
     pub fn render(&self, fonts: &Fonts<'_>, width: f64, height: f64) -> Scene {
-        let device = device(width, height);
+        let viewport = Viewport {
+            width,
+            height,
+            device_pixel_ratio: 1.0,
+        };
+        let device = device(viewport);
         let images = |url: &Url| self.image(url);
         let tree = mb_layout::layout(&LayoutInput {
             document: &self.document,
@@ -313,7 +332,25 @@ impl Page {
         height: f64,
         budget: &Budget,
     ) -> Result<Scene, Exhausted> {
-        let device = device(width, height);
+        let viewport = Viewport {
+            width,
+            height,
+            device_pixel_ratio: 1.0,
+        };
+        let tree = self.layout_within(fonts, viewport, budget)?;
+        Ok(self.paint(&tree, (0.0, 0.0)))
+    }
+
+    /// Stil und Layout in `viewport`, bezahlt aus `budget`; `Err`, wenn es
+    /// verbraucht ist oder der Auftrag abgebrochen wurde. Wie weit sich
+    /// scrollen lässt, sagt [`FragmentTree::scroll_size`].
+    pub fn layout_within(
+        &self,
+        fonts: &Fonts<'_>,
+        viewport: Viewport,
+        budget: &Budget,
+    ) -> Result<FragmentTree, Exhausted> {
+        let device = device(viewport);
         let images = |url: &Url| self.image(url);
         let input = LayoutInput {
             document: &self.document,
@@ -323,18 +360,21 @@ impl Page {
             base: &self.base,
             images: &images,
         };
-        let tree = mb_layout::layout_within(&input, budget)?;
-        Ok(tree.paint(&images))
+        mb_layout::layout_within(&input, budget)
+    }
+
+    /// Zeichnet, was der Viewport von `tree` zeigt, wenn er um `scroll`
+    /// CSS-Pixel nach rechts und unten gescrollt ist.
+    pub fn paint(&self, tree: &FragmentTree, scroll: (f64, f64)) -> Scene {
+        tree.paint_scrolled(&|url: &Url| self.image(url), scroll)
     }
 }
 
-/// Ein Viewport von `width` × `height` CSS-Pixeln, ein Gerätepixel je
-/// CSS-Pixel.
-fn device(width: f64, height: f64) -> Device {
+fn device(viewport: Viewport) -> Device {
     Device {
-        viewport_width: width,
-        viewport_height: height,
-        device_pixel_ratio: 1.0,
+        viewport_width: viewport.width,
+        viewport_height: viewport.height,
+        device_pixel_ratio: viewport.device_pixel_ratio,
         system_color,
     }
 }
