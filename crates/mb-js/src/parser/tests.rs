@@ -596,7 +596,7 @@ fn nested(open: &str, middle: &str, close: &str, depth: usize) -> String {
 /// dass ein Stapel von 1 MiB überläuft, und bei kleiner Tiefe einen Baum.
 #[test]
 fn deepest_nesting_fits_on_a_small_stack() {
-    let forms: [(&str, &str, &str, &str, &str); 17] = [
+    let forms: [(&str, &str, &str, &str, &str); 44] = [
         ("", "(", "a", ")", ""),
         ("", "[", "a", "]", ""),
         ("x = ", "{a: ", "a", "}", ""),
@@ -614,6 +614,33 @@ fn deepest_nesting_fits_on_a_small_stack() {
         ("", "{", "", "}", ""),
         ("", "if (a) ", ";", "", ""),
         ("", "function f() {", "", "}", ""),
+        ("", "for (;;) ", ";", "", ""),
+        ("", "for (a in b) ", ";", "", ""),
+        ("", "for (let a of b) ", ";", "", ""),
+        ("", "while (a) ", ";", "", ""),
+        ("", "do ", ";", " while (a)", ""),
+        ("", "with (a) ", ";", "", ""),
+        ("", "try {", "", "} finally {}", ""),
+        ("", "switch (a) { case a: ", "", "}", ""),
+        ("", "if (a) {} else ", ";", "", ""),
+        ("x = ", "{[", "a", "]: a}", ""),
+        ("x = ", "{...", "a", "}", ""),
+        ("x = ", "{a() { return ", "a", "}}", ""),
+        ("", "[...", "a", "]", ""),
+        ("", "a?.(", "a", ")", ""),
+        ("", "a`${", "a", "}`", ""),
+        ("", "a ? a : ", "a", "", ""),
+        ("", "new (", "a", ")", ""),
+        ("", "import(", "a", ")", ""),
+        ("", "[", "a", "] = b", ""),
+        ("", "() => {", "", "}", ""),
+        ("", "async () => ", "a", "", ""),
+        ("", "function* g() { yield ", "a", "}", ""),
+        ("", "function f(a = ", "a", ") {}", ""),
+        ("", "class A extends ", "a", " {}", ""),
+        ("", "x = class { a() {", "", "} }", ""),
+        ("", "x = class { static {", "", "} }", ""),
+        ("", "x = class { a = ", "a", " }", ""),
     ];
     let thread = std::thread::Builder::new()
         .stack_size(1 << 20)

@@ -4,7 +4,7 @@
 use super::pattern::Names;
 use super::scope::{Binding, ScopeKind};
 use super::{Cover, ErrorKind, Label, Parser, Result};
-use crate::ast::{DeclarationKind, Node, NodeId};
+use crate::ast::{Atom, DeclarationKind, Node, NodeId};
 use crate::lexer::{Goal, Punctuator, TokenKind};
 
 /// Wo eine Anweisung steht.
@@ -23,6 +23,33 @@ enum Declarations {
     Statement,
     /// Im Kopf von `for`: Ohne `in` und vielleicht vor `in` oder `of`.
     ForHead,
+}
+
+/// Womit eine Anweisung beginnt.
+#[derive(Clone, Copy)]
+enum StatementStart {
+    Var,
+    If,
+    For,
+    While,
+    Do,
+    Jump { is_break: bool },
+    Return,
+    With,
+    Switch,
+    Throw,
+    Try,
+    Debugger,
+    Labelled,
+    Block,
+    Empty,
+    Expression,
+}
+
+/// Der Kopf von `for` bis vor das erste `;` oder bis vor `in` oder `of`.
+enum ForHead {
+    Classic(Option<NodeId>),
+    InOf { left: NodeId, of: bool },
 }
 
 impl Parser<'_> {
@@ -133,33 +160,51 @@ impl Parser<'_> {
 
     fn statement_inner(&mut self, position: Position) -> Result<NodeId> {
         let start = self.start(Goal::RegExp)?;
+        match self.statement_start()? {
+            StatementStart::Var => self.var_statement(start),
+            StatementStart::If => self.if_statement(),
+            StatementStart::For => self.iteration(|parser| parser.for_statement()),
+            StatementStart::While => self.iteration(|parser| parser.while_statement()),
+            StatementStart::Do => self.iteration(|parser| parser.do_while_statement()),
+            StatementStart::Jump { is_break } => self.jump(is_break),
+            StatementStart::Return => self.return_statement(),
+            StatementStart::With => self.with_statement(),
+            StatementStart::Switch => self.switch_statement(),
+            StatementStart::Throw => self.throw_statement(),
+            StatementStart::Try => self.try_statement(),
+            StatementStart::Debugger => self.debugger_statement(start),
+            StatementStart::Labelled => self.labelled_statement(start, position),
+            StatementStart::Block => self.block_statement(),
+            StatementStart::Empty => {
+                self.advance();
+                Ok(self.node(Node::Empty, start))
+            }
+            StatementStart::Expression => self.expression_statement(start),
+        }
+    }
+
+    /// Welche Anweisung beginnt. Wörter, mit denen hier keine Anweisung
+    /// beginnen darf, sind Fehler.
+    fn statement_start(&mut self) -> Result<StatementStart> {
         if let Some(name) = self.name(Goal::RegExp)? {
             if !name.escaped {
                 match name.value.as_str() {
-                    "var" => {
-                        self.advance();
-                        let node = self
-                            .declarations(DeclarationKind::Var, Declarations::Statement, start)?
-                            .0;
-                        self.semicolon()?;
-                        self.ast.set_range(node, start..self.previous_end);
-                        return Ok(node);
+                    "var" => return Ok(StatementStart::Var),
+                    "if" => return Ok(StatementStart::If),
+                    "for" => return Ok(StatementStart::For),
+                    "while" => return Ok(StatementStart::While),
+                    "do" => return Ok(StatementStart::Do),
+                    "continue" | "break" => {
+                        return Ok(StatementStart::Jump {
+                            is_break: name.value == "break",
+                        });
                     }
-                    "if" => return self.if_statement(),
-                    "for" => return self.iteration(|parser| parser.for_statement()),
-                    "while" => return self.iteration(|parser| parser.while_statement()),
-                    "do" => return self.iteration(|parser| parser.do_while_statement()),
-                    "continue" | "break" => return self.jump(name.value == "break"),
-                    "return" => return self.return_statement(),
-                    "with" => return self.with_statement(),
-                    "switch" => return self.switch_statement(),
-                    "throw" => return self.throw_statement(),
-                    "try" => return self.try_statement(),
-                    "debugger" => {
-                        self.advance();
-                        self.semicolon()?;
-                        return Ok(self.node(Node::Debugger, start));
-                    }
+                    "return" => return Ok(StatementStart::Return),
+                    "with" => return Ok(StatementStart::With),
+                    "switch" => return Ok(StatementStart::Switch),
+                    "throw" => return Ok(StatementStart::Throw),
+                    "try" => return Ok(StatementStart::Try),
+                    "debugger" => return Ok(StatementStart::Debugger),
                     "function" => return Err(self.error(ErrorKind::InvalidFunctionDeclaration)),
                     "class" => return Err(self.error(ErrorKind::UnexpectedToken)),
                     "async" if self.async_function_follows()? => {
@@ -194,17 +239,33 @@ impl Parser<'_> {
                 .peek(Goal::RegExp, Goal::Div)?
                 .is_some_and(|next| next.kind == TokenKind::Punctuator(Punctuator::Colon));
             if label {
-                return self.labelled_statement(name, start, position);
+                return Ok(StatementStart::Labelled);
             }
         }
-        match self.punctuator(Goal::RegExp)? {
-            Some(Punctuator::LeftBrace) => return self.block_statement(),
-            Some(Punctuator::Semicolon) => {
-                self.advance();
-                return Ok(self.node(Node::Empty, start));
-            }
-            _ => {}
-        }
+        Ok(match self.punctuator(Goal::RegExp)? {
+            Some(Punctuator::LeftBrace) => StatementStart::Block,
+            Some(Punctuator::Semicolon) => StatementStart::Empty,
+            _ => StatementStart::Expression,
+        })
+    }
+
+    fn var_statement(&mut self, start: usize) -> Result<NodeId> {
+        self.advance();
+        let node = self
+            .declarations(DeclarationKind::Var, Declarations::Statement, start)?
+            .0;
+        self.semicolon()?;
+        self.ast.set_range(node, start..self.previous_end);
+        Ok(node)
+    }
+
+    fn debugger_statement(&mut self, start: usize) -> Result<NodeId> {
+        self.advance();
+        self.semicolon()?;
+        Ok(self.node(Node::Debugger, start))
+    }
+
+    fn expression_statement(&mut self, start: usize) -> Result<NodeId> {
         let expression = self.expression(true)?;
         self.semicolon()?;
         Ok(self.node(Node::Expression(expression), start))
@@ -234,15 +295,8 @@ impl Parser<'_> {
         result
     }
 
-    fn labelled_statement(
-        &mut self,
-        name: crate::lexer::Name,
-        start: usize,
-        position: Position,
-    ) -> Result<NodeId> {
-        let label = self.label_identifier(&name, start)?;
-        self.advance();
-        self.expect(Punctuator::Colon, Goal::Div)?;
+    fn labelled_statement(&mut self, start: usize, position: Position) -> Result<NodeId> {
+        let label = self.label(start)?;
         if self
             .function
             .labels
@@ -270,6 +324,17 @@ impl Parser<'_> {
         self.function.labels.pop();
         let body = body?;
         Ok(self.node(Node::Labeled { label, body }, start))
+    }
+
+    /// Die Marke mit dem Doppelpunkt danach.
+    fn label(&mut self, start: usize) -> Result<Atom> {
+        let Some(name) = self.name(Goal::RegExp)? else {
+            return Err(self.unexpected(Goal::RegExp));
+        };
+        let label = self.label_identifier(&name, start)?;
+        self.advance();
+        self.expect(Punctuator::Colon, Goal::Div)?;
+        Ok(label)
     }
 
     /// Eine Funktionsdeklaration ohne `*` und `async`, wie sie nach einer
@@ -470,12 +535,16 @@ impl Parser<'_> {
         }
         self.expect(Punctuator::LeftParenthesis, Goal::Div)?;
         self.push_scope(ScopeKind::For);
-        let result = self.for_rest(start, is_await);
+        let result = match self.for_head(is_await) {
+            Ok(ForHead::Classic(init)) => self.for_classic(start, init),
+            Ok(ForHead::InOf { left, of }) => self.for_in_of(start, left, of, is_await),
+            Err(error) => Err(error),
+        };
         self.pop_scope();
         result
     }
 
-    fn for_rest(&mut self, start: usize, is_await: bool) -> Result<NodeId> {
+    fn for_head(&mut self, is_await: bool) -> Result<ForHead> {
         let head_start = self.start(Goal::RegExp)?;
         let kind = match self.name(Goal::RegExp)? {
             Some(name) if !name.escaped => match name.value.as_str() {
@@ -533,7 +602,10 @@ impl Parser<'_> {
                 {
                     return Err(self.error(ErrorKind::InvalidForInOf));
                 }
-                return self.for_in_of(start, declaration, of, is_await);
+                return Ok(ForHead::InOf {
+                    left: declaration,
+                    of,
+                });
             }
             if is_await {
                 return Err(self.unexpected(Goal::Div));
@@ -541,13 +613,13 @@ impl Parser<'_> {
             if let Some(position) = missing {
                 return Err(self.error_at(ErrorKind::MissingInitializer, position));
             }
-            return self.for_classic(start, Some(declaration));
+            return Ok(ForHead::Classic(Some(declaration)));
         }
         if self.at(Punctuator::Semicolon, Goal::RegExp)? {
             if is_await {
                 return Err(self.unexpected(Goal::RegExp));
             }
-            return self.for_classic(start, None);
+            return Ok(ForHead::Classic(None));
         }
         let starts_with_let = self.at_keyword("let", Goal::RegExp)?;
         let starts_with_async = self.at_keyword("async", Goal::RegExp)?;
@@ -561,7 +633,7 @@ impl Parser<'_> {
             }
             cover.check()?;
             let init = self.node(Node::Expression(init), head_start);
-            return self.for_classic(start, Some(init));
+            return Ok(ForHead::Classic(Some(init)));
         }
         // `for (async of …)` ist verboten, `for await (async of …)` nicht.
         let async_of = starts_with_async && !is_await && self.is_plain_async(init);
@@ -579,7 +651,7 @@ impl Parser<'_> {
                 return Err(self.error_at(ErrorKind::InvalidAssignmentTarget, head_start));
             }
         }
-        self.for_in_of(start, init, of, is_await)
+        Ok(ForHead::InOf { left: init, of })
     }
 
     /// Ob `using of` ohne `=` danach folgt: Dann ist `using` das Ziel von

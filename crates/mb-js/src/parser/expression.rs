@@ -29,6 +29,18 @@ enum UnaryStart {
     Other,
 }
 
+/// Was ein Name am Anfang eines *PrimaryExpression* beginnt.
+#[derive(Clone, Copy)]
+enum NameStart {
+    /// `this`, `null`, `true` oder `false`.
+    Literal(Node),
+    Function,
+    Class,
+    AsyncFunction,
+    AsyncArrow,
+    Identifier,
+}
+
 /// Was in einer Kette von Zugriffen und Aufrufen folgt.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Link {
@@ -175,6 +187,19 @@ impl Parser<'_> {
         let start = self.start(Goal::RegExp)?;
         let mut cover = Cover::default();
         let expression = self.conditional(in_, &mut cover)?;
+        self.assignment_rest(start, expression, cover, in_, outer)
+    }
+
+    /// Was nach dem *ConditionalExpression* am Anfang folgt: `=>`, ein
+    /// Zuweisungsoperator oder nichts.
+    fn assignment_rest(
+        &mut self,
+        start: usize,
+        expression: NodeId,
+        cover: Cover,
+        in_: bool,
+        outer: Option<&mut Cover>,
+    ) -> Result<NodeId> {
         let Some(punctuator) = self.punctuator(Goal::Div)? else {
             return self.pass_cover(expression, cover, outer);
         };
@@ -316,12 +341,23 @@ impl Parser<'_> {
     /// statt Rekursion.
     fn binary(&mut self, in_: bool, cover: &mut Cover) -> Result<NodeId> {
         let first = self.unary(cover)?;
-        let Some(mut operator) = self.next_binary_operator(in_)? else {
+        let Some(operator) = self.next_binary_operator(in_)? else {
             if matches!(self.ast.node(first), Node::PrivateName(_)) {
                 return Err(self.error(ErrorKind::UnexpectedToken));
             }
             return Ok(first);
         };
+        self.binary_operations(first, operator, in_, cover)
+    }
+
+    /// Ab dem ersten zweistelligen Operator.
+    fn binary_operations(
+        &mut self,
+        first: NodeId,
+        mut operator: BinaryOperator,
+        in_: bool,
+        cover: &mut Cover,
+    ) -> Result<NodeId> {
         let mut operands = vec![first];
         let mut operators: Vec<BinaryOperator> = Vec::new();
         loop {
@@ -436,9 +472,17 @@ impl Parser<'_> {
     }
 
     fn unary_inner(&mut self, cover: &mut Cover) -> Result<NodeId> {
-        let start = self.start(Goal::RegExp)?;
+        match self.unary_start()? {
+            UnaryStart::Operator(operator) => self.unary_operator(operator),
+            UnaryStart::Update => self.prefix_update(),
+            UnaryStart::Await => self.await_expression(),
+            UnaryStart::Other => self.postfix(cover),
+        }
+    }
+
+    fn unary_start(&mut self) -> Result<UnaryStart> {
         let await_operator = self.context().await_;
-        let operator = match &self.token(Goal::RegExp)?.kind {
+        Ok(match &self.token(Goal::RegExp)?.kind {
             TokenKind::Punctuator(Punctuator::Bang) => UnaryStart::Operator(UnaryOperator::Not),
             TokenKind::Punctuator(Punctuator::Tilde) => {
                 UnaryStart::Operator(UnaryOperator::BitwiseNot)
@@ -456,13 +500,12 @@ impl Parser<'_> {
                 _ => UnaryStart::Other,
             },
             _ => UnaryStart::Other,
-        };
-        let operator = match operator {
-            UnaryStart::Operator(operator) => operator,
-            UnaryStart::Update => return self.prefix_update(),
-            UnaryStart::Await => return self.await_expression(),
-            UnaryStart::Other => return self.postfix(cover),
-        };
+        })
+    }
+
+    /// Ein einstelliger Operator mit seinem Operanden.
+    fn unary_operator(&mut self, operator: UnaryOperator) -> Result<NodeId> {
+        let start = self.start(Goal::RegExp)?;
         self.advance();
         let mut inner = Cover::default();
         let argument = self.unary(&mut inner)?;
@@ -596,7 +639,16 @@ impl Parser<'_> {
     /// Ketten.
     pub(super) fn left_hand_side(&mut self, cover: &mut Cover) -> Result<NodeId> {
         let start = self.start(Goal::RegExp)?;
-        let mut expression = if self.at_keyword("new", Goal::RegExp)? {
+        let expression = self.left_hand_side_head(cover, start)?;
+        if self.arrow_head.is_some_and(|head| head.node == expression) {
+            return Ok(expression);
+        }
+        self.links(expression, start)
+    }
+
+    /// Der Anfang vor den Gliedern einer Kette, mit `async(…)`.
+    fn left_hand_side_head(&mut self, cover: &mut Cover, start: usize) -> Result<NodeId> {
+        let expression = if self.at_keyword("new", Goal::RegExp)? {
             self.new_expression()?
         } else if self.at_keyword("super", Goal::RegExp)? {
             self.super_expression(true)?
@@ -613,11 +665,13 @@ impl Parser<'_> {
             && self.at(Punctuator::LeftParenthesis, Goal::Div)?
             && !self.newline_before(Goal::Div)?
         {
-            expression = self.async_call(expression, start)?;
-            if self.arrow_head.is_some_and(|head| head.node == expression) {
-                return Ok(expression);
-            }
+            return self.async_call(expression, start);
         }
+        Ok(expression)
+    }
+
+    /// Die Glieder einer Kette nach `expression`.
+    fn links(&mut self, mut expression: NodeId, start: usize) -> Result<NodeId> {
         let mut chain = false;
         loop {
             match self.link()? {
@@ -944,33 +998,13 @@ impl Parser<'_> {
         let start = self.start(Goal::RegExp)?;
         let token = self.token(Goal::RegExp)?;
         match &token.kind {
-            TokenKind::Name(name) => {
-                let name = name.clone();
-                self.primary_name(name, start)
-            }
-            TokenKind::PrivateName(name) => {
-                // Nur `#x in y` (Abschnitt 13.10).
-                let name = name.clone();
-                self.advance();
-                let atom = self.intern_name(&name);
-                self.use_private_name(atom, start)?;
-                Ok(self.node(Node::PrivateName(atom), start))
-            }
+            TokenKind::Name(_) => self.primary_name(start),
+            TokenKind::PrivateName(_) => self.private_name_operand(start),
             TokenKind::Number(_) | TokenKind::BigInt(_) | TokenKind::String(_) => {
                 Ok(self.literal_property_name()?.0)
             }
             TokenKind::Template(_) => self.template(false),
-            TokenKind::RegExp(regexp) => {
-                let body = regexp.body.clone();
-                let flags = regexp.flags.clone();
-                if !valid_flags(&flags) {
-                    return Err(self.error(ErrorKind::InvalidRegExpFlags));
-                }
-                self.advance();
-                let body = self.intern(&body);
-                let flags = self.intern(&flags);
-                Ok(self.node(Node::RegExp { body, flags }, start))
-            }
+            TokenKind::RegExp(_) => self.regexp_literal(start),
             TokenKind::Punctuator(Punctuator::LeftParenthesis) => self.parenthesized(),
             TokenKind::Punctuator(Punctuator::LeftBracket) => self.array_literal(cover),
             TokenKind::Punctuator(Punctuator::LeftBrace) => self.object_literal(cover),
@@ -978,40 +1012,87 @@ impl Parser<'_> {
         }
     }
 
-    fn primary_name(&mut self, name: Name, start: usize) -> Result<NodeId> {
-        if !name.escaped {
-            match name.value.as_str() {
-                "this" => {
-                    self.advance();
-                    return Ok(self.node(Node::This, start));
-                }
-                "null" => {
-                    self.advance();
-                    return Ok(self.node(Node::Null, start));
-                }
-                "true" | "false" => {
-                    self.advance();
-                    return Ok(self.node(Node::Boolean(name.value == "true"), start));
-                }
-                "function" => return self.function_expression(start, false),
-                "class" => return self.class_expression(),
-                "async" => {
-                    if let Some(next) = self.peek(Goal::RegExp, Goal::Div)?
-                        && !next.newline_before
-                        && let TokenKind::Name(next_name) = &next.kind
-                        && !next_name.escaped
-                        && next_name.value == "function"
-                    {
-                        self.advance();
-                        return self.function_expression(start, true);
-                    }
-                    if self.async_arrow_follows()? {
-                        return self.async_arrow_identifier(start);
-                    }
-                }
-                _ => {}
-            }
+    /// `#x`, nur vor `in` erlaubt (Abschnitt 13.10).
+    fn private_name_operand(&mut self, start: usize) -> Result<NodeId> {
+        let TokenKind::PrivateName(name) = &self.token(Goal::RegExp)?.kind else {
+            return Err(self.unexpected(Goal::RegExp));
+        };
+        let name = name.clone();
+        self.advance();
+        let atom = self.intern_name(&name);
+        self.use_private_name(atom, start)?;
+        Ok(self.node(Node::PrivateName(atom), start))
+    }
+
+    fn regexp_literal(&mut self, start: usize) -> Result<NodeId> {
+        let TokenKind::RegExp(regexp) = &self.token(Goal::RegExp)?.kind else {
+            return Err(self.unexpected(Goal::RegExp));
+        };
+        let body = regexp.body.clone();
+        let flags = regexp.flags.clone();
+        if !valid_flags(&flags) {
+            return Err(self.error(ErrorKind::InvalidRegExpFlags));
         }
+        self.advance();
+        let body = self.intern(&body);
+        let flags = self.intern(&flags);
+        Ok(self.node(Node::RegExp { body, flags }, start))
+    }
+
+    fn primary_name(&mut self, start: usize) -> Result<NodeId> {
+        match self.name_start()? {
+            NameStart::Literal(node) => {
+                self.advance();
+                Ok(self.node(node, start))
+            }
+            NameStart::Function => self.function_expression(start, false),
+            NameStart::Class => self.class_expression(),
+            NameStart::AsyncFunction => {
+                self.advance();
+                self.function_expression(start, true)
+            }
+            NameStart::AsyncArrow => self.async_arrow_identifier(start),
+            NameStart::Identifier => self.identifier_expression(start),
+        }
+    }
+
+    fn name_start(&mut self) -> Result<NameStart> {
+        let Some(name) = self.name(Goal::RegExp)? else {
+            return Err(self.unexpected(Goal::RegExp));
+        };
+        if name.escaped {
+            return Ok(NameStart::Identifier);
+        }
+        Ok(match name.value.as_str() {
+            "this" => NameStart::Literal(Node::This),
+            "null" => NameStart::Literal(Node::Null),
+            "true" => NameStart::Literal(Node::Boolean(true)),
+            "false" => NameStart::Literal(Node::Boolean(false)),
+            "function" => NameStart::Function,
+            "class" => NameStart::Class,
+            "async" => {
+                if let Some(next) = self.peek(Goal::RegExp, Goal::Div)?
+                    && !next.newline_before
+                    && let TokenKind::Name(next_name) = &next.kind
+                    && !next_name.escaped
+                    && next_name.value == "function"
+                {
+                    NameStart::AsyncFunction
+                } else if self.async_arrow_follows()? {
+                    NameStart::AsyncArrow
+                } else {
+                    NameStart::Identifier
+                }
+            }
+            _ => NameStart::Identifier,
+        })
+    }
+
+    /// Ein Bezeichner; folgt `=>`, ist er der Kopf einer Pfeilfunktion.
+    fn identifier_expression(&mut self, start: usize) -> Result<NodeId> {
+        let Some(name) = self.name(Goal::RegExp)? else {
+            return Err(self.unexpected(Goal::RegExp));
+        };
         let yield_await = self.function.yield_await;
         let await_identifiers = self.function.await_identifiers;
         let atom = self.identifier_reference(&name, start)?;
@@ -1097,13 +1178,7 @@ impl Parser<'_> {
         }
         while only_parameters.is_none() {
             if self.at(Punctuator::Ellipsis, Goal::RegExp)? {
-                let rest_start = self.start(Goal::RegExp)?;
-                only_parameters = Some(rest_start);
-                self.advance();
-                let mut names = Vec::new();
-                let target = self.binding_target(&mut names)?;
-                let rest = self.node(Node::Rest(target), rest_start);
-                self.scratch.push(rest);
+                only_parameters = Some(self.parenthesized_rest()?);
                 break;
             }
             let element = self.assignment(true, Some(&mut cover))?;
@@ -1117,6 +1192,39 @@ impl Parser<'_> {
         }
         self.expect(Punctuator::RightParenthesis, Goal::RegExp)?;
         let list = self.finish_list(mark);
+        self.parenthesized_end(
+            start,
+            list,
+            only_parameters,
+            cover,
+            yield_await,
+            await_identifiers,
+        )
+    }
+
+    /// `...` mit seinem Ziel, nur in Parametern erlaubt. Gibt zurück, wo
+    /// es beginnt.
+    fn parenthesized_rest(&mut self) -> Result<usize> {
+        let rest_start = self.start(Goal::RegExp)?;
+        self.advance();
+        let mut names = Vec::new();
+        let target = self.binding_target(&mut names)?;
+        let rest = self.node(Node::Rest(target), rest_start);
+        self.scratch.push(rest);
+        Ok(rest_start)
+    }
+
+    /// Nach `)`: mit `=>` der Kopf einer Pfeilfunktion, sonst ein
+    /// Klammerausdruck.
+    fn parenthesized_end(
+        &mut self,
+        start: usize,
+        list: List,
+        only_parameters: Option<usize>,
+        cover: Cover,
+        yield_await: u32,
+        await_identifiers: u32,
+    ) -> Result<NodeId> {
         let token = self.token(Goal::Div)?;
         if token.kind == TokenKind::Punctuator(Punctuator::Arrow) && !token.newline_before {
             let node = self.node(Node::Sequence(list), start);
@@ -1211,46 +1319,16 @@ impl Parser<'_> {
     fn property_definition(&mut self, cover: &mut Cover, proto: &mut bool) -> Result<NodeId> {
         let start = self.start(Goal::Div)?;
         if self.eat(Punctuator::Ellipsis, Goal::Div)? {
-            let argument = self.assignment(true, Some(cover))?;
-            let spread = self.node(Node::Spread(argument), start);
-            if self.at(Punctuator::Comma, Goal::Div)? {
-                self.spread_with_comma.insert(spread);
-            }
-            return Ok(spread);
+            return self.spread_property(start, cover);
         }
         let modifiers = self.method_modifiers(false)?;
         if modifiers.any() {
-            let (key, _) = self.property_name(false)?;
-            let function = self.method(modifiers, start, None)?;
-            let kind = match modifiers.accessor {
-                Some(crate::ast::MethodKind::Get) => PropertyKind::Get,
-                Some(crate::ast::MethodKind::Set) => PropertyKind::Set,
-                _ => PropertyKind::Method,
-            };
-            let value = self.node(Node::Function(function), start);
-            return Ok(self.node(Node::Property { kind, key, value }, start));
+            return self.method_property(start, modifiers);
         }
         let name = self.name(Goal::Div)?;
         let (key, key_name) = self.property_name(false)?;
         match self.punctuator(Goal::Div)? {
-            Some(Punctuator::Colon) => {
-                self.advance();
-                let value = self.assignment(true, Some(cover))?;
-                if key_name.is_some_and(|key_name| self.atom_is(key_name, "__proto__")) {
-                    if *proto {
-                        cover.record(self.error_at(ErrorKind::DuplicateProto, start));
-                    }
-                    *proto = true;
-                }
-                Ok(self.node(
-                    Node::Property {
-                        kind: PropertyKind::Init,
-                        key,
-                        value,
-                    },
-                    start,
-                ))
-            }
+            Some(Punctuator::Colon) => self.init_property(start, key, key_name, cover, proto),
             Some(Punctuator::LeftParenthesis) => {
                 let function = self.method(MethodModifiers::default(), start, None)?;
                 let value = self.node(Node::Function(function), start);
@@ -1263,37 +1341,95 @@ impl Parser<'_> {
                     start,
                 ))
             }
-            _ => {
-                // Kurzform: der Name ist eine *IdentifierReference*.
-                let Some(name) = name else {
-                    return Err(self.unexpected(Goal::Div));
-                };
-                let atom = self.identifier_reference(&name, start)?;
-                let mut value = self.node_at(Node::Identifier(atom), start, self.previous_end);
-                if self.at(Punctuator::Assign, Goal::Div)? {
-                    // *CoverInitializedName*, nur in Mustern gültig.
-                    cover.record(self.error(ErrorKind::InvalidCoverGrammar));
-                    self.advance();
-                    let initializer = self.assignment(true, None)?;
-                    value = self.node(
-                        Node::Assign {
-                            operator: AssignOperator::Assign,
-                            target: value,
-                            value: initializer,
-                        },
-                        start,
-                    );
-                }
-                Ok(self.node(
-                    Node::Property {
-                        kind: PropertyKind::Shorthand,
-                        key,
-                        value,
-                    },
-                    start,
-                ))
-            }
+            _ => self.shorthand_property(start, key, name, cover),
         }
+    }
+
+    /// `...` und sein Ausdruck in einem Objekt-Literal.
+    fn spread_property(&mut self, start: usize, cover: &mut Cover) -> Result<NodeId> {
+        let argument = self.assignment(true, Some(cover))?;
+        let spread = self.node(Node::Spread(argument), start);
+        if self.at(Punctuator::Comma, Goal::Div)? {
+            self.spread_with_comma.insert(spread);
+        }
+        Ok(spread)
+    }
+
+    /// Eine Methode mit `get`, `set`, `async` oder `*` davor.
+    fn method_property(&mut self, start: usize, modifiers: MethodModifiers) -> Result<NodeId> {
+        let (key, _) = self.property_name(false)?;
+        let function = self.method(modifiers, start, None)?;
+        let kind = match modifiers.accessor {
+            Some(crate::ast::MethodKind::Get) => PropertyKind::Get,
+            Some(crate::ast::MethodKind::Set) => PropertyKind::Set,
+            _ => PropertyKind::Method,
+        };
+        let value = self.node(Node::Function(function), start);
+        Ok(self.node(Node::Property { kind, key, value }, start))
+    }
+
+    /// `key: value`; die aktuelle Stelle ist `:`.
+    fn init_property(
+        &mut self,
+        start: usize,
+        key: NodeId,
+        key_name: Option<Atom>,
+        cover: &mut Cover,
+        proto: &mut bool,
+    ) -> Result<NodeId> {
+        self.advance();
+        let value = self.assignment(true, Some(cover))?;
+        if key_name.is_some_and(|key_name| self.atom_is(key_name, "__proto__")) {
+            if *proto {
+                cover.record(self.error_at(ErrorKind::DuplicateProto, start));
+            }
+            *proto = true;
+        }
+        Ok(self.node(
+            Node::Property {
+                kind: PropertyKind::Init,
+                key,
+                value,
+            },
+            start,
+        ))
+    }
+
+    /// Die Kurzform: der Name ist eine *IdentifierReference*.
+    fn shorthand_property(
+        &mut self,
+        start: usize,
+        key: NodeId,
+        name: Option<Name>,
+        cover: &mut Cover,
+    ) -> Result<NodeId> {
+        let Some(name) = name else {
+            return Err(self.unexpected(Goal::Div));
+        };
+        let atom = self.identifier_reference(&name, start)?;
+        let mut value = self.node_at(Node::Identifier(atom), start, self.previous_end);
+        if self.at(Punctuator::Assign, Goal::Div)? {
+            // *CoverInitializedName*, nur in Mustern gültig.
+            cover.record(self.error(ErrorKind::InvalidCoverGrammar));
+            self.advance();
+            let initializer = self.assignment(true, None)?;
+            value = self.node(
+                Node::Assign {
+                    operator: AssignOperator::Assign,
+                    target: value,
+                    value: initializer,
+                },
+                start,
+            );
+        }
+        Ok(self.node(
+            Node::Property {
+                kind: PropertyKind::Shorthand,
+                key,
+                value,
+            },
+            start,
+        ))
     }
 
     /// *PropertyName* (und mit `private` *ClassElementName*). Gibt auch
@@ -1317,14 +1453,17 @@ impl Parser<'_> {
                 let atom = self.intern_name(&name);
                 Ok((self.node(Node::PrivateName(atom), start), None))
             }
-            TokenKind::Punctuator(Punctuator::LeftBracket) => {
-                self.advance();
-                let expression = self.assignment(true, None)?;
-                self.expect(Punctuator::RightBracket, Goal::Div)?;
-                Ok((self.node(Node::ComputedKey(expression), start), None))
-            }
+            TokenKind::Punctuator(Punctuator::LeftBracket) => self.computed_key(start),
             _ => Err(self.unexpected(Goal::Div)),
         }
+    }
+
+    /// `[…]` als Name.
+    fn computed_key(&mut self, start: usize) -> Result<(NodeId, Option<Atom>)> {
+        self.advance();
+        let expression = self.assignment(true, None)?;
+        self.expect(Punctuator::RightBracket, Goal::Div)?;
+        Ok((self.node(Node::ComputedKey(expression), start), None))
     }
 
     /// Eine Zahl oder Zeichenkette als aktuelles Token, mit *PropName* für

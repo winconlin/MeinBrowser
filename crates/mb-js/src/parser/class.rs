@@ -80,19 +80,12 @@ impl Parser<'_> {
     fn class_tail_inner(&mut self, start: usize, name: Option<Atom>) -> Result<ClassId> {
         // Die Oberklasse gehört noch nicht zum Bereich der privaten Namen.
         let heritage = if self.eat_keyword("extends", Goal::Div)? {
-            let mut cover = Cover::default();
-            let heritage = self.left_hand_side(&mut cover)?;
-            cover.check()?;
-            Some(heritage)
+            Some(self.heritage()?)
         } else {
             None
         };
         self.expect(Punctuator::LeftBrace, Goal::Div)?;
-        self.classes.push(PrivateScope::default());
-        let result = self.class_body(heritage.is_some());
-        let scope = self.classes.pop().unwrap_or_default();
-        let (constructor, elements) = result?;
-        self.resolve_private_names(scope)?;
+        let (constructor, elements) = self.class_scope(heritage.is_some())?;
         Ok(self.ast.add_class(Class {
             name,
             heritage,
@@ -100,6 +93,24 @@ impl Parser<'_> {
             elements,
             range: start..self.previous_end,
         }))
+    }
+
+    /// *ClassHeritage* nach `extends`.
+    fn heritage(&mut self) -> Result<NodeId> {
+        let mut cover = Cover::default();
+        let heritage = self.left_hand_side(&mut cover)?;
+        cover.check()?;
+        Ok(heritage)
+    }
+
+    /// *ClassBody* bis einschließlich `}` im Bereich seiner privaten Namen.
+    fn class_scope(&mut self, derived: bool) -> Result<(Option<FunctionId>, List)> {
+        self.classes.push(PrivateScope::default());
+        let result = self.class_body(derived);
+        let scope = self.classes.pop().unwrap_or_default();
+        let body = result?;
+        self.resolve_private_names(scope)?;
+        Ok(body)
     }
 
     /// *ClassBody* bis einschließlich `}`.

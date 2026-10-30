@@ -48,7 +48,11 @@ use scope::Scope;
 /// Wie tief Ausdrücke, Anweisungen und Muster höchstens verschachtelt
 /// sind. Jede Ebene kostet einige Stapelrahmen; der Test
 /// `deepest_nesting_fits_on_a_small_stack` prüft, dass die tiefste Eingabe
-/// in einem Faden mit 1 MiB Stapel bleibt.
+/// in einem Faden mit 1 MiB Stapel bleibt, auch ohne Optimierung. Dafür
+/// halten die Funktionen, die bis zur nächsten Ebene auf dem Stapel
+/// bleiben, ihre Rahmen klein: Was Token kopiert, vorausliest oder nur
+/// manche Fälle betrifft, steht in eigenen Funktionen, die vorher
+/// zurückkehren.
 pub const MAX_DEPTH: u32 = 256;
 
 /// Ein früher Fehler (*SyntaxError*) mit seiner Lage.
