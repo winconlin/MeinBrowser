@@ -479,7 +479,7 @@ Jede Schicht soll auch dann noch schützen, wenn die davor versagt hat.
 11. **Erweiterungen, Mods und Skins:** Berechtigungen werden vor der Installation angezeigt, Zugriff auf Websites lässt sich auch erst bei Bedarf erteilen. Erweiterungen laufen in eigenen Zellen, Inhalts-Skripte in isolierten Welten. Mods laufen in der WebAssembly-Sandbox und bekommen nur die Fähigkeiten, die der Nutzer freigibt. Skins sind reine Daten ohne Code und dürfen nur lokale Ressourcen laden, damit sie weder nachladen noch mitlesen können.
 12. **Datenschutz:** Vorschlag: Speicher und Cookies werden standardmäßig nach der obersten Website getrennt (Partitionierung), damit eingebettete Inhalte Nutzer nicht über Websites hinweg verfolgen können.
 13. **Lieferkette:** keine fremden Crates (der Abhängigkeitswächter läuft bereits in der CI), keine fremden GitHub Actions (die CI holt den Quelltext selbst mit git; braucht es doch einmal eine Action, wird sie auf einen festen Commit-Hash festgelegt), reproduzierbare Builds als Ziel, Updates signiert mit einem Schlüssel, der nicht auf dem Build-Server liegt.
-14. **Fehler finden, bevor andere es tun:** Fuzzing für jeden Parser ab dem ersten Tag (HTML, CSS, URL, JavaScript, Bilder, Schriften, Kompression, TLS, IPC-Nachrichten), nächtlich in der CI. Das Werkzeug dafür ist noch offen, denn verbreitete Rust-Fuzzer werden als Crate eingebunden und fallen damit unter die Regel „keine fremden Crates“.
+14. **Fehler finden, bevor andere es tun:** Fuzzing für jeden Parser ab dem ersten Tag (HTML, CSS, URL, JavaScript, Bilder, Schriften, Kompression, TLS, IPC-Nachrichten), nächtlich in der CI. Verbreitete Rust-Fuzzer werden als Crate eingebunden und fallen damit unter die Regel „keine fremden Crates“. Deshalb entsteht ein eigener Fuzzer im Workspace, abdeckungsgesteuert über die SanitizerCoverage von LLVM ([Abschnitt 14](#14-offene-entscheidungen)). Umgesetzt ist er noch nicht.
 15. **Begrenzte Arbeit:** Was eine Seite an Rechenarbeit auslöst, bezahlt sie aus einem Budget mit festen Messstellen; ist es verbraucht oder bricht die Oberfläche den Auftrag ab, endet er mit einem Fehler statt weiterzurechnen. Bisher gilt das für Stil und Layout (`mb_base::Budget`). Ebenso hat eine Seite ein Budget an Bytes für alles, was sie lädt und dekodiert (`mb_web::PAGE_BYTES`), und von lokalen Dateien liest sie nur normale Dateien, keine Geräte oder Pipes, mit einer Grenze je Datei (`mb_web::read_file`). Wiederholte Arbeit wie verschachtelte Selektoren wird innerhalb eines Auftrags gemerkt, damit das Budget nicht schon bei gewöhnlichen Seiten ausgeht.
 16. **Umgang mit gemeldeten Lücken:** eine `SECURITY.md` mit vertraulichem Meldeweg (die private Schwachstellenmeldung von GitHub), Sicherheitshinweise zu jeder behobenen Lücke und schnelle Sicherheitsupdates. Vor Version 1.0 prüft ein externes Audit Kryptografie, Sandbox, IPC und JIT.
 
@@ -488,7 +488,7 @@ Jede Schicht soll auch dann noch schützen, wenn die davor versagt hat.
 | Meilenstein | Sicherheitsaufgaben |
 |---|---|
 | M0 | `SECURITY.md` und Meldeweg (erledigt), Abhängigkeitswächter (erledigt), keine fremden GitHub Actions (erledigt) |
-| M1 | Fuzzing für alle Parser, nächtlich in der CI |
+| M1 | Grenzen für Arbeit und Speicher je Seite (erledigt), Fuzzing für alle Parser, nächtlich in der CI (offen) |
 | M2 | Belastungstests für den Garbage Collector, differentielle Tests der JavaScript-Engine |
 | M3 | TLS gegen Testvektoren, HSTS-Preload, Certificate Transparency und Widerrufsprüfung |
 | M5 | Zellen pro Website und Sandbox auf allen Stufe-1-Systemen, Prüfung aller IPC-Nachrichten, Berechtigungsdialoge, Regeln für die Adresszeile |
@@ -647,6 +647,7 @@ Was daraus folgt:
 
 - **Grenze des Eigenbaus:** Rust-Standardbibliothek sowie Betriebssystem- und Grafikschnittstellen sind erlaubt, alles andere ist eigen ([1.1](#11-was-komplett-eigen-hier-bedeutet)).
 - **Kryptografie und TLS:** selbst geschrieben, mit Testvektoren, Fuzzing und externem Audit ([4.11](#411-netzwerk-und-kryptografie)).
+- **Fuzzing-Werkzeug (30.10.2026):** ein eigener Fuzzer im Workspace, ohne Ausnahme von „keine fremden Crates“ ([8.2](#82-schutzschichten), Punkt 14).
 
 **Noch offen**
 
@@ -659,8 +660,7 @@ Was daraus folgt:
 7. **Telemetrie:** keine, oder nur freiwillig?
 8. **Schutzlisten gegen Phishing und Schadsoftware:** Google Safe Browsing hat eigene Nutzungsbedingungen. Welche Listen nutzen wir, und wie bleibt dabei die Privatsphäre gewahrt?
 9. **Widerruf von Zertifikaten und Certificate Transparency:** eigenes Verfahren nach dem Vorbild von CRLite (Firefox) oder CRLSets (Chrome), oder Sperrlisten der Aussteller direkt? Woher kommt die Liste der CT-Logs?
-10. **Fuzzing-Werkzeug:** selbst schreiben oder für dieses Entwicklungswerkzeug eine Ausnahme von „keine fremden Crates“ machen ([8.2](#82-schutzschichten), Punkt 14)?
-11. **Partitionierung als Standard:** Speicher und Cookies standardmäßig nach oberster Website trennen ([8.2](#82-schutzschichten), Punkt 12)?
+10. **Partitionierung als Standard:** Speicher und Cookies standardmäßig nach oberster Website trennen ([8.2](#82-schutzschichten), Punkt 12)?
 
 ---
 
