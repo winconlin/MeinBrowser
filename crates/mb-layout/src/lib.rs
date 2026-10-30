@@ -27,6 +27,8 @@ mod style;
 #[cfg(test)]
 mod tests;
 
+use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use mb_base::{Budget, Exhausted};
@@ -38,7 +40,7 @@ use mb_url::Url;
 
 pub use fonts::Fonts;
 
-use crate::block::ContainingBlock;
+use crate::block::{ContainingBlock, Intrinsic};
 use crate::boxes::{Builder, StyleRef};
 use crate::fragment::BoxFragment;
 use crate::style::Style;
@@ -47,6 +49,12 @@ use crate::style::Style;
 pub(crate) struct LayoutContext<'a> {
     pub(crate) fonts: &'a Fonts<'a>,
     pub(crate) budget: &'a Budget,
+    /// Die Größen aus dem Inhalt je Blockcontainer (Adresse im Kastenbaum,
+    /// der sich während des Layouts nicht bewegt). Sie hängen nur vom
+    /// Kasten ab; ohne diesen Speicher würde jede Ebene verschachtelter
+    /// Inline-Blöcke die darunter mehrfach ausmessen, mit `width`,
+    /// `min-width` und `max-width` aus dem Inhalt bis zu viermal.
+    pub(crate) intrinsic: RefCell<BTreeMap<(usize, Intrinsic), f64>>,
 }
 
 /// Was das Layout eines Dokuments braucht.
@@ -125,6 +133,7 @@ pub fn layout_within(input: &LayoutInput<'_>, budget: &Budget) -> Result<Fragmen
     let context = LayoutContext {
         fonts: input.fonts,
         budget,
+        intrinsic: RefCell::default(),
     };
     let width = input.device.viewport_width;
     let height = input.device.viewport_height;

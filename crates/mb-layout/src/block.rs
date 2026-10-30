@@ -138,7 +138,7 @@ impl AtomicLayout {
 }
 
 /// Welche Größe aus dem Inhalt (*intrinsic size*).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Intrinsic {
     Min,
     Max,
@@ -162,16 +162,35 @@ fn content_size(value: f64, padding_border: f64, border_box: bool) -> f64 {
     }
 }
 
-/// Die Größe des Inhalts eines Blockcontainers in der Breite.
+/// Die Größe des Inhalts eines Blockcontainers in der Breite, beim ersten
+/// Mal gemessen und dann gemerkt.
 pub(crate) fn intrinsic_width(
     context: &LayoutContext<'_>,
     block: &BlockBox,
     which: Intrinsic,
     depth: usize,
 ) -> f64 {
+    let key = (std::ptr::from_ref(block).addr(), which);
+    if let Some(&width) = context.intrinsic.borrow().get(&key) {
+        return width;
+    }
     if !context.budget.spend(1) {
         return 0.0;
     }
+    let width = measure_intrinsic_width(context, block, which, depth);
+    // Was bei verbrauchtem Budget herauskam, stimmt nicht.
+    if context.budget.exhausted().is_none() {
+        context.intrinsic.borrow_mut().insert(key, width);
+    }
+    width
+}
+
+fn measure_intrinsic_width(
+    context: &LayoutContext<'_>,
+    block: &BlockBox,
+    which: Intrinsic,
+    depth: usize,
+) -> f64 {
     match &block.contents {
         BlockContents::Inline(content) => {
             let container = inline::Container {

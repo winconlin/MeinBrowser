@@ -171,3 +171,21 @@ fn render_within_stops_when_the_budget_runs_out() {
     let budget = Budget::new(RENDER_STEPS);
     assert!(page.render_within(&fonts, 800.0, 600.0, &budget).is_ok());
 }
+
+#[test]
+fn nested_intrinsic_sizes_are_measured_once() {
+    // Jede Ebene misst die darunter mit `width`, `min-width` und `max-width`
+    // aus dem Inhalt; ohne gemerkte Größen wüchse die Arbeit mit 3^Tiefe.
+    let open = "<span style='display: inline-block; width: min-content; \
+                min-width: max-content; max-width: fit-content'>";
+    let html = format!(
+        "<!DOCTYPE html><body>{}x{}",
+        open.repeat(30),
+        "</span>".repeat(30)
+    );
+    let page = load("a.html", &[("a.html", html.into_bytes())]);
+    let library = FontLibrary::new(Box::new(|_| None));
+    let fonts = Fonts::new(&library);
+    let budget = Budget::new(100_000);
+    assert!(page.render_within(&fonts, 800.0, 600.0, &budget).is_ok());
+}
