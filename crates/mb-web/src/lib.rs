@@ -13,5 +13,11 @@ mod page;
 #[cfg(test)]
 mod tests;
 
-pub use files::{MAX_FILE_BYTES, read_file};
+#[cfg(test)]
+mod resource_tests;
+
+#[cfg(test)]
+mod image_tests;
+
+pub use files::{MAX_FILE_BYTES, read_file, read_file_within};
 pub use page::{Fetch, MAX_IMPORTS, PAGE_BYTES, Page, RENDER_STEPS, Viewport, file_url};

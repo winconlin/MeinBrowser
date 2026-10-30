@@ -1,13 +1,16 @@
 //! Eine Seite laden und darstellen.
 //!
 //! - Was die Seite lädt, holt eine Funktion des Aufrufers ([`Fetch`]); für
-//!   lokale Dateien gibt es [`crate::read_file`]. Netzwerk, Fetch und
+//!   lokale Dateien gibt es [`crate::read_file_within`]. Netzwerk, Fetch und
 //!   MIME-Typen kommen mit M3. Bis dahin entscheidet die Endung: `.xht`,
 //!   `.xhtml` und `.xml` liest der XML-Parser, alles andere der HTML-Parser.
 //! - Alles, was die Seite lädt und dekodiert, bezahlt sie aus
 //!   [`PAGE_BYTES`]: Dokument, Stylesheets, Bilddateien und die Pixel der
 //!   Bilder. Ein Bild wird nur dekodiert, wenn das Budget auch für die
 //!   Zwischenpuffer des Dekoders reicht; was nicht mehr passt, fehlt.
+//!   Jeder Abruf erhält das Restbudget als Leselimit. Bei null wird kein
+//!   weiterer Abruf begonnen. Das ist keine Grenze für alle Zuweisungen
+//!   des Parsers oder den gesamten Speicherverbrauch des Prozesses.
 //! - Die Kodierung von HTML-Bytes bestimmt [`mb_html::parse_bytes`] aus
 //!   der Byte-Order-Mark, dem Vorab-Lesen (*prescan*) und einem `meta`
 //!   beim Parsen. Ohne Angabe gilt UTF-8; die Ersatzkodierung nach Sprache
@@ -19,7 +22,8 @@
 //!   zurückführt, das es schon einbindet, tiefer als
 //!   [`mb_style::MAX_IMPORT_DEPTH`] steht oder mehr als [`MAX_IMPORTS`]
 //!   Stylesheets aus `@import` lädt. Es fehlt `<?xml-stylesheet?>`.
-//! - Bilder sind bisher nur PNG.
+//! - Bilder sind PNG oder das erste Einzelbild eines GIF87a/GIF89a.
+//!   Die Dateisignatur entscheidet, nicht die Endung; Animationen fehlen.
 //! - Kaskaden-Vorbereitung, Stil und Layout fremder Seiten bezahlt [`Page::render_within`] aus
 //!   einem Budget ([`RENDER_STEPS`]); ist es verbraucht, gibt es kein Bild,
 //!   sondern einen Fehler.
@@ -61,8 +65,11 @@ pub struct Viewport {
     pub device_pixel_ratio: f64,
 }
 
-/// Holt die Bytes hinter einer URL; `None`, wenn das nicht geht.
-pub type Fetch = Box<dyn Fn(&Url) -> Option<Vec<u8>> + Send + Sync>;
+/// Holt die Bytes hinter einer URL, höchstens so viele wie das zweite
+/// Argument erlaubt; `None`, wenn das nicht geht oder die Ressource größer
+/// ist. Der Abruf muss schon das Einlesen begrenzen, nicht erst den fertigen
+/// Puffer. Die Seite prüft die Länge zusätzlich vor der Verwendung.
+pub type Fetch = Box<dyn Fn(&Url, u64) -> Option<Vec<u8>> + Send + Sync>;
 
 /// So viele Pixel darf ein Bild haben; größere werden nicht dekodiert.
 const MAX_IMAGE_PIXELS: u64 = 1 << 26;
@@ -143,6 +150,18 @@ impl Bytes {
     fn left(&self) -> u64 {
         self.0.load(Ordering::Relaxed)
     }
+
+    /// Dokument und Stylesheets laden nacheinander vor Veröffentlichung
+    /// der Seite; Bildabrufe sind unter `Page::images` serialisiert. Damit
+    /// kann während eines Abrufs kein anderer Abruf dieses Budget ausgeben.
+    fn fetch(&self, fetch: &Fetch, url: &Url) -> Option<Vec<u8>> {
+        let left = self.left();
+        if left == 0 {
+            return None;
+        }
+        let bytes = fetch(url, left)?;
+        self.spend(length(&bytes)).then_some(bytes)
+    }
 }
 
 /// Die Länge eines Puffers als Zahl für das Budget.
@@ -202,7 +221,7 @@ impl Page {
     /// was die Seite lädt und dekodiert.
     pub fn load_within(url: Url, fetch: Fetch, bytes: u64) -> Option<Page> {
         let budget = Bytes(AtomicU64::new(bytes));
-        let bytes = fetch(&url).filter(|bytes| budget.spend(length(bytes)))?;
+        let bytes = budget.fetch(&fetch, &url)?;
         let pathname = url.pathname().to_ascii_lowercase();
         let xml = [".xht", ".xhtml", ".xml"]
             .iter()
@@ -270,8 +289,7 @@ impl Page {
                 let Ok(sheet_url) = Url::parse(&href, Some(&base)) else {
                     continue;
                 };
-                let Some(bytes) = fetch(&sheet_url).filter(|bytes| budget.spend(length(bytes)))
-                else {
+                let Some(bytes) = budget.fetch(&fetch, &sheet_url) else {
                     continue;
                 };
                 let (text, sheet_encoding) =
@@ -351,16 +369,10 @@ impl Page {
         if let Some(image) = images.get(&key) {
             return image.clone();
         }
-        let image = (self.fetch)(url)
-            .filter(|bytes| self.bytes.spend(length(bytes)))
-            .and_then(|bytes| {
-                // Nur so viele Pixel, wie das Budget mit den Puffern des
-                // Dekoders und seiner Kopie der Bilddaten erlaubt; bezahlt
-                // werden danach die Pixel des Ergebnisses.
-                let left = self.bytes.left().saturating_sub(length(&bytes));
-                let pixels = MAX_IMAGE_PIXELS.min(left / mb_image::png::DECODE_BYTES_PER_PIXEL);
-                decode_image(&bytes, pixels)
-            })
+        let image = self
+            .bytes
+            .fetch(&self.fetch, url)
+            .and_then(|bytes| decode_image(&bytes, self.bytes.left()))
             .filter(|image| {
                 let pixels = u64::from(image.width()).saturating_mul(u64::from(image.height()));
                 self.bytes.spend(pixels.saturating_mul(4))
@@ -473,9 +485,7 @@ impl Imports<'_> {
                 continue;
             }
             self.left = self.left.saturating_sub(1);
-            let Some(bytes) =
-                (self.fetch)(pending.url()).filter(|bytes| self.budget.spend(length(bytes)))
-            else {
+            let Some(bytes) = self.budget.fetch(self.fetch, pending.url()) else {
                 continue;
             };
             let (text, imported_encoding) = mb_css::decode_stylesheet(&bytes, None, Some(encoding));
@@ -518,9 +528,23 @@ fn document_base(document: &Document, url: &Url) -> Url {
         .unwrap_or_else(|| url.clone())
 }
 
-fn decode_image(bytes: &[u8], max_pixels: u64) -> Option<Arc<Image>> {
-    let png = mb_image::png::decode(bytes, max_pixels).ok()?;
-    Image::new(png.width(), png.height(), png.to_rgba8()).map(Arc::new)
+fn decode_image(bytes: &[u8], remaining: u64) -> Option<Arc<Image>> {
+    // Die Eingabe ist bereits bezahlt. GIF schreibt direkt in die
+    // RGBA-Ausgabe; PNG braucht zusätzlich Zwischenpuffer und eine Kopie
+    // der komprimierten Bilddaten. Feste Dekodertabellen zählen hier nicht.
+    let image = if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        let max_pixels = MAX_IMAGE_PIXELS.min(remaining / 4);
+        let gif = mb_image::gif::decode(bytes, max_pixels).ok()?;
+        Image::new(gif.width(), gif.height(), gif.into_rgba8())
+    } else if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        let left = remaining.saturating_sub(length(bytes));
+        let max_pixels = MAX_IMAGE_PIXELS.min(left / mb_image::png::DECODE_BYTES_PER_PIXEL);
+        let png = mb_image::png::decode(bytes, max_pixels).ok()?;
+        Image::new(png.width(), png.height(), png.to_rgba8())
+    } else {
+        None
+    };
+    image.map(Arc::new)
 }
 
 /// Die Systemfarben eines hellen Farbschemas. Links, besuchte und aktive

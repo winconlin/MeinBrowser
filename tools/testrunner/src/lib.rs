@@ -95,7 +95,7 @@ pub const VIEWPORT: (f64, f64) = (800.0, 600.0);
 /// wenn sie sich nicht laden lässt oder das Budget nicht reicht.
 pub fn render(path: &Path, fonts: &Fonts<'_>) -> Option<Canvas> {
     let url = mb_web::file_url(path)?;
-    let page = mb_web::Page::load(url, Box::new(mb_web::read_file))?;
+    let page = mb_web::Page::load(url, Box::new(mb_web::read_file_within))?;
     let budget = Budget::new(mb_web::RENDER_STEPS);
     let scene = page
         .render_within(fonts, VIEWPORT.0, VIEWPORT.1, &budget)

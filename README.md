@@ -1,7 +1,9 @@
 # MeinBrowser
-A new Browser lightweight, open source, fully compatible to firefox and chrome plugins.
+Ein unabhängiger, ressourcenschonender Open-Source-Browser mit eigener Engine. Ziel ist die Unterstützung von Chrome- und Firefox-Erweiterungen; implementiert sind bisher die Grundlagen zur Darstellung lokaler HTML- und XHTML-Dateien (M0 und M1).
 
 Architekturkonzept (Deutsch): [docs/architektur.md](docs/architektur.md)
+
+Grundsatz ist eigener Browsercode. Geplant ist eine optionale Widevine-Anbindung für DRM: standardmäßig deaktiviert, nur nach Zustimmung und in einem eigenen eingeschränkten Prozess. Sie ist noch nicht implementiert; Lizenzierung, Plattformen und Verfügbarkeit bei Streamingdiensten sind gesondert zu klären. Die Entscheidung und Schutzgrenzen stehen in [Abschnitt 4.13 der Architektur](docs/architektur.md#413-bilder-audio-und-video).
 
 Sicherheitslücken bitte vertraulich melden, siehe [SECURITY.md](SECURITY.md).
 
