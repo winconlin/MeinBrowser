@@ -9,7 +9,7 @@ use mb_scene::{Color, Item, Rect};
 use mb_text::FontLibrary;
 use mb_url::Url;
 
-use crate::{Page, RENDER_STEPS, file_url};
+use crate::{Page, RENDER_STEPS, file_url, read_file};
 
 /// Eine Seite aus Dateien unter `file:///t/`.
 fn load(name: &str, files: &[(&str, Vec<u8>)]) -> Page {
@@ -188,4 +188,109 @@ fn nested_intrinsic_sizes_are_measured_once() {
     let fonts = Fonts::new(&library);
     let budget = Budget::new(100_000);
     assert!(page.render_within(&fonts, 800.0, 600.0, &budget).is_ok());
+}
+
+/// Wie [`load`], aber mit einem Budget von `bytes` für die Seite.
+fn load_within(name: &str, files: &[(&str, Vec<u8>)], bytes: u64) -> Page {
+    let files: BTreeMap<String, Vec<u8>> = files
+        .iter()
+        .map(|(name, bytes)| (format!("file:///t/{name}"), bytes.clone()))
+        .collect();
+    let url = Url::parse(&format!("file:///t/{name}"), None).expect("URL");
+    Page::load_within(
+        url,
+        Box::new(move |url: &Url| files.get(&url.serialize(true)).cloned()),
+        bytes,
+    )
+    .expect("Seite")
+}
+
+#[test]
+fn the_page_budget_covers_stylesheets_and_pixels() {
+    let html = b"<!DOCTYPE html><link rel=stylesheet href=s.css>\
+                 <style>body { margin: 0 } div { height: 10px; background: green }</style>\
+                 <div></div><img src=i.png>"
+        .to_vec();
+    let css = format!("div {{ background: red }} /*{}*/", "x".repeat(100)).into_bytes();
+    let png = testdata::read_bytes("image-png", "tests/pngsuite/basn2c08.png");
+    let files = [
+        ("a.html", html.clone()),
+        ("s.css", css),
+        ("i.png", png.clone()),
+    ];
+    let images = |page: &Page| {
+        let library = FontLibrary::new(Box::new(|_| None));
+        let fonts = Fonts::new(&library);
+        let scene = page.render(&fonts, 800.0, 600.0);
+        scene
+            .items
+            .iter()
+            .filter(|item| matches!(item, Item::Image { .. }))
+            .count()
+    };
+    // Genug für das Dokument und die Bilddatei, aber weder für das
+    // Stylesheet noch für die 32 × 32 Pixel des Bildes.
+    let html_bytes = u64::try_from(html.len()).expect("Länge");
+    let png_bytes = u64::try_from(png.len()).expect("Länge");
+    let page = load_within("a.html", &files, html_bytes + png_bytes + 100);
+    assert_eq!(rects(&page), [(Rect::new(0.0, 0.0, 800.0, 10.0), GREEN)]);
+    assert_eq!(images(&page), 0);
+    let page = load_within("a.html", &files, crate::PAGE_BYTES);
+    assert_eq!(images(&page), 1);
+}
+
+/// Ein eigener Ordner je Test (RS-14).
+fn directory(name: &str) -> std::path::PathBuf {
+    let directory = std::env::temp_dir().join(format!("mb-web-{}-{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir_all(directory.join("seite").join("support")).expect("Ordner");
+    directory
+}
+
+#[test]
+fn local_pages_load_normal_files_from_anywhere() {
+    let directory = directory("ordner");
+    let path = directory.join("seite").join("a.html");
+    std::fs::write(
+        &path,
+        "<!DOCTYPE html><link rel=stylesheet href=support/s.css>\
+         <link rel=stylesheet href=../t.css><div></div>",
+    )
+    .expect("schreiben");
+    std::fs::write(
+        directory.join("seite").join("support").join("s.css"),
+        "body { margin: 0 } div { height: 10px; background: red }",
+    )
+    .expect("schreiben");
+    std::fs::write(directory.join("t.css"), "div { background: green }").expect("schreiben");
+    let url = file_url(&path).expect("URL");
+    let page = Page::load(url, Box::new(read_file)).expect("Seite");
+    assert_eq!(rects(&page), [(Rect::new(0.0, 0.0, 800.0, 10.0), GREEN)]);
+    std::fs::remove_dir_all(&directory).expect("aufräumen");
+}
+
+#[cfg(unix)]
+#[test]
+fn special_files_are_refused_at_once() {
+    let directory = directory("speziell");
+    let fifo = directory.join("seite").join("pipe.css");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .expect("mkfifo");
+    assert!(made.success());
+    let path = directory.join("seite").join("a.html");
+    std::fs::write(
+        &path,
+        "<!DOCTYPE html><link rel=stylesheet href=pipe.css>\
+         <link rel=stylesheet href=file:///dev/zero><p>Text",
+    )
+    .expect("schreiben");
+    let url = file_url(&path).expect("URL");
+    // Bliebe das Laden an der Pipe hängen, endete der Test nie.
+    assert!(Page::load(url, Box::new(read_file)).is_some());
+    let zero = Url::parse("file:///dev/zero", None).expect("URL");
+    assert_eq!(read_file(&zero), None);
+    assert_eq!(read_file(&file_url(&fifo).expect("URL")), None);
+    std::fs::remove_dir_all(&directory).expect("aufräumen");
 }

@@ -1,9 +1,13 @@
 //! Eine Seite laden und darstellen.
 //!
 //! - Was die Seite lädt, holt eine Funktion des Aufrufers ([`Fetch`]); für
-//!   lokale Dateien gibt es [`read_file`]. Netzwerk, Fetch und MIME-Typen
-//!   kommen mit M3. Bis dahin entscheidet die Endung: `.xht`, `.xhtml` und
-//!   `.xml` liest der XML-Parser, alles andere der HTML-Parser.
+//!   lokale Dateien gibt es [`crate::read_file`]. Netzwerk, Fetch und
+//!   MIME-Typen kommen mit M3. Bis dahin entscheidet die Endung: `.xht`,
+//!   `.xhtml` und `.xml` liest der XML-Parser, alles andere der HTML-Parser.
+//! - Alles, was die Seite lädt und dekodiert, bezahlt sie aus
+//!   [`PAGE_BYTES`]: Dokument, Stylesheets, Bilddateien und die Pixel der
+//!   Bilder. Ein Bild wird nur dekodiert, wenn das Budget auch für die
+//!   Zwischenpuffer des Dekoders reicht; was nicht mehr passt, fehlt.
 //! - HTML-Bytes werden nach einer BOM dekodiert, sonst als UTF-8. Das ist
 //!   eine Lücke: Es fehlen das Vorab-Lesen von `<meta charset>`
 //!   (*prescan*) und die Ersatzkodierung nach Sprache und Region, die der
@@ -22,6 +26,7 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use mb_base::{Budget, CodePoint, Exhausted};
@@ -41,6 +46,17 @@ pub type Fetch = Box<dyn Fn(&Url) -> Option<Vec<u8>> + Send + Sync>;
 /// So viele Pixel darf ein Bild haben; größere werden nicht dekodiert.
 const MAX_IMAGE_PIXELS: u64 = 1 << 26;
 
+/// So viele Bytes darf eine Seite laden und dekodieren, zusammen: das
+/// Dokument, die Stylesheets, die Bilddateien und die Pixel der Bilder mit
+/// vier Bytes je Pixel. Festgelegt von diesem Browser: genug für Seiten mit
+/// vielen Bildern, aber auch für Geräte mit wenig Speicher.
+pub const PAGE_BYTES: u64 = 256 << 20;
+
+/// So viele Bytes braucht das Dekodieren eines PNG höchstens je Pixel:
+/// entpackte und rekonstruierte Daten mit je bis zu acht Bytes (16 Bit
+/// RGBA), dazu vier für das Ergebnis.
+const DECODE_BYTES_PER_PIXEL: u64 = 20;
+
 /// So viele Arbeitsschritte dürfen Stil und Layout einer Seite kosten (siehe
 /// `mb_base::budget`). Festgelegt von diesem Browser nach Messungen vom
 /// 30.10.2026 (Release-Build): Die 796 Dateien der Referenztests für M1
@@ -49,23 +65,6 @@ const MAX_IMAGE_PIXELS: u64 = 1 << 26;
 /// Ein Schritt kostet dabei 0,4 bis 1 µs; nach spätestens rund zwei Minuten
 /// ist das Budget verbraucht. Abbrechen lässt sich ein Auftrag jederzeit.
 pub const RENDER_STEPS: u64 = 100_000_000;
-
-/// Liest eine `file:`-URL aus dem Dateisystem. Hosts in `file:`-URLs (UNC)
-/// gibt es noch nicht.
-pub fn read_file(url: &Url) -> Option<Vec<u8>> {
-    if url.scheme() != "file" || !url.hostname().is_empty() {
-        return None;
-    }
-    let path =
-        String::from_utf8(mb_url::percent::percent_decode(url.pathname().as_bytes())).ok()?;
-    // Unter Windows beginnt der Pfad mit dem Laufwerk: `/C:/…`.
-    let path = if cfg!(windows) && path.get(2..3) == Some(":") && path.starts_with('/') {
-        path.get(1..).unwrap_or_default().to_owned()
-    } else {
-        path
-    };
-    std::fs::read(path).ok()
-}
 
 /// Die `file:`-URL eines Pfads, relativ zum Arbeitsverzeichnis, wenn er
 /// nicht absolut ist.
@@ -98,6 +97,31 @@ pub struct Page {
     fetch: Fetch,
     /// Die Bilder nach URL ohne Fragment, `None`, wo das Laden scheiterte.
     images: Mutex<BTreeMap<String, Option<Arc<Image>>>>,
+    /// Was von [`PAGE_BYTES`] übrig ist.
+    bytes: Bytes,
+}
+
+/// Ein Budget an Bytes, das mehrere Fäden teilen können.
+struct Bytes(AtomicU64);
+
+impl Bytes {
+    /// Bezahlt `count` Bytes; `false`, wenn nicht mehr so viele übrig sind.
+    fn spend(&self, count: u64) -> bool {
+        self.0
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |left| {
+                left.checked_sub(count)
+            })
+            .is_ok()
+    }
+
+    fn left(&self) -> u64 {
+        self.0.load(Ordering::Relaxed)
+    }
+}
+
+/// Die Länge eines Puffers als Zahl für das Budget.
+fn length(bytes: &[u8]) -> u64 {
+    u64::try_from(bytes.len()).unwrap_or(u64::MAX)
 }
 
 impl std::fmt::Debug for Page {
@@ -145,7 +169,14 @@ impl Page {
     /// Lädt das Dokument hinter `url` mit seinen Stylesheets; `None`, wenn
     /// es sich nicht holen lässt.
     pub fn load(url: Url, fetch: Fetch) -> Option<Page> {
-        let bytes = fetch(&url)?;
+        Page::load_within(url, fetch, PAGE_BYTES)
+    }
+
+    /// Wie [`Page::load`], aber mit `bytes` statt [`PAGE_BYTES`] für alles,
+    /// was die Seite lädt und dekodiert.
+    pub fn load_within(url: Url, fetch: Fetch, bytes: u64) -> Option<Page> {
+        let budget = Bytes(AtomicU64::new(bytes));
+        let bytes = fetch(&url).filter(|bytes| budget.spend(length(bytes)))?;
         let pathname = url.pathname().to_ascii_lowercase();
         let xml = [".xht", ".xhtml", ".xml"]
             .iter()
@@ -210,7 +241,8 @@ impl Page {
                 let Ok(sheet_url) = Url::parse(&href, Some(&base)) else {
                     continue;
                 };
-                let Some(bytes) = fetch(&sheet_url) else {
+                let Some(bytes) = fetch(&sheet_url).filter(|bytes| budget.spend(length(bytes)))
+                else {
                     continue;
                 };
                 let (text, _) = mb_css::decode_stylesheet(&bytes, None, Some(encoding));
@@ -227,6 +259,7 @@ impl Page {
             stylist: builder.build(),
             fetch,
             images: Mutex::new(BTreeMap::new()),
+            bytes: budget,
         })
     }
 
@@ -241,7 +274,18 @@ impl Page {
         if let Some(image) = images.get(&key) {
             return image.clone();
         }
-        let image = (self.fetch)(url).and_then(|bytes| decode_image(&bytes));
+        let image = (self.fetch)(url)
+            .filter(|bytes| self.bytes.spend(length(bytes)))
+            .and_then(|bytes| {
+                // Nur so viele Pixel, wie das Budget mit den Puffern des
+                // Dekoders erlaubt; bezahlt werden danach die des Ergebnisses.
+                let pixels = MAX_IMAGE_PIXELS.min(self.bytes.left() / DECODE_BYTES_PER_PIXEL);
+                decode_image(&bytes, pixels)
+            })
+            .filter(|image| {
+                let pixels = u64::from(image.width()).saturating_mul(u64::from(image.height()));
+                self.bytes.spend(pixels.saturating_mul(4))
+            });
         images.insert(key, image.clone());
         image
     }
@@ -310,8 +354,8 @@ fn document_base(document: &Document, url: &Url) -> Url {
         .unwrap_or_else(|| url.clone())
 }
 
-fn decode_image(bytes: &[u8]) -> Option<Arc<Image>> {
-    let png = mb_image::png::decode(bytes, MAX_IMAGE_PIXELS).ok()?;
+fn decode_image(bytes: &[u8], max_pixels: u64) -> Option<Arc<Image>> {
+    let png = mb_image::png::decode(bytes, max_pixels).ok()?;
     Image::new(png.width(), png.height(), png.to_rgba8()).map(Arc::new)
 }
 

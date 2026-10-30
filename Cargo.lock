@@ -200,6 +200,7 @@ dependencies = [
  "mb-html",
  "mb-image",
  "mb-layout",
+ "mb-platform",
  "mb-scene",
  "mb-style",
  "mb-text",

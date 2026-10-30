@@ -6,7 +6,9 @@
 //!   bleibt dabei bedienbar: Eine neue Größe bricht den laufenden Auftrag
 //!   ab, und für Stil und Layout gilt das Budget [`mb_web::RENDER_STEPS`].
 //!   Ist es verbraucht, bleibt das letzte Bild stehen, und der Fehler
-//!   erscheint auf der Standardfehlerausgabe.
+//!   erscheint auf der Standardfehlerausgabe. Die Seite darf Stylesheets und
+//!   Bilder aus normalen lokalen Dateien laden ([`mb_web::read_file`]); das
+//!   Fenster öffnet sich, während sie lädt.
 //! - `meinbrowser` öffnet ein Fenster mit einem selbst gezeichneten Testbild
 //!   (M0). Mausklicks setzen Punkte ins Bild, Tasten und Texteingaben
 //!   erscheinen auf der Standardausgabe.
@@ -28,8 +30,7 @@ use mb_layout::Fonts;
 use mb_platform::{Capture, Event, KeyEvent, Window, WindowOptions};
 use mb_raster::{Canvas, Color, PROBES, probe_position, test_image};
 use mb_text::FontLibrary;
-use mb_url::Url;
-use mb_web::Page;
+use mb_web::{Fetch, Page};
 
 #[cfg(test)]
 mod tests;
@@ -107,29 +108,66 @@ struct Renderer {
     jobs: Sender<Job>,
     frames: Receiver<(u64, Result<Canvas, String>)>,
     next_id: Cell<u64>,
+    /// Meldet einmal, ob sich die Seite laden ließ; danach steht es in
+    /// `state`.
+    loaded: Receiver<bool>,
+    state: Cell<Option<bool>>,
+    /// Der Pfad für Meldungen.
+    name: String,
 }
 
 impl Renderer {
-    /// Startet den Faden und wartet, bis die Seite geladen ist.
-    fn start(path: &Path) -> Result<Renderer, String> {
-        let url = mb_web::file_url(path)
-            .ok_or_else(|| format!("{}: kein gültiger Pfad", path.display()))?;
+    /// Startet den Faden, der die Seite lädt, ohne zu warten.
+    fn spawn(path: &Path) -> Result<Renderer, String> {
+        let name = path.display().to_string();
+        let url = mb_web::file_url(path).ok_or_else(|| format!("{name}: kein gültiger Pfad"))?;
         let (loaded_sender, loaded) = mpsc::channel();
         let (jobs, requests) = mpsc::channel();
         let (results, frames) = mpsc::channel();
+        let fetch: Fetch = Box::new(mb_web::read_file);
         std::thread::Builder::new()
             .name("Seite".into())
             .stack_size(STACK)
-            .spawn(move || render_page(url, loaded_sender, requests, results))
+            .spawn(move || render_page(url, fetch, loaded_sender, requests, results))
             .map_err(|err| format!("Faden: {err}"))?;
-        match loaded.recv() {
-            Ok(true) => Ok(Renderer {
-                jobs,
-                frames,
-                next_id: Cell::new(0),
-            }),
-            _ => Err(format!("{}: lässt sich nicht laden", path.display())),
+        Ok(Renderer {
+            jobs,
+            frames,
+            next_id: Cell::new(0),
+            loaded,
+            state: Cell::new(None),
+            name,
+        })
+    }
+
+    /// Startet den Faden und wartet, bis die Seite geladen ist. Das Fenster
+    /// wartet nicht, es nimmt [`Renderer::spawn`].
+    #[cfg(test)]
+    fn start(path: &Path) -> Result<Renderer, String> {
+        let renderer = Renderer::spawn(path)?;
+        let loaded = renderer.loaded.recv().unwrap_or(false);
+        renderer.state.set(Some(loaded));
+        if loaded {
+            Ok(renderer)
+        } else {
+            Err(renderer.unloadable())
         }
+    }
+
+    /// Ob sich die Seite laden ließ; `None`, solange sie lädt.
+    fn loaded(&self) -> Option<bool> {
+        if self.state.get().is_none() {
+            match self.loaded.try_recv() {
+                Ok(loaded) => self.state.set(Some(loaded)),
+                Err(TryRecvError::Disconnected) => self.state.set(Some(false)),
+                Err(TryRecvError::Empty) => {}
+            }
+        }
+        self.state.get()
+    }
+
+    fn unloadable(&self) -> String {
+        format!("{}: lässt sich nicht laden", self.name)
     }
 
     /// Zeichnet die Seite in einem Viewport von `width` × `height` Pixeln
@@ -179,12 +217,13 @@ fn stopped() -> String {
     "der Faden der Seite ist beendet".to_owned()
 }
 
-/// Der Faden eines [`Renderer`]: meldet über `loaded`, ob sich die Seite
-/// laden ließ, und zeichnet sie dann für jeden Auftrag aus `requests`. Von
-/// mehreren wartenden Aufträgen zählt nur der neueste; die anderen enden
-/// als abgebrochen.
+/// Der Faden eines [`Renderer`]: lädt die Seite mit `fetch`, meldet über
+/// `loaded`, ob das ging, und zeichnet sie dann für jeden Auftrag aus
+/// `requests`. Von mehreren wartenden Aufträgen zählt nur der neueste; die
+/// anderen enden als abgebrochen.
 fn render_page(
-    url: Url,
+    url: mb_url::Url,
+    fetch: Fetch,
     loaded: Sender<bool>,
     requests: Receiver<Job>,
     results: Sender<(u64, Result<Canvas, String>)>,
@@ -194,7 +233,7 @@ fn render_page(
         library.add_file(file);
     }
     let fonts = Fonts::new(&library);
-    let page = Page::load(url, Box::new(mb_web::read_file));
+    let page = Page::load(url, fetch);
     if loaded.send(page.is_some()).is_err() {
         return;
     }
@@ -222,7 +261,12 @@ fn render_page(
 
 /// Zeigt eine lokale Datei an und zeichnet sie bei jeder Größenänderung neu.
 fn view(path: &Path) -> ExitCode {
-    let renderer = match Renderer::start(path) {
+    // Was offensichtlich fehlt, wird gemeldet, bevor das Fenster aufgeht.
+    if !std::fs::metadata(path).is_ok_and(|metadata| metadata.is_file()) {
+        eprintln!("meinbrowser: {}: keine lesbare Datei", path.display());
+        return ExitCode::FAILURE;
+    }
+    let renderer = match Renderer::spawn(path) {
         Ok(renderer) => renderer,
         Err(err) => {
             eprintln!("meinbrowser: {err}");
@@ -257,6 +301,10 @@ fn view(path: &Path) -> ExitCode {
                 return ExitCode::FAILURE;
             }
         };
+        if renderer.loaded() == Some(false) {
+            eprintln!("meinbrowser: {}", renderer.unloadable());
+            return ExitCode::FAILURE;
+        }
         let mut redraw = false;
         match event {
             Some(Event::CloseRequested) => {

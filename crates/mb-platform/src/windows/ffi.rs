@@ -201,10 +201,14 @@ pub struct BITMAPINFO {
     pub bmiColors: [RGBQUAD; 1],
 }
 
+/// `fileapi.h`: eine Datei auf einem Datenträger.
+pub const FILE_TYPE_DISK: DWORD = 0x0001;
+
 #[link(name = "kernel32")]
 unsafe extern "system" {
     pub fn GetModuleHandleW(lpModuleName: *const u16) -> HINSTANCE;
     pub fn GetLastError() -> DWORD;
+    pub fn GetFileType(hFile: HANDLE) -> DWORD;
 }
 
 #[link(name = "user32")]
