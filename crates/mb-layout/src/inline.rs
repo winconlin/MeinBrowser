@@ -1527,10 +1527,12 @@ fn place_line(
                     });
                     if !same_face {
                         if let Some(face) = context.fonts.library().face(glyph.face) {
+                            let query = Query::new(&style.font());
                             fragment.runs.push(GlyphRun {
                                 face,
                                 size: style.font_size(),
                                 glyphs: Vec::new(),
+                                oblique: context.fonts.synthetic_oblique(&query, glyph.face),
                             });
                         } else {
                             glyph_x += f64::from(glyph.advance);

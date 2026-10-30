@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use mb_style::properties::{FontFamily, FontStyle, GenericFamily, ScriptGenericFamily};
 use mb_style::{Advance, Font, FontMetrics, FontMetricsSource};
-use mb_text::{Face, Family, FontLibrary, FontQuery, Glyph, Slope};
+use mb_text::{Face, FaceId, Family, FontLibrary, FontQuery, Glyph, Slope};
 
 /// Die Maße der ersten verfügbaren Schrift in `px`.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -252,6 +252,12 @@ impl<'a> Fonts<'a> {
     /// Formt Text; die Vorschubbreiten sind in `px`.
     pub(crate) fn shape(&self, query: &Query, size: f64, text: &[u32]) -> Vec<Glyph> {
         mb_text::shape(self.library, &query.as_query(), to_f32(size), text)
+    }
+
+    /// Um wie viel Grad die Glyphen von `face` für `query` künstlich schräg
+    /// gestellt werden, 0 für keine Scherung.
+    pub(crate) fn synthetic_oblique(&self, query: &Query, face: FaceId) -> f64 {
+        f64::from(self.library.synthetic_oblique(face, query.slope))
     }
 }
 

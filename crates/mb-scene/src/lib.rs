@@ -156,6 +156,10 @@ pub struct GlyphRun {
     pub size: f32,
     pub color: Color,
     pub glyphs: Vec<PositionedGlyph>,
+    /// Um wie viel Grad die Glyphen künstlich schräg gestellt werden,
+    /// positiv im Uhrzeigersinn, geschert um die Grundlinie; 0 für keine
+    /// Scherung.
+    pub oblique: f32,
 }
 
 /// Ein Zeichenbefehl.

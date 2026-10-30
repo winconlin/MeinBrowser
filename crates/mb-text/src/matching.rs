@@ -5,9 +5,10 @@
 //! Die Schnitte sind statisch. Wie die Eigenschaft `font-style` es
 //! beschreibt, hat ein aufrechter Schnitt den Italic-Wert 0 und den
 //! Oblique-Winkel 0, ein kursiver den Italic-Wert 1 und ein schräger den
-//! Winkel 14deg, den `oblique` ohne Winkel bedeutet. Variable Schriften und
-//! künstlich schräg gestellte Schnitte fehlen noch; der Schritt, der sie
-//! erzeugt, wird übersprungen.
+//! Winkel 14deg, den `oblique` ohne Winkel bedeutet. Variable Schriften
+//! fehlen noch. Den Schritt, der künstlich schräg gestellte Schnitte erzeugt,
+//! überspringt die Wahl; ob ein gewählter aufrechter Schnitt geschert wird,
+//! sagt danach `FontLibrary::synthetic_oblique`.
 
 use crate::opentype::FaceStyle;
 
@@ -79,7 +80,7 @@ impl Candidate {
 }
 
 /// Der Winkel von `oblique` ohne Angabe.
-const DEFAULT_OBLIQUE: f32 = 14.0;
+pub(crate) const DEFAULT_OBLIQUE: f32 = 14.0;
 
 /// Ab diesem Winkel wird schräg vor kursiv gesucht.
 const OBLIQUE_THRESHOLD: f32 = 11.0;

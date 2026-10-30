@@ -132,6 +132,29 @@ fn styles_and_weights_in_one_family() {
 }
 
 #[test]
+fn upright_faces_are_sheared_for_italic_and_oblique() {
+    let library = library(&BASIC);
+    let families = [name("CSSTest Basic")];
+    let first = |slope| {
+        *library
+            .select(&query(&families, 400.0, slope))
+            .first()
+            .expect("Schnitt")
+    };
+    let upright = first(Slope::Normal);
+    let italic = first(Slope::Italic);
+    assert_eq!(library.synthetic_oblique(upright, Slope::Normal), 0.0);
+    assert_eq!(library.synthetic_oblique(upright, Slope::Italic), 14.0);
+    assert_eq!(
+        library.synthetic_oblique(upright, Slope::Oblique(-20.0)),
+        -20.0
+    );
+    // Ein kursiver Schnitt bleibt, wie er ist.
+    assert_eq!(library.synthetic_oblique(italic, Slope::Italic), 0.0);
+    assert_eq!(library.synthetic_oblique(italic, Slope::Oblique(20.0)), 0.0);
+}
+
+#[test]
 fn font_list_in_order_without_missing_families() {
     let library = library(&["Lato-Bold.ttf", "Lato-Medium.ttf", "Ahem.ttf"]);
     let families = [

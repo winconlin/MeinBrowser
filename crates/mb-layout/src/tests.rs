@@ -562,6 +562,18 @@ fn dotted_borders_are_drawn_as_round_dots() {
 }
 
 #[test]
+fn short_sides_get_a_single_dot() {
+    // 5 px mit Punkten von 4 px: Für zwei ist kein Platz.
+    let page = load(
+        "<div></div>",
+        "body { margin: 0 } div { width: 5px; border-top: 4px dotted red }",
+    );
+    let red = Color::rgb(255, 0, 0);
+    let scene = page.tree.paint(&image);
+    assert_eq!(polygon_bounds(&scene, red), [(0.5, 0.0, 4.5, 4.0)]);
+}
+
+#[test]
 fn thin_dots_are_squares_on_whole_pixels() {
     let page = load(
         "<div></div>",
@@ -675,6 +687,26 @@ fn slanted_corners_fall_on_device_pixels() {
         top,
         [[(0.0, 0.0), (11.0, 0.0), (10.5, 0.5), (0.5, 0.5)].as_slice()]
     );
+}
+
+#[test]
+fn italic_without_italic_face_is_sheared() {
+    // Ahem hat nur einen aufrechten Schnitt.
+    let page = load(
+        "<p>X</p><p style='font-style: italic'>X</p><p style='font-style: oblique -20deg'>X</p>",
+        "",
+    );
+    let obliques: Vec<f32> = page
+        .tree
+        .paint(&image)
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Glyphs(run) => Some(run.oblique),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(obliques, [0.0, 14.0, -20.0]);
 }
 
 #[test]
