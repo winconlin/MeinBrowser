@@ -3,7 +3,7 @@
 //! Stylesheet der Benutzeragenten. Wo die WPT-Tests `z-index` prüfen, das es
 //! hier noch nicht gibt, steht `width`.
 
-use mb_base::CodePoint;
+use mb_base::{Budget, Cancel, CodePoint, Exhausted};
 use mb_css::{Source, parse_component_value_list};
 use mb_dom::{Document, NodeId};
 use mb_html::{Options, ScriptingMode, parse_document};
@@ -11,6 +11,35 @@ use mb_html::{Options, ScriptingMode, parse_document};
 use mb_url::Url;
 
 use super::*;
+
+#[test]
+fn failed_bounded_user_agent_addition_cannot_publish_partial_styles() {
+    let mut builder = StylistBuilder::new();
+    assert_eq!(
+        builder.add_user_agent_sheets_within(DocumentInfo::default(), &mb_base::Budget::new(0)),
+        Err(mb_base::Exhausted::Steps)
+    );
+    assert!(matches!(
+        builder.build_within(&mb_base::Budget::unlimited()),
+        Err(mb_base::Exhausted::Steps)
+    ));
+}
+
+#[test]
+fn indexing_a_single_large_selector_respects_the_budget() {
+    for selector in [".a".repeat(4096), format!("#{}", "A".repeat(16_384))] {
+        let sheet = StyleSheet::parse(
+            &format!("{selector} {{ color: green }}"),
+            ParseContext::default(),
+        );
+        let mut builder = StylistBuilder::new();
+        builder.add(Origin::Author, &sheet);
+        assert!(matches!(
+            builder.build_within(&mb_base::Budget::new(64)),
+            Err(mb_base::Exhausted::Steps)
+        ));
+    }
+}
 use crate::computed::test_device;
 use crate::declarations::parse_declaration_block;
 use crate::properties::{Direction, PropertyId, TextOrientation, WritingMode};
@@ -695,4 +724,193 @@ fn imports() {
     narrow.viewport_width = 400.0;
     let page = on_device(&narrow, html, &[&sheet]);
     page.check(&[("b", Longhand::Color, "-")]);
+}
+
+/// Bricht beim ersten tatsächlich benötigten Schriftmaß ab. So lässt sich
+/// ein Abbruch während des Aufbaus ohne Rennen zwischen Fäden prüfen.
+struct CancellingMetrics<'a> {
+    cancel: &'a Cancel,
+    calls: std::cell::Cell<usize>,
+}
+
+impl FontMetricsSource for CancellingMetrics<'_> {
+    fn metrics(&self, _: &crate::Font<'_>) -> crate::FontMetrics {
+        self.calls.set(self.calls.get() + 1);
+        self.cancel.cancel();
+        crate::FontMetrics {
+            x_height: Some(8.0),
+            ..crate::FontMetrics::default()
+        }
+    }
+}
+
+#[test]
+fn preparation_refuses_empty_and_cancelled_budgets_before_media_work() {
+    let device = test_device();
+    let sheet = StyleSheet::parse(
+        "@media (min-width: 1ex) { a { color: green } }",
+        ParseContext::default(),
+    );
+    for cancelled in [false, true] {
+        let cancel = Cancel::new();
+        if cancelled {
+            cancel.cancel();
+        }
+        let fonts = CancellingMetrics {
+            cancel: &cancel,
+            calls: std::cell::Cell::new(0),
+        };
+        let budget = Budget::with_cancel(if cancelled { 10_000 } else { 0 }, cancel.clone());
+        let mut builder = StylistBuilder::for_device(&device, &fonts);
+        assert_eq!(
+            builder.add_within(Origin::Author, &sheet, &budget),
+            Err(if cancelled {
+                Exhausted::Cancelled
+            } else {
+                Exhausted::Steps
+            })
+        );
+        assert_eq!(fonts.calls.get(), 0);
+    }
+}
+
+#[test]
+fn a_large_layer_statement_exhausts_the_preparation_budget() {
+    // Nur eine Regel: Ein Schritt pro CssRule allein würde die vielen
+    // Namen und ihre Pfade nicht begrenzen.
+    let names = (0..2048)
+        .map(|i| format!("layer{i}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let sheet = StyleSheet::parse(&format!("@layer {names};"), ParseContext::default());
+    let mut builder = StylistBuilder::new();
+    assert_eq!(
+        builder.add_within(Origin::Author, &sheet, &Budget::new(32)),
+        Err(Exhausted::Steps)
+    );
+    // Ein neuer Auftrag darf keinen teilweise aufgebauten Stylist retten.
+    assert!(matches!(
+        builder.build_within(&Budget::unlimited()),
+        Err(Exhausted::Steps)
+    ));
+}
+
+#[test]
+fn layer_ranking_and_selector_indexing_are_budgeted() {
+    let names = (0..2048)
+        .map(|i| format!("layer{i}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let layer_sheet = StyleSheet::parse(&format!("@layer {names};"), ParseContext::default());
+    let selectors = (0..2048)
+        .map(|i| format!(".class{i}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let selector_sheet = StyleSheet::parse(
+        &format!("{selectors} {{ color: green }}"),
+        ParseContext::default(),
+    );
+    for sheet in [&layer_sheet, &selector_sheet] {
+        let mut builder = StylistBuilder::new();
+        builder.add(Origin::Author, sheet);
+        assert!(matches!(
+            builder.build_within(&Budget::new(32)),
+            Err(Exhausted::Steps)
+        ));
+    }
+}
+
+#[test]
+fn cancellation_during_media_evaluation_invalidates_the_builder() {
+    let device = test_device();
+    let cancel = Cancel::new();
+    let fonts = CancellingMetrics {
+        cancel: &cancel,
+        calls: std::cell::Cell::new(0),
+    };
+    let sheet = StyleSheet::parse(
+        "@media (min-width: 1ex) { a { color: green } }
+         @layer later; @media (min-width: 2ex) { a { color: red } }",
+        ParseContext::default(),
+    );
+    let mut builder = StylistBuilder::for_device(&device, &fonts);
+    assert_eq!(
+        builder.add_within(
+            Origin::Author,
+            &sheet,
+            &Budget::with_cancel(100_000, cancel.clone())
+        ),
+        Err(Exhausted::Cancelled)
+    );
+    assert_eq!(fonts.calls.get(), 1);
+    assert!(matches!(
+        builder.build_within(&Budget::unlimited()),
+        Err(Exhausted::Cancelled)
+    ));
+}
+
+#[test]
+fn cache_validation_observes_budget_and_mid_query_cancellation() {
+    let device = test_device();
+    let sheet = StyleSheet::parse(
+        "@media (min-width: 1ex) { a { color: green } }",
+        ParseContext::default(),
+    );
+    let mut builder = StylistBuilder::for_device(&device, &NoFonts);
+    builder.add(Origin::Author, &sheet);
+    let stylist = builder.build();
+    assert_eq!(
+        stylist.is_valid_for_within(&device, &NoFonts, &Budget::new(0)),
+        Err(Exhausted::Steps)
+    );
+    let cancel = Cancel::new();
+    let fonts = CancellingMetrics {
+        cancel: &cancel,
+        calls: std::cell::Cell::new(0),
+    };
+    assert_eq!(
+        stylist.is_valid_for_within(
+            &device,
+            &fonts,
+            &Budget::with_cancel(10_000, cancel.clone())
+        ),
+        Err(Exhausted::Cancelled)
+    );
+    assert_eq!(fonts.calls.get(), 1);
+}
+
+#[test]
+fn bounded_preparation_preserves_layer_order_and_importance() {
+    let html = "<div id=normal></div><div id=important></div><div id=nested></div>
+                <div id=parent></div><div id=reopened></div><div id=anonymous></div>";
+    let sheet = StyleSheet::parse(
+        "@layer zeta, alpha;
+         @layer zeta { #normal { color: red } #important { color: green !important } }
+         @layer alpha { #normal { color: green } #important { color: red !important } }
+         @layer zeta.z { #nested { color: red } }
+         @layer zeta.a { #nested { color: green } }
+         @layer zeta { #parent { color: green } @layer child { #parent { color: red } } }
+         @layer zeta { #reopened { color: red } }
+         @layer alpha { #reopened { color: green } }
+         @layer zeta { #reopened { color: red } }
+         @layer { #anonymous { color: red } } @layer { #anonymous { color: green } }",
+        ParseContext::default(),
+    );
+    let budget = Budget::new(100_000);
+    let mut builder = StylistBuilder::new();
+    builder
+        .add_within(Origin::Author, &sheet, &budget)
+        .expect("Stylesheet");
+    let page = Page {
+        document: document(html),
+        stylist: builder.build_within(&budget).expect("Stylist"),
+    };
+    page.check(&[
+        ("normal", Longhand::Color, "green"),
+        ("important", Longhand::Color, "green"),
+        ("nested", Longhand::Color, "green"),
+        ("parent", Longhand::Color, "green"),
+        ("reopened", Longhand::Color, "green"),
+        ("anonymous", Longhand::Color, "green"),
+    ]);
 }

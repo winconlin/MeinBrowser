@@ -27,7 +27,7 @@ use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use mb_base::DomString;
+use mb_base::{Budget, DomString, Exhausted};
 use mb_css::{
     AnPlusB, BlockKind, ComponentValue, Source, Token, Values, parse_an_plus_b,
     parse_component_value_list,
@@ -451,29 +451,27 @@ impl Selector {
     /// Kleinschreibung können beim Abgleich anders gelten; wer vorsortiert,
     /// vergleicht deshalb ohne Unterschied zwischen ASCII-Groß- und
     /// -Kleinbuchstaben.
-    pub(crate) fn key(&self) -> Key<'_> {
+    pub(crate) fn key_within(&self, budget: &Budget) -> Result<Key<'_>, Exhausted> {
+        budget.spend(1);
+        budget.check()?;
         let Some(subject) = self.compounds.last() else {
-            return Key::Any;
+            return Ok(Key::Any);
         };
-        let id = subject.iter().find_map(|simple| match simple {
-            Simple::Id(id) => Some(Key::Id(id)),
-            _ => None,
-        });
-        let class = || {
-            subject.iter().find_map(|simple| match simple {
-                Simple::Class(class) => Some(Key::Class(class)),
-                _ => None,
-            })
-        };
-        let name = || {
-            subject.iter().find_map(|simple| match simple {
+        let mut class = None;
+        let mut name = None;
+        for simple in subject {
+            budget.spend(1);
+            budget.check()?;
+            match simple {
+                Simple::Id(id) => return Ok(Key::Id(id)),
+                Simple::Class(value) if class.is_none() => class = Some(Key::Class(value)),
                 Simple::Type {
-                    name: Some(name), ..
-                } => Some(Key::LocalName(&name.lower)),
-                _ => None,
-            })
-        };
-        id.or_else(class).or_else(name).unwrap_or(Key::Any)
+                    name: Some(value), ..
+                } if name.is_none() => name = Some(Key::LocalName(&value.lower)),
+                _ => {}
+            }
+        }
+        Ok(class.or(name).unwrap_or(Key::Any))
     }
 
     /// Das Pseudoelement, für das der Selektor gilt, falls er für eines gilt,

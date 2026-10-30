@@ -20,7 +20,7 @@
 //!   [`mb_style::MAX_IMPORT_DEPTH`] steht oder mehr als [`MAX_IMPORTS`]
 //!   Stylesheets aus `@import` lädt. Es fehlt `<?xml-stylesheet?>`.
 //! - Bilder sind bisher nur PNG.
-//! - Stil und Layout fremder Seiten bezahlt [`Page::render_within`] aus
+//! - Kaskaden-Vorbereitung, Stil und Layout fremder Seiten bezahlt [`Page::render_within`] aus
 //!   einem Budget ([`RENDER_STEPS`]); ist es verbraucht, gibt es kein Bild,
 //!   sondern einen Fehler.
 //! - Zum Scrollen wird einmal gesetzt ([`Page::layout_within`]) und an jeder
@@ -79,13 +79,11 @@ pub const MAX_IMPORTS: usize = 1024;
 /// vielen Bildern, aber auch für Geräte mit wenig Speicher.
 pub const PAGE_BYTES: u64 = 256 << 20;
 
-/// So viele Arbeitsschritte dürfen Stil und Layout einer Seite kosten (siehe
-/// `mb_base::budget`). Festgelegt von diesem Browser nach Messungen vom
-/// 30.10.2026 (Release-Build): Die 796 Dateien der Referenztests für M1
-/// brauchen je höchstens 2 238 Schritte, eine Seite mit 300 000 Elementen
-/// (`div`, `p` und `b` mit Text) ohne Schriften rund 26 Millionen in 19 s.
-/// Ein Schritt kostet dabei 0,4 bis 1 µs; nach spätestens rund zwei Minuten
-/// ist das Budget verbraucht. Abbrechen lässt sich ein Auftrag jederzeit.
+/// So viele Arbeitsschritte dürfen Kaskaden-Vorbereitung, Stil und Layout
+/// einer Seite zusammen kosten (siehe `mb_base::budget`). Festgelegt von
+/// diesem Browser. Auch Cacheprüfung, Media Queries und Selektorindexierung
+/// zählen mit. Schritte sind ungefähre Arbeitseinheiten, keine feste
+/// Zeitgrenze; Abbruch wird kooperativ an den budgetierten Stellen geprüft.
 pub const RENDER_STEPS: u64 = 100_000_000;
 
 /// Die `file:`-URL eines Pfads, relativ zum Arbeitsverzeichnis, wenn er
@@ -305,22 +303,41 @@ impl Page {
 
     /// Die Regeln für ein Gerät: die vorigen, wenn jede Media Query dort
     /// gleich ausfällt, sonst neu zusammengestellt.
-    fn stylist(&self, device: &Device, fonts: &Fonts<'_>) -> Arc<Stylist> {
-        let mut cached = self.stylist.lock().unwrap_or_else(PoisonError::into_inner);
+    fn stylist(
+        &self,
+        device: &Device,
+        fonts: &Fonts<'_>,
+        budget: &Budget,
+    ) -> Result<Arc<Stylist>, Exhausted> {
+        budget.spend(1);
+        budget.check()?;
+        // Nur den Arc unter dem Lock kopieren. Prüfen und Bauen dürfen
+        // weder andere Viewports blockieren noch einen Teilstand publizieren.
+        let cached = self
+            .stylist
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
         if let Some(stylist) = cached
-            .as_ref()
-            .filter(|stylist| stylist.is_valid_for(device, fonts))
+            && stylist.is_valid_for_within(device, fonts, budget)?
         {
-            return Arc::clone(stylist);
+            return Ok(stylist);
         }
         let mut builder = StylistBuilder::for_device(device, fonts);
-        builder.add_user_agent_sheets(self.info);
+        builder.add_user_agent_sheets_within(self.info, budget)?;
         for sheet in &self.sheets {
-            builder.add(Origin::Author, sheet);
+            builder.add_within(Origin::Author, sheet, budget)?;
         }
-        let stylist = Arc::new(builder.build());
-        *cached = Some(Arc::clone(&stylist));
-        stylist
+        let stylist = Arc::new(builder.build_within(budget)?);
+        budget.spend(0);
+        budget.check()?;
+        let previous = self
+            .stylist
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .replace(Arc::clone(&stylist));
+        drop(previous);
+        Ok(stylist)
     }
 
     pub fn document(&self) -> &Document {
@@ -362,7 +379,9 @@ impl Page {
             device_pixel_ratio: 1.0,
         };
         let device = device(viewport);
-        let stylist = self.stylist(&device, fonts);
+        let stylist = self
+            .stylist(&device, fonts, &Budget::unlimited())
+            .expect("unbegrenztes Budget");
         let images = |url: &Url| self.image(url);
         let tree = mb_layout::layout(&LayoutInput {
             document: &self.document,
@@ -375,7 +394,7 @@ impl Page {
         tree.paint(&images)
     }
 
-    /// Wie [`Page::render`], aber Stil und Layout bezahlt aus `budget`;
+    /// Wie [`Page::render`], aber Kaskaden-Vorbereitung, Stil und Layout bezahlt aus `budget`;
     /// `Err`, wenn es verbraucht ist oder der Auftrag abgebrochen wurde.
     pub fn render_within(
         &self,
@@ -393,7 +412,7 @@ impl Page {
         Ok(self.paint(&tree, (0.0, 0.0)))
     }
 
-    /// Stil und Layout in `viewport`, bezahlt aus `budget`; `Err`, wenn es
+    /// Kaskaden-Vorbereitung, Stil und Layout in `viewport`, bezahlt aus `budget`; `Err`, wenn es
     /// verbraucht ist oder der Auftrag abgebrochen wurde. Wie weit sich
     /// scrollen lässt, sagt [`FragmentTree::scroll_size`].
     pub fn layout_within(
@@ -403,7 +422,7 @@ impl Page {
         budget: &Budget,
     ) -> Result<FragmentTree, Exhausted> {
         let device = device(viewport);
-        let stylist = self.stylist(&device, fonts);
+        let stylist = self.stylist(&device, fonts, budget)?;
         let images = |url: &Url| self.image(url);
         let input = LayoutInput {
             document: &self.document,
