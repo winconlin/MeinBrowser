@@ -10,9 +10,8 @@
 //! diesen Namen für alte Programme trägt.
 //!
 //! Noch nicht: Schriftaliase wie bei fontconfig (`Arial` für `Liberation
-//! Sans`), künstlicher Fettdruck und künstliche Schrägstellung, eine
-//! Übersicht der Zeichen jedes Schnitts im Index (die Ersatzschriftsuche lädt
-//! dafür Schnitte).
+//! Sans`), künstlicher Fettdruck, eine Übersicht der Zeichen jedes Schnitts
+//! im Index (die Ersatzschriftsuche lädt dafür Schnitte).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -21,7 +20,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use mb_unicode::case_folding;
 
-use crate::matching::{self, Candidate, Slope};
+use crate::matching::{self, Candidate, DEFAULT_OBLIQUE, FaceSlope, Slope};
 use crate::opentype::{Face, FontData, face_count};
 
 /// Liest den Inhalt einer Schriftdatei; `None`, wenn das nicht geht.
@@ -312,6 +311,32 @@ impl FontLibrary {
                 .all(|&character| face.glyph_index(character).is_some())
                 .then_some(id)
         })
+    }
+
+    /// Um wie viel Grad die Glyphen von `id` geschert werden, wenn die
+    /// Schriftauswahl den Schnitt für `slope` gewählt hat; positiv im
+    /// Uhrzeigersinn, 0 für keine Scherung. Ein aufrechter Schnitt wird für
+    /// `italic` um den Winkel von `oblique` ohne Angabe geschert, für
+    /// `oblique` um dessen Winkel (CSS Fonts 4, `font-synthesis-style:
+    /// auto`).
+    ///
+    /// Die Auswahl selbst bleibt dabei ohne den Schritt, der künstlich
+    /// schräge Schnitte erzeugt. Für `italic` kommt dasselbe heraus, denn
+    /// ein aufrechter Schnitt wird dort erst gewählt, wenn es keinen
+    /// kursiven oder schrägen gibt. Für `oblique` weicht es ab: Hat die
+    /// Familie einen kursiven, aber keinen schrägen Schnitt, nimmt der
+    /// Browser den kursiven, wo Fonts 4 den aufrechten scheren würde.
+    pub fn synthetic_oblique(&self, id: FaceId, slope: Slope) -> f32 {
+        let upright = self
+            .faces
+            .get(id.0)
+            .is_some_and(|entry| entry.candidate.slope == FaceSlope::Normal);
+        match slope {
+            _ if !upright => 0.0,
+            Slope::Normal => 0.0,
+            Slope::Italic => DEFAULT_OBLIQUE,
+            Slope::Oblique(angle) => angle,
+        }
     }
 
     /// Der Schnitt mit seinen Daten, beim ersten Mal geladen.

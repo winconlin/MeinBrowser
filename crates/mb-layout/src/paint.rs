@@ -227,6 +227,7 @@ impl Painter<'_> {
                         y,
                     })
                     .collect(),
+                oblique: to_f32(run.oblique),
             }));
         }
     }

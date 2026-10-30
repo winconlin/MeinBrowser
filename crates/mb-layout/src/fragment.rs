@@ -128,6 +128,9 @@ pub(crate) struct GlyphRun {
     pub(crate) size: f64,
     /// Glyphe und Anfang auf der Grundlinie, waagrecht.
     pub(crate) glyphs: Vec<(GlyphId, f64)>,
+    /// Um wie viel Grad die Glyphen künstlich schräg gestellt werden, 0 für
+    /// keine Scherung.
+    pub(crate) oblique: f64,
 }
 
 /// Text auf einer Zeile in einem Stil.

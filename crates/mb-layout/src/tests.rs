@@ -678,6 +678,26 @@ fn slanted_corners_fall_on_device_pixels() {
 }
 
 #[test]
+fn italic_without_italic_face_is_sheared() {
+    // Ahem hat nur einen aufrechten Schnitt.
+    let page = load(
+        "<p>X</p><p style='font-style: italic'>X</p><p style='font-style: oblique -20deg'>X</p>",
+        "",
+    );
+    let obliques: Vec<f32> = page
+        .tree
+        .paint(&image)
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Glyphs(run) => Some(run.oblique),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(obliques, [0.0, 14.0, -20.0]);
+}
+
+#[test]
 fn scroll_size_covers_boxes_and_lines() {
     // #a ist breiter als der Viewport. Die Zeilen von #b reichen unter den
     // Kasten, und das zu lange erste Wort ragt rechts über ihn hinaus.

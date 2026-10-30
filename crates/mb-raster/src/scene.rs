@@ -133,12 +133,28 @@ fn draw_glyphs(canvas: &mut Canvas, run: &GlyphRun, device_scale: f32) {
     }
     let scale = size / units_per_em;
     let fill = color(run.color);
+    // Künstlich schräg: x' = x + y · tan(Winkel) um die Grundlinie, nach
+    // oben positiv. Höchstens 89 Grad, damit die Scherung endlich bleibt;
+    // CSS erlaubt bis 90.
+    let skew = if run.oblique.is_finite() {
+        f64::from(run.oblique).clamp(-89.0, 89.0).to_radians().tan() as f32
+    } else {
+        0.0
+    };
     // Das Rechteck um alle Glyphen der Schrift, nach oben positiv, mit
-    // einem Pixel Rand für die Kantenglättung.
+    // einem Pixel Rand für die Kantenglättung; geschert reicht es oben und
+    // unten weiter zur Seite.
     let (x_min, y_min, x_max, y_max) = run.face.metrics().bounds;
+    let (lean_low, lean_high) = {
+        let (low, high) = (
+            skew * f32::from(y_min) * scale,
+            skew * f32::from(y_max) * scale,
+        );
+        (low.min(high), low.max(high))
+    };
     let (left, right) = (
-        f32::from(x_min) * scale - 1.0,
-        f32::from(x_max) * scale + 1.0,
+        f32::from(x_min) * scale - 1.0 + lean_low,
+        f32::from(x_max) * scale + 1.0 + lean_high,
     );
     let (below, above) = (
         f32::from(y_min) * scale - 1.0,
@@ -164,7 +180,12 @@ fn draw_glyphs(canvas: &mut Canvas, run: &GlyphRun, device_scale: f32) {
         // Ganze Pixel bis 10⁹ sind als f32 nur auf Vielfache von 64 genau;
         // so weit draußen zeichnet ohnehin nichts.
         let (origin_x, origin_y) = (x as f32, y as f32);
-        let point = |p: mb_text::Point| (origin_x + p.x * scale, origin_y - p.y * scale);
+        let point = |p: mb_text::Point| {
+            (
+                origin_x + (p.x + skew * p.y) * scale,
+                origin_y - p.y * scale,
+            )
+        };
         let mut path = Path::new();
         for command in &outline.commands {
             match *command {
@@ -350,6 +371,7 @@ mod tests {
             color: mb_scene::Color::rgb(0, 0, 0),
             // Wird zu (1, 8) gerundet.
             glyphs: vec![PositionedGlyph { id, x: 1.4, y: 7.6 }],
+            oblique: 0.0,
         }));
         let canvas = render(&scene).expect("Fläche");
         for y in 0..10 {
@@ -383,6 +405,43 @@ mod tests {
     }
 
     #[test]
+    fn oblique_glyphs_are_sheared_about_the_baseline() {
+        // Ahem bei 10 px: ein Quadrat von 8 px über bis 2 px unter der
+        // Grundlinie. Um 45 Grad geschert rückt jede Zeile um so viel nach
+        // rechts, wie sie über der Grundlinie liegt.
+        let data = testdata::read_bytes("wpt", "fonts/Ahem.ttf");
+        let face = Arc::new(mb_text::Face::parse(data.into(), 0).expect("Ahem"));
+        let id = face.glyph_index('X').expect("Glyphe");
+        let mut scene = Scene::new(30.0, 12.0, mb_scene::Color::WHITE);
+        scene.items.push(Item::Glyphs(GlyphRun {
+            face,
+            size: 10.0,
+            color: mb_scene::Color::rgb(0, 0, 0),
+            glyphs: vec![PositionedGlyph {
+                id,
+                x: 5.0,
+                y: 10.0,
+            }],
+            oblique: 45.0,
+        }));
+        let canvas = render(&scene).expect("Fläche");
+        let black = Some(0xff00_0000);
+        let white = Some(0xffff_ffff);
+        // Zeile 2 liegt 7 bis 8 px über der Grundlinie: von 12 bis 23 px.
+        for x in 13..22 {
+            assert_eq!(canvas.pixel(x, 2), black, "({x}, 2)");
+        }
+        assert_eq!(canvas.pixel(11, 2), white);
+        assert_eq!(canvas.pixel(23, 2), white);
+        // Zeile 11 liegt 1 bis 2 px unter ihr: von 3 bis 14 px.
+        for x in 4..13 {
+            assert_eq!(canvas.pixel(x, 11), black, "({x}, 11)");
+        }
+        assert_eq!(canvas.pixel(2, 11), white);
+        assert_eq!(canvas.pixel(14, 11), white);
+    }
+
+    #[test]
     fn scaled_glyphs_start_on_whole_device_pixels() {
         // Wie `glyphs_start_on_whole_pixels` mit halber Größe und doppeltem
         // Maßstab: (0,7, 3,8) wird zu (1,4, 7,6) und auf (1, 8) gerundet.
@@ -395,6 +454,7 @@ mod tests {
             size: 5.0,
             color: mb_scene::Color::rgb(0, 0, 0),
             glyphs: vec![PositionedGlyph { id, x: 0.7, y: 3.8 }],
+            oblique: 0.0,
         }));
         let canvas = render_scaled(&scene, 12, 10, 2.0).expect("Fläche");
         for y in 0..10 {
@@ -438,6 +498,7 @@ mod tests {
                     y: 25.0,
                 },
             ],
+            oblique: 0.0,
         }));
         let canvas = render(&scene).expect("Fläche");
         for y in 0..10 {
