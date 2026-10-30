@@ -1095,6 +1095,9 @@ fn place_line(
 
     // Waagrechte Stellen der Teile.
     let mut x = indent + offset;
+    // Negative Abstände führen zurück; der Inhalt reicht so weit, wie `x`
+    // irgendwo kam, nicht nur bis zum Zeilenende.
+    let mut extent = (x, x);
     let mut positions: Vec<f64> = Vec::with_capacity(end.saturating_sub(start));
     let mut placed: Vec<PlacedBox> = open
         .iter()
@@ -1159,6 +1162,7 @@ fn place_line(
             }
             None => {}
         }
+        extent = (extent.0.min(x), extent.1.max(x));
     }
     let line_end = x;
     for placed_box in placed.iter_mut() {
@@ -1551,6 +1555,6 @@ fn place_line(
         height: line_height,
         baseline: root_baseline,
         width,
-        extent: (indent + offset, offset + width),
+        extent,
     })
 }

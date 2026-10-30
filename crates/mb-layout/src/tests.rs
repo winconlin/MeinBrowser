@@ -473,6 +473,24 @@ fn scroll_size_covers_boxes_and_lines() {
 }
 
 #[test]
+fn lines_reach_as_far_as_their_content() {
+    // Der negative Außenabstand führt zurück; die Zeile ist danach 10px
+    // breit, ihr Text reicht aber bis 1000px.
+    let page = load(
+        "<div>XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\
+         XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\
+         <span id=a>X</span></div>",
+        "body { margin: 0 } div { white-space: nowrap; font-size: 10px; line-height: 10px } \
+         #a { margin-left: -1000px }",
+    );
+    let starts: Vec<f64> = page.texts().into_iter().flat_map(|(_, x)| x).collect();
+    assert_eq!(starts.len(), 101);
+    assert_eq!(starts.get(99), Some(&990.0));
+    assert_eq!(starts.last(), Some(&0.0));
+    assert_eq!(page.tree.scroll_size(), (1000.0, 600.0));
+}
+
+#[test]
 fn unreachable_overflow_does_not_count() {
     // Ganz links vom Ursprung: nicht erreichbar, auch nicht seine Höhe.
     let page = load(
