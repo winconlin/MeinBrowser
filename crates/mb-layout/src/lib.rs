@@ -84,6 +84,8 @@ pub struct FragmentTree {
     propagated_from: Option<NodeId>,
     width: f64,
     height: f64,
+    /// Gerätepixel je CSS-Pixel, für die Kanten beim Zeichnen.
+    device_pixel_ratio: f64,
 }
 
 /// Ob ein Kasten einen Hintergrund hat: eine Farbe, die nicht ganz
@@ -114,6 +116,7 @@ pub fn layout(input: &LayoutInput<'_>) -> FragmentTree {
             propagated_from: None,
             width: input.device.viewport_width,
             height: input.device.viewport_height,
+            device_pixel_ratio: input.device.device_pixel_ratio,
         },
     }
 }
@@ -166,6 +169,7 @@ pub fn layout_within(input: &LayoutInput<'_>, budget: &Budget) -> Result<Fragmen
         propagated_from,
         width,
         height,
+        device_pixel_ratio: input.device.device_pixel_ratio,
     })
 }
 
@@ -189,6 +193,7 @@ impl FragmentTree {
             background: self.canvas.as_ref(),
             propagated_from: self.propagated_from,
             scroll,
+            device_pixel_ratio: self.device_pixel_ratio,
         };
         paint::paint(self.root.as_ref(), &canvas, images)
     }

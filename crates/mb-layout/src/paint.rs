@@ -10,10 +10,27 @@
 //!
 //! Die Leinwand bekommt den Hintergrund der Wurzel; ist der durchsichtig
 //! und ohne Bild, bei einem `html`-Element den des ersten `body`-Kindes
-//! (Backgrounds 3, Abschnitt 2.11.2), sonst bleibt sie weiß. Rahmen werden
-//! alle durchgezogen gezeichnet, auch `dotted`, `dashed`, `double`,
-//! `groove`, `ridge`, `inset` und `outset`; Ecken ohne Rundung. Hintergrund-
+//! (Backgrounds 3, Abschnitt 2.11.2), sonst bleibt sie weiß. Hintergrund-
 //! bilder werden bei `space` und `round` wie bei `repeat` gekachelt.
+//!
+//! Rahmen und Umrisse haben Ecken ohne Rundung. `dotted` zeichnet runde
+//! Punkte, `dashed` Striche mit geraden Enden (Backgrounds 3, Abschnitt
+//! 3.2); `double`, `groove`, `ridge`, `inset` und `outset` sind noch
+//! durchgezogen. Wie lang Striche und Lücken sind, lässt die Spezifikation
+//! offen; festgelegt ist hier:
+//!
+//! - Ein Strich ist dreimal so lang, wie die Seite breit ist. Eine Seite
+//!   beginnt und endet mit einem Strich über die Ecke, und die Lücken
+//!   dazwischen sind gleich lang, mindestens so lang wie ein Strich. Ist
+//!   dafür kein Platz, ist die Seite durchgezogen.
+//! - Ein Punkt ist so breit wie die Seite, von Mitte zu Mitte sind es etwa
+//!   zwei Breiten. Der erste und der letzte Punkt sitzen in der Mitte der
+//!   Ecke, ohne Nachbarseite am Rand.
+//! - In einer Ecke trennt die Diagonale zwei verschiedene Seiten (Abschnitt
+//!   4.4 überlässt die Form des Übergangs dem Browser). Gleiche Seiten
+//!   treffen sich gerade, die Ecke gehört dann der Seite oben oder unten.
+//!   Kanten liegen auf ganzen Gerätepixeln, die Enden der Striche auch.
+//!
 //! `visibility: hidden` lässt Hintergrund, Rahmen, Text, Bild und Umriss des
 //! Kastens weg, nicht die seiner Kinder.
 //!
@@ -27,8 +44,8 @@ use std::sync::Arc;
 use mb_dom::NodeId;
 use mb_scene::{Color, Image, Item, PositionedGlyph, Scene};
 use mb_style::properties::{
-    Attachment, BgClip, BgImage, BgSize, HorizontalEdge, Layers, LengthPercentageOrAuto, Longhand,
-    PositionComponent, RepeatStyle, Repetition, SpecifiedValue, VerticalEdge, VisualBox,
+    Attachment, BgClip, BgImage, BgSize, HorizontalEdge, Layers, LengthPercentageOrAuto, LineStyle,
+    Longhand, PositionComponent, RepeatStyle, Repetition, SpecifiedValue, VerticalEdge, VisualBox,
 };
 use mb_style::values::color::Rgba;
 use mb_url::Url;
@@ -64,6 +81,8 @@ pub(crate) struct Canvas<'a> {
     pub(crate) propagated_from: Option<NodeId>,
     /// Wie weit der Viewport nach rechts und unten gescrollt ist.
     pub(crate) scroll: (f64, f64),
+    /// Gerätepixel je CSS-Pixel.
+    pub(crate) device_pixel_ratio: f64,
 }
 
 pub(crate) struct Painter<'a> {
@@ -71,6 +90,8 @@ pub(crate) struct Painter<'a> {
     images: Images<'a>,
     viewport: Rect,
     propagated_from: Option<NodeId>,
+    /// Gerätepixel je CSS-Pixel, gültig.
+    scale: f64,
 }
 
 /// Zeichnet den Fragmentbaum; `root` liegt im anfänglichen umgebenden
@@ -82,6 +103,11 @@ pub(crate) fn paint(root: Option<&BoxFragment>, canvas: &Canvas<'_>, images: Ima
         images,
         viewport,
         propagated_from: canvas.propagated_from,
+        scale: if canvas.device_pixel_ratio.is_finite() && canvas.device_pixel_ratio > 0.0 {
+            canvas.device_pixel_ratio
+        } else {
+            1.0
+        },
     };
     let origin = (-canvas.scroll.0, -canvas.scroll.1);
     if let (Some(root), Some(style)) = (root, canvas.background) {
@@ -233,12 +259,16 @@ impl Painter<'_> {
         if !style.visible() {
             return;
         }
-        let Some((width, _, Some(color))) = style.outline() else {
+        let Some((width, line_style, Some(color))) = style.outline() else {
             return;
         };
         let inner = border_box.inflate(style.outline_offset());
         let outer = inner.inflate(width);
         let color = scene_color(color);
+        if patterned(line_style) {
+            self.sides(&outer, &inner, [Some(color); 4], [line_style; 4]);
+            return;
+        }
         let sides = [
             Rect::new(outer.x, outer.y, outer.width, width),
             Rect::new(outer.x, inner.y + inner.height, outer.width, width),
@@ -268,19 +298,22 @@ impl Painter<'_> {
         if colors.iter().all(Option::is_none) {
             return;
         }
+        let styles = Side::ALL.map(|side| style.border_style(side));
         let [top, right, bottom, left] = colors;
         let outer = *rect;
         let inner = rect.deflate(border);
         // Rechtecke nur, wenn alle Seiten mit einer Breite dieselbe sichtbare
-        // Farbe haben; neben einer durchsichtigen Seite endet ein Rahmen
-        // schräg in der Ecke.
+        // Farbe haben und durchgezogen sind; neben einer durchsichtigen Seite
+        // endet ein Rahmen schräg in der Ecke.
         let mut sides = [border.top, border.right, border.bottom, border.left]
             .into_iter()
-            .zip(colors)
+            .zip(colors.into_iter().zip(styles))
             .filter(|(width, _)| *width > 0.0)
-            .map(|(_, color)| color);
-        let first = sides.next().flatten();
-        if first.is_some() && sides.all(|color| color == first) {
+            .map(|(_, side)| side);
+        let first = sides
+            .next()
+            .and_then(|(color, style)| color.filter(|_| !patterned(style)));
+        if first.is_some() && sides.all(|(color, style)| color == first && !patterned(style)) {
             // Eine Farbe: Oben und unten reichen über die Ecken.
             let rects = [
                 (top, Rect::new(outer.x, outer.y, outer.width, border.top)),
@@ -301,9 +334,25 @@ impl Painter<'_> {
             }
             return;
         }
-        // Verschiedene Farben treffen sich in den Ecken schräg. Die Ecken
-        // liegen auf ganzen Pixeln wie die Kanten von Rechtecken.
-        let snap = |value: f64| to_f32(value.round());
+        self.sides(&outer, &inner, colors, styles);
+    }
+
+    /// Die vier Seiten zwischen `outer` und `inner` (oben, rechts, unten,
+    /// links), die sich in den Ecken schräg treffen. Die Ecken liegen auf
+    /// ganzen Gerätepixeln wie die Kanten von Rechtecken. Gleiche Seiten
+    /// (Farbe, Stil und bei Mustern die Breite) treffen sich gerade: Die Ecke
+    /// gehört dann ganz der Seite oben oder unten. An der Diagonale bekämen
+    /// beide Seiten dort nur einen Teil der Pixel, und die Ecke hätte eine
+    /// helle Naht.
+    fn sides(
+        &mut self,
+        outer: &Rect,
+        inner: &Rect,
+        colors: [Option<Color>; 4],
+        styles: [LineStyle; 4],
+    ) {
+        let scale = self.scale;
+        let snap = move |value: f64| (value * scale).round() / scale;
         let (x0, y0, x1, y1) = (
             snap(outer.x),
             snap(outer.y),
@@ -316,17 +365,155 @@ impl Painter<'_> {
             snap(inner.x + inner.width),
             snap(inner.y + inner.height),
         );
-        let polygons = [
-            (top, vec![(x0, y0), (x1, y0), (ix1, iy0), (ix0, iy0)]),
-            (right, vec![(x1, y0), (x1, y1), (ix1, iy1), (ix1, iy0)]),
-            (bottom, vec![(x1, y1), (x0, y1), (ix0, iy1), (ix1, iy1)]),
-            (left, vec![(x0, y1), (x0, y0), (ix0, iy0), (ix0, iy1)]),
+        let (top, right, bottom, left) = (iy0 - y0, x1 - ix1, y1 - iy1, ix0 - x0);
+        let widths = [top, right, bottom, left];
+        let same = |a: usize, b: usize| {
+            let (Some(color_a), Some(color_b)) = (
+                colors.get(a).copied().flatten(),
+                colors.get(b).copied().flatten(),
+            ) else {
+                return false;
+            };
+            let (Some(&style_a), Some(&style_b)) = (styles.get(a), styles.get(b)) else {
+                return false;
+            };
+            color_a == color_b
+                && patterned(style_a) == patterned(style_b)
+                && (!patterned(style_a) || (style_a == style_b && widths.get(a) == widths.get(b)))
+        };
+        let (top_left, top_right, bottom_right, bottom_left) =
+            (same(0, 3), same(0, 1), same(2, 1), same(2, 3));
+        let pick = |joined: bool, straight: f64, slanted: f64| {
+            if joined { straight } else { slanted }
+        };
+        let bands = [
+            Band {
+                region: [
+                    (x0, y0),
+                    (x1, y0),
+                    (pick(top_right, x1, ix1), iy0),
+                    (pick(top_left, x0, ix0), iy0),
+                ],
+                along: (x0, x1),
+                across: (y0, iy0),
+                ends: (left, right),
+                vertical: false,
+            },
+            Band {
+                region: [
+                    (x1, pick(top_right, iy0, y0)),
+                    (x1, pick(bottom_right, iy1, y1)),
+                    (ix1, iy1),
+                    (ix1, iy0),
+                ],
+                along: (y0, y1),
+                across: (ix1, x1),
+                ends: (top, bottom),
+                vertical: true,
+            },
+            Band {
+                region: [
+                    (x1, y1),
+                    (x0, y1),
+                    (pick(bottom_left, x0, ix0), iy1),
+                    (pick(bottom_right, x1, ix1), iy1),
+                ],
+                along: (x0, x1),
+                across: (iy1, y1),
+                ends: (left, right),
+                vertical: false,
+            },
+            Band {
+                region: [
+                    (x0, pick(bottom_left, iy1, y1)),
+                    (x0, pick(top_left, iy0, y0)),
+                    (ix0, iy0),
+                    (ix0, iy1),
+                ],
+                along: (y0, y1),
+                across: (x0, ix0),
+                ends: (top, bottom),
+                vertical: true,
+            },
         ];
-        for (color, points) in polygons {
-            if let Some(color) = color {
-                self.scene.items.push(Item::Polygon { points, color });
+        for ((band, color), style) in bands.iter().zip(colors).zip(styles) {
+            let Some(color) = color else {
+                continue;
+            };
+            if !patterned(style) {
+                self.push_polygon(band.region.to_vec(), color);
+                continue;
+            }
+            // Nur, was der Viewport zeigt: Eine sehr lange Seite hätte sonst
+            // sehr viele Striche oder Punkte.
+            let (along, across) = if band.vertical {
+                (
+                    (self.viewport.y, self.viewport.y + self.viewport.height),
+                    (self.viewport.x, self.viewport.x + self.viewport.width),
+                )
+            } else {
+                (
+                    (self.viewport.x, self.viewport.x + self.viewport.width),
+                    (self.viewport.y, self.viewport.y + self.viewport.height),
+                )
+            };
+            if band.across.1 < across.0 || band.across.0 > across.1 {
+                continue;
+            }
+            let width = band.across.1 - band.across.0;
+            let piece = |(start, end): (f64, f64)| {
+                vec![
+                    band.point(start, band.across.0),
+                    band.point(end, band.across.0),
+                    band.point(end, band.across.1),
+                    band.point(start, band.across.1),
+                ]
+            };
+            let pieces: Vec<Vec<(f64, f64)>> = if style == LineStyle::Dotted {
+                let middle = (band.across.0 + band.across.1) / 2.0;
+                let radius = width / 2.0;
+                // Rund wären Punkte unter drei Gerätepixeln nur blasser.
+                let square = width * scale < 3.0;
+                match dots(band.along, band.ends, width, along) {
+                    Some(centers) => centers
+                        .into_iter()
+                        .map(|center| {
+                            if square {
+                                let start = snap(center - radius);
+                                piece((start, start + width))
+                            } else {
+                                circle(band.point(center, middle), radius, width * scale)
+                            }
+                        })
+                        .collect(),
+                    None => vec![band.region.to_vec()],
+                }
+            } else {
+                dashes(band.along, width, along, snap)
+                    .into_iter()
+                    .map(piece)
+                    .collect()
+            };
+            for piece in pieces {
+                // Was in einer geraden Ecke der anderen Seite gehört, bleibt
+                // ohne Fläche übrig.
+                let clipped = clip_convex(piece, &band.region);
+                if area(&clipped).abs() > 1e-6 {
+                    self.push_polygon(clipped, color);
+                }
             }
         }
+    }
+
+    fn push_polygon(&mut self, points: Vec<(f64, f64)>, color: Color) {
+        if points.len() < 3 {
+            return;
+        }
+        let points = points
+            .into_iter()
+            .map(|(x, y)| (to_f32(x), to_f32(y)))
+            .collect();
+        self.scene.items.push(Item::Polygon { points, color });
     }
 
     /// Der Hintergrund eines Kastens; mit `canvas` auf die ganze Leinwand.
@@ -573,4 +760,210 @@ fn vertical_offset(component: &PositionComponent<VerticalEdge>, free: f64) -> f6
             }
         }
     }
+}
+
+/// Höchstens so viele Striche oder Punkte je Seite im Viewport; bei mehr
+/// ist die Seite durchgezogen. Das kommt erst bei sehr hohen Skalierungen
+/// vor, denn ein Strich mit Lücke ist mindestens sechs Gerätepixel lang.
+const MAX_PIECES: f64 = 65536.0;
+
+/// Ob ein Linienstil ein Muster hat, statt durchgezogen zu sein.
+fn patterned(style: LineStyle) -> bool {
+    matches!(style, LineStyle::Dotted | LineStyle::Dashed)
+}
+
+/// Eine Seite eines Rahmens oder Umrisses.
+struct Band {
+    /// Ihr Bereich, ein Trapez mit der Außenkante zuerst.
+    region: [(f64, f64); 4],
+    /// Längs von Ecke zu Ecke, außen gemessen.
+    along: (f64, f64),
+    /// Quer, der kleinere Wert zuerst.
+    across: (f64, f64),
+    /// Die Breiten der Nachbarseiten am Anfang und am Ende.
+    ends: (f64, f64),
+    /// Ob die Seite senkrecht verläuft (rechts und links).
+    vertical: bool,
+}
+
+impl Band {
+    /// Der Punkt `along` längs und `across` quer.
+    fn point(&self, along: f64, across: f64) -> (f64, f64) {
+        if self.vertical {
+            (across, along)
+        } else {
+            (along, across)
+        }
+    }
+}
+
+/// Die Striche einer Seite längs von `along.0` bis `along.1`, die `visible`
+/// berühren, als Anfang und Ende; `snap` legt sie auf ganze Gerätepixel.
+/// Ohne Platz für zwei Striche oder bei zu vielen ist es ein Strich über
+/// die ganze Seite.
+fn dashes(
+    along: (f64, f64),
+    width: f64,
+    visible: (f64, f64),
+    snap: impl Fn(f64) -> f64,
+) -> Vec<(f64, f64)> {
+    let (start, end) = along;
+    let length = end - start;
+    if !(width > 0.0 && length > 0.0 && length.is_finite()) {
+        return Vec::new();
+    }
+    let whole = || {
+        if start <= visible.1 && end >= visible.0 {
+            vec![(start, end)]
+        } else {
+            Vec::new()
+        }
+    };
+    let dash = 3.0 * width;
+    // So viele Striche, dass die Lücken mindestens einen Strich lang sind.
+    let count = ((length + dash) / (2.0 * dash)).floor();
+    if count < 2.0 {
+        return whole();
+    }
+    let step = dash + (length - count * dash) / (count - 1.0);
+    let first = ((visible.0 - start - dash) / step).floor().max(0.0);
+    let last = ((visible.1 - start) / step).ceil().min(count - 1.0);
+    let span = last - first;
+    if span > MAX_PIECES {
+        return whole();
+    }
+    let mut result = Vec::new();
+    // Gezählt wird ab null, damit es auch bei sehr großen `first` weitergeht.
+    let mut offset = 0.0;
+    while offset <= span {
+        let from = start + (first + offset) * step;
+        result.push((snap(from), snap((from + dash).min(end))));
+        offset += 1.0;
+    }
+    result
+}
+
+/// Die Mittelpunkte der Punkte einer Seite längs von `along.0` bis
+/// `along.1`, die `visible` berühren. `ends` sind die Breiten der
+/// Nachbarseiten: Der erste und der letzte Punkt sitzen in der Mitte der
+/// Ecken. `None`, wenn es zu viele wären.
+fn dots(along: (f64, f64), ends: (f64, f64), width: f64, visible: (f64, f64)) -> Option<Vec<f64>> {
+    if !(width > 0.0 && (along.1 - along.0).is_finite()) {
+        return Some(Vec::new());
+    }
+    let radius = width / 2.0;
+    let inset = |neighbour: f64| {
+        if neighbour > 0.0 {
+            neighbour / 2.0
+        } else {
+            radius
+        }
+    };
+    let first_center = along.0 + inset(ends.0);
+    let last_center = along.1 - inset(ends.1);
+    let distance = last_center - first_center;
+    if distance <= 0.0 {
+        let center = (first_center + last_center) / 2.0;
+        let touches = center + radius >= visible.0 && center - radius <= visible.1;
+        return Some(if touches { vec![center] } else { Vec::new() });
+    }
+    // Von Mitte zu Mitte etwa zwei Breiten.
+    let intervals = (distance / (2.0 * width)).round().max(1.0);
+    let step = distance / intervals;
+    let first = ((visible.0 - radius - first_center) / step)
+        .floor()
+        .max(0.0);
+    let last = ((visible.1 + radius - first_center) / step)
+        .ceil()
+        .min(intervals);
+    let span = last - first;
+    if span > MAX_PIECES {
+        return None;
+    }
+    let mut centers = Vec::new();
+    let mut offset = 0.0;
+    while offset <= span {
+        centers.push(first_center + (first + offset) * step);
+        offset += 1.0;
+    }
+    Some(centers)
+}
+
+/// Ein Kreis als Vieleck, mit mehr Ecken, je größer er auf dem Gerät ist.
+fn circle(center: (f64, f64), radius: f64, device_diameter: f64) -> Vec<(f64, f64)> {
+    let corners: u32 = if device_diameter <= 8.0 {
+        16
+    } else if device_diameter <= 32.0 {
+        32
+    } else {
+        64
+    };
+    (0..corners)
+        .map(|corner| {
+            let angle = std::f64::consts::TAU * f64::from(corner) / f64::from(corners);
+            (
+                center.0 + radius * angle.cos(),
+                center.1 + radius * angle.sin(),
+            )
+        })
+        .collect()
+}
+
+fn cross(a: (f64, f64), b: (f64, f64), c: (f64, f64)) -> f64 {
+    (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0)
+}
+
+/// Die doppelte Fläche eines Vielecks mit Vorzeichen; das Vorzeichen sagt,
+/// auf welcher Seite der Kanten das Innere liegt.
+fn area(points: &[(f64, f64)]) -> f64 {
+    let Some(&anchor) = points.first() else {
+        return 0.0;
+    };
+    points
+        .windows(2)
+        .map(|pair| match pair {
+            [a, b] => cross(anchor, *a, *b),
+            _ => 0.0,
+        })
+        .sum()
+}
+
+/// Der Teil des konvexen Vielecks `subject`, der im konvexen Vieleck `clip`
+/// liegt, nach Sutherland und Hodgman; leer, wenn `clip` keine Fläche hat.
+fn clip_convex(subject: Vec<(f64, f64)>, clip: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    let area = area(clip);
+    let orientation = if area > 0.0 {
+        1.0
+    } else if area < 0.0 {
+        -1.0
+    } else {
+        return Vec::new();
+    };
+    let mut result = subject;
+    for (&from, &to) in clip.iter().zip(clip.iter().cycle().skip(1)) {
+        let side = |point: (f64, f64)| orientation * cross(from, to, point);
+        let crossing = |a: (f64, f64), b: (f64, f64)| {
+            let (side_a, side_b) = (side(a), side(b));
+            let t = side_a / (side_a - side_b);
+            (a.0 + t * (b.0 - a.0), a.1 + t * (b.1 - a.1))
+        };
+        let input = std::mem::take(&mut result);
+        let Some(&last) = input.last() else {
+            break;
+        };
+        let mut previous = last;
+        for &current in &input {
+            match (side(previous) >= 0.0, side(current) >= 0.0) {
+                (true, true) => result.push(current),
+                (true, false) => result.push(crossing(previous, current)),
+                (false, true) => {
+                    result.push(crossing(previous, current));
+                    result.push(current);
+                }
+                (false, false) => {}
+            }
+            previous = current;
+        }
+    }
+    result
 }
