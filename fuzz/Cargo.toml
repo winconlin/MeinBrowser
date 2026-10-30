@@ -1,0 +1,109 @@
+[package]
+name = "meinbrowser-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "MIT"
+
+[package.metadata]
+cargo-fuzz = true
+
+# Development-only workspace: never a dependency of the browser.
+[workspace]
+members = ["."]
+
+[dependencies]
+libfuzzer-sys = "=0.4.13"
+mb-base = { path = "../crates/mb-base" }
+mb-compress = { path = "../crates/mb-compress" }
+mb-css = { path = "../crates/mb-css" }
+mb-dom = { path = "../crates/mb-dom" }
+mb-encoding = { path = "../crates/mb-encoding" }
+mb-html = { path = "../crates/mb-html" }
+mb-image = { path = "../crates/mb-image" }
+mb-json = { path = "../crates/mb-json" }
+mb-style = { path = "../crates/mb-style" }
+mb-text = { path = "../crates/mb-text" }
+mb-unicode = { path = "../crates/mb-unicode" }
+mb-url = { path = "../crates/mb-url" }
+mb-xml = { path = "../crates/mb-xml" }
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "html"
+path = "fuzz_targets/html.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "css"
+path = "fuzz_targets/css.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "url"
+path = "fuzz_targets/url.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "xml"
+path = "fuzz_targets/xml.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "png"
+path = "fuzz_targets/png.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "gif"
+path = "fuzz_targets/gif.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "deflate"
+path = "fuzz_targets/deflate.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "font"
+path = "fuzz_targets/font.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "json"
+path = "fuzz_targets/json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "encoding"
+path = "fuzz_targets/encoding.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "unicode"
+path = "fuzz_targets/unicode.rs"
+test = false
+doc = false
+bench = false

@@ -46,7 +46,9 @@ jobs:
         run: cargo run --locked -p datagen -- --check
 
       - name: Formatierung
-        run: cargo fmt --all --check
+        run: |
+          cargo fmt --all --check
+          cargo fmt --manifest-path fuzz/Cargo.toml --all --check
 
       - name: Lints
         run: cargo clippy --locked --workspace --all-targets -- -D warnings

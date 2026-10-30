@@ -26,6 +26,8 @@ Unter Linux braucht das Fenster einen X-Server (unter Wayland über XWayland). O
 
 Fremde Crates sind nicht erlaubt, auch nicht als dev- oder build-dependency.
 
+Dieser Branch enthält als separat prüfbare Alternative zum geplanten eigenen Fuzzer ein abdeckungsgesteuertes Entwicklungswerkzeug unter `fuzz/`. Es verwendet `cargo-fuzz`/libFuzzer in einem getrennten Workspace und benötigt eine eng begrenzte Ausnahme für Entwicklungswerkzeuge; der Browser selbst erhält keine fremden Abhängigkeiten. Diese Variante ersetzt die Werkzeugentscheidung auf `main` nicht automatisch. Anleitung: [docs/fuzzing.md](docs/fuzzing.md).
+
 Tabellen aus Rohdaten unter `data/` (zurzeit die Unicode-Zeichendatenbank mit der IDNA-Zuordnungstabelle, die Daten des WHATWG Encoding Standard, die benannten Zeichenreferenzen und die CSS-Blöcke aus dem Abschnitt „Rendering“ des HTML Standard) erzeugt `cargo run -p datagen`. Die erzeugten Dateien werden eingecheckt.
 
 Externe Testsammlungen (zurzeit Teile der WPT, html5lib-tests, Testdateien von Unicode, css-parsing-tests, webref, die XML-Testsuite des W3C, Deflate-Testdaten aus Go und die PNG-Testbilder von image-png) liegen nicht im Repository. `cargo run -p testdata` holt sie mit `git` in der Version, die `tools/testdata/src/lib.rs` festlegt, nach `target/testdata/`.

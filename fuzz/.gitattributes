@@ -1,0 +1,2 @@
+# Startkorpora sind Bytes, auch wenn sie wie Text aussehen.
+seeds/** -text -diff
