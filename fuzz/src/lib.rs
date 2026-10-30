@@ -234,13 +234,17 @@ fn parts(data: &[u8]) -> Vec<Vec<u8>> {
     parts
 }
 
-/// Part `N` for each URL below [`ORIGIN`] whose path starts with the number `N`.
-fn resource(parts: &[Vec<u8>], url: &mb_url::Url) -> Option<Vec<u8>> {
+/// Part `N` for each URL below [`ORIGIN`] whose path starts with the number `N`,
+/// if it has at most `limit` bytes.
+fn resource(parts: &[Vec<u8>], url: &mb_url::Url, limit: u64) -> Option<Vec<u8>> {
     let href = url.href();
     let path = href.strip_prefix(ORIGIN)?;
     let digits = path.bytes().take_while(u8::is_ascii_digit).count();
     let index: usize = path.get(..digits)?.parse().ok()?;
-    parts.get(index).cloned()
+    parts
+        .get(index)
+        .filter(|part| u64::try_from(part.len()).is_ok_and(|length| length <= limit))
+        .cloned()
 }
 
 /// Loads part 0 as `0.xhtml` if it starts with `<?xml`, otherwise as `0.html`.
@@ -254,7 +258,7 @@ fn load_page(data: &[u8]) -> mb_web::Page {
     let url = mb_url::Url::parse(&format!("{ORIGIN}{name}"), None).expect("fixed document URL");
     mb_web::Page::load_within(
         url,
-        Box::new(move |url: &mb_url::Url| resource(&parts, url)),
+        Box::new(move |url: &mb_url::Url, limit| resource(&parts, url, limit)),
         MAX_PAGE_BYTES,
     )
     .expect("document within the byte budget")
