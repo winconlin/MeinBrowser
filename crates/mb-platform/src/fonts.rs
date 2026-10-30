@@ -1,12 +1,35 @@
 //! Wo das System Schriften ablegt.
 //!
-//! Gelesen werden nur Verzeichnisse; den Index der Schriften baut `mb-text`.
+//! [`font_files`] findet die Dateien; den Index baut `mb-text`. Die Bytes
+//! liest [`read_font`] mit einer Grenze je Datei, auch beim späteren
+//! Nachladen eines Schnitts. Die Erkennung von Schriftformaten bleibt
+//! Aufgabe von `mb-text`.
 //! Unter Linux und BSD sind es die Vorgaben aus der `fonts.conf` von
 //! fontconfig (Debian und Ubuntu, fontconfig 2.15.0); weitere Verzeichnisse
 //! aus den Konfigurationsdateien von fontconfig werden noch nicht gelesen.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+
+/// Höchstgröße einer Schriftdatei, einschließlich Sammlungen (TTC/OTC).
+/// Festgelegt von diesem Browser: 64 MiB. Größere Dateien werden weder
+/// indexiert noch nachgeladen. Dies begrenzt nicht den gesamten Schriftcache
+/// oder den RAM-Verbrauch beim Parsen.
+pub const MAX_FONT_BYTES: u64 = 64 << 20;
+
+/// Liest eine Schriftdatei, wenn sie eine normale Datei mit höchstens
+/// [`MAX_FONT_BYTES`] ist. Bei Spezialdateien, Überschreitung oder Lesefehlern
+/// `None`. Symbolische Verweise zählen mit ihrem Ziel; geprüft wird auch am
+/// offenen Handle (siehe [`crate::files::read_regular`]).
+///
+/// Derselbe Leser wird für den Indexaufbau und für spätere Abrufe verwendet:
+/// Die Verzeichnissuche allein schützt nicht davor, dass eine Datei danach
+/// ausgetauscht wird. Die bestehenden Grenzen der Pfad-/Handleprüfung gelten
+/// weiterhin; die Suche selbst ist damit nicht gegen alle Dateisystemrennen
+/// abgesichert.
+pub fn read_font(path: &Path) -> Option<Vec<u8>> {
+    crate::files::read_regular(path, MAX_FONT_BYTES).ok()
+}
 
 /// Die Verzeichnisse mit installierten Schriften, ob es sie gibt oder nicht.
 pub fn font_directories() -> Vec<PathBuf> {
@@ -133,7 +156,7 @@ fn system_directories() -> Vec<PathBuf> {
 }
 
 #[cfg(test)]
-mod tests {
+mod discovery_tests {
     use super::*;
 
     #[test]
@@ -178,3 +201,6 @@ mod tests {
         std::fs::remove_dir_all(&root).expect("aufräumen");
     }
 }
+
+#[cfg(test)]
+mod tests;
