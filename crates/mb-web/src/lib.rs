@@ -1,4 +1,4 @@
-//! Web-APIs, Ereignisschleife und Worker.
+//! Laden und Darstellen von Seiten, Web-APIs, Ereignisschleife und Worker.
 //!
 //! Siehe `docs/architektur.md`, Abschnitt 4.10. Bisher gibt es nur das
 //! Laden und Darstellen einer Seite ohne Skripte: Dokument, Stylesheets,
