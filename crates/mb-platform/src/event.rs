@@ -10,7 +10,8 @@ pub enum Event {
     /// Der Nutzer will das Fenster schließen. Es bleibt offen, bis das
     /// Programm das [`Window`](crate::Window) verwirft.
     CloseRequested,
-    /// Die Zeichenfläche hat eine neue Größe in Gerätepixeln.
+    /// Die Zeichenfläche hat eine neue Größe in Gerätepixeln oder eine neue
+    /// Skalierung ([`Window::scale`](crate::Window::scale)).
     Resized { width: u32, height: u32 },
     /// Der Inhalt muss neu gezeichnet werden, zum Beispiel nach dem Aufdecken.
     RedrawRequested,

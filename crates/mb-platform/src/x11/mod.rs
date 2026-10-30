@@ -5,6 +5,14 @@
 //! Standardbibliothek. Bilder gehen mit `PutImage` an den Server, in Streifen,
 //! die in eine Anfrage passen. Unter Wayland läuft das Fenster über XWayland;
 //! ein eigener Wayland-Client folgt später.
+//!
+//! X11 rechnet in Gerätepixeln. Die Skalierung kommt aus der Ressource
+//! `Xft.dpi` (die logische Auflösung in Punkten je Zoll, siehe Xft(3)) in der
+//! Eigenschaft `RESOURCE_MANAGER` des Wurzelfensters, die `xrdb` und die
+//! Arbeitsumgebungen setzen: 96 dpi sind ein Gerätepixel je logischem Pixel.
+//! Gelesen wird sie beim Öffnen des Fensters; ohne die Ressource bleibt es
+//! bei eins. Muster mit `*` und Fortsetzungszeilen werten wir nicht aus,
+//! ebenso wenig XSETTINGS.
 
 #![forbid(unsafe_code)]
 
@@ -71,6 +79,33 @@ impl Write for Stream {
             Stream::Tcp(stream) => stream.flush(),
         }
     }
+}
+
+/// So viel liest der Client höchstens aus `RESOURCE_MANAGER`, in
+/// Vier-Byte-Einheiten: 64 KiB.
+const RESOURCE_UNITS: u32 = 16 * 1024;
+
+/// Gerätepixel je logischem Pixel aus den Ressourcen des X-Servers:
+/// `Xft.dpi` geteilt durch 96; ohne gültigen Eintrag eins. Der letzte
+/// Eintrag gilt.
+fn xft_scale(resources: &[u8]) -> f64 {
+    let mut scale = 1.0;
+    for line in resources.split(|&byte| byte == b'\n') {
+        let Some(colon) = line.iter().position(|&byte| byte == b':') else {
+            continue;
+        };
+        let (name, value) = (line.get(..colon), line.get(colon + 1..));
+        if name.map(<[u8]>::trim_ascii) != Some(b"Xft.dpi".as_slice()) {
+            continue;
+        }
+        let dpi = value
+            .and_then(|value| std::str::from_utf8(value.trim_ascii()).ok())
+            .and_then(|value| value.parse::<f64>().ok());
+        if let Some(dpi) = dpi.filter(|dpi| dpi.is_finite() && *dpi > 0.0) {
+            scale = dpi / 96.0;
+        }
+    }
+    scale
 }
 
 /// Öffnet die Verbindung und nennt die Adressen, unter denen der Client in
@@ -429,6 +464,8 @@ pub struct Window {
     keymap: Keymap,
     width: u32,
     height: u32,
+    /// Gerätepixel je logischem Pixel.
+    scale: f64,
     focused: Option<bool>,
     /// Tastencode, dessen nächstes Drücken eine automatische Wiederholung ist.
     repeating: Option<u8>,
@@ -447,14 +484,6 @@ impl Window {
                 Error::InvalidArgument(format!("X11-Bildschirm {screen_number} gibt es nicht"))
             })?;
         let format = PixelFormat::new(&connection.setup, &screen)?;
-        let too_large = || {
-            Error::InvalidArgument(format!(
-                "Fenstergröße {}×{} ist für X11 zu groß",
-                options.width, options.height
-            ))
-        };
-        let width = u16::try_from(options.width).map_err(|_| too_large())?;
-        let height = u16::try_from(options.height).map_err(|_| too_large())?;
 
         let atom_names = [
             "WM_PROTOCOLS",
@@ -476,6 +505,13 @@ impl Window {
         let keyboard_request =
             connection.send(proto::get_keyboard_mapping(min_keycode, keycode_count)?);
         let modifier_request = connection.send(proto::get_modifier_mapping()?);
+        let resource_request = connection.send(proto::get_property(
+            screen.root,
+            proto::ATOM_RESOURCE_MANAGER,
+            proto::ATOM_STRING,
+            0,
+            RESOURCE_UNITS,
+        )?);
 
         let mut atoms = Vec::with_capacity(atom_requests.len());
         for sequence in atom_requests {
@@ -487,6 +523,23 @@ impl Window {
         };
         let mut keymap = parse_keyboard_mapping(min_keycode, &connection.reply(keyboard_request)?)?;
         apply_modifier_mapping(&mut keymap, &connection.reply(modifier_request)?)?;
+        let scale = xft_scale(proto::property_bytes(&connection.reply(resource_request)?)?);
+
+        // Die gewünschte Größe ist in logischen Pixeln.
+        let too_large = || {
+            Error::InvalidArgument(format!(
+                "Fenstergröße {}×{} ist für X11 zu groß",
+                options.width, options.height
+            ))
+        };
+        let device = |value: u32| {
+            let pixels = (f64::from(value) * scale).round().max(1.0);
+            // Nach der Prüfung passt der Wert in u16.
+            (pixels <= f64::from(u16::MAX))
+                .then_some(pixels as u16)
+                .ok_or_else(too_large)
+        };
+        let (width, height) = (device(options.width)?, device(options.height)?);
 
         let window = connection.generate_id()?;
         let gc = connection.generate_id()?;
@@ -551,11 +604,9 @@ impl Window {
         let sync = connection.send(proto::get_input_focus()?);
         connection.reply(sync)?;
 
+        let (width, height) = (u32::from(width), u32::from(height));
         let mut pending = VecDeque::new();
-        pending.push_back(Event::Resized {
-            width: options.width,
-            height: options.height,
-        });
+        pending.push_back(Event::Resized { width, height });
         Ok(Window {
             connection,
             window,
@@ -564,8 +615,9 @@ impl Window {
             wm_protocols,
             wm_delete_window,
             keymap,
-            width: options.width,
-            height: options.height,
+            width,
+            height,
+            scale,
             focused: None,
             repeating: None,
             pending,
@@ -574,6 +626,10 @@ impl Window {
 
     pub fn size(&self) -> (u32, u32) {
         (self.width, self.height)
+    }
+
+    pub fn scale(&self) -> f64 {
+        self.scale
     }
 
     pub fn present(&mut self, width: u32, height: u32, pixels: &[u32]) -> Result<(), Error> {
@@ -899,6 +955,17 @@ mod tests {
             resource_increment: 1,
             queued: VecDeque::new(),
         }
+    }
+
+    #[test]
+    fn scale_from_xft_dpi() {
+        assert_eq!(xft_scale(b""), 1.0);
+        assert_eq!(xft_scale(b"Xft.antialias:\t1\nXft.dpi:\t192\n"), 2.0);
+        assert_eq!(xft_scale(b"  Xft.dpi : 120 "), 1.25);
+        // Ungültige Werte zählen nicht, der letzte gültige gilt.
+        assert_eq!(xft_scale(b"Xft.dpi: 144\nXft.dpi: 0\nXft.dpi: x"), 1.5);
+        // Andere Namen und Muster werten wir nicht aus.
+        assert_eq!(xft_scale(b"*dpi: 192\nXft.dpix: 192"), 1.0);
     }
 
     #[test]

@@ -16,6 +16,11 @@
 //! bilder werden bei `space` und `round` wie bei `repeat` gekachelt.
 //! `visibility: hidden` lässt Hintergrund, Rahmen, Text, Bild und Umriss des
 //! Kastens weg, nicht die seiner Kinder.
+//!
+//! Gezeichnet wird, was der Viewport an seiner Scrollposition zeigt: Alle
+//! Kästen sind um sie verschoben. Der Hintergrund der Leinwand füllt immer
+//! den ganzen Viewport, und Hintergrundbilder mit `background-attachment:
+//! fixed` liegen fest im Viewport.
 
 use std::sync::Arc;
 
@@ -57,6 +62,8 @@ pub(crate) struct Canvas<'a> {
     pub(crate) background: Option<&'a StyleRef>,
     /// Das `body`-Element, dessen Hintergrund auf die Leinwand ging.
     pub(crate) propagated_from: Option<NodeId>,
+    /// Wie weit der Viewport nach rechts und unten gescrollt ist.
+    pub(crate) scroll: (f64, f64),
 }
 
 pub(crate) struct Painter<'a> {
@@ -67,7 +74,7 @@ pub(crate) struct Painter<'a> {
 }
 
 /// Zeichnet den Fragmentbaum; `root` liegt im anfänglichen umgebenden
-/// Block.
+/// Block, der Viewport an `canvas.scroll`.
 pub(crate) fn paint(root: Option<&BoxFragment>, canvas: &Canvas<'_>, images: Images<'_>) -> Scene {
     let viewport = Rect::new(0.0, 0.0, canvas.width, canvas.height);
     let mut painter = Painter {
@@ -76,13 +83,14 @@ pub(crate) fn paint(root: Option<&BoxFragment>, canvas: &Canvas<'_>, images: Ima
         viewport,
         propagated_from: canvas.propagated_from,
     };
+    let origin = (-canvas.scroll.0, -canvas.scroll.1);
     if let (Some(root), Some(style)) = (root, canvas.background) {
         // Die Bilder liegen, wie sie für die Wurzel lägen; gezeichnet wird
         // auf der ganzen Leinwand.
-        painter.background(style, root, (0.0, 0.0), Some(viewport));
+        painter.background(style, root, origin, Some(viewport));
     }
     if let Some(root) = root {
-        painter.stacking_context(root, (0.0, 0.0), true);
+        painter.stacking_context(root, origin, true);
     }
     painter.scene
 }

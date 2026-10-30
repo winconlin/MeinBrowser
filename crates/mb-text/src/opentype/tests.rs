@@ -38,6 +38,7 @@ fn ahem() {
     assert_eq!(face.glyph_count(), 278);
     let metrics = face.metrics();
     assert_eq!(metrics.units_per_em, 1000);
+    assert_eq!(metrics.bounds, (0, -200, 1000, 800));
     assert_eq!(
         (metrics.ascender, metrics.descender, metrics.line_gap),
         (800, -200, 0)

@@ -9,7 +9,7 @@ use mb_scene::{Color, Item, Rect};
 use mb_text::FontLibrary;
 use mb_url::Url;
 
-use crate::{Page, RENDER_STEPS, file_url, read_file};
+use crate::{Page, RENDER_STEPS, Viewport, file_url, read_file};
 
 /// Eine Seite aus Dateien unter `file:///t/`.
 fn load(name: &str, files: &[(&str, Vec<u8>)]) -> Page {
@@ -318,4 +318,41 @@ fn images_are_decoded_only_within_the_budget() {
     let needed = length(&html) + 2 * length(&png) + 32 * 32 * mb_image::png::DECODE_BYTES_PER_PIXEL;
     assert_eq!(image_count(&load_within("a.html", &files, needed)), 1);
     assert_eq!(image_count(&load_within("a.html", &files, needed - 1)), 0);
+}
+
+#[test]
+fn pages_scroll_and_know_the_device_pixel_ratio() {
+    let page = load(
+        "a.html",
+        &[(
+            "a.html",
+            b"<!DOCTYPE html><style>body { margin: 0 } \
+              div { height: 1000px; border-top: 0.5px solid green }</style><div></div>"
+                .to_vec(),
+        )],
+    );
+    let library = FontLibrary::new(Box::new(|_| None));
+    let fonts = Fonts::new(&library);
+    let budget = Budget::new(RENDER_STEPS);
+    let viewport = Viewport {
+        width: 400.0,
+        height: 300.0,
+        device_pixel_ratio: 2.0,
+    };
+    let tree = page
+        .layout_within(&fonts, viewport, &budget)
+        .expect("Layout");
+    // Ein halber CSS-Pixel ist hier ein ganzes Gerätepixel und bleibt.
+    assert_eq!(tree.scroll_size(), (400.0, 1000.5));
+    let scene = page.paint(&tree, (0.0, 100.0));
+    assert_eq!((scene.width, scene.height), (400.0, 300.0));
+    let rects: Vec<(Rect, Color)> = scene
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Rect { rect, color } => Some((*rect, *color)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(rects, [(Rect::new(0.0, -100.0, 400.0, 0.5), GREEN)]);
 }

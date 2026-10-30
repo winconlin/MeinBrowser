@@ -235,6 +235,7 @@ dependencies = [
  "mb-layout",
  "mb-platform",
  "mb-raster",
+ "mb-scene",
  "mb-text",
  "mb-url",
  "mb-web",

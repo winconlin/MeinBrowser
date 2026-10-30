@@ -1,14 +1,18 @@
 //! Das Programm MeinBrowser, siehe `docs/architektur.md`, Abschnitt 12.
 //!
 //! - `meinbrowser DATEI` zeigt eine lokale HTML- oder XHTML-Datei in der
-//!   Größe des Fensters an (M1), ein Gerätepixel je CSS-Pixel. Scrollen gibt
-//!   es noch nicht. Gezeichnet wird auf einem eigenen Faden, das Fenster
-//!   bleibt dabei bedienbar: Eine neue Größe bricht den laufenden Auftrag
-//!   ab, und für Stil und Layout gilt das Budget [`mb_web::RENDER_STEPS`].
-//!   Ist es verbraucht, bleibt das letzte Bild stehen, und der Fehler
-//!   erscheint auf der Standardfehlerausgabe. Die Seite darf Stylesheets und
-//!   Bilder aus normalen lokalen Dateien laden ([`mb_web::read_file`]); das
-//!   Fenster öffnet sich, während sie lädt.
+//!   Größe des Fensters an (M1), mit so vielen Gerätepixeln je CSS-Pixel,
+//!   wie das System für das Fenster vorgibt ([`Window::scale`]). Gescrollt
+//!   wird mit Mausrad oder Touchpad, mit den Pfeiltasten, Bild auf und ab,
+//!   der Leertaste (mit Umschalttaste zurück), Pos1 und Ende; Balken am
+//!   rechten und unteren Rand zeigen die Stelle. Gezeichnet wird auf einem
+//!   eigenen Faden, das Fenster bleibt dabei bedienbar: Eine neue Größe
+//!   bricht den laufenden Auftrag ab, und für Stil und Layout gilt das
+//!   Budget [`mb_web::RENDER_STEPS`]. Zum Scrollen wird nur neu gezeichnet,
+//!   nicht neu gesetzt. Ist das Budget verbraucht, bleibt das letzte Bild
+//!   stehen, und der Fehler erscheint auf der Standardfehlerausgabe. Die
+//!   Seite darf Stylesheets und Bilder aus normalen lokalen Dateien laden
+//!   ([`mb_web::read_file`]); das Fenster öffnet sich, während sie lädt.
 //! - `meinbrowser` öffnet ein Fenster mit einem selbst gezeichneten Testbild
 //!   (M0). Mausklicks setzen Punkte ins Bild, Tasten und Texteingaben
 //!   erscheinen auf der Standardausgabe.
@@ -26,11 +30,12 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::time::{Duration, Instant};
 
 use mb_base::{Budget, Cancel, Exhausted};
-use mb_layout::Fonts;
-use mb_platform::{Capture, Event, KeyEvent, Window, WindowOptions};
+use mb_layout::{Fonts, FragmentTree};
+use mb_platform::{Capture, Event, Key, KeyEvent, NamedKey, ScrollDelta, Window, WindowOptions};
 use mb_raster::{Canvas, Color, PROBES, probe_position, test_image};
+use mb_scene::{Rect, Scene};
 use mb_text::FontLibrary;
-use mb_web::{Fetch, Page};
+use mb_web::{Fetch, Page, Viewport};
 
 #[cfg(test)]
 mod tests;
@@ -44,6 +49,13 @@ const STACK: usize = 64 << 20;
 /// So oft schaut das Fenster nach, ob ein Bild fertig ist, solange eins
 /// aussteht. Sonst wartet es nur auf Ereignisse.
 const POLL: Duration = Duration::from_millis(50);
+
+/// So weit scrollen die Pfeiltasten, in CSS-Pixeln. Eine Raste des Mausrads
+/// scrollt [`WHEEL_LINES`] solche Zeilen, eine Seite ist die Höhe des
+/// Viewports ohne eine Zeile, die stehen bleibt, mindestens die halbe Höhe.
+/// Festgelegt von diesem Browser.
+const LINE: f64 = 40.0;
+const WHEEL_LINES: f64 = 3.0;
 
 fn main() -> ExitCode {
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
@@ -89,12 +101,59 @@ fn show(window: &mut Window, canvas: &Canvas) -> Result<(), String> {
         .map_err(|err| err.to_string())
 }
 
-/// Ein Auftrag an den Faden der Seite: zeichnen in dieser Größe.
-struct Job {
-    id: u64,
+/// Was ein Bild der Seite zeigen soll.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct View {
+    /// Die Größe der Zeichenfläche in Gerätepixeln.
     width: u32,
     height: u32,
+    /// Gerätepixel je CSS-Pixel.
+    scale: f64,
+    /// Die gewünschte Scrollposition in CSS-Pixeln.
+    scroll: (f64, f64),
+}
+
+impl View {
+    /// Ein Bild in dieser Größe, ein Gerätepixel je CSS-Pixel, ungescrollt.
+    #[cfg(test)]
+    fn new(width: u32, height: u32) -> View {
+        View {
+            width,
+            height,
+            scale: 1.0,
+            scroll: (0.0, 0.0),
+        }
+    }
+
+    /// Der Viewport in CSS-Pixeln.
+    fn viewport(&self) -> Viewport {
+        Viewport {
+            width: f64::from(self.width) / self.scale,
+            height: f64::from(self.height) / self.scale,
+            device_pixel_ratio: self.scale,
+        }
+    }
+}
+
+/// Ein Auftrag an den Faden der Seite: zeichnen, was `view` zeigen soll.
+struct Job {
+    id: u64,
+    view: View,
     cancel: Cancel,
+}
+
+/// Wo ein fertiges Bild gescrollt ist und wie weit es sich scrollen ließe,
+/// in CSS-Pixeln.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Limits {
+    scroll: (f64, f64),
+    max: (f64, f64),
+}
+
+/// Ein fertiges Bild der Seite.
+struct Frame {
+    canvas: Canvas,
+    limits: Limits,
 }
 
 /// Ein Bild, das der Faden der Seite noch zeichnet.
@@ -106,8 +165,10 @@ struct Pending {
 /// Lädt und zeichnet eine Seite auf einem eigenen Faden mit großem Stapel.
 struct Renderer {
     jobs: Sender<Job>,
-    frames: Receiver<(u64, Result<Canvas, String>)>,
+    frames: Receiver<(u64, Result<Frame, String>)>,
     next_id: Cell<u64>,
+    /// Die Scrollgrenzen des zuletzt gelieferten Bildes.
+    limits: Cell<Option<Limits>>,
     /// Meldet einmal, ob sich die Seite laden ließ; danach steht es in
     /// `state`.
     loaded: Receiver<bool>,
@@ -134,6 +195,7 @@ impl Renderer {
             jobs,
             frames,
             next_id: Cell::new(0),
+            limits: Cell::new(None),
             loaded,
             state: Cell::new(None),
             name,
@@ -172,27 +234,39 @@ impl Renderer {
 
     /// Zeichnet die Seite in einem Viewport von `width` × `height` Pixeln
     /// und wartet auf das Bild. Das Fenster wartet nicht, es nimmt
-    /// [`Renderer::request`].
+    /// [`Renderer::request_view`].
     #[cfg(test)]
     fn render(&self, width: u32, height: u32) -> Result<Canvas, String> {
-        let pending = self.request(width, height)?;
+        self.render_view(View::new(width, height))
+    }
+
+    /// Zeichnet, was `view` zeigen soll, und wartet auf das Bild.
+    #[cfg(test)]
+    fn render_view(&self, view: View) -> Result<Canvas, String> {
+        let pending = self.request_view(view)?;
         loop {
             let (id, result) = self.frames.recv().map_err(|_| stopped())?;
             if id == pending.id {
-                return result;
+                return self.deliver(result);
             }
         }
     }
 
-    /// Gibt ein Bild in Auftrag, ohne zu warten.
+    /// Gibt ein Bild in einem Viewport von `width` × `height` Pixeln in
+    /// Auftrag, ohne zu warten.
+    #[cfg(test)]
     fn request(&self, width: u32, height: u32) -> Result<Pending, String> {
+        self.request_view(View::new(width, height))
+    }
+
+    /// Gibt ein Bild in Auftrag, ohne zu warten.
+    fn request_view(&self, view: View) -> Result<Pending, String> {
         let id = self.next_id.get();
         self.next_id.set(id.wrapping_add(1));
         let cancel = Cancel::new();
         let job = Job {
             id,
-            width,
-            height,
+            view,
             cancel: cancel.clone(),
         };
         self.jobs.send(job).map_err(|_| stopped())?;
@@ -204,12 +278,26 @@ impl Renderer {
     fn poll(&self, pending: &Pending) -> Option<Result<Canvas, String>> {
         loop {
             match self.frames.try_recv() {
-                Ok((id, result)) if id == pending.id => return Some(result),
+                Ok((id, result)) if id == pending.id => return Some(self.deliver(result)),
                 Ok(_) => {}
                 Err(TryRecvError::Empty) => return None,
                 Err(TryRecvError::Disconnected) => return Some(Err(stopped())),
             }
         }
+    }
+
+    /// Merkt sich die Scrollgrenzen eines gelieferten Bildes.
+    fn deliver(&self, result: Result<Frame, String>) -> Result<Canvas, String> {
+        result.map(|frame| {
+            self.limits.set(Some(frame.limits));
+            frame.canvas
+        })
+    }
+
+    /// Die Scrollgrenzen des zuletzt gelieferten Bildes; `None` vor dem
+    /// ersten.
+    fn limits(&self) -> Option<Limits> {
+        self.limits.get()
     }
 }
 
@@ -226,7 +314,7 @@ fn render_page(
     fetch: Fetch,
     loaded: Sender<bool>,
     requests: Receiver<Job>,
-    results: Sender<(u64, Result<Canvas, String>)>,
+    results: Sender<(u64, Result<Frame, String>)>,
 ) {
     let mut library = FontLibrary::new(Box::new(|path| std::fs::read(path).ok()));
     for file in mb_platform::fonts::font_files() {
@@ -240,6 +328,7 @@ fn render_page(
     let Some(page) = page else {
         return;
     };
+    let mut laid_out: Option<LaidOut> = None;
     while let Ok(mut job) = requests.recv() {
         while let Ok(newer) = requests.try_recv() {
             let skipped = std::mem::replace(&mut job, newer);
@@ -248,18 +337,193 @@ fn render_page(
                 return;
             }
         }
-        let budget = Budget::with_cancel(mb_web::RENDER_STEPS, job.cancel);
-        let canvas = page
-            .render_within(&fonts, f64::from(job.width), f64::from(job.height), &budget)
-            .map_err(|err| format!("Stil und Layout: {err}"))
-            .and_then(|scene| mb_raster::render(&scene).map_err(|err| err.to_string()));
-        if results.send((job.id, canvas)).is_err() {
+        let frame = draw_page(&page, &fonts, &mut laid_out, &job);
+        if results.send((job.id, frame)).is_err() {
             return;
         }
     }
 }
 
-/// Zeigt eine lokale Datei an und zeichnet sie bei jeder Größenänderung neu.
+/// Das Layout für eine Größe und Skalierung. Ein zu teures bleibt als
+/// Fehler gemerkt, damit Scrollen es nicht jedes Mal neu versucht.
+struct LaidOut {
+    width: u32,
+    height: u32,
+    scale: f64,
+    tree: Result<FragmentTree, Exhausted>,
+}
+
+/// Zeichnet ein Bild für `job`; gesetzt wird nur, wenn sich Größe oder
+/// Skalierung geändert haben. Die Scrollposition wird auf den möglichen
+/// Bereich begrenzt und auf ganze Gerätepixel abgerundet, damit Kanten und
+/// Text scharf bleiben.
+fn draw_page(
+    page: &Page,
+    fonts: &Fonts<'_>,
+    laid_out: &mut Option<LaidOut>,
+    job: &Job,
+) -> Result<Frame, String> {
+    let view = job.view;
+    let viewport = view.viewport();
+    let fresh = laid_out.as_ref().is_some_and(|laid_out| {
+        (laid_out.width, laid_out.height, laid_out.scale) == (view.width, view.height, view.scale)
+    });
+    if !fresh {
+        let budget = Budget::with_cancel(mb_web::RENDER_STEPS, job.cancel.clone());
+        let tree = page.layout_within(fonts, viewport, &budget);
+        *laid_out = match tree {
+            // Ein abgebrochener Auftrag sagt nichts über den nächsten.
+            Err(Exhausted::Cancelled) => None,
+            tree => Some(LaidOut {
+                width: view.width,
+                height: view.height,
+                scale: view.scale,
+                tree,
+            }),
+        };
+    }
+    let tree = match laid_out.as_ref().map(|laid_out| &laid_out.tree) {
+        Some(Ok(tree)) => tree,
+        Some(Err(err)) => return Err(format!("Stil und Layout: {err}")),
+        None => return Err(format!("Stil und Layout: {}", Exhausted::Cancelled)),
+    };
+    let size = tree.scroll_size();
+    let max = (
+        (size.0 - viewport.width).max(0.0),
+        (size.1 - viewport.height).max(0.0),
+    );
+    let snap = |value: f64, max: f64| {
+        if value.is_finite() {
+            (value.clamp(0.0, max) * view.scale).floor() / view.scale
+        } else {
+            0.0
+        }
+    };
+    let scroll = (snap(view.scroll.0, max.0), snap(view.scroll.1, max.1));
+    let mut scene = page.paint(tree, scroll);
+    scrollbars(&mut scene, &viewport, size, scroll);
+    let canvas = mb_raster::render_scaled(&scene, view.width, view.height, view.scale as f32)
+        .map_err(|err| err.to_string())?;
+    Ok(Frame {
+        canvas,
+        limits: Limits { scroll, max },
+    })
+}
+
+/// Zeichnet Balken über den Inhalt, die zeigen, welcher Teil des Dokuments
+/// zu sehen ist: rechts, wenn es höher ist als der Viewport, unten, wenn es
+/// breiter ist. Die Seite verliert dadurch keinen Platz, wie bei Leisten,
+/// die über dem Inhalt liegen; CSS Overflow 3 überlässt das dem Browser.
+/// Der dunkle Balken hat einen hellen Rand, damit er auf jedem Hintergrund
+/// zu sehen ist.
+fn scrollbars(scene: &mut Scene, viewport: &Viewport, size: (f64, f64), scroll: (f64, f64)) {
+    // Dicke, Abstand vom Rand und kleinste Länge in CSS-Pixeln.
+    const THICKNESS: f64 = 6.0;
+    const EDGE: f64 = 2.0;
+    const MIN_LENGTH: f64 = 16.0;
+    let vertical = size.1 > viewport.height;
+    let horizontal = size.0 > viewport.width;
+    // Ohne den anderen Balken reicht die Bahn bis zur Ecke.
+    let corner = |other: bool| if other { THICKNESS + EDGE } else { 0.0 };
+    // Anfang und Länge eines Balkens auf seiner Bahn.
+    let thumb = |visible: f64, total: f64, position: f64, track: f64| {
+        let length = (track * visible / total).max(MIN_LENGTH).min(track);
+        let max = total - visible;
+        let offset = if max > 0.0 {
+            (track - length) * (position / max).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        (EDGE + offset, length)
+    };
+    let mut bars = Vec::new();
+    if vertical {
+        let track = viewport.height - 2.0 * EDGE - corner(horizontal);
+        if track > 0.0 {
+            let (y, length) = thumb(viewport.height, size.1, scroll.1, track);
+            let x = viewport.width - EDGE - THICKNESS;
+            bars.push((x, y, THICKNESS, length));
+        }
+    }
+    if horizontal {
+        let track = viewport.width - 2.0 * EDGE - corner(vertical);
+        if track > 0.0 {
+            let (x, length) = thumb(viewport.width, size.0, scroll.0, track);
+            let y = viewport.height - EDGE - THICKNESS;
+            bars.push((x, y, length, THICKNESS));
+        }
+    }
+    let rect = |x: f64, y: f64, width: f64, height: f64| {
+        Rect::new(x as f32, y as f32, width as f32, height as f32)
+    };
+    for (x, y, width, height) in bars {
+        scene.push_rect(
+            rect(x - 1.0, y - 1.0, width + 2.0, height + 2.0),
+            mb_scene::Color::rgba(255, 255, 255, 128),
+        );
+        scene.push_rect(
+            rect(x, y, width, height),
+            mb_scene::Color::rgba(0, 0, 0, 128),
+        );
+    }
+}
+
+/// Begrenzt eine Scrollposition auf `[0, max]`; was nicht endlich ist, wird
+/// null.
+fn clamp_scroll(target: (f64, f64), max: (f64, f64)) -> (f64, f64) {
+    let clamp = |value: f64, max: f64| {
+        if value.is_finite() {
+            value.clamp(0.0, max.max(0.0))
+        } else {
+            0.0
+        }
+    };
+    (clamp(target.0, max.0), clamp(target.1, max.1))
+}
+
+/// Die Scrollposition nach Mausrad oder Touchpad; `scale` sind die
+/// Gerätepixel je CSS-Pixel.
+fn wheel_scroll(delta: ScrollDelta, scale: f64, limits: Limits, scroll: (f64, f64)) -> (f64, f64) {
+    let (dx, dy) = match delta {
+        ScrollDelta::Steps { x, y } => (x * WHEEL_LINES * LINE, y * WHEEL_LINES * LINE),
+        ScrollDelta::Pixels { x, y } => (x / scale, y / scale),
+    };
+    clamp_scroll((scroll.0 + dx, scroll.1 + dy), limits.max)
+}
+
+/// Die Scrollposition nach einem Tastendruck in einem Viewport der Höhe
+/// `height`; `None` für Tasten, die nicht scrollen. Mit Strg, Alt oder der
+/// Meta-Taste scrollt nichts, das sind Tastenkürzel.
+fn key_scroll(
+    key: &KeyEvent,
+    height: f64,
+    limits: Limits,
+    scroll: (f64, f64),
+) -> Option<(f64, f64)> {
+    let modifiers = key.modifiers;
+    if !key.pressed || modifiers.control || modifiers.alt || modifiers.meta {
+        return None;
+    }
+    let page = (height - LINE).max(height / 2.0);
+    let (x, y) = scroll;
+    let target = match key.key {
+        Key::Named(NamedKey::ArrowDown) => (x, y + LINE),
+        Key::Named(NamedKey::ArrowUp) => (x, y - LINE),
+        Key::Named(NamedKey::ArrowRight) => (x + LINE, y),
+        Key::Named(NamedKey::ArrowLeft) => (x - LINE, y),
+        Key::Named(NamedKey::PageDown) => (x, y + page),
+        Key::Named(NamedKey::PageUp) => (x, y - page),
+        Key::Character(' ') if modifiers.shift => (x, y - page),
+        Key::Character(' ') => (x, y + page),
+        Key::Named(NamedKey::Home) => (x, 0.0),
+        Key::Named(NamedKey::End) => (x, limits.max.1),
+        _ => return None,
+    };
+    Some(clamp_scroll(target, limits.max))
+}
+
+/// Zeigt eine lokale Datei an und zeichnet sie bei jeder Größenänderung und
+/// beim Scrollen neu.
 fn view(path: &Path) -> ExitCode {
     // Was offensichtlich fehlt, wird gemeldet, bevor das Fenster aufgeht.
     if !std::fs::metadata(path).is_ok_and(|metadata| metadata.is_file()) {
@@ -291,6 +555,13 @@ fn view(path: &Path) -> ExitCode {
     };
     let mut frame: Option<Canvas> = None;
     let mut pending: Option<Pending> = None;
+    // Die gewünschte Scrollposition in CSS-Pixeln, und ob dafür noch ein
+    // Bild in Auftrag zu geben ist. Es steht höchstens eins aus; was sich
+    // inzwischen ändert, kommt mit dem nächsten.
+    let mut scroll = (0.0, 0.0);
+    let mut outdated = false;
+    // Derselbe Fehler wird nur einmal gemeldet, nicht bei jedem Bild.
+    let mut last_error: Option<String> = None;
     loop {
         // Solange ein Bild aussteht, kommt die Schleife regelmäßig zurück.
         let timeout = pending.as_ref().map(|_| POLL);
@@ -314,19 +585,27 @@ fn view(path: &Path) -> ExitCode {
                 return ExitCode::SUCCESS;
             }
             Some(Event::Resized { .. }) => {
+                // Das Bild in der alten Größe braucht niemand mehr.
                 if let Some(pending) = pending.take() {
                     pending.cancel.cancel();
                 }
-                let (width, height) = window.size();
-                match renderer.request(width, height) {
-                    Ok(next) => pending = Some(next),
-                    Err(err) => {
-                        eprintln!("meinbrowser: {err}");
-                        return ExitCode::FAILURE;
-                    }
-                }
+                outdated = true;
             }
             Some(Event::RedrawRequested) => redraw = true,
+            Some(Event::Scroll(delta)) => {
+                let limits = renderer.limits().unwrap_or_default();
+                let next = wheel_scroll(delta, window.scale(), limits, scroll);
+                outdated |= next != scroll;
+                scroll = next;
+            }
+            Some(Event::Key(key)) => {
+                let limits = renderer.limits().unwrap_or_default();
+                let height = f64::from(window.size().1) / window.scale();
+                if let Some(next) = key_scroll(&key, height, limits, scroll) {
+                    outdated |= next != scroll;
+                    scroll = next;
+                }
+            }
             _ => {}
         }
         if let Some(waiting) = &pending
@@ -335,9 +614,19 @@ fn view(path: &Path) -> ExitCode {
             pending = None;
             redraw = true;
             match result {
-                Ok(canvas) => frame = Some(canvas),
+                Ok(canvas) => {
+                    frame = Some(canvas);
+                    last_error = None;
+                    // Nach einer neuen Größe kann der Bereich kleiner sein.
+                    if let Some(limits) = renderer.limits() {
+                        scroll = clamp_scroll(scroll, limits.max);
+                    }
+                }
                 Err(err) => {
-                    eprintln!("meinbrowser: {err}");
+                    if last_error.as_ref() != Some(&err) {
+                        eprintln!("meinbrowser: {err}");
+                        last_error = Some(err);
+                    }
                     // Ohne ein früheres Bild bleibt das Fenster weiß.
                     if frame.is_none() {
                         let (width, height) = window.size();
@@ -345,6 +634,23 @@ fn view(path: &Path) -> ExitCode {
                     }
                 }
             }
+        }
+        if outdated && pending.is_none() {
+            let (width, height) = window.size();
+            let view = View {
+                width,
+                height,
+                scale: window.scale(),
+                scroll,
+            };
+            match renderer.request_view(view) {
+                Ok(next) => pending = Some(next),
+                Err(err) => {
+                    eprintln!("meinbrowser: {err}");
+                    return ExitCode::FAILURE;
+                }
+            }
+            outdated = false;
         }
         if redraw
             && let Some(canvas) = &frame

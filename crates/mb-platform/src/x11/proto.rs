@@ -18,6 +18,7 @@ const BYTE_ORDER: u8 = if cfg!(target_endian = "little") {
 };
 
 pub const ATOM_ATOM: u32 = 4;
+pub const ATOM_RESOURCE_MANAGER: u32 = 23;
 pub const ATOM_STRING: u32 = 31;
 pub const ATOM_WM_NAME: u32 = 39;
 pub const ATOM_WM_CLASS: u32 = 67;
@@ -467,6 +468,42 @@ pub fn change_property(
         .finish()
 }
 
+/// `GetProperty` ohne Löschen; Anfang und Länge in Vier-Byte-Einheiten.
+pub fn get_property(
+    window: u32,
+    property: u32,
+    kind: u32,
+    long_offset: u32,
+    long_length: u32,
+) -> Result<Vec<u8>, Error> {
+    Request::new(20, 0)
+        .u32(window)
+        .u32(property)
+        .u32(kind)
+        .u32(long_offset)
+        .u32(long_length)
+        .finish()
+}
+
+/// Der Wert aus einer Antwort auf `GetProperty` mit 8 Bit je Element; leer,
+/// wenn die Eigenschaft fehlt oder ein anderes Format hat.
+pub fn property_bytes(reply: &[u8]) -> Result<&[u8], Error> {
+    let mut reader = Reader::new(reply);
+    reader.skip(1)?;
+    let format = reader.u8()?;
+    // Sequenznummer, Länge der Antwort, Typ und übrige Bytes.
+    reader.skip(14)?;
+    let length = reader.u32()?;
+    if format != 8 {
+        return Ok(&[]);
+    }
+    let length = usize::try_from(length).map_err(|_| too_short("GetProperty"))?;
+    reply
+        .get(PACKET_SIZE..)
+        .and_then(|value| value.get(..length))
+        .ok_or_else(|| too_short("GetProperty"))
+}
+
 pub fn get_input_focus() -> Result<Vec<u8>, Error> {
     Request::new(43, 0).finish()
 }
@@ -783,6 +820,25 @@ mod tests {
     }
 
     #[test]
+    fn property_values() {
+        // Antwort mit Format 8 und drei Bytes Wert, aufgefüllt auf vier.
+        let mut reply = vec![1, 8];
+        reply.extend(u16s(&[5]));
+        reply.extend(u32s(&[1, ATOM_STRING, 0, 3]));
+        reply.resize(PACKET_SIZE, 0);
+        reply.extend_from_slice(b"abc\0");
+        assert_eq!(property_bytes(&reply).unwrap(), b"abc");
+        // Ohne die Eigenschaft: Format 0, kein Wert.
+        let mut missing = vec![1, 0];
+        missing.extend(u16s(&[5]));
+        missing.resize(PACKET_SIZE, 0);
+        assert_eq!(property_bytes(&missing).unwrap(), b"");
+        // Ein Wert, der länger sein soll als die Antwort.
+        reply.truncate(PACKET_SIZE + 2);
+        assert!(property_bytes(&reply).is_err());
+    }
+
+    #[test]
     fn requests_have_correct_length_and_padding() {
         let request = intern_atom("WM_PROTOCOLS").unwrap();
         // 8 Byte Kopf, 12 Byte Name: 20 Bytes, also fünf Einheiten.
@@ -796,6 +852,11 @@ mod tests {
         assert_eq!(&request[14..16], &[0, 0]);
 
         assert_eq!(map_window(7).unwrap().len(), 8);
+        let request = get_property(1, ATOM_RESOURCE_MANAGER, ATOM_STRING, 0, 9).unwrap();
+        assert_eq!(request.len(), 24);
+        assert_eq!(request[0], 20);
+        assert_eq!(u16::from_ne_bytes([request[2], request[3]]), 6);
+        assert_eq!(&request[4..24], &u32s(&[1, 23, 31, 0, 9])[..]);
         assert_eq!(get_input_focus().unwrap(), {
             let mut expected = vec![43, 0];
             expected.extend(u16s(&[1]));

@@ -1,6 +1,8 @@
-//! Eine Szene aus `mb-scene` zeichnen, ein Gerätepixel je CSS-Pixel.
+//! Eine Szene aus `mb-scene` zeichnen, mit einer festen Zahl Gerätepixel je
+//! CSS-Pixel ([`render_scaled`]), etwa zwei auf Bildschirmen mit hoher
+//! Auflösung.
 //!
-//! Kanten von Rechtecken und Bildern fallen auf ganze Pixel: Beide Enden
+//! Kanten von Rechtecken und Bildern fallen auf ganze Gerätepixel: Beide Enden
 //! werden gerundet, sodass aneinanderstoßende Rechtecke weder Lücken noch
 //! Überlappungen haben. Glyphen beginnen auf ganzen Pixeln, gleicher Text
 //! sieht also an jeder Stelle gleich aus; ihre Umrisse werden wie Vielecke
@@ -47,7 +49,8 @@ fn pixels(rect: &Rect, canvas: &Canvas) -> Option<((u32, u32), (u32, u32))> {
     ))
 }
 
-/// Zeichnet `scene` auf eine neue Zeichenfläche ihrer Größe, aufgerundet.
+/// Zeichnet `scene` auf eine neue Zeichenfläche ihrer Größe, aufgerundet,
+/// ein Gerätepixel je CSS-Pixel.
 pub fn render(scene: &Scene) -> Result<Canvas, TooLarge> {
     let size = |value: f32| {
         // Nach dem Begrenzen passt der Wert in u32.
@@ -57,29 +60,58 @@ pub fn render(scene: &Scene) -> Result<Canvas, TooLarge> {
             0
         }
     };
-    let mut canvas = Canvas::new(
-        size(scene.width),
-        size(scene.height),
-        color(scene.background),
-    )?;
+    render_scaled(scene, size(scene.width), size(scene.height), 1.0)
+}
+
+/// Zeichnet `scene` mit `scale` Gerätepixeln je CSS-Pixel auf eine neue
+/// Zeichenfläche von `width` × `height` Gerätepixeln. Ohne gültigen
+/// Maßstab (endlich und größer als null) bleibt es beim Hintergrund.
+pub fn render_scaled(
+    scene: &Scene,
+    width: u32,
+    height: u32,
+    scale: f32,
+) -> Result<Canvas, TooLarge> {
+    let mut canvas = Canvas::new(width, height, color(scene.background))?;
+    if !(scale.is_finite() && scale > 0.0) {
+        return Ok(canvas);
+    }
     for item in &scene.items {
         match item {
-            Item::Rect { rect, color: fill } => fill_rect(&mut canvas, rect, color(*fill)),
-            Item::Glyphs(run) => draw_glyphs(&mut canvas, run),
+            Item::Rect { rect, color: fill } => {
+                fill_rect(&mut canvas, &scaled(rect, scale), color(*fill));
+            }
+            Item::Glyphs(run) => draw_glyphs(&mut canvas, run, scale),
             Item::Image {
                 rect,
                 clip,
                 image,
                 repeat_x,
                 repeat_y,
-            } => draw_image(&mut canvas, rect, clip, image, (*repeat_x, *repeat_y)),
+            } => draw_image(
+                &mut canvas,
+                &scaled(rect, scale),
+                &scaled(clip, scale),
+                image,
+                (*repeat_x, *repeat_y),
+            ),
             Item::Polygon {
                 points,
                 color: fill,
-            } => fill_polygon(&mut canvas, points, color(*fill)),
+            } => fill_polygon(&mut canvas, points, scale, color(*fill)),
         }
     }
     Ok(canvas)
+}
+
+/// Ein Rechteck in Gerätepixeln.
+fn scaled(rect: &Rect, scale: f32) -> Rect {
+    Rect::new(
+        rect.x * scale,
+        rect.y * scale,
+        rect.width * scale,
+        rect.height * scale,
+    )
 }
 
 fn fill_rect(canvas: &mut Canvas, rect: &Rect, fill: Color) {
@@ -93,17 +125,36 @@ fn fill_rect(canvas: &mut Canvas, rect: &Rect, fill: Color) {
     }
 }
 
-fn draw_glyphs(canvas: &mut Canvas, run: &GlyphRun) {
+fn draw_glyphs(canvas: &mut Canvas, run: &GlyphRun, device_scale: f32) {
     let units_per_em = f32::from(run.face.metrics().units_per_em);
-    if !(units_per_em > 0.0 && run.size.is_finite() && run.size > 0.0) {
+    let size = run.size * device_scale;
+    if !(units_per_em > 0.0 && size.is_finite() && size > 0.0) {
         return;
     }
-    let scale = run.size / units_per_em;
+    let scale = size / units_per_em;
     let fill = color(run.color);
+    // Das Rechteck um alle Glyphen der Schrift, nach oben positiv, mit
+    // einem Pixel Rand für die Kantenglättung.
+    let (x_min, y_min, x_max, y_max) = run.face.metrics().bounds;
+    let (left, right) = (
+        f32::from(x_min) * scale - 1.0,
+        f32::from(x_max) * scale + 1.0,
+    );
+    let (below, above) = (
+        f32::from(y_min) * scale - 1.0,
+        f32::from(y_max) * scale + 1.0,
+    );
+    let (width, height) = (canvas.width() as f32, canvas.height() as f32);
     for glyph in &run.glyphs {
-        let (Some(x), Some(y)) = (snap(glyph.x), snap(glyph.y)) else {
+        let (Some(x), Some(y)) = (snap(glyph.x * device_scale), snap(glyph.y * device_scale))
+        else {
             continue;
         };
+        // Glyphen ganz außerhalb der Fläche werden gar nicht erst gelesen.
+        let (x_f, y_f) = (x as f32, y as f32);
+        if x_f + right < 0.0 || x_f + left > width || y_f - below < 0.0 || y_f - above > height {
+            continue;
+        }
         let Ok(outline) = run.face.outline(glyph.id) else {
             continue;
         };
@@ -143,9 +194,9 @@ fn draw_glyphs(canvas: &mut Canvas, run: &GlyphRun) {
     }
 }
 
-fn fill_polygon(canvas: &mut Canvas, points: &[(f32, f32)], fill: Color) {
-    let mut corners = points.iter();
-    let Some(&(x, y)) = corners.next() else {
+fn fill_polygon(canvas: &mut Canvas, points: &[(f32, f32)], scale: f32, fill: Color) {
+    let mut corners = points.iter().map(|&(x, y)| (x * scale, y * scale));
+    let Some((x, y)) = corners.next() else {
         return;
     };
     if !points.iter().all(|(x, y)| x.is_finite() && y.is_finite()) {
@@ -153,7 +204,7 @@ fn fill_polygon(canvas: &mut Canvas, points: &[(f32, f32)], fill: Color) {
     }
     let mut path = Path::new();
     path.move_to(x, y);
-    for &(x, y) in corners {
+    for (x, y) in corners {
         path.line_to(x, y);
     }
     path.close();
@@ -304,6 +355,94 @@ mod tests {
         for y in 0..10 {
             for x in 0..12 {
                 let expected = if (1..11).contains(&x) {
+                    0xff00_0000
+                } else {
+                    0xffff_ffff
+                };
+                assert_eq!(canvas.pixel(x, y), Some(expected), "({x}, {y})");
+            }
+        }
+    }
+
+    #[test]
+    fn scaled_scenes_cover_device_pixels() {
+        // Zwei Gerätepixel je CSS-Pixel: Das Rechteck bei x = 1 bedeckt die
+        // Spalten 2 und 3 in beiden Zeilen, das Vieleck die Spalten 0 und 1.
+        let mut scene = Scene::new(2.0, 1.0, mb_scene::Color::WHITE);
+        scene.push_rect(Rect::new(1.0, 0.0, 1.0, 1.0), RED);
+        scene.items.push(Item::Polygon {
+            points: vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)],
+            color: mb_scene::Color::rgb(0, 0, 255),
+        });
+        let canvas = render_scaled(&scene, 4, 2, 2.0).expect("Fläche");
+        let row = [0xff00_00ff, 0xff00_00ff, 0xffff_0000, 0xffff_0000];
+        assert_eq!(canvas.pixels(), [row, row].concat());
+        // Ohne gültigen Maßstab nur der Hintergrund.
+        let canvas = render_scaled(&scene, 4, 2, f32::NAN).expect("Fläche");
+        assert!(canvas.pixels().iter().all(|&pixel| pixel == 0xffff_ffff));
+    }
+
+    #[test]
+    fn scaled_glyphs_start_on_whole_device_pixels() {
+        // Wie `glyphs_start_on_whole_pixels` mit halber Größe und doppeltem
+        // Maßstab: (0,7, 3,8) wird zu (1,4, 7,6) und auf (1, 8) gerundet.
+        let data = testdata::read_bytes("wpt", "fonts/Ahem.ttf");
+        let face = Arc::new(mb_text::Face::parse(data.into(), 0).expect("Ahem"));
+        let id = face.glyph_index('X').expect("Glyphe");
+        let mut scene = Scene::new(6.0, 5.0, mb_scene::Color::WHITE);
+        scene.items.push(Item::Glyphs(GlyphRun {
+            face,
+            size: 5.0,
+            color: mb_scene::Color::rgb(0, 0, 0),
+            glyphs: vec![PositionedGlyph { id, x: 0.7, y: 3.8 }],
+        }));
+        let canvas = render_scaled(&scene, 12, 10, 2.0).expect("Fläche");
+        for y in 0..10 {
+            for x in 0..12 {
+                let expected = if (1..11).contains(&x) {
+                    0xff00_0000
+                } else {
+                    0xffff_ffff
+                };
+                assert_eq!(canvas.pixel(x, y), Some(expected), "({x}, {y})");
+            }
+        }
+    }
+
+    #[test]
+    fn glyphs_partly_outside_are_drawn() {
+        // Links und unten über den Rand hinaus: Zu sehen ist der Rest, ganz
+        // außerhalb liegende Glyphen fehlen.
+        let data = testdata::read_bytes("wpt", "fonts/Ahem.ttf");
+        let face = Arc::new(mb_text::Face::parse(data.into(), 0).expect("Ahem"));
+        let id = face.glyph_index('X').expect("Glyphe");
+        let mut scene = Scene::new(10.0, 10.0, mb_scene::Color::WHITE);
+        scene.items.push(Item::Glyphs(GlyphRun {
+            face,
+            size: 10.0,
+            color: mb_scene::Color::rgb(0, 0, 0),
+            glyphs: vec![
+                PositionedGlyph {
+                    id,
+                    x: -5.0,
+                    y: 13.0,
+                },
+                PositionedGlyph {
+                    id,
+                    x: -20.0,
+                    y: 5.0,
+                },
+                PositionedGlyph {
+                    id,
+                    x: 0.0,
+                    y: 25.0,
+                },
+            ],
+        }));
+        let canvas = render(&scene).expect("Fläche");
+        for y in 0..10 {
+            for x in 0..10 {
+                let expected = if x < 5 && y >= 5 {
                     0xff00_0000
                 } else {
                     0xffff_ffff

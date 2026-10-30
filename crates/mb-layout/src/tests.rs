@@ -457,3 +457,60 @@ fn transparent_sides_keep_slanted_corners() {
         )]
     );
 }
+
+#[test]
+fn scroll_size_covers_boxes_and_lines() {
+    // #a ist breiter als der Viewport. Die Zeilen von #b reichen unter den
+    // Kasten, und das zu lange erste Wort ragt rechts über ihn hinaus.
+    let page = load(
+        "<div id=a></div><div id=b>XXXXXXXXXXXXXXXXXXXX XXXXX</div>",
+        "body { margin: 0 } #a { width: 850px; height: 590px } \
+         #b { margin-left: 700px; width: 100px; height: 10px; font-size: 10px; \
+         line-height: 20px }",
+    );
+    assert_eq!(page.rect("b"), Rect::new(700.0, 590.0, 100.0, 10.0));
+    assert_eq!(page.tree.scroll_size(), (900.0, 630.0));
+}
+
+#[test]
+fn unreachable_overflow_does_not_count() {
+    // Ganz links vom Ursprung: nicht erreichbar, auch nicht seine Höhe.
+    let page = load(
+        "<div style='height: 0'><div id=a></div></div>",
+        "body { margin: 0 } #a { margin-left: -2000px; width: 1000px; height: 5000px }",
+    );
+    assert_eq!(page.rect("a"), Rect::new(-2000.0, 0.0, 1000.0, 5000.0));
+    assert_eq!(page.tree.scroll_size(), (800.0, 600.0));
+}
+
+#[test]
+fn painting_follows_the_scroll_position() {
+    // Kästen verschieben sich mit dem Viewport, die Leinwand nicht.
+    let page = load(
+        "<div id=a></div>",
+        "body { background: lime; margin: 0 } \
+         #a { margin-top: 100px; height: 10px; background: blue }",
+    );
+    let scene = page.tree.paint_scrolled(&image, (5.0, 50.0));
+    let rects: Vec<(mb_scene::Rect, Color)> = scene
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Rect { rect, color } => Some((*rect, *color)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        rects,
+        [
+            (
+                mb_scene::Rect::new(0.0, 0.0, 800.0, 600.0),
+                Color::rgb(0, 255, 0)
+            ),
+            (
+                mb_scene::Rect::new(-5.0, 50.0, 800.0, 10.0),
+                Color::rgb(0, 0, 255)
+            ),
+        ]
+    );
+}
