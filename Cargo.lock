@@ -91,6 +91,7 @@ name = "mb-js"
 version = "0.0.0"
 dependencies = [
  "mb-unicode",
+ "testdata",
 ]
 
 [[package]]
