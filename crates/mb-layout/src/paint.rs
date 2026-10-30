@@ -863,7 +863,10 @@ fn dots(along: (f64, f64), ends: (f64, f64), width: f64, visible: (f64, f64)) ->
     let first_center = along.0 + inset(ends.0);
     let last_center = along.1 - inset(ends.1);
     let distance = last_center - first_center;
-    if distance <= 0.0 {
+    // Ist kein Platz für zwei Punkte nebeneinander, gibt es einen in der
+    // Mitte; zwei würden sich überdecken, bei durchscheinender Farbe mit
+    // einer dunkleren Stelle.
+    if distance < width {
         let center = (first_center + last_center) / 2.0;
         let touches = center + radius >= visible.0 && center - radius <= visible.1;
         return Some(if touches { vec![center] } else { Vec::new() });
