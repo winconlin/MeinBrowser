@@ -12,6 +12,9 @@ dependencies = [
 [[package]]
 name = "deps-guard"
 version = "0.0.0"
+dependencies = [
+ "mb-json",
+]
 
 [[package]]
 name = "mb-base"
