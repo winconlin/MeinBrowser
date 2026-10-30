@@ -316,7 +316,7 @@ fn render_page(
     requests: Receiver<Job>,
     results: Sender<(u64, Result<Frame, String>)>,
 ) {
-    let mut library = FontLibrary::new(Box::new(|path| std::fs::read(path).ok()));
+    let mut library = FontLibrary::new(Box::new(mb_platform::fonts::read_font));
     for file in mb_platform::fonts::font_files() {
         library.add_file(file);
     }

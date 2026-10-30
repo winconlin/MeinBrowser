@@ -58,7 +58,7 @@ fn main() -> ExitCode {
         eprintln!("{}: {error}", out.display());
         return ExitCode::FAILURE;
     }
-    let mut library = FontLibrary::new(Box::new(|path| std::fs::read(path).ok()));
+    let mut library = FontLibrary::new(Box::new(mb_platform::fonts::read_font));
     for file in mb_platform::fonts::font_files() {
         library.add_file(file);
     }
