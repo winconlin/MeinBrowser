@@ -9,23 +9,33 @@ pub const MAX_INPUT: usize = 4096;
 pub const MAX_FONT_INPUT: usize = 65536;
 const MAX_PIXELS: u64 = 4096;
 const MAX_INFLATED: usize = 65536;
+/// Everything one page may load and decode, including image pixels.
+const MAX_PAGE_BYTES: u64 = 1 << 20;
+/// Style and layout work per viewport; see `mb_web::RENDER_STEPS`. Measured on
+/// 30.10.2026 with AddressSanitizer: the slowest of several 4 KiB inputs, a table
+/// with 400 rows, took 2 s for both viewports.
+const MAX_RENDER_STEPS: u64 = 1_000_000;
+/// Separates the parts of a `page` input: the document, then its resources.
+const PART_SEPARATOR: [u8; 2] = [0x1f, 0x1f];
+/// The origin of a `page` input's document and resources.
+const ORIGIN: &str = "https://example.test/";
+/// The only font of the `page` target, so text layout reaches real glyphs.
+const FONT: &[u8] = include_bytes!("../seeds/font/synthetic-sfnt");
 
 pub fn html(data: &[u8]) {
     if data.len() > MAX_INPUT {
         return;
     }
-    let text = mb_encoding::utf8_decode(data);
-    let mut document = mb_dom::Document::new();
-    mb_html::parse_document(
-        &mut document,
-        text.chars().map(mb_base::CodePoint::from),
+    let mut parsed = mb_html::parse_bytes(
+        data,
+        mb_encoding::Encoding::Utf8,
         mb_html::Options {
             scripting: mb_html::ScriptingMode::Disabled,
             collect_errors: false,
         },
     );
-    document.perform_microtask_checkpoint();
-    black_box(document);
+    parsed.document.perform_microtask_checkpoint();
+    black_box(parsed);
 }
 
 pub fn css(data: &[u8]) {
@@ -207,6 +217,88 @@ pub fn unicode(data: &[u8]) {
     black_box(mb_unicode::idna::to_unicode(&text, options));
 }
 
+/// Splits a `page` input at each [`PART_SEPARATOR`].
+fn parts(data: &[u8]) -> Vec<Vec<u8>> {
+    let mut parts = Vec::new();
+    let mut rest = data;
+    while let Some(position) = rest
+        .windows(PART_SEPARATOR.len())
+        .position(|window| window == PART_SEPARATOR)
+    {
+        parts.push(rest.get(..position).unwrap_or_default().to_vec());
+        rest = rest
+            .get(position.saturating_add(PART_SEPARATOR.len())..)
+            .unwrap_or_default();
+    }
+    parts.push(rest.to_vec());
+    parts
+}
+
+/// Part `N` for each URL below [`ORIGIN`] whose path starts with the number `N`.
+fn resource(parts: &[Vec<u8>], url: &mb_url::Url) -> Option<Vec<u8>> {
+    let href = url.href();
+    let path = href.strip_prefix(ORIGIN)?;
+    let digits = path.bytes().take_while(u8::is_ascii_digit).count();
+    let index: usize = path.get(..digits)?.parse().ok()?;
+    parts.get(index).cloned()
+}
+
+/// Loads part 0 as `0.xhtml` if it starts with `<?xml`, otherwise as `0.html`.
+fn load_page(data: &[u8]) -> mb_web::Page {
+    let parts = parts(data);
+    let name = if data.starts_with(b"<?xml") {
+        "0.xhtml"
+    } else {
+        "0.html"
+    };
+    let url = mb_url::Url::parse(&format!("{ORIGIN}{name}"), None).expect("fixed document URL");
+    mb_web::Page::load_within(
+        url,
+        Box::new(move |url: &mb_url::Url| resource(&parts, url)),
+        MAX_PAGE_BYTES,
+    )
+    .expect("document within the byte budget")
+}
+
+fn font_library() -> mb_text::FontLibrary {
+    let mut library = mb_text::FontLibrary::new(Box::new(|_| Some(FONT.to_vec())));
+    library.add_file(std::path::PathBuf::from("synthetic-sfnt"));
+    library
+}
+
+/// Loading, cascade, layout and painting of a page with its stylesheets and
+/// images, in two viewports.
+pub fn page(data: &[u8]) {
+    if data.len() > MAX_INPUT {
+        return;
+    }
+    let page = load_page(data);
+    let library = font_library();
+    let fonts = mb_layout::Fonts::new(&library);
+    let budget = mb_base::Budget::new(MAX_RENDER_STEPS);
+    match page.render_within(&fonts, 800.0, 600.0, &budget) {
+        Ok(scene) => {
+            black_box(scene);
+        }
+        Err(error) => assert_eq!(error, mb_base::Exhausted::Steps),
+    }
+    let viewport = mb_web::Viewport {
+        width: 320.0,
+        height: 480.0,
+        device_pixel_ratio: 2.0,
+    };
+    let budget = mb_base::Budget::new(MAX_RENDER_STEPS);
+    match page.layout_within(&fonts, viewport, &budget) {
+        Ok(tree) => {
+            let (width, height) = tree.scroll_size();
+            assert!(width >= viewport.width && height >= viewport.height);
+            let scroll = (width - viewport.width, height - viewport.height);
+            black_box(page.paint(&tree, scroll));
+        }
+        Err(error) => assert_eq!(error, mb_base::Exhausted::Steps),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,9 +323,46 @@ mod tests {
     }
 
     #[test]
+    fn page_seeds_reach_resources_and_glyphs() {
+        assert_eq!(font_library().face_count(), 1);
+        let face = mb_text::Face::parse(FONT.into(), 0).expect("synthetic font");
+        for character in [' ', 'A', 'T', 'x', '~'] {
+            assert_eq!(face.glyph_index(character), Some(mb_text::GlyphId(1)));
+        }
+        assert_eq!(face.glyph_index('\u{e9}'), None);
+        let data = include_bytes!("../seeds/page/resources");
+        assert_eq!(parts(data).len(), 4);
+        let page = load_page(data);
+        let library = font_library();
+        let fonts = mb_layout::Fonts::new(&library);
+        let budget = mb_base::Budget::new(MAX_RENDER_STEPS);
+        let scene = page
+            .render_within(&fonts, 800.0, 600.0, &budget)
+            .expect("seed within the step budget");
+        // 1.css imports 3.css, which colors the paragraph.
+        let green = mb_scene::Color::rgb(0, 128, 0);
+        assert!(scene.items.iter().any(|item| matches!(
+            item,
+            mb_scene::Item::Rect { color, .. } if *color == green
+        )));
+        assert!(
+            scene
+                .items
+                .iter()
+                .any(|item| matches!(item, mb_scene::Item::Image { .. }))
+        );
+        // Text glyphs from the font, not only the missing glyph 0.
+        assert!(scene.items.iter().any(|item| matches!(
+            item,
+            mb_scene::Item::Glyphs(run)
+                if run.glyphs.iter().any(|glyph| glyph.id == mb_text::GlyphId(1))
+        )));
+    }
+
+    #[test]
     fn start_corpora_and_empty_inputs_exercise_all_harnesses() {
         type Harness = fn(&[u8]);
-        let targets: [(&str, Harness); 11] = [
+        let targets: [(&str, Harness); 12] = [
             ("html", html),
             ("css", css),
             ("url", url),
@@ -245,6 +374,7 @@ mod tests {
             ("json", json),
             ("encoding", encoding),
             ("unicode", unicode),
+            ("page", page),
         ];
         for (name, check) in targets {
             check(&[]);
