@@ -1,6 +1,6 @@
 # Parser mit libFuzzer prüfen
 
-Dieser Branch stellt eine separat prüfbare Variante mit `cargo-fuzz` und libFuzzer bereit. Sie weicht von der auf `main` dokumentierten Planung eines eigenen Fuzzers ohne fremde Crates ab. Eine Übernahme erfordert eine ausdrückliche, eng begrenzte Ausnahme für dieses Entwicklungswerkzeug. Die bestehende Architekturentscheidung wird mit diesem Vorschlag nicht als bereits ersetzt dargestellt.
+Die Parser werden mit `cargo-fuzz` und libFuzzer geprüft. `libfuzzer-sys` ist dafür als einzige Ausnahme von der Regel „keine fremden Crates“ zugelassen (entschieden am 30.10.2026, siehe `docs/architektur.md`, Abschnitt 14). Die Ausnahme gilt nur für dieses Entwicklungswerkzeug; weitere fremde Crates deckt sie nicht.
 
 Das Werkzeug liegt in einem eigenen Cargo-Workspace unter `fuzz/`, mit eigenem Lockfile. Die Browser-Crates und ihr Lockfile bleiben frei von fremden Abhängigkeiten; der normale Abhängigkeitswächter bleibt aktiv.
 
