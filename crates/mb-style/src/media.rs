@@ -29,6 +29,7 @@
 
 use std::cmp::Ordering;
 
+use mb_base::{Budget, Exhausted};
 use mb_css::{BlockKind, ComponentValue, Source, Token, Values, parse_component_value_list};
 
 use crate::computed::{Device, FontMetricsSource, initial_px};
@@ -74,8 +75,34 @@ impl MediaQueryList {
     /// Ob die Liste für ein Gerät zutrifft: Sie ist leer, oder eine ihrer
     /// Media Queries trifft zu.
     pub fn matches(&self, device: &Device, fonts: &dyn FontMetricsSource) -> bool {
-        let environment = Environment { device, fonts };
-        self.queries.is_empty() || self.queries.iter().any(|query| query.matches(&environment))
+        self.matches_within(device, fonts, &Budget::unlimited())
+            .expect("unbegrenztes Budget")
+    }
+
+    /// Wie [`MediaQueryList::matches`], aber jede Media Query, Bedingung und
+    /// Merkmalsauswertung bezahlt aus `budget`. Ein Abbruch ist ein Fehler,
+    /// kein nicht zutreffendes Ergebnis; auch eine leere Liste prüft ihn.
+    pub fn matches_within(
+        &self,
+        device: &Device,
+        fonts: &dyn FontMetricsSource,
+        budget: &Budget,
+    ) -> Result<bool, Exhausted> {
+        let environment = Environment {
+            device,
+            fonts,
+            budget,
+        };
+        environment.step()?;
+        if self.queries.is_empty() {
+            return Ok(true);
+        }
+        for query in &self.queries {
+            if query.matches(&environment)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 }
 
@@ -83,6 +110,27 @@ impl MediaQueryList {
 struct Environment<'a> {
     device: &'a Device,
     fonts: &'a dyn FontMetricsSource,
+    budget: &'a Budget,
+}
+
+impl Environment<'_> {
+    fn step(&self) -> Result<(), Exhausted> {
+        if self.budget.spend(1) {
+            Ok(())
+        } else {
+            self.budget.check()
+        }
+    }
+
+    /// Auch ein gerade erst gesetztes Cancel bemerken, ohne einen weiteren
+    /// Arbeitsschritt zu berechnen.
+    fn check(&self) -> Result<(), Exhausted> {
+        if self.budget.spend(0) {
+            Ok(())
+        } else {
+            self.budget.check()
+        }
+    }
 }
 
 /// Ein Wahrheitswert der dreiwertigen Logik nach Kleene, von falsch nach
@@ -124,28 +172,30 @@ enum MediaQuery {
 }
 
 impl MediaQuery {
-    fn matches(&self, environment: &Environment<'_>) -> bool {
+    fn matches(&self, environment: &Environment<'_>) -> Result<bool, Exhausted> {
+        environment.step()?;
         let (not, value) = match self {
-            MediaQuery::NotAll => return false,
+            MediaQuery::NotAll => return Ok(false),
             MediaQuery::Typed {
                 not,
                 media_type,
                 condition,
             } => {
-                let condition = condition
-                    .as_ref()
-                    .map_or(Kleene::True, |condition| condition.evaluate(environment));
+                let condition = match condition {
+                    Some(condition) => condition.evaluate(environment)?,
+                    None => Kleene::True,
+                };
                 (*not, Kleene::from_bool(media_type.matches()).min(condition))
             }
-            MediaQuery::Condition(condition) => (false, condition.evaluate(environment)),
+            MediaQuery::Condition(condition) => (false, condition.evaluate(environment)?),
         };
         // Eine Media Query, deren Wert „unknown“ ist, wird zu `not all`;
         // `not` davor ändert daran nichts.
-        match value {
+        Ok(match value {
             Kleene::Unknown => false,
             Kleene::True => !not,
             Kleene::False => not,
-        }
+        })
     }
 }
 
@@ -198,22 +248,27 @@ enum Condition {
 }
 
 impl Condition {
-    fn evaluate(&self, environment: &Environment<'_>) -> Kleene {
-        match self {
-            Condition::Not(condition) => condition.evaluate(environment).not(),
-            Condition::And(conditions) => conditions
-                .iter()
-                .map(|condition| condition.evaluate(environment))
-                .min()
-                .unwrap_or(Kleene::True),
-            Condition::Or(conditions) => conditions
-                .iter()
-                .map(|condition| condition.evaluate(environment))
-                .max()
-                .unwrap_or(Kleene::False),
-            Condition::Feature(feature) => feature.evaluate(environment),
+    fn evaluate(&self, environment: &Environment<'_>) -> Result<Kleene, Exhausted> {
+        environment.step()?;
+        Ok(match self {
+            Condition::Not(condition) => condition.evaluate(environment)?.not(),
+            Condition::And(conditions) => {
+                let mut result = Kleene::True;
+                for condition in conditions {
+                    result = result.min(condition.evaluate(environment)?);
+                }
+                result
+            }
+            Condition::Or(conditions) => {
+                let mut result = Kleene::False;
+                for condition in conditions {
+                    result = result.max(condition.evaluate(environment)?);
+                }
+                result
+            }
+            Condition::Feature(feature) => feature.evaluate(environment)?,
             Condition::GeneralEnclosed => Kleene::Unknown,
-        }
+        })
     }
 }
 
@@ -242,8 +297,9 @@ enum Feature {
 }
 
 impl Feature {
-    fn evaluate(&self, environment: &Environment<'_>) -> Kleene {
-        match self {
+    fn evaluate(&self, environment: &Environment<'_>) -> Result<Kleene, Exhausted> {
+        environment.step()?;
+        Ok(match self {
             Feature::Unknown => Kleene::Unknown,
             Feature::Boolean(definition) => Kleene::from_bool(match definition.kind {
                 // Wahr außer bei null.
@@ -259,14 +315,15 @@ impl Feature {
                 comparisons,
             } => {
                 let Kind::Range { device, .. } = definition.kind else {
-                    return Kleene::Unknown;
+                    return Ok(Kleene::Unknown);
                 };
                 let device = device(environment.device);
                 let mut result = true;
                 for (comparison, specified) in comparisons {
+                    environment.step()?;
                     // Fehlt ein Maß der Schrift, ist der Wert unbekannt.
-                    let Some(value) = specified.resolve(environment) else {
-                        return Kleene::Unknown;
+                    let Some(value) = specified.resolve(environment)? else {
+                        return Ok(Kleene::Unknown);
                     };
                     result &=
                         comparison.holds(positive_zero(device).total_cmp(&positive_zero(value)));
@@ -286,7 +343,7 @@ impl Feature {
                 Kind::MqBoolean(current) => Kleene::from_bool(current == *value),
                 _ => Kleene::Unknown,
             },
-        }
+        })
     }
 }
 
@@ -348,13 +405,18 @@ enum Specified {
 }
 
 impl Specified {
-    fn resolve(self, environment: &Environment<'_>) -> Option<f64> {
-        match self {
+    fn resolve(self, environment: &Environment<'_>) -> Result<Option<f64>, Exhausted> {
+        environment.check()?;
+        let value = match self {
             Specified::Length(length) => {
                 initial_px(length, environment.device, environment.fonts).ok()
             }
             Specified::Number(number) => Some(number),
-        }
+        };
+        // Schriftmaße kommen über einen Aufruf des Nutzers. Ein darin
+        // gesetzter Abbruch darf nicht als unbekannter Wert verschwinden.
+        environment.check()?;
+        Ok(value)
     }
 }
 
@@ -976,7 +1038,96 @@ fn specified(kind: RangeKind, value: &MfValue<'_>) -> Option<Specified> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::computed::{NoFonts, test_device};
+    use crate::computed::{Font, FontMetrics, NoFonts, test_device};
+    use mb_base::Cancel;
+    use std::cell::Cell;
+
+    #[test]
+    fn empty_and_nonempty_queries_observe_budget_and_cancellation() {
+        let device = test_device();
+        for text in ["", "all", "not all", "(color)"] {
+            let list = MediaQueryList::parse(text);
+            assert_eq!(
+                list.matches_within(&device, &NoFonts, &Budget::new(0)),
+                Err(Exhausted::Steps),
+                "{text}"
+            );
+            let cancel = Cancel::new();
+            cancel.cancel();
+            let budget = Budget::with_cancel(100, cancel);
+            assert_eq!(
+                list.matches_within(&device, &NoFonts, &budget),
+                Err(Exhausted::Cancelled),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn wide_conditions_and_query_lists_are_bounded() {
+        // Beides ist gültig und liefert unbegrenzt false bzw. true. Es
+        // darf mit kleinem Budget nicht bis zum Ende ausgewertet werden.
+        let texts = [
+            vec!["print"; 2_000].join(", "),
+            vec!["(color)"; 2_000].join(" and "),
+        ];
+        for text in texts {
+            let list = MediaQueryList::parse(&text);
+            let budget = Budget::new(32);
+            assert_eq!(
+                list.matches_within(&test_device(), &NoFonts, &budget),
+                Err(Exhausted::Steps)
+            );
+        }
+    }
+
+    struct CancellingFonts {
+        cancel: Cancel,
+        calls: Cell<usize>,
+    }
+
+    impl FontMetricsSource for CancellingFonts {
+        fn metrics(&self, _: &Font<'_>) -> FontMetrics {
+            self.calls.set(self.calls.get() + 1);
+            self.cancel.cancel();
+            FontMetrics::default()
+        }
+    }
+
+    #[test]
+    fn cancellation_during_font_metrics_is_not_an_unknown_match() {
+        let cancel = Cancel::new();
+        let fonts = CancellingFonts {
+            cancel: cancel.clone(),
+            calls: Cell::new(0),
+        };
+        let list = MediaQueryList::parse("(width: 1cap), all");
+        let budget = Budget::with_cancel(100, cancel);
+        assert_eq!(
+            list.matches_within(&test_device(), &fonts, &budget),
+            Err(Exhausted::Cancelled)
+        );
+        assert_eq!(fonts.calls.get(), 1);
+    }
+
+    struct ExhaustingFonts<'a>(&'a Budget);
+
+    impl FontMetricsSource for ExhaustingFonts<'_> {
+        fn metrics(&self, _: &Font<'_>) -> FontMetrics {
+            self.0.spend(u64::MAX);
+            FontMetrics::default()
+        }
+    }
+
+    #[test]
+    fn exhaustion_during_font_metrics_is_propagated() {
+        let budget = Budget::new(100);
+        let list = MediaQueryList::parse("(width: 1cap), all");
+        assert_eq!(
+            list.matches_within(&test_device(), &ExhaustingFonts(&budget), &budget),
+            Err(Exhausted::Steps)
+        );
+    }
 
     fn matches_on(device: &Device, text: &str) -> bool {
         MediaQueryList::parse(text).matches(device, &NoFonts)

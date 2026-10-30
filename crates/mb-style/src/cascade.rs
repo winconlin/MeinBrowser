@@ -32,7 +32,7 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use mb_base::DomString;
+use mb_base::{Budget, DomString, Exhausted};
 use mb_dom::NodeId;
 
 use crate::computed::{Device, FontMetricsSource, NoFonts};
@@ -153,8 +153,9 @@ struct Layers {
 
 #[derive(Debug)]
 struct LayerNode {
-    /// `None` bei einer anonymen Ebene, die nur einmal vorkommt.
-    name: Option<String>,
+    /// Benannte Kinder separat nachschlagen; ihre Reihenfolge bleibt in
+    /// `children`. Anonyme Ebenen werden nicht in den Index aufgenommen.
+    named: BTreeMap<String, usize>,
     children: Vec<usize>,
 }
 
@@ -162,7 +163,7 @@ impl Layers {
     fn new() -> Layers {
         Layers {
             nodes: vec![LayerNode {
-                name: None,
+                named: BTreeMap::new(),
                 children: Vec::new(),
             }],
         }
@@ -170,44 +171,57 @@ impl Layers {
 
     /// Die Ebene `name` in `parent`, neu angelegt, wenn es sie noch nicht
     /// gibt; anonyme Ebenen sind immer neu.
-    fn child(&mut self, parent: usize, name: Option<&str>) -> usize {
+    fn child(
+        &mut self,
+        parent: usize,
+        name: Option<&str>,
+        budget: &Budget,
+    ) -> Result<usize, Exhausted> {
+        spend(budget, 1)?;
+        if let Some(name) = name {
+            spend(budget, u64::try_from(name.len() / 64).unwrap_or(u64::MAX))?;
+        }
         if let Some(name) = name
-            && let Some(existing) = self.nodes.get(parent).and_then(|node| {
-                node.children.iter().copied().find(|&child| {
-                    self.nodes
-                        .get(child)
-                        .is_some_and(|child| child.name.as_deref() == Some(name))
-                })
-            })
+            && let Some(&existing) = self.nodes.get(parent).and_then(|node| node.named.get(name))
         {
-            return existing;
+            return Ok(existing);
         }
         let index = self.nodes.len();
         self.nodes.push(LayerNode {
-            name: name.map(str::to_owned),
+            named: BTreeMap::new(),
             children: Vec::new(),
         });
         if let Some(node) = self.nodes.get_mut(parent) {
             node.children.push(index);
+            if let Some(name) = name {
+                node.named.insert(name.to_owned(), index);
+            }
         }
-        index
+        Ok(index)
     }
 
     /// Die Ebene zu einem ⟨layer-name⟩ in `parent`.
-    fn path(&mut self, parent: usize, name: &LayerName) -> usize {
-        name.iter().fold(parent, |current, segment| {
-            self.child(current, Some(segment))
+    fn path(
+        &mut self,
+        parent: usize,
+        name: &LayerName,
+        budget: &Budget,
+    ) -> Result<usize, Exhausted> {
+        name.iter().try_fold(parent, |current, segment| {
+            self.child(current, Some(segment), budget)
         })
     }
 
     /// Die Stelle jeder Ebene in der Reihenfolge der Ebenen: verschachtelte
     /// vor ihrer Elternebene, in der Reihenfolge ihres ersten Erscheinens;
     /// die äußere Ebene zuletzt.
-    fn ranks(&self) -> Vec<u32> {
+    fn ranks(&self, budget: &Budget) -> Result<Vec<u32>, Exhausted> {
+        spend(budget, u64::try_from(self.nodes.len()).unwrap_or(u64::MAX))?;
         let mut ranks = vec![0; self.nodes.len()];
         let mut next: u32 = 0;
         let mut stack = vec![(0, 0)];
         while let Some((node, child)) = stack.pop() {
+            spend(budget, 1)?;
             let children = self
                 .nodes
                 .get(node)
@@ -226,7 +240,7 @@ impl Layers {
                 }
             }
         }
-        ranks
+        Ok(ranks)
     }
 }
 
@@ -258,6 +272,9 @@ pub struct StylistBuilder<'a> {
     entries: Vec<Entry>,
     /// Die ausgewerteten Media Queries mit ihrem Ergebnis.
     media: Vec<(Arc<MediaQueryList>, bool)>,
+    /// Nach einer abgebrochenen Ergänzung darf kein Teilstand als gültiger
+    /// Stylist herausgegeben werden, auch nicht mit einem neuen Budget.
+    failure: Option<Exhausted>,
 }
 
 impl std::fmt::Debug for StylistBuilder<'_> {
@@ -314,80 +331,135 @@ impl<'a> StylistBuilder<'a> {
             layers: [Layers::new(), Layers::new(), Layers::new(), Layers::new()],
             entries: Vec::new(),
             media: Vec::new(),
+            failure: None,
         }
     }
 
     /// Die Stylesheets aus dem HTML Standard für ein Dokument; sie gehören
     /// vor alle anderen.
     pub fn add_user_agent_sheets(&mut self, info: DocumentInfo) {
-        for (origin, sheet) in sheets_for(info) {
-            self.add(origin, sheet);
+        self.add_user_agent_sheets_within(info, &Budget::unlimited())
+            .expect("unbegrenztes Budget");
+    }
+
+    /// Wie [`StylistBuilder::add_user_agent_sheets`], aber mit Arbeitsbudget.
+    pub fn add_user_agent_sheets_within(
+        &mut self,
+        info: DocumentInfo,
+        budget: &Budget,
+    ) -> Result<(), Exhausted> {
+        if let Some(reason) = self.failure {
+            return Err(reason);
         }
+        let result = (|| {
+            spend(budget, 1)?;
+            for (origin, sheet) in sheets_for(info) {
+                self.add_within(origin, sheet, budget)?;
+            }
+            spend(budget, 0)
+        })();
+        if let Err(reason) = result {
+            self.failure = Some(reason);
+        }
+        result
     }
 
     /// Ein Stylesheet; die Reihenfolge der Aufrufe ist die Reihenfolge des
-    /// Erscheinens (*final CSS style sheets*).
+    /// Erscheinens (*final CSS style sheets*). Ohne Arbeitsgrenze, für
+    /// vertrauenswürdige Eingaben. Für fremde Inhalte gibt es `add_within`.
     pub fn add(&mut self, origin: Origin, sheet: &StyleSheet) {
-        self.sheet(origin, sheet, 0, 0);
+        self.add_within(origin, sheet, &Budget::unlimited())
+            .expect("unbegrenztes Budget");
     }
 
-    /// Ein Stylesheet mit den Stylesheets seiner `@import`-Regeln an deren
-    /// Stelle, mit seinem Ursprung. Wie tief, begrenzt [`MAX_IMPORT_DEPTH`].
-    fn sheet(&mut self, origin: Origin, sheet: &StyleSheet, layer: usize, depth: usize) {
+    /// Ergänzt Regeln, Imports und Ebenen aus `budget`. Nach einem Fehler
+    /// bleibt der Builder unvollständig und kann nicht mehr gebaut werden.
+    pub fn add_within(
+        &mut self,
+        origin: Origin,
+        sheet: &StyleSheet,
+        budget: &Budget,
+    ) -> Result<(), Exhausted> {
+        if let Some(reason) = self.failure {
+            return Err(reason);
+        }
+        let result = self
+            .sheet(origin, sheet, 0, 0, budget)
+            .and_then(|()| spend(budget, 0));
+        if let Err(reason) = result {
+            self.failure = Some(reason);
+        }
+        result
+    }
+
+    fn sheet(
+        &mut self,
+        origin: Origin,
+        sheet: &StyleSheet,
+        layer: usize,
+        depth: usize,
+        budget: &Budget,
+    ) -> Result<(), Exhausted> {
+        spend(budget, 1)?;
         if let Some(media) = &sheet.media
-            && !self.evaluate(media)
+            && !self.evaluate(media, budget)?
         {
-            return;
+            return Ok(());
         }
         let (before, after) = sheet
             .rules
             .split_at_checked(sheet.import_position)
             .unwrap_or((&sheet.rules, &[]));
-        self.rules(origin, before, layer, None);
+        self.rules(origin, before, layer, None, budget)?;
         for import in &sheet.imports {
-            if !import.supports || !self.evaluate(&import.media) {
+            spend(budget, 1)?;
+            if !import.supports || !self.evaluate(&import.media, budget)? {
                 continue;
             }
-            // Die Ebene gibt es auch, wenn das Laden scheiterte, aber nur,
-            // wenn die Bedingungen zutreffen.
             let node = match &import.layer {
                 None => layer,
-                Some(Some(name)) => self.layers_mut(origin).path(layer, name),
-                Some(None) => self.layers_mut(origin).child(layer, None),
+                Some(Some(name)) => self.layers_mut(origin).path(layer, name, budget)?,
+                Some(None) => self.layers_mut(origin).child(layer, None, budget)?,
             };
             if let Some(imported) = &import.sheet
                 && depth < MAX_IMPORT_DEPTH
             {
-                self.sheet(origin, imported, node, depth.saturating_add(1));
+                self.sheet(origin, imported, node, depth.saturating_add(1), budget)?;
             }
         }
-        self.rules(origin, after, layer, None);
+        self.rules(origin, after, layer, None, budget)
     }
 
-    /// Wertet Media Queries für das Gerät aus und merkt sich das Ergebnis.
-    fn evaluate(&mut self, queries: &Arc<MediaQueryList>) -> bool {
+    /// Ein Fehler in der Auswertung darf nicht als falsche Media Query
+    /// gespeichert werden; nur vollständige Ergebnisse kommen in den Cache.
+    fn evaluate(
+        &mut self,
+        queries: &Arc<MediaQueryList>,
+        budget: &Budget,
+    ) -> Result<bool, Exhausted> {
+        spend(budget, 1)?;
         if queries.is_empty() {
-            return true;
+            return Ok(true);
         }
-        let matches = queries.matches(self.device, self.fonts);
+        let matches = queries.matches_within(self.device, self.fonts, budget)?;
         self.media.push((Arc::clone(queries), matches));
-        matches
+        Ok(matches)
     }
 
-    /// Steigt rekursiv ab; wie tief, begrenzt schon das Lesen des
-    /// Stylesheets.
     fn rules(
         &mut self,
         origin: Origin,
         rules: &[CssRule],
         layer: usize,
         parent: Option<&Arc<SelectorList>>,
-    ) {
+        budget: &Budget,
+    ) -> Result<(), Exhausted> {
         for rule in rules {
+            spend(budget, 1)?;
             match rule {
                 CssRule::Style(rule) => {
                     self.push(origin, &rule.selectors, &rule.declarations, layer);
-                    self.rules(origin, &rule.rules, layer, Some(&rule.selectors));
+                    self.rules(origin, &rule.rules, layer, Some(&rule.selectors), budget)?;
                 }
                 CssRule::NestedDeclarations(declarations) => {
                     if let Some(parent) = parent {
@@ -397,29 +469,30 @@ impl<'a> StylistBuilder<'a> {
                 CssRule::LayerBlock { name, rules } => {
                     let layers = self.layers_mut(origin);
                     let node = match name {
-                        Some(name) => layers.path(layer, name),
-                        None => layers.child(layer, None),
+                        Some(name) => layers.path(layer, name, budget)?,
+                        None => layers.child(layer, None, budget)?,
                     };
-                    self.rules(origin, rules, node, parent);
+                    self.rules(origin, rules, node, parent, budget)?;
                 }
                 CssRule::LayerStatement(names) => {
                     let layers = self.layers_mut(origin);
                     for name in names {
-                        layers.path(layer, name);
+                        layers.path(layer, name, budget)?;
                     }
                 }
                 CssRule::Media { queries, rules } => {
-                    if self.evaluate(queries) {
-                        self.rules(origin, rules, layer, parent);
+                    if self.evaluate(queries, budget)? {
+                        self.rules(origin, rules, layer, parent, budget)?;
                     }
                 }
                 CssRule::Supports { matches, rules } => {
                     if *matches {
-                        self.rules(origin, rules, layer, parent);
+                        self.rules(origin, rules, layer, parent, budget)?;
                     }
                 }
             }
         }
+        Ok(())
     }
 
     fn layers_mut(&mut self, origin: Origin) -> &mut Layers {
@@ -452,9 +525,24 @@ impl<'a> StylistBuilder<'a> {
 
     /// Ordnet die Ebenen und sortiert die Selektoren vor.
     pub fn build(self) -> Stylist {
-        let ranks: Vec<Vec<u32>> = self.layers.iter().map(Layers::ranks).collect();
+        self.build_within(&Budget::unlimited())
+            .expect("unbegrenztes Budget")
+    }
+
+    /// Ordnet die Ebenen und indexiert die Selektoren aus `budget`.
+    /// Ein zuvor abgebrochener Aufbau liefert immer einen Fehler.
+    pub fn build_within(self, budget: &Budget) -> Result<Stylist, Exhausted> {
+        if let Some(reason) = self.failure {
+            return Err(reason);
+        }
+        spend(budget, 1)?;
+        let mut ranks = Vec::with_capacity(self.layers.len());
+        for layers in &self.layers {
+            ranks.push(layers.ranks(budget)?);
+        }
         let mut entries = self.entries;
         for entry in &mut entries {
+            spend(budget, 1)?;
             let node = usize::try_from(entry.layer).unwrap_or(usize::MAX);
             entry.layer = ranks
                 .get(entry.origin.index())
@@ -464,10 +552,12 @@ impl<'a> StylistBuilder<'a> {
         }
         let mut index = Index::default();
         for (entry_number, entry) in entries.iter().enumerate() {
+            spend(budget, 1)?;
             let Ok(entry_number) = u32::try_from(entry_number) else {
                 break;
             };
             for (selector_number, selector) in entry.selectors.selectors().iter().enumerate() {
+                spend(budget, 1)?;
                 let Ok(selector_number) = u32::try_from(selector_number) else {
                     break;
                 };
@@ -475,21 +565,50 @@ impl<'a> StylistBuilder<'a> {
                     entry: entry_number,
                     selector: selector_number,
                 };
-                let bucket = match selector.key() {
-                    Key::Id(id) => index.ids.entry(lower(id)).or_default(),
-                    Key::Class(class) => index.classes.entry(lower(class)).or_default(),
-                    Key::LocalName(name) => index.names.entry(lower(name)).or_default(),
+                let bucket = match selector.key_within(budget)? {
+                    Key::Id(id) => index.ids.entry(lower_within(id, budget)?).or_default(),
+                    Key::Class(class) => index
+                        .classes
+                        .entry(lower_within(class, budget)?)
+                        .or_default(),
+                    Key::LocalName(name) => {
+                        index.names.entry(lower_within(name, budget)?).or_default()
+                    }
                     Key::Any => &mut index.any,
                 };
                 bucket.push(candidate);
             }
         }
-        Stylist {
+        spend(budget, 0)?;
+        Ok(Stylist {
             entries,
             index,
             media: self.media,
-        }
+        })
     }
+}
+
+/// `check()` allein erkennt kein neu gesetztes Cancel; spend pollt es.
+fn spend(budget: &Budget, steps: u64) -> Result<(), Exhausted> {
+    budget.spend(steps);
+    budget.check()
+}
+
+/// Auch sehr lange Bezeichner müssen während des Indexierens abbrechbar sein.
+fn lower_within(value: &DomString, budget: &Budget) -> Result<Vec<u16>, Exhausted> {
+    spend(budget, u64::try_from(value.len() / 64).unwrap_or(u64::MAX))?;
+    let mut lower = Vec::with_capacity(value.len());
+    for (index, unit) in value.code_units().enumerate() {
+        if index % 64 == 0 {
+            spend(budget, 1)?;
+        }
+        lower.push(if (0x41..=0x5A).contains(&unit) {
+            unit + 0x20
+        } else {
+            unit
+        });
+    }
+    Ok(lower)
 }
 
 /// Die Codeeinheiten in ASCII-Kleinbuchstaben, als Schlüssel.
@@ -526,9 +645,26 @@ impl Stylist {
     /// die beim Bauen ausgewertet wurde, ergibt dort dasselbe. Sonst muss
     /// ein neuer [`Stylist`] her.
     pub fn is_valid_for(&self, device: &Device, fonts: &dyn FontMetricsSource) -> bool {
-        self.media
-            .iter()
-            .all(|(queries, matches)| queries.matches(device, fonts) == *matches)
+        self.is_valid_for_within(device, fonts, &Budget::unlimited())
+            .expect("unbegrenztes Budget")
+    }
+
+    /// Wie [`Stylist::is_valid_for`], aber auch die Cacheprüfung bezahlt
+    /// jede Media Query aus `budget`. Abbruch ist kein Cache-Miss.
+    pub fn is_valid_for_within(
+        &self,
+        device: &Device,
+        fonts: &dyn FontMetricsSource,
+        budget: &Budget,
+    ) -> Result<bool, Exhausted> {
+        spend(budget, 1)?;
+        for (queries, matches) in &self.media {
+            if queries.matches_within(device, fonts, budget)? != *matches {
+                return Ok(false);
+            }
+        }
+        spend(budget, 0)?;
+        Ok(true)
     }
 
     /// Die Deklarationen, die für ein Element oder eines seiner

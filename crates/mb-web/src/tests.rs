@@ -483,3 +483,119 @@ fn imports_load_once_per_rule_without_cycles() {
         [(Rect::new(0.0, 0.0, 400.0, 30.0), GREEN)]
     );
 }
+
+fn rects_within(page: &Page, width: f64, budget: &Budget) -> Result<Vec<(Rect, Color)>, Exhausted> {
+    let library = FontLibrary::new(Box::new(|_| None));
+    let fonts = Fonts::new(&library);
+    page.render_within(&fonts, width, 300.0, budget)
+        .map(|scene| {
+            scene
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    Item::Rect { rect, color } => Some((*rect, *color)),
+                    _ => None,
+                })
+                .collect()
+        })
+}
+
+#[test]
+fn failed_preparation_never_caches_partial_rules() {
+    let layers = (0..2048)
+        .map(|i| format!("layer{i}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let html = format!(
+        "<!DOCTYPE html><style>@layer {layers}; body {{ margin: 0 }}
+         div {{ height: 10px; background: green }}</style><div></div>"
+    );
+    let page = load("a.html", &[("a.html", html.into_bytes())]);
+    assert_eq!(
+        rects_within(&page, 800.0, &Budget::new(0)),
+        Err(Exhausted::Steps)
+    );
+    let cancel = Cancel::new();
+    cancel.cancel();
+    assert_eq!(
+        rects_within(&page, 800.0, &Budget::with_cancel(RENDER_STEPS, cancel)),
+        Err(Exhausted::Cancelled)
+    );
+    assert_eq!(
+        rects_within(&page, 800.0, &Budget::new(128)),
+        Err(Exhausted::Steps)
+    );
+    assert_eq!(
+        rects_within(&page, 800.0, &Budget::new(RENDER_STEPS)).expect("vollständige Regeln"),
+        [(Rect::new(0.0, 0.0, 800.0, 10.0), GREEN)]
+    );
+}
+
+#[test]
+fn cached_media_validation_stops_when_its_budget_is_spent() {
+    // Alle Bedingungen bleiben falsch. Der Cache muss deshalb die ganze
+    // Liste auswerten, bevor er seine Gültigkeit bestätigen könnte.
+    let media = "@media print { .unused { color: red } }".repeat(10_000);
+    let html = format!(
+        "<!DOCTYPE html><style>{media} body {{ margin: 0 }}
+         div {{ height: 10px; background: green }}</style><div></div>"
+    );
+    let page = load("a.html", &[("a.html", html.into_bytes())]);
+    let expected = [(Rect::new(0.0, 0.0, 800.0, 10.0), GREEN)];
+    assert_eq!(
+        rects_within(&page, 800.0, &Budget::new(RENDER_STEPS)).expect("Cache aufbauen"),
+        expected
+    );
+    // Für dieses kleine Layout reicht das Budget; nicht aber für alle
+    // 10.000 Bedingungen des vorbereiteten Caches.
+    let simple = load("a.html", &[("a.html", b"<!DOCTYPE html><style>body { margin: 0 } div { height: 10px; background: green }</style><div></div>".to_vec())]);
+    let _ = rects_at(&simple, 800.0);
+    assert!(rects_within(&simple, 800.0, &Budget::new(2_000)).is_ok());
+    assert_eq!(
+        rects_within(&page, 800.0, &Budget::new(2_000)),
+        Err(Exhausted::Steps)
+    );
+    assert_eq!(
+        rects_within(&page, 800.0, &Budget::new(RENDER_STEPS)).expect("Cache bleibt nutzbar"),
+        expected
+    );
+}
+
+#[test]
+fn failed_viewport_rebuild_preserves_the_previous_stylist() {
+    let unused = (0..4096)
+        .map(|i| format!(".unused{i} {{ color: red }}"))
+        .collect::<String>();
+    let html = format!(
+        "<!DOCTYPE html><style>{unused} body {{ margin: 0 }}
+         div {{ height: 10px; background: green }}
+         @media (max-width: 499px) {{ div {{ background: blue }} }}
+         </style><div></div>"
+    );
+    let files = [("a.html", html.into_bytes())];
+    let page = load("a.html", &files);
+    let green = [(Rect::new(0.0, 0.0, 800.0, 10.0), GREEN)];
+    assert_eq!(
+        rects_within(&page, 800.0, &Budget::new(RENDER_STEPS)).expect("breiter Cache"),
+        green
+    );
+    // Der alte Cache gilt im schmalen Viewport nicht. Der fehlgeschlagene
+    // Neuaufbau darf ihn weder ersetzen noch vorzeitig entfernen.
+    assert_eq!(
+        rects_within(&page, 400.0, &Budget::new(128)),
+        Err(Exhausted::Steps)
+    );
+    let fresh = load("a.html", &files);
+    assert_eq!(
+        rects_within(&fresh, 800.0, &Budget::new(2_000)),
+        Err(Exhausted::Steps)
+    );
+    assert_eq!(
+        rects_within(&page, 800.0, &Budget::new(2_000)).expect("vorheriger Cache"),
+        green
+    );
+    assert_eq!(
+        rects_within(&page, 400.0, &Budget::new(RENDER_STEPS)).expect("neuer schmaler Cache"),
+        [(Rect::new(0.0, 0.0, 400.0, 10.0), Color::rgb(0, 0, 255))]
+    );
+}
