@@ -24,8 +24,19 @@ pub const MAX_FILE_BYTES: u64 = 64 << 20;
 /// Liest eine `file:`-URL aus dem Dateisystem, wenn sie eine normale Datei
 /// mit höchstens [`MAX_FILE_BYTES`] bezeichnet.
 pub fn read_file(url: &Url) -> Option<Vec<u8>> {
+    read_file_within(url, MAX_FILE_BYTES)
+}
+
+/// Wie [`read_file`], aber mit der kleineren Grenze aus `limit` und
+/// [`MAX_FILE_BYTES`]. Bei null werden weder Pfad noch Datei abgefragt.
+/// Beim Lesen einer wachsenden Datei ist ein zusätzliches Byte nötig, um
+/// die Überschreitung zu erkennen; der Puffer wird dann verworfen.
+pub fn read_file_within(url: &Url, limit: u64) -> Option<Vec<u8>> {
+    if limit == 0 {
+        return None;
+    }
     let path = file_path(url)?;
-    read_regular(&path, MAX_FILE_BYTES).ok()
+    read_regular(&path, limit.min(MAX_FILE_BYTES)).ok()
 }
 
 /// Der Pfad einer `file:`-URL. Hosts in `file:`-URLs (UNC) gibt es noch

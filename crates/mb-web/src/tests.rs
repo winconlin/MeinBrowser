@@ -10,7 +10,7 @@ use mb_scene::{Color, Item, Rect};
 use mb_text::FontLibrary;
 use mb_url::Url;
 
-use crate::{Page, RENDER_STEPS, Viewport, file_url, read_file};
+use crate::{Page, RENDER_STEPS, Viewport, file_url, read_file, read_file_within};
 
 /// Eine Seite aus Dateien unter `file:///t/`.
 fn load(name: &str, files: &[(&str, Vec<u8>)]) -> Page {
@@ -21,7 +21,12 @@ fn load(name: &str, files: &[(&str, Vec<u8>)]) -> Page {
     let url = Url::parse(&format!("file:///t/{name}"), None).expect("URL");
     Page::load(
         url,
-        Box::new(move |url: &Url| files.get(&url.serialize(true)).cloned()),
+        Box::new(move |url: &Url, limit| {
+            files
+                .get(&url.serialize(true))
+                .filter(|bytes| bytes.len() as u64 <= limit)
+                .cloned()
+        }),
     )
     .expect("Seite")
 }
@@ -228,7 +233,12 @@ fn load_within(name: &str, files: &[(&str, Vec<u8>)], bytes: u64) -> Page {
     let url = Url::parse(&format!("file:///t/{name}"), None).expect("URL");
     Page::load_within(
         url,
-        Box::new(move |url: &Url| files.get(&url.serialize(true)).cloned()),
+        Box::new(move |url: &Url, limit| {
+            files
+                .get(&url.serialize(true))
+                .filter(|bytes| bytes.len() as u64 <= limit)
+                .cloned()
+        }),
         bytes,
     )
     .expect("Seite")
@@ -293,7 +303,7 @@ fn local_pages_load_normal_files_from_anywhere() {
     .expect("schreiben");
     std::fs::write(directory.join("t.css"), "div { background: green }").expect("schreiben");
     let url = file_url(&path).expect("URL");
-    let page = Page::load(url, Box::new(read_file)).expect("Seite");
+    let page = Page::load(url, Box::new(read_file_within)).expect("Seite");
     assert_eq!(rects(&page), [(Rect::new(0.0, 0.0, 800.0, 10.0), GREEN)]);
     std::fs::remove_dir_all(&directory).expect("aufräumen");
 }
@@ -317,7 +327,7 @@ fn special_files_are_refused_at_once() {
     .expect("schreiben");
     let url = file_url(&path).expect("URL");
     // Bliebe das Laden an der Pipe hängen, endete der Test nie.
-    assert!(Page::load(url, Box::new(read_file)).is_some());
+    assert!(Page::load(url, Box::new(read_file_within)).is_some());
     let zero = Url::parse("file:///dev/zero", None).expect("URL");
     assert_eq!(read_file(&zero), None);
     assert_eq!(read_file(&file_url(&fifo).expect("URL")), None);
@@ -475,12 +485,15 @@ fn imports_load_once_per_rule_without_cycles() {
     let url = Url::parse("file:///t/a.html", None).expect("URL");
     let page = Page::load(
         url,
-        Box::new(move |url: &Url| {
+        Box::new(move |url: &Url, limit| {
             let key = url.serialize(true);
             log.lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .push(key.trim_start_matches("file:///t/").to_owned());
-            files.get(&key).cloned()
+            files
+                .get(&key)
+                .filter(|bytes| bytes.len() as u64 <= limit)
+                .cloned()
         }),
     )
     .expect("Seite");

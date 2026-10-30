@@ -185,7 +185,7 @@ impl Renderer {
         let (loaded_sender, loaded) = mpsc::channel();
         let (jobs, requests) = mpsc::channel();
         let (results, frames) = mpsc::channel();
-        let fetch: Fetch = Box::new(mb_web::read_file);
+        let fetch: Fetch = Box::new(mb_web::read_file_within);
         std::thread::Builder::new()
             .name("Seite".into())
             .stack_size(STACK)

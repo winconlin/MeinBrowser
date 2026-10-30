@@ -1,13 +1,16 @@
 //! Eine Seite laden und darstellen.
 //!
 //! - Was die Seite lädt, holt eine Funktion des Aufrufers ([`Fetch`]); für
-//!   lokale Dateien gibt es [`crate::read_file`]. Netzwerk, Fetch und
+//!   lokale Dateien gibt es [`crate::read_file_within`]. Netzwerk, Fetch und
 //!   MIME-Typen kommen mit M3. Bis dahin entscheidet die Endung: `.xht`,
 //!   `.xhtml` und `.xml` liest der XML-Parser, alles andere der HTML-Parser.
 //! - Alles, was die Seite lädt und dekodiert, bezahlt sie aus
 //!   [`PAGE_BYTES`]: Dokument, Stylesheets, Bilddateien und die Pixel der
 //!   Bilder. Ein Bild wird nur dekodiert, wenn das Budget auch für die
 //!   Zwischenpuffer des Dekoders reicht; was nicht mehr passt, fehlt.
+//!   Jeder Abruf erhält das Restbudget als Leselimit. Bei null wird kein
+//!   weiterer Abruf begonnen. Das ist keine Grenze für alle Zuweisungen
+//!   des Parsers oder den gesamten Speicherverbrauch des Prozesses.
 //! - Die Kodierung von HTML-Bytes bestimmt [`mb_html::parse_bytes`] aus
 //!   der Byte-Order-Mark, dem Vorab-Lesen (*prescan*) und einem `meta`
 //!   beim Parsen. Ohne Angabe gilt UTF-8; die Ersatzkodierung nach Sprache
@@ -61,8 +64,11 @@ pub struct Viewport {
     pub device_pixel_ratio: f64,
 }
 
-/// Holt die Bytes hinter einer URL; `None`, wenn das nicht geht.
-pub type Fetch = Box<dyn Fn(&Url) -> Option<Vec<u8>> + Send + Sync>;
+/// Holt die Bytes hinter einer URL, höchstens so viele wie das zweite
+/// Argument erlaubt; `None`, wenn das nicht geht oder die Ressource größer
+/// ist. Der Abruf muss schon das Einlesen begrenzen, nicht erst den fertigen
+/// Puffer. Die Seite prüft die Länge zusätzlich vor der Verwendung.
+pub type Fetch = Box<dyn Fn(&Url, u64) -> Option<Vec<u8>> + Send + Sync>;
 
 /// So viele Pixel darf ein Bild haben; größere werden nicht dekodiert.
 const MAX_IMAGE_PIXELS: u64 = 1 << 26;
@@ -143,6 +149,18 @@ impl Bytes {
     fn left(&self) -> u64 {
         self.0.load(Ordering::Relaxed)
     }
+
+    /// Dokument und Stylesheets laden nacheinander vor Veröffentlichung
+    /// der Seite; Bildabrufe sind unter `Page::images` serialisiert. Damit
+    /// kann während eines Abrufs kein anderer Abruf dieses Budget ausgeben.
+    fn fetch(&self, fetch: &Fetch, url: &Url) -> Option<Vec<u8>> {
+        let left = self.left();
+        if left == 0 {
+            return None;
+        }
+        let bytes = fetch(url, left)?;
+        self.spend(length(&bytes)).then_some(bytes)
+    }
 }
 
 /// Die Länge eines Puffers als Zahl für das Budget.
@@ -202,7 +220,7 @@ impl Page {
     /// was die Seite lädt und dekodiert.
     pub fn load_within(url: Url, fetch: Fetch, bytes: u64) -> Option<Page> {
         let budget = Bytes(AtomicU64::new(bytes));
-        let bytes = fetch(&url).filter(|bytes| budget.spend(length(bytes)))?;
+        let bytes = budget.fetch(&fetch, &url)?;
         let pathname = url.pathname().to_ascii_lowercase();
         let xml = [".xht", ".xhtml", ".xml"]
             .iter()
@@ -270,8 +288,7 @@ impl Page {
                 let Ok(sheet_url) = Url::parse(&href, Some(&base)) else {
                     continue;
                 };
-                let Some(bytes) = fetch(&sheet_url).filter(|bytes| budget.spend(length(bytes)))
-                else {
+                let Some(bytes) = budget.fetch(&fetch, &sheet_url) else {
                     continue;
                 };
                 let (text, sheet_encoding) =
@@ -351,8 +368,9 @@ impl Page {
         if let Some(image) = images.get(&key) {
             return image.clone();
         }
-        let image = (self.fetch)(url)
-            .filter(|bytes| self.bytes.spend(length(bytes)))
+        let image = self
+            .bytes
+            .fetch(&self.fetch, url)
             .and_then(|bytes| {
                 // Nur so viele Pixel, wie das Budget mit den Puffern des
                 // Dekoders und seiner Kopie der Bilddaten erlaubt; bezahlt
@@ -473,9 +491,7 @@ impl Imports<'_> {
                 continue;
             }
             self.left = self.left.saturating_sub(1);
-            let Some(bytes) =
-                (self.fetch)(pending.url()).filter(|bytes| self.budget.spend(length(bytes)))
-            else {
+            let Some(bytes) = self.budget.fetch(self.fetch, pending.url()) else {
                 continue;
             };
             let (text, imported_encoding) = mb_css::decode_stylesheet(&bytes, None, Some(encoding));
