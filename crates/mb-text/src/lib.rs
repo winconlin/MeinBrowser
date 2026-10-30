@@ -1,4 +1,4 @@
-//! Schriften, Textformung und Zeilenumbruch.
+//! Schriften und Textformung.
 //!
 //! Siehe `docs/architektur.md`, Abschnitt 4.3. Bisher gibt es den Leser für
 //! Schriftdateien im sfnt-Format (TrueType und OpenType, auch Sammlungen):

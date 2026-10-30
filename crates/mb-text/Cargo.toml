@@ -1,6 +1,6 @@
 [package]
 name = "mb-text"
-description = "Schriften, Textformung und Zeilenumbruch"
+description = "Schriften und Textformung"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
