@@ -22,7 +22,8 @@
 //!   zurückführt, das es schon einbindet, tiefer als
 //!   [`mb_style::MAX_IMPORT_DEPTH`] steht oder mehr als [`MAX_IMPORTS`]
 //!   Stylesheets aus `@import` lädt. Es fehlt `<?xml-stylesheet?>`.
-//! - Bilder sind bisher nur PNG.
+//! - Bilder sind PNG oder das erste Einzelbild eines GIF87a/GIF89a.
+//!   Die Dateisignatur entscheidet, nicht die Endung; Animationen fehlen.
 //! - Kaskaden-Vorbereitung, Stil und Layout fremder Seiten bezahlt [`Page::render_within`] aus
 //!   einem Budget ([`RENDER_STEPS`]); ist es verbraucht, gibt es kein Bild,
 //!   sondern einen Fehler.
@@ -371,14 +372,7 @@ impl Page {
         let image = self
             .bytes
             .fetch(&self.fetch, url)
-            .and_then(|bytes| {
-                // Nur so viele Pixel, wie das Budget mit den Puffern des
-                // Dekoders und seiner Kopie der Bilddaten erlaubt; bezahlt
-                // werden danach die Pixel des Ergebnisses.
-                let left = self.bytes.left().saturating_sub(length(&bytes));
-                let pixels = MAX_IMAGE_PIXELS.min(left / mb_image::png::DECODE_BYTES_PER_PIXEL);
-                decode_image(&bytes, pixels)
-            })
+            .and_then(|bytes| decode_image(&bytes, self.bytes.left()))
             .filter(|image| {
                 let pixels = u64::from(image.width()).saturating_mul(u64::from(image.height()));
                 self.bytes.spend(pixels.saturating_mul(4))
@@ -534,9 +528,23 @@ fn document_base(document: &Document, url: &Url) -> Url {
         .unwrap_or_else(|| url.clone())
 }
 
-fn decode_image(bytes: &[u8], max_pixels: u64) -> Option<Arc<Image>> {
-    let png = mb_image::png::decode(bytes, max_pixels).ok()?;
-    Image::new(png.width(), png.height(), png.to_rgba8()).map(Arc::new)
+fn decode_image(bytes: &[u8], remaining: u64) -> Option<Arc<Image>> {
+    // Die Eingabe ist bereits bezahlt. GIF schreibt direkt in die
+    // RGBA-Ausgabe; PNG braucht zusätzlich Zwischenpuffer und eine Kopie
+    // der komprimierten Bilddaten. Feste Dekodertabellen zählen hier nicht.
+    let image = if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        let max_pixels = MAX_IMAGE_PIXELS.min(remaining / 4);
+        let gif = mb_image::gif::decode(bytes, max_pixels).ok()?;
+        Image::new(gif.width(), gif.height(), gif.into_rgba8())
+    } else if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        let left = remaining.saturating_sub(length(bytes));
+        let max_pixels = MAX_IMAGE_PIXELS.min(left / mb_image::png::DECODE_BYTES_PER_PIXEL);
+        let png = mb_image::png::decode(bytes, max_pixels).ok()?;
+        Image::new(png.width(), png.height(), png.to_rgba8())
+    } else {
+        None
+    };
+    image.map(Arc::new)
 }
 
 /// Die Systemfarben eines hellen Farbschemas. Links, besuchte und aktive
