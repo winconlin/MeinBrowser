@@ -3,9 +3,9 @@
 //! Ausnahmen der Komposition aus `CompositionExclusions.txt`, Bidi-Klasse und
 //! Joining-Type aus den abgeleiteten Dateien, Zeilenumbruchklasse aus
 //! `LineBreak.txt`, East_Asian_Width aus `EastAsianWidth.txt`,
-//! Extended_Pictographic aus `emoji-data.txt`, die Faltung der Groß- und
-//! Kleinschreibung aus `CaseFolding.txt`, Namen der Werte aus
-//! `PropertyValueAliases.txt`.
+//! Extended_Pictographic aus `emoji-data.txt`, ID_Start und ID_Continue aus
+//! `DerivedCoreProperties.txt`, die Faltung der Groß- und Kleinschreibung
+//! aus `CaseFolding.txt`, Namen der Werte aus `PropertyValueAliases.txt`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
@@ -44,6 +44,7 @@ pub struct Sources<'a> {
     pub line_breaks: &'a str,
     pub east_asian_widths: &'a str,
     pub emoji_data: &'a str,
+    pub derived_core_properties: &'a str,
     pub case_folding: &'a str,
 }
 
@@ -68,6 +69,7 @@ pub fn run(read: &dyn Fn(&str) -> Result<String, String>) -> Result<String, Stri
         line_breaks: &read("LineBreak.txt")?,
         east_asian_widths: &read("EastAsianWidth.txt")?,
         emoji_data: &read("emoji-data.txt")?,
+        derived_core_properties: &read("DerivedCoreProperties.txt")?,
         case_folding: &read("CaseFolding.txt")?,
     })
 }
@@ -135,6 +137,18 @@ pub fn generate(sources: &Sources<'_>) -> Result<String, String> {
         "Extended_Pictographic",
         count,
     )?;
+    let id_start_of = flags(
+        "DerivedCoreProperties.txt",
+        sources.derived_core_properties,
+        "ID_Start",
+        count,
+    )?;
+    let id_continue_of = flags(
+        "DerivedCoreProperties.txt",
+        sources.derived_core_properties,
+        "ID_Continue",
+        count,
+    )?;
     let tables = Tables {
         general: runs(&category_of),
         classes: runs(&class_of),
@@ -143,6 +157,8 @@ pub fn generate(sources: &Sources<'_>) -> Result<String, String> {
         line_break: runs(&line_break_of),
         east_asian: runs(&east_asian_of),
         pictographic: runs(&pictographic_of),
+        id_start: runs(&id_start_of),
+        id_continue: runs(&id_continue_of),
         decompositions,
         compositions,
         case_folding: case_folding(sources.case_folding)?,
@@ -466,6 +482,8 @@ struct Tables {
     line_break: Vec<(u32, usize)>,
     east_asian: Vec<(u32, usize)>,
     pictographic: Vec<(u32, bool)>,
+    id_start: Vec<(u32, bool)>,
+    id_continue: Vec<(u32, bool)>,
     decompositions: BTreeMap<u32, Vec<u32>>,
     compositions: Vec<(u32, u32, u32)>,
     case_folding: BTreeMap<u32, Vec<u32>>,
@@ -602,6 +620,16 @@ fn emit(
     writeln!(out)?;
     writeln!(
         out,
+        "/// ID_Start (UAX #31): Anfang jedes Abschnitts und ob seine Codepunkte"
+    )?;
+    writeln!(out, "/// die Eigenschaft haben.")?;
+    emit_flags(&mut out, "ID_START", &tables.id_start)?;
+    writeln!(out)?;
+    writeln!(out, "/// ID_Continue (UAX #31), aufgebaut wie oben.")?;
+    emit_flags(&mut out, "ID_CONTINUE", &tables.id_continue)?;
+    writeln!(out)?;
+    writeln!(
+        out,
         "/// Vollständige kanonische Zerlegung jedes zerlegbaren Zeichens, nach"
     )?;
     writeln!(
@@ -642,6 +670,15 @@ fn emit(
     writeln!(out, "/// bleiben, wie sie sind.")?;
     emit_sequences(&mut out, "CASE_FOLDING", &tables.case_folding)?;
     Ok(out)
+}
+
+/// Schreibt eine binäre Eigenschaft als Abschnitte.
+fn emit_flags(out: &mut String, table: &str, runs: &[(u32, bool)]) -> std::fmt::Result {
+    writeln!(out, "pub static {table}: [(u32, bool); {}] = [", runs.len())?;
+    for &(start, flag) in runs {
+        writeln!(out, "    (0x{start:04X}, {flag}),")?;
+    }
+    writeln!(out, "];")
 }
 
 /// Schreibt eine Tabelle, die Codepunkten Folgen von Codepunkten zuordnet.
@@ -783,6 +820,14 @@ mod tests {
                          00A9          ; Extended_Pictographic# E0.6   [1] (©)\n\
                          1F000..1F0FF  ; Extended_Pictographic# E0.0 [256]\n";
 
+    const DERIVED_CORE: &str = "0041..0042    ; ID_Start # L&   [2]\n\
+                                0030..0039    ; ID_Continue # Nd  [10]\n\
+                                0041..0042    ; ID_Continue # L&   [2]\n\
+                                0300          ; ID_Continue # Mn\n\
+                                0041..0042    ; XID_Start # L&   [2]\n\
+                                # @missing: 0000..10FFFF; InCB; None\n\
+                                094D          ; InCB; Linker # Mn\n";
+
     const CASE_FOLDING: &str = "0041; C; 0061; # LATIN CAPITAL LETTER A\n\
                                 0049; T; 0131; # LATIN CAPITAL LETTER I\n\
                                 00DF; F; 0073 0073; # LATIN SMALL LETTER SHARP S\n\
@@ -799,6 +844,7 @@ mod tests {
             line_breaks: LINE_BREAKS,
             east_asian_widths: EAST_ASIAN,
             emoji_data: EMOJI,
+            derived_core_properties: DERIVED_CORE,
             case_folding: CASE_FOLDING,
         }
     }
@@ -888,6 +934,17 @@ mod tests {
              (0x0000, false),\n    (0x00A9, true),\n    (0x00AA, false),\n    \
              (0x1F000, true),\n    (0x1F100, false),\n];\n"
         ));
+        // Nur die genannte Eigenschaft, nicht XID_Start oder InCB.
+        assert!(source.contains(
+            "pub static ID_START: [(u32, bool); 3] = [\n    \
+             (0x0000, false),\n    (0x0041, true),\n    (0x0043, false),\n];\n"
+        ));
+        assert!(source.contains(
+            "pub static ID_CONTINUE: [(u32, bool); 7] = [\n    \
+             (0x0000, false),\n    (0x0030, true),\n    (0x003A, false),\n    \
+             (0x0041, true),\n    (0x0043, false),\n    (0x0300, true),\n    \
+             (0x0301, false),\n];\n"
+        ));
         // Ohne die einfache und die türkische Faltung.
         assert!(source.contains(
             "pub static CASE_FOLDING: [(u32, &[u32]); 3] = [\n    \
@@ -912,6 +969,9 @@ mod tests {
         let mut broken = sources(UNICODE_DATA, VALUE_ALIASES);
         broken.emoji_data = "0023 ; Emoji\n";
         assert!(generate(&broken).is_err(), "ohne Extended_Pictographic");
+        let mut broken = sources(UNICODE_DATA, VALUE_ALIASES);
+        broken.derived_core_properties = "0041 ; ID_Start\n";
+        assert!(generate(&broken).is_err(), "ohne ID_Continue");
         for case_folding in [
             "0041; X; 0061;\n",
             "0041; C;\n",

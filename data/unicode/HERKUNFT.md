@@ -5,7 +5,7 @@
 | Datensatz | Unicode Character Database (UCD), beschrieben in UAX #44, und die IDNA-Zuordnungstabelle aus UTS #46 |
 | Version | 18.0.0 |
 | Quelle | Repository `unicode-org/unicodetools`, in dem Unicode, Inc. die Dateien der UCD pflegt, Ordner `unicodetools/data/ucd/18.0.0/` und `unicodetools/data/idna/18.0.0/`, Commit `578f6c0516f5f268292ebda50b51848407a06478` |
-| Abgerufen | 24.10.2026, `CaseFolding.txt`, `LineBreak.txt`, `EastAsianWidth.txt` und `emoji-data.txt` am 25.10.2026, über raw.githubusercontent.com |
+| Abgerufen | 24.10.2026, `CaseFolding.txt`, `LineBreak.txt`, `EastAsianWidth.txt` und `emoji-data.txt` am 25.10.2026, `DerivedCoreProperties.txt` am 30.10.2026, über raw.githubusercontent.com |
 | Lizenz | Unicode License V3 (SPDX `Unicode-3.0`), Text in [LICENSE.txt](LICENSE.txt) |
 
 ## Dateien
@@ -21,6 +21,7 @@
 | `LineBreak.txt` | https://raw.githubusercontent.com/unicode-org/unicodetools/578f6c0516f5f268292ebda50b51848407a06478/unicodetools/data/ucd/18.0.0/LineBreak.txt | `ae8cf1970c73f3f1a12d77852df96c4b2b1723ca8b388e36bb5739250c6849de` |
 | `EastAsianWidth.txt` | https://raw.githubusercontent.com/unicode-org/unicodetools/578f6c0516f5f268292ebda50b51848407a06478/unicodetools/data/ucd/18.0.0/EastAsianWidth.txt | `a0cf29eacd00cfcaec4381c6b7c281685f18dbb4e7ff82b4076ccb342ca839aa` |
 | `emoji-data.txt` | https://raw.githubusercontent.com/unicode-org/unicodetools/578f6c0516f5f268292ebda50b51848407a06478/unicodetools/data/ucd/18.0.0/emoji/emoji-data.txt | `80d00f8e616a0ef27fd6b8de3b758c06383b5d917e2977709578e68baf733bf1` |
+| `DerivedCoreProperties.txt` | https://raw.githubusercontent.com/unicode-org/unicodetools/578f6c0516f5f268292ebda50b51848407a06478/unicodetools/data/ucd/18.0.0/DerivedCoreProperties.txt | `09c928886a178fcafd93c29e4bd59073a058e5a100b716d425cb563ab50f68c9` |
 | `IdnaMappingTable.txt` | https://raw.githubusercontent.com/unicode-org/unicodetools/578f6c0516f5f268292ebda50b51848407a06478/unicodetools/data/idna/18.0.0/IdnaMappingTable.txt | `a03b1eb38032268c696406a83f0972d6a815acd2c8d4151d42ec0fda70ffced1` |
 | `LICENSE.txt` | https://raw.githubusercontent.com/unicode-org/unicodetools/578f6c0516f5f268292ebda50b51848407a06478/LICENSE | `fe5c62b543e287981db198f2acfa0ca732d12591a1024536dc8fd85dacd77104` |
 

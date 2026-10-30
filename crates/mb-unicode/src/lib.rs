@@ -67,6 +67,19 @@ pub fn is_extended_pictographic(code_point: u32) -> bool {
     lookup(&tables::EXTENDED_PICTOGRAPHIC, code_point).unwrap_or(false)
 }
 
+/// Ob ein Codepunkt ein Bezeichner beginnen kann (ID_Start, UAX #31).
+/// ECMAScript ergänzt für Bezeichner `$` und `_` selbst.
+pub fn is_id_start(code_point: u32) -> bool {
+    lookup(&tables::ID_START, code_point).unwrap_or(false)
+}
+
+/// Ob ein Codepunkt in einem Bezeichner nach dem ersten Zeichen stehen kann
+/// (ID_Continue, UAX #31). Jeder Codepunkt mit ID_Start hat auch diese
+/// Eigenschaft.
+pub fn is_id_continue(code_point: u32) -> bool {
+    lookup(&tables::ID_CONTINUE, code_point).unwrap_or(false)
+}
+
 /// Sucht den Abschnitt, in dem der Codepunkt liegt. Die Tabellen beginnen
 /// bei 0 und sind nach Anfang sortiert.
 fn lookup<T: Copy>(table: &[(u32, T)], code_point: u32) -> Option<T> {
@@ -280,6 +293,42 @@ mod tests {
         assert!(!is_extended_pictographic(0x11_0000));
     }
 
+    #[test]
+    fn known_identifier_properties() {
+        // (Codepunkt, ID_Start, ID_Continue)
+        let cases = [
+            (0x0024, false, false),
+            (0x0030, false, true),
+            (0x0041, true, true),
+            (0x005F, false, true),
+            // Other_ID_Continue.
+            (0x00B7, false, true),
+            (0x0387, false, true),
+            (0x1369, false, true),
+            (0x19DA, false, true),
+            // ZWNJ, ZWJ und KATAKANA MIDDLE DOT seit Unicode 15.1.
+            (0x200C, false, true),
+            (0x200D, false, true),
+            (0x30FB, false, true),
+            // Other_ID_Start.
+            (0x1885, true, true),
+            (0x2118, true, true),
+            (0x212E, true, true),
+            (0x309B, true, true),
+            // Lm, aber Pattern_Syntax.
+            (0x2E2F, false, false),
+            (0x0345, false, true),
+            (0xFF10, false, true),
+            (0xE0100, false, true),
+            (0x1F600, false, false),
+            (0x11_0000, false, false),
+        ];
+        for (code_point, start, part) in cases {
+            assert_eq!(is_id_start(code_point), start, "{code_point:#X}");
+            assert_eq!(is_id_continue(code_point), part, "{code_point:#X}");
+        }
+    }
+
     /// Liest eine Eigenschaftsdatei unabhängig vom Generator: `default` für
     /// alle Codepunkte, darüber die Werte aus den Datenzeilen.
     fn property_file(text: &str, default: &'static str) -> Vec<String> {
@@ -303,10 +352,11 @@ mod tests {
         values
     }
 
-    /// Vergleicht jeden Codepunkt mit `LineBreak.txt`, `EastAsianWidth.txt`
-    /// und `emoji-data.txt`, gelesen unabhängig vom Generator. Beide Dateien
-    /// haben nur eine `@missing`-Zeile für den ganzen Coderaum, die
-    /// übrigen Vorgaben stehen als Datenzeilen darin.
+    /// Vergleicht jeden Codepunkt mit `LineBreak.txt`, `EastAsianWidth.txt`,
+    /// `emoji-data.txt` und `DerivedCoreProperties.txt`, gelesen unabhängig
+    /// vom Generator. `LineBreak.txt` und `EastAsianWidth.txt` haben nur eine
+    /// `@missing`-Zeile für den ganzen Coderaum, die übrigen Vorgaben stehen
+    /// als Datenzeilen darin.
     #[test]
     fn tables_match_property_files() {
         let line_breaks = include_str!("../../../data/unicode/LineBreak.txt");
@@ -324,6 +374,16 @@ mod tests {
             .map(|line| format!("{line}\n"))
             .collect();
         let pictographic = property_file(&pictographic, "");
+        let derived = include_str!("../../../data/unicode/DerivedCoreProperties.txt");
+        let only = |property: &str| -> String {
+            derived
+                .lines()
+                .filter(|line| line.contains(&format!("; {property} ")))
+                .map(|line| format!("{line}\n"))
+                .collect()
+        };
+        let id_start = property_file(&only("ID_Start"), "");
+        let id_continue = property_file(&only("ID_Continue"), "");
         for code_point in 0..=MAX_CODE_POINT {
             let index = code_point as usize;
             assert_eq!(
@@ -339,6 +399,16 @@ mod tests {
             assert_eq!(
                 is_extended_pictographic(code_point),
                 !pictographic[index].is_empty(),
+                "{code_point:#X}"
+            );
+            assert_eq!(
+                is_id_start(code_point),
+                !id_start[index].is_empty(),
+                "{code_point:#X}"
+            );
+            assert_eq!(
+                is_id_continue(code_point),
+                !id_continue[index].is_empty(),
                 "{code_point:#X}"
             );
         }
