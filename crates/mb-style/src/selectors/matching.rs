@@ -5,12 +5,20 @@
 //! eigenen Stapel statt Rekursion. Die Abkürzungen beim Zurückgehen stammen
 //! aus WebKit: Scheitert etwa `a > b c` an einem Vorfahren für `b`, muss kein
 //! weiterer Vorfahr für `c` mehr probiert werden.
+//!
+//! Ein Durchgang über viele Elemente ([`MatchingPass`]) merkt sich, was sich
+//! wiederholt: die Ergebnisse von Listen in Pseudoklassen, die über das
+//! Element hinausgehen, und die Stellen unter den Geschwistern je
+//! Elternknoten. Ohne das wüchse die Arbeit etwa bei verschachteltem
+//! `:nth-child(… of …)` mit jeder Ebene um den Faktor der Geschwister. Die
+//! Arbeit bezahlt der Abgleich aus einem [`Budget`]; ist es verbraucht,
+//! hört er auf, und seine Ergebnisse gelten nicht mehr.
 
-use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::cell::{Cell, RefCell};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use mb_base::DomString;
+use mb_base::{Budget, DomString};
 use mb_dom::{Document, Element, Namespace, NodeId, NodeKind, QuirksMode};
 
 use super::{
@@ -32,6 +40,9 @@ pub struct MatchingContext<'d> {
     /// Die *pragma-set default language* oder die Sprache aus HTTP, für
     /// `:lang()`.
     pub default_language: Option<&'d DomString>,
+    /// Der Durchgang, zu dem der Abgleich gehört. Ohne ihn merkt sich jeder
+    /// Aufruf nur selbst etwas, und seine Arbeit ist nicht begrenzt.
+    pub pass: Option<&'d MatchingPass<'d>>,
 }
 
 impl<'d> MatchingContext<'d> {
@@ -41,6 +52,157 @@ impl<'d> MatchingContext<'d> {
             scoping_root: None,
             target: None,
             default_language: None,
+            pass: None,
+        }
+    }
+}
+
+/// So viele Ergebnisse merkt sich ein Durchgang höchstens, zusammen über
+/// alle Arten. Festgelegt von diesem Browser: genug für die Geschwister
+/// großer Listen und Tabellen, höchstens einige MiB. Darüber rechnet der
+/// Abgleich neu und bezahlt das aus dem Budget.
+const MAX_REMEMBERED: usize = 1 << 18;
+
+/// Was `&` ergab, je Liste (Adresse ihres `Arc`), Element und Anker von
+/// `:has()`.
+type NestingResults = BTreeMap<(usize, NodeId, Option<NodeId>), bool>;
+
+/// Der Typ, unter dem ein Element für `:nth-of-type()` zählt: Namensraum
+/// und lokaler Name; `None` für die übrigen Arten.
+type TypeKey<'d> = Option<(Option<Namespace>, &'d DomString)>;
+
+/// Ein Durchgang des Abgleichs über viele Elemente, etwa für die Stile einer
+/// Seite: was sich der Abgleich dabei merkt, und das Budget, aus dem er
+/// seine Arbeit bezahlt. Ein Schritt ist ein Verbundselektor gegen ein
+/// Element oder ein Knoten, über den der Abgleich geht.
+///
+/// Was er sich merkt, gilt nur für einen [`MatchingContext`] und nur, solange
+/// sich das Dokument nicht ändert. Darum lebt ein Durchgang nicht länger als
+/// ein Auftrag und wird danach verworfen; eine Invalidierung braucht er nicht.
+#[derive(Debug)]
+pub struct MatchingPass<'b> {
+    budget: &'b Budget,
+    /// Ergebnisse von Listen in Pseudoklassen, je Liste (Adresse) und
+    /// Element. Nur für Listen, deren Abgleich über das Element hinausgeht
+    /// ([`worth_remembering`]).
+    lists: RefCell<BTreeMap<(usize, NodeId), bool>>,
+    /// Was `&` ergab. `&&` gleicht die Liste darüber zweimal ab; ohne diesen
+    /// Speicher wüchse die Arbeit mit jeder Ebene der Verschachtelung auf
+    /// das Doppelte.
+    nesting: RefCell<NestingResults>,
+    /// Die Stellen unter den Geschwistern je Art und Element, nur für
+    /// Elemente, die zählen.
+    positions: RefCell<BTreeMap<(Siblings, NodeId), Position>>,
+    /// Die Elternknoten, deren Kinder für eine Art schon gezählt sind.
+    counted: RefCell<BTreeSet<(Siblings, NodeId)>>,
+    /// Wie viele Einträge es insgesamt gibt.
+    entries: Cell<usize>,
+}
+
+impl<'b> MatchingPass<'b> {
+    pub fn new(budget: &'b Budget) -> MatchingPass<'b> {
+        MatchingPass {
+            budget,
+            lists: RefCell::default(),
+            nesting: RefCell::default(),
+            positions: RefCell::default(),
+            counted: RefCell::default(),
+            entries: Cell::new(0),
+        }
+    }
+
+    pub fn budget(&self) -> &'b Budget {
+        self.budget
+    }
+
+    /// Ob noch `count` Einträge Platz haben; wenn ja, sind sie belegt. Was
+    /// bei verbrauchtem Budget herauskam, stimmt nicht und wird nicht
+    /// gemerkt.
+    fn reserve(&self, count: usize) -> bool {
+        let entries = self.entries.get().saturating_add(count);
+        if entries > MAX_REMEMBERED || self.budget.exhausted().is_some() {
+            return false;
+        }
+        self.entries.set(entries);
+        true
+    }
+
+    fn remember<K: Ord>(&self, map: &RefCell<BTreeMap<K, bool>>, key: K, value: bool) {
+        if self.reserve(1) {
+            map.borrow_mut().insert(key, value);
+        }
+    }
+}
+
+/// Welche Geschwister für eine Stelle zählen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Siblings {
+    /// Alle Elemente: `:nth-child()` ohne `of`, `:only-child`.
+    Elements,
+    /// Die Elemente, die eine Liste trifft, nach ihrer Adresse:
+    /// `:nth-child(… of S)`.
+    Of(usize),
+    /// Die Elemente desselben Typs: `:nth-of-type()`, `:only-of-type`.
+    SameType,
+}
+
+/// Die Stelle eines Elements unter den Geschwistern, die zählen, von vorn
+/// und beginnend bei 1, dazu wie viele zählen, mit ihm selbst.
+#[derive(Clone, Copy, Debug)]
+struct Position {
+    from_start: i64,
+    count: i64,
+}
+
+impl Position {
+    /// Die Stelle von vorn oder mit `last` von hinten.
+    fn index(self, last: bool) -> i64 {
+        if last {
+            self.count.saturating_sub(self.from_start).saturating_add(1)
+        } else {
+            self.from_start
+        }
+    }
+}
+
+/// Die Adresse einer Liste als Schlüssel. Die Listen gehören zu Selektoren,
+/// die während eines Durchgangs ausgeliehen sind und sich nicht bewegen.
+fn address(list: &SelectorList) -> usize {
+    std::ptr::from_ref(list).addr()
+}
+
+/// Ob sich die Ergebnisse einer Liste zu merken lohnen: wenn ihr Abgleich
+/// über das Element hinausgeht, also mit Kombinatoren oder weiteren Listen.
+/// Für eine Liste wie in `:not(.a)` wäre der Eintrag teurer als das
+/// Nachrechnen.
+fn worth_remembering(list: &SelectorList) -> bool {
+    list.selectors.iter().any(|selector| {
+        !selector.combinators.is_empty()
+            || selector.compounds.iter().flatten().any(|simple| {
+                matches!(
+                    simple,
+                    Simple::PseudoClass(
+                        PseudoClass::Is(_)
+                            | PseudoClass::Where(_)
+                            | PseudoClass::Not(_)
+                            | PseudoClass::Has(_)
+                            | PseudoClass::NthChild { of: Some(_), .. }
+                            | PseudoClass::Nesting(Some(_))
+                    )
+                )
+            })
+    })
+}
+
+/// Gibt `f` einen [`Matcher`] im Durchgang des Kontexts oder, ohne ihn, in
+/// einem eigenen ohne Grenze.
+fn with_matcher<R>(context: &MatchingContext<'_>, f: impl FnOnce(Matcher<'_, '_>) -> R) -> R {
+    match context.pass {
+        Some(pass) => f(Matcher::new(context, pass)),
+        None => {
+            let budget = Budget::unlimited();
+            let pass = MatchingPass::new(&budget);
+            f(Matcher::new(context, &pass))
         }
     }
 }
@@ -58,8 +220,14 @@ impl SelectorList {
     /// `node` in Baumreihenfolge, die die Liste trifft, mit `node` als
     /// *scoping root*. So arbeiten `querySelectorAll()` und Verwandte.
     pub fn scope_match(&self, node: NodeId, context: &MatchingContext<'_>) -> Vec<NodeId> {
+        // Mit einem anderen *scoping root* gilt nicht, was sich der Durchgang
+        // gemerkt hat; das Budget bleibt dasselbe.
+        let unlimited = Budget::unlimited();
+        let budget = context.pass.map_or(&unlimited, |pass| pass.budget);
+        let pass = MatchingPass::new(budget);
         let context = MatchingContext {
             scoping_root: Some(node),
+            pass: Some(&pass),
             ..*context
         };
         let document = context.document;
@@ -79,8 +247,8 @@ impl Selector {
     /// Ob der Selektor das Element trifft. Selektoren für Pseudoelemente
     /// treffen nie ein Element.
     pub fn matches(&self, element: NodeId, context: &MatchingContext<'_>) -> bool {
-        let nesting = NestingCache::default();
-        self.pseudo_element.is_none() && Matcher::new(context, &nesting).complex(self, element)
+        self.pseudo_element.is_none()
+            && with_matcher(context, |matcher| matcher.complex(self, element))
     }
 
     /// *Match a selector against a pseudo-element*: ob der Selektor das
@@ -97,12 +265,12 @@ impl Selector {
         if selector.target != PseudoTarget::Element(pseudo_element) {
             return false;
         }
-        let nesting = NestingCache::default();
-        let matcher = Matcher::new(context, &nesting);
         // Hinter einem Pseudoelement stehen nur Nutzeraktionen und logische
         // Kombinationen davon. Sie hängen nicht vom Element ab, also darf
         // das Ursprungselement für das Pseudoelement einstehen.
-        matcher.compound(&selector.states, element) && matcher.complex(self, element)
+        with_matcher(context, |matcher| {
+            matcher.compound(&selector.states, element) && matcher.complex(self, element)
+        })
     }
 }
 
@@ -128,18 +296,13 @@ struct Frame {
     candidate: Option<NodeId>,
 }
 
-/// Was `&` ergab, je Liste (Adresse ihres `Arc`), Element und Anker von
-/// `:has()`. `&&` gleicht die Liste darüber zweimal ab; ohne diesen Speicher
-/// wüchse die Arbeit mit jeder Ebene der Verschachtelung auf das Doppelte.
-type NestingCache = RefCell<BTreeMap<(usize, NodeId, Option<NodeId>), bool>>;
-
 #[derive(Clone, Copy)]
 struct Matcher<'c, 'd> {
     context: &'c MatchingContext<'d>,
     document: &'d Document,
     /// Das Element, an dem die relativen Selektoren von `:has()` hängen.
     anchor: Option<NodeId>,
-    nesting: &'c NestingCache,
+    pass: &'c MatchingPass<'c>,
 }
 
 /// Leerraum in Selektoren und in Attributwerten wie `class`.
@@ -211,19 +374,48 @@ const CASE_INSENSITIVE_ATTRIBUTES: [&str; 46] = [
 ];
 
 impl<'c, 'd> Matcher<'c, 'd> {
-    fn new(context: &'c MatchingContext<'d>, nesting: &'c NestingCache) -> Matcher<'c, 'd> {
+    fn new(context: &'c MatchingContext<'d>, pass: &'c MatchingPass<'c>) -> Matcher<'c, 'd> {
         Matcher {
             context,
             document: context.document,
             anchor: None,
-            nesting,
+            pass,
         }
     }
 
+    /// Bezahlt Schritte aus dem Budget; `false`, wenn es verbraucht ist.
+    fn spend(self, steps: u64) -> bool {
+        self.pass.budget.spend(steps)
+    }
+
+    fn exhausted(self) -> bool {
+        self.pass.budget.exhausted().is_some()
+    }
+
+    /// Bezahlt das Lesen eines Werts: einen Schritt je 64 Codeeinheiten.
+    fn spend_reading(self, value: &DomString) -> bool {
+        self.spend(u64::try_from(value.len() / 64).unwrap_or(u64::MAX))
+    }
+
+    /// Ob ein Selektor der Liste das Element trifft. Die relativen
+    /// Selektoren von `:has()` gehen nicht hier durch, also hängt das
+    /// Ergebnis nicht vom Anker ab.
     fn list(self, list: &SelectorList, node: NodeId) -> bool {
-        list.selectors
-            .iter()
-            .any(|selector| self.complex(selector, node))
+        let evaluate = || {
+            list.selectors
+                .iter()
+                .any(|selector| self.complex(selector, node))
+        };
+        if !worth_remembering(list) {
+            return evaluate();
+        }
+        let key = (address(list), node);
+        if let Some(known) = self.pass.lists.borrow().get(&key).copied() {
+            return known;
+        }
+        let matched = evaluate();
+        self.pass.remember(&self.pass.lists, key, matched);
+        matched
     }
 
     /// Gleicht einen komplexen Selektor ohne sein Pseudoelement ab.
@@ -234,6 +426,9 @@ impl<'c, 'd> Matcher<'c, 'd> {
         let mut stack = Vec::new();
         let mut returned = self.enter(selector, last, node, &mut stack);
         loop {
+            if self.exhausted() {
+                return false;
+            }
             let Some(frame) = stack.last_mut() else {
                 return returned == Some(Outcome::Matched);
             };
@@ -325,6 +520,9 @@ impl<'c, 'd> Matcher<'c, 'd> {
     fn previous_element_sibling(self, node: NodeId) -> Option<NodeId> {
         let mut current = self.document.previous_sibling(node);
         while let Some(sibling) = current {
+            if !self.spend(1) {
+                return None;
+            }
             if self.document.element(sibling).is_some() {
                 return Some(sibling);
             }
@@ -337,6 +535,9 @@ impl<'c, 'd> Matcher<'c, 'd> {
         let Some(element) = self.document.element(node) else {
             return false;
         };
+        if !self.spend(1) {
+            return false;
+        }
         compound
             .iter()
             .all(|simple| self.simple(simple, node, element))
@@ -362,9 +563,12 @@ impl<'c, 'd> Matcher<'c, 'd> {
             }
             Simple::Id(id) => element.attribute("id").is_some_and(|value| {
                 let quirks = self.quirks();
-                code_units(value, quirks) == code_units(id, quirks)
+                self.spend_reading(value) && code_units(value, quirks) == code_units(id, quirks)
             }),
             Simple::Class(class) => element.attribute("class").is_some_and(|value| {
+                if !self.spend_reading(value) {
+                    return false;
+                }
                 let quirks = self.quirks();
                 let class = code_units(class, quirks);
                 code_units(value, quirks)
@@ -388,6 +592,10 @@ impl<'c, 'd> Matcher<'c, 'd> {
 
     fn attribute(self, selector: &AttributeSelector, element: &Element) -> bool {
         let html = self.is_html(element);
+        // Je acht Attribute ein Schritt, dazu das Lesen der Werte.
+        if !self.spend(u64::try_from(element.attributes.len() / 8).unwrap_or(u64::MAX)) {
+            return false;
+        }
         element.attributes.iter().any(|attribute| {
             // Namen mit Namensraum vergleicht HTML genau.
             let lower = html && attribute.namespace.is_none();
@@ -404,6 +612,9 @@ impl<'c, 'd> Matcher<'c, 'd> {
             let Some(value) = &selector.value else {
                 return true;
             };
+            if !self.spend_reading(&attribute.value) {
+                return false;
+            }
             let ignore_case = match value.case {
                 AttributeCase::Insensitive => true,
                 AttributeCase::Sensitive => false,
@@ -426,20 +637,21 @@ impl<'c, 'd> Matcher<'c, 'd> {
             PseudoClass::Root => self.parent_kind(node) == Some(NodeKind::Document),
             PseudoClass::Empty => self.is_empty(node),
             PseudoClass::NthChild { formula, of, last } => {
-                let counts = |sibling: NodeId| of.as_ref().is_none_or(|of| self.list(of, sibling));
-                counts(node) && formula.contains(self.index(node, *last, counts))
+                let siblings = of
+                    .as_ref()
+                    .map_or(Siblings::Elements, |of| Siblings::Of(address(of)));
+                self.position(node, siblings, of.as_ref())
+                    .is_some_and(|position| formula.contains(position.index(*last)))
             }
-            PseudoClass::NthOfType { formula, last } => {
-                formula
-                    .contains(self.index(node, *last, |sibling| self.same_type(sibling, element)))
-            }
-            PseudoClass::OnlyChild => {
-                self.index(node, false, |_| true) == 1 && self.index(node, true, |_| true) == 1
-            }
-            PseudoClass::OnlyOfType => {
-                let same = |sibling: NodeId| self.same_type(sibling, element);
-                self.index(node, false, same) == 1 && self.index(node, true, same) == 1
-            }
+            PseudoClass::NthOfType { formula, last } => self
+                .position(node, Siblings::SameType, None)
+                .is_some_and(|position| formula.contains(position.index(*last))),
+            PseudoClass::OnlyChild => self
+                .position(node, Siblings::Elements, None)
+                .is_some_and(|position| position.count == 1),
+            PseudoClass::OnlyOfType => self
+                .position(node, Siblings::SameType, None)
+                .is_some_and(|position| position.count == 1),
             // Ohne Verlauf ist jeder Verweis unbesucht.
             PseudoClass::AnyLink | PseudoClass::Link => is_link(element),
             PseudoClass::Visited => false,
@@ -508,33 +720,80 @@ impl<'c, 'd> Matcher<'c, 'd> {
             })
     }
 
-    /// Die Stelle des Elements unter seinen Geschwistern, die `counts`
-    /// zählt, von vorn oder mit `last` von hinten, beginnend bei 1. Das
-    /// Element selbst zählt immer.
-    fn index(self, node: NodeId, last: bool, counts: impl Fn(NodeId) -> bool) -> i64 {
-        let step = |node: NodeId| {
-            if last {
-                self.document.next_sibling(node)
-            } else {
-                self.document.previous_sibling(node)
-            }
+    /// Die Stelle des Elements unter den Geschwistern, die zählen; `None`,
+    /// wenn es selbst nicht zählt. `of` ist die Liste zu [`Siblings::Of`].
+    /// Beim ersten Mal werden alle Kinder des Elternknotens gezählt und, wenn
+    /// Platz ist, gemerkt.
+    fn position(
+        self,
+        node: NodeId,
+        siblings: Siblings,
+        of: Option<&SelectorList>,
+    ) -> Option<Position> {
+        let Some(parent) = self.document.parent(node) else {
+            // Ohne Elternknoten hat das Element keine Geschwister.
+            let counts = of.is_none_or(|of| self.list(of, node));
+            return counts.then_some(Position {
+                from_start: 1,
+                count: 1,
+            });
         };
-        let mut index: i64 = 1;
-        let mut current = step(node);
-        while let Some(sibling) = current {
-            if self.document.element(sibling).is_some() && counts(sibling) {
-                index = index.saturating_add(1);
-            }
-            current = step(sibling);
+        if self.pass.counted.borrow().contains(&(siblings, parent)) {
+            return self.pass.positions.borrow().get(&(siblings, node)).copied();
         }
-        index
+        let positions = self.count_children(parent, siblings, of);
+        let found = positions
+            .iter()
+            .find(|(child, _)| *child == node)
+            .map(|&(_, position)| position);
+        if self.pass.reserve(positions.len().saturating_add(1)) {
+            self.pass.counted.borrow_mut().insert((siblings, parent));
+            self.pass.positions.borrow_mut().extend(
+                positions
+                    .into_iter()
+                    .map(|(child, position)| ((siblings, child), position)),
+            );
+        }
+        found
     }
 
-    /// Ob ein Geschwister denselben Typ hat: Namensraum und lokalen Namen.
-    fn same_type(self, sibling: NodeId, element: &Element) -> bool {
-        self.document.element(sibling).is_some_and(|other| {
-            other.namespace == element.namespace && other.local_name == element.local_name
-        })
+    /// Die Stellen der Kinder eines Knotens, die für eine Art zählen, in
+    /// Baumreihenfolge.
+    fn count_children(
+        self,
+        parent: NodeId,
+        siblings: Siblings,
+        of: Option<&SelectorList>,
+    ) -> Vec<(NodeId, Position)> {
+        let document = self.document;
+        // Je Kind seine Stelle von vorn und der Typ, unter dem es zählt.
+        let mut found: Vec<(NodeId, i64, TypeKey<'d>)> = Vec::new();
+        let mut counts: BTreeMap<TypeKey<'d>, i64> = BTreeMap::new();
+        for child in document.children(parent) {
+            if !self.spend(1) {
+                break;
+            }
+            let Some(element) = document.element(child) else {
+                continue;
+            };
+            let (counted, kind) = match siblings {
+                Siblings::Elements => (true, None),
+                Siblings::Of(_) => (of.is_none_or(|of| self.list(of, child)), None),
+                Siblings::SameType => (true, Some((element.namespace, &element.local_name))),
+            };
+            if counted {
+                let count = counts.entry(kind).or_insert(0);
+                *count = count.saturating_add(1);
+                found.push((child, *count, kind));
+            }
+        }
+        found
+            .into_iter()
+            .map(|(child, from_start, kind)| {
+                let count = counts.get(&kind).copied().unwrap_or(from_start);
+                (child, Position { from_start, count })
+            })
+            .collect()
     }
 
     fn is_scope(self, node: NodeId) -> bool {
@@ -551,14 +810,14 @@ impl<'c, 'd> Matcher<'c, 'd> {
     /// Element trifft. Wie `:is()` trifft `&` keine Pseudoelemente.
     fn nesting(self, list: &Arc<SelectorList>, node: NodeId) -> bool {
         let key = (Arc::as_ptr(list).addr(), node, self.anchor);
-        if let Some(known) = self.nesting.borrow().get(&key).copied() {
+        if let Some(known) = self.pass.nesting.borrow().get(&key).copied() {
             return known;
         }
         let matched = list
             .selectors
             .iter()
             .any(|selector| selector.pseudo_element.is_none() && self.complex(selector, node));
-        self.nesting.borrow_mut().insert(key, matched);
+        self.pass.remember(&self.pass.nesting, key, matched);
         matched
     }
 
@@ -580,6 +839,9 @@ impl<'c, 'd> Matcher<'c, 'd> {
             if !siblings {
                 let mut current = document.first_child(node);
                 while let Some(candidate) = current {
+                    if !self.spend(1) {
+                        return false;
+                    }
                     if matcher.complex(selector, candidate) {
                         return true;
                     }
@@ -595,6 +857,9 @@ impl<'c, 'd> Matcher<'c, 'd> {
             while let Some(root) = sibling {
                 let mut current = Some(root);
                 while let Some(candidate) = current {
+                    if !self.spend(1) {
+                        return false;
+                    }
                     if matcher.complex(selector, candidate) {
                         return true;
                     }
@@ -616,6 +881,9 @@ impl<'c, 'd> Matcher<'c, 'd> {
         let document = self.document;
         let mut current = Some(node);
         while let Some(node) = current {
+            if !self.spend(1) {
+                return None;
+            }
             let element = document.element(node)?;
             let xml_lang = element.attributes.iter().find(|attribute| {
                 attribute.namespace == Some(Namespace::Xml) && attribute.local_name == "lang"

@@ -8,6 +8,7 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+mb-base = { path = "../mb-base" }
 mb-layout = { path = "../mb-layout" }
 mb-platform = { path = "../mb-platform" }
 mb-raster = { path = "../mb-raster" }

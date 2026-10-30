@@ -8,6 +8,7 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+mb-base = { path = "../../crates/mb-base" }
 mb-layout = { path = "../../crates/mb-layout" }
 mb-platform = { path = "../../crates/mb-platform" }
 mb-raster = { path = "../../crates/mb-raster" }

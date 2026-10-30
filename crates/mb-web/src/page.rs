@@ -13,6 +13,9 @@
 //!   als `text/css`). Das Attribut `media` wird noch nicht ausgewertet,
 //!   denn Media Queries fehlen; ebenso `<?xml-stylesheet?>` und `@import`.
 //! - Bilder sind bisher nur PNG.
+//! - Stil und Layout fremder Seiten bezahlt [`Page::render_within`] aus
+//!   einem Budget ([`RENDER_STEPS`]); ist es verbraucht, gibt es kein Bild,
+//!   sondern einen Fehler.
 //! - Die Systemfarben sind die eines hellen Farbschemas, festgelegt von
 //!   diesem Browser (CSS Color 4 überlässt sie dem Benutzeragenten), bis es
 //!   Farbschemata und die Werte der Plattformen gibt.
@@ -21,7 +24,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use mb_base::CodePoint;
+use mb_base::{Budget, CodePoint, Exhausted};
 use mb_dom::{Document, NodeId, NodeKind, QuirksMode};
 use mb_encoding::Encoding;
 use mb_html::{Options, ScriptingMode, parse_document};
@@ -37,6 +40,15 @@ pub type Fetch = Box<dyn Fn(&Url) -> Option<Vec<u8>> + Send + Sync>;
 
 /// So viele Pixel darf ein Bild haben; größere werden nicht dekodiert.
 const MAX_IMAGE_PIXELS: u64 = 1 << 26;
+
+/// So viele Arbeitsschritte dürfen Stil und Layout einer Seite kosten (siehe
+/// `mb_base::budget`). Festgelegt von diesem Browser nach Messungen vom
+/// 30.10.2026 (Release-Build): Die 796 Dateien der Referenztests für M1
+/// brauchen je höchstens 2 238 Schritte, eine Seite mit 300 000 Elementen
+/// (`div`, `p` und `b` mit Text) ohne Schriften rund 26 Millionen in 19 s.
+/// Ein Schritt kostet dabei 0,4 bis 1 µs; nach spätestens rund zwei Minuten
+/// ist das Budget verbraucht. Abbrechen lässt sich ein Auftrag jederzeit.
+pub const RENDER_STEPS: u64 = 100_000_000;
 
 /// Liest eine `file:`-URL aus dem Dateisystem. Hosts in `file:`-URLs (UNC)
 /// gibt es noch nicht.
@@ -235,14 +247,10 @@ impl Page {
     }
 
     /// Layout und Zeichnen in einem Viewport von `width` × `height` CSS-
-    /// Pixeln, ein Gerätepixel je CSS-Pixel.
+    /// Pixeln, ein Gerätepixel je CSS-Pixel, ohne Grenze für die Arbeit.
+    /// Für fremde Seiten gibt es [`Page::render_within`].
     pub fn render(&self, fonts: &Fonts<'_>, width: f64, height: f64) -> Scene {
-        let device = Device {
-            viewport_width: width,
-            viewport_height: height,
-            device_pixel_ratio: 1.0,
-            system_color,
-        };
+        let device = device(width, height);
         let images = |url: &Url| self.image(url);
         let tree = mb_layout::layout(&LayoutInput {
             document: &self.document,
@@ -253,6 +261,40 @@ impl Page {
             images: &images,
         });
         tree.paint(&images)
+    }
+
+    /// Wie [`Page::render`], aber Stil und Layout bezahlt aus `budget`;
+    /// `Err`, wenn es verbraucht ist oder der Auftrag abgebrochen wurde.
+    pub fn render_within(
+        &self,
+        fonts: &Fonts<'_>,
+        width: f64,
+        height: f64,
+        budget: &Budget,
+    ) -> Result<Scene, Exhausted> {
+        let device = device(width, height);
+        let images = |url: &Url| self.image(url);
+        let input = LayoutInput {
+            document: &self.document,
+            stylist: &self.stylist,
+            device: &device,
+            fonts,
+            base: &self.base,
+            images: &images,
+        };
+        let tree = mb_layout::layout_within(&input, budget)?;
+        Ok(tree.paint(&images))
+    }
+}
+
+/// Ein Viewport von `width` × `height` CSS-Pixeln, ein Gerätepixel je
+/// CSS-Pixel.
+fn device(width: f64, height: f64) -> Device {
+    Device {
+        viewport_width: width,
+        viewport_height: height,
+        device_pixel_ratio: 1.0,
+        system_color,
     }
 }
 

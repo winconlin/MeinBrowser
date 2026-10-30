@@ -11,4 +11,4 @@ mod page;
 #[cfg(test)]
 mod tests;
 
-pub use page::{Fetch, Page, file_url, read_file};
+pub use page::{Fetch, Page, RENDER_STEPS, file_url, read_file};
