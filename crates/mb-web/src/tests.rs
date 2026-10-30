@@ -10,7 +10,7 @@ use mb_scene::{Color, Item, Rect};
 use mb_text::FontLibrary;
 use mb_url::Url;
 
-use crate::{Page, RENDER_STEPS, Viewport, file_url, read_file, read_file_within};
+use crate::{Page, RENDER_STEPS, Viewport, file_url, read_file_within};
 
 /// Eine Seite aus Dateien unter `file:///t/`.
 fn load(name: &str, files: &[(&str, Vec<u8>)]) -> Page {
@@ -311,6 +311,8 @@ fn local_pages_load_normal_files_from_anywhere() {
 #[cfg(unix)]
 #[test]
 fn special_files_are_refused_at_once() {
+    use crate::read_file;
+
     let directory = directory("speziell");
     let fifo = directory.join("seite").join("pipe.css");
     let made = std::process::Command::new("mkfifo")
