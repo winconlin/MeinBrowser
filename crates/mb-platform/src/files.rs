@@ -15,9 +15,16 @@
 //! xnu, FreeBSD `sys/sys/fcntl.h`). Auf anderen Unix-Systemen fehlen sie
 //! noch; dort schützt nur die Prüfung des Pfads vor dem Öffnen.
 //!
-//! Eine Lücke: Unter Windows öffnet ein Pfad, der nach einem reservierten
-//! Gerätenamen wie `COM1` aussieht, das Gerät, bevor die Prüfung am Handle
-//! es ablehnt.
+//! Unter Windows werden Gerätealiase wie `COM1` vor jedem Dateizugriff
+//! abgewiesen, auch vor der Metadatenabfrage. Erlaubt sind
+//! Laufwerkspfade, einschließlich langer Pfade mit `\\?\C:\…`, keine
+//! UNC- oder Geräte-Namensräume und keine alternativen Datenströme.
+//! Relative Pfade werden ohne Dateizugriff aufgelöst und nochmals geprüft.
+//! Die Prüfung am Handle bleibt nötig; eine lexikalische Prüfung verhindert
+//! keine Rennen mit Verweisen oder Reparse Points im Dateisystem.
+
+#[cfg(any(windows, test))]
+mod windows_path;
 
 use std::fs::{File, Metadata};
 use std::io::{self, Read};
@@ -44,10 +51,20 @@ const OPEN_FLAGS: i32 = 0;
 /// Liest eine normale Datei mit höchstens `limit` Bytes. Symbolische
 /// Verweise zählen mit ihrem Ziel.
 ///
+/// Unter Windows nur Laufwerkspfade: keine UNC-/Gerätepfade, reservierten
+/// DOS-Gerätenamen oder alternativen Datenströme. Relative Pfade und die
+/// lange Form `\\?\C:\…` sind erlaubt. Die Pfadprüfung findet vor der
+/// Metadatenabfrage statt; sie ersetzt keine Sandbox.
+///
 /// Fehler: [`io::ErrorKind::InvalidInput`] für Spezialdateien wie Geräte,
 /// Pipes und Ordner, [`io::ErrorKind::FileTooLarge`] über der Grenze, sonst
 /// die Fehler des Systems.
 pub fn read_regular(path: &Path, limit: u64) -> io::Result<Vec<u8>> {
+    #[cfg(windows)]
+    let absolute = windows_path::resolve(path)?;
+    #[cfg(windows)]
+    let path = absolute.as_path();
+
     // Spezialdateien gar nicht erst öffnen; die Prüfung am Handle danach
     // fängt ab, was sich inzwischen geändert hat.
     regular(&std::fs::metadata(path)?)?;
@@ -157,9 +174,73 @@ mod tests {
         std::fs::remove_dir_all(&directory).expect("aufräumen");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn windows_device_names_are_ordinary_names_on_unix() {
+        let directory = directory("windows-namen");
+        for name in ["NUL", "COM1.txt", "CONIN$", "COM¹", "name:stream"] {
+            let path = directory.join(name);
+            std::fs::write(&path, b"normal").expect("schreiben");
+            assert_eq!(read_regular(&path, 6).expect("lesen"), b"normal", "{name}");
+        }
+        std::fs::remove_dir_all(&directory).expect("aufräumen");
+    }
+
     #[cfg(windows)]
     #[test]
-    fn the_null_device_is_refused() {
-        assert!(read_regular(Path::new("NUL"), 100).is_err());
+    fn windows_special_paths_are_rejected_before_metadata() {
+        let directory = directory("windows-pfade");
+        let missing = directory.join("nicht-angelegt");
+        // Unter dem fehlenden Elternordner müsste metadata NotFound
+        // liefern. InvalidInput belegt die vorgezogene Pfadprüfung.
+        for name in [
+            "NUL",
+            "nul.txt",
+            "NUL .css",
+            "CON",
+            "PRN",
+            "AUX",
+            "COM1",
+            "cOm9.html",
+            "LPT1",
+            "lpt9.txt",
+            "COM¹",
+            "LPT²",
+            "COM³",
+            "CONIN$",
+            "CONOUT$",
+            "CLOCK$",
+            "normal.css:stream",
+        ] {
+            let path = missing.join(name);
+            let error = read_regular(&path, 100).expect_err("Spezialpfad");
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput, "{path:?}");
+        }
+        for path in [
+            r"\\.\NUL",
+            r"\\.\pipe\meinbrowser",
+            r"\\?\GLOBALROOT\Device\Null",
+            r"\\?\UNC\server\share\file",
+            r"\\server\pipe\meinbrowser",
+        ] {
+            let error = read_regular(Path::new(path), 100).expect_err("Namensraum");
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput, "{path}");
+        }
+        let error = read_regular(&missing.join("normal.css"), 100).expect_err("fehlt");
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        std::fs::remove_dir_all(&directory).expect("aufräumen");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_verbatim_disk_paths_remain_readable() {
+        let directory = directory("windows-lang");
+        let path = directory.join("normal.css");
+        std::fs::write(&path, b"p {}").expect("schreiben");
+        // canonicalize wird nur im Test auf der selbst angelegten Datei
+        // verwendet, nicht in der Sicherheitsprüfung fremder Pfade.
+        let verbatim = std::fs::canonicalize(&path).expect("langer Laufwerkspfad");
+        assert_eq!(read_regular(&verbatim, 4).expect("lesen"), b"p {}");
+        std::fs::remove_dir_all(&directory).expect("aufräumen");
     }
 }
