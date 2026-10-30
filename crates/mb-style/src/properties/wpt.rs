@@ -13,6 +13,9 @@
 //! [`crate::computed::test_device`], ohne Schriften. Was vom Layout oder von
 //! Schriftmaßen abhängt, lässt sich nicht ausführen.
 //!
+//! Die Seite mit `CSS.supports()` und `getComputedStyle()` nutzen auch die
+//! Tests aus `css/css-conditional/js/` (`supports/wpt.rs`).
+//!
 //! Fehlgeschlagene Tests werden eingeordnet: Tests gültiger Werte mit
 //! Funktionen oder Eigenschaften, die noch fehlen ([`GAPS`]), Abweichungen
 //! mit Begründung ([`DEVIATIONS`]), alle übrigen sind Fehler. Was sich in
@@ -25,7 +28,7 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use mb_base::CodePoint;
-use mb_css::{Source, parse_component_value_list};
+use mb_css::Source;
 use mb_dom::{Document, NodeId, NodeKind, QuirksMode};
 use mb_html::{Options, ScriptingMode, parse_document};
 use mb_url::Url;
@@ -36,6 +39,7 @@ use crate::computed::{Ancestors, ComputedValues, MissingFontMetric, NoFonts, tes
 use crate::declarations::{DeclarationBlock, Declared, parse_declaration_block};
 use crate::selectors::MatchingContext;
 use crate::stylesheet::StyleSheet;
+use crate::supports::{supports_condition, supports_declaration};
 use crate::ua::DocumentInfo;
 use crate::values::{ParseContext, ToCss};
 use crate::wpt_js::{
@@ -241,18 +245,18 @@ enum TestKind {
     Script,
 }
 
-enum Outcome {
+pub(crate) enum Outcome {
     Pass,
     Fail(String),
     Unsupported(String),
 }
 
-struct Subtest {
-    name: String,
+pub(crate) struct Subtest {
+    pub name: String,
     kind: TestKind,
     /// Die Eingaben als Text, um Lücken zu erkennen.
     inputs: Vec<String>,
-    outcome: Outcome,
+    pub outcome: Outcome,
 }
 
 /// Die Seite einer Testdatei: das Dokument mit seinen Stylesheets, die
@@ -692,13 +696,7 @@ fn supports(property: &Value, value: &Value) -> Completion<bool> {
     if property.starts_with("--") {
         return unsupported("eigene Eigenschaften");
     }
-    let Some(property) = PropertyId::from_name(&property) else {
-        return Ok(false);
-    };
-    let values = parse_component_value_list(&Source::new(&text(value)?));
-    Ok(property
-        .parse(values.values(), ParseContext::default())
-        .is_some())
+    Ok(supports_declaration(&property, &text(value)?))
 }
 
 /// `CSS`
@@ -709,7 +707,8 @@ impl Host for CssNamespace {
         match key {
             "supports" => Ok(Some(Value::native(|_, _, arguments| {
                 if arguments.len() < 2 {
-                    return unsupported("CSS.supports() mit einer Bedingung");
+                    let condition = text(&argument(&arguments, 0))?;
+                    return Ok(Value::Bool(supports_condition(&condition)));
                 }
                 Ok(Value::Bool(supports(
                     &argument(&arguments, 0),
@@ -1601,12 +1600,12 @@ enum Script {
 }
 
 /// Was eine Datei ergab.
-struct FileResult {
-    subtests: Vec<Subtest>,
+pub(crate) struct FileResult {
+    pub subtests: Vec<Subtest>,
     /// Was sich nicht ausführen ließ, sortiert und ohne Doppelte.
-    unsupported: Vec<String>,
+    pub unsupported: Vec<String>,
     /// Fehler der Datei selbst, etwa eine Ausnahme außerhalb von `test()`.
-    errors: Vec<String>,
+    pub errors: Vec<String>,
 }
 
 /// Der Text der Kinder eines Elements, etwa eines Skripts.
@@ -1624,7 +1623,8 @@ fn text_content(document: &Document, node: NodeId) -> String {
     text
 }
 
-fn run_file(path: &str) -> FileResult {
+/// Führt eine Testdatei aus; `path` ist ihr Pfad unter `css/`.
+pub(crate) fn run_file(path: &str) -> FileResult {
     let mut html = testdata::read("wpt", &format!("css/{path}"));
     if path.ends_with(".sub.html") {
         html = html.replace("{{host}}", "web-platform.test");
@@ -1703,7 +1703,8 @@ fn run_file(path: &str) -> FileResult {
         }
     }
 
-    let mut builder = StylistBuilder::new();
+    let device = test_device();
+    let mut builder = StylistBuilder::for_device(&device, &NoFonts);
     builder.add_user_agent_sheets(DocumentInfo {
         quirks_mode: document.quirks_mode(),
         html_document: true,

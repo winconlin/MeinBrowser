@@ -14,17 +14,21 @@
 //!   HTML Standard vorsieht.
 //! - Stylesheets kommen in Baumreihenfolge aus `<style>` und aus
 //!   `<link rel=stylesheet>` (ohne `alternate`, `disabled` und andere Typen
-//!   als `text/css`). Das Attribut `media` wird noch nicht ausgewertet,
-//!   denn Media Queries fehlen; ebenso `<?xml-stylesheet?>` und `@import`.
+//!   als `text/css`), jeweils mit dem Attribut `media`, und aus `@import`
+//!   darin. Ein `@import` wird nicht geladen, wenn es zu einem Stylesheet
+//!   zurückführt, das es schon einbindet, tiefer als
+//!   [`mb_style::MAX_IMPORT_DEPTH`] steht oder mehr als [`MAX_IMPORTS`]
+//!   Stylesheets aus `@import` lädt. Es fehlt `<?xml-stylesheet?>`.
 //! - Bilder sind bisher nur PNG.
 //! - Stil und Layout fremder Seiten bezahlt [`Page::render_within`] aus
 //!   einem Budget ([`RENDER_STEPS`]); ist es verbraucht, gibt es kein Bild,
 //!   sondern einen Fehler.
 //! - Zum Scrollen wird einmal gesetzt ([`Page::layout_within`]) und an jeder
 //!   Scrollposition neu gezeichnet ([`Page::paint`]). Der Viewport kennt die
-//!   Gerätepixel je CSS-Pixel ([`Viewport`]); Media Queries, die danach
-//!   fragen, fehlen noch, aber die Breite von Rahmen fällt auf ganze
-//!   Gerätepixel.
+//!   Gerätepixel je CSS-Pixel ([`Viewport`]) für Media Queries und für die
+//!   Breite von Rahmen, die auf ganze Gerätepixel fällt. Die Regeln für einen
+//!   Viewport werden neu zusammengestellt, wenn eine Media Query dort anders
+//!   ausfällt als für den vorigen.
 //! - Die Systemfarben sind die eines hellen Farbschemas, festgelegt von
 //!   diesem Browser (CSS Color 4 überlässt sie dem Benutzeragenten), bis es
 //!   Farbschemata und die Werte der Plattformen gibt.
@@ -42,7 +46,10 @@ use mb_layout::{Fonts, FragmentTree, LayoutInput};
 use mb_scene::{Image, Scene};
 use mb_style::values::ParseContext;
 use mb_style::values::color::{Rgba, SystemColor};
-use mb_style::{Device, DocumentInfo, Origin, StyleSheet, Stylist, StylistBuilder};
+use mb_style::{
+    Device, DocumentInfo, MAX_IMPORT_DEPTH, MediaQueryList, Origin, StyleSheet, Stylist,
+    StylistBuilder,
+};
 use mb_url::Url;
 
 /// Ein Viewport: seine Größe in CSS-Pixeln und wie viele Gerätepixel auf
@@ -59,6 +66,12 @@ pub type Fetch = Box<dyn Fn(&Url) -> Option<Vec<u8>> + Send + Sync>;
 
 /// So viele Pixel darf ein Bild haben; größere werden nicht dekodiert.
 const MAX_IMAGE_PIXELS: u64 = 1 << 26;
+
+/// So viele Stylesheets darf eine Seite mit `@import` laden. Festgelegt von
+/// diesem Browser: Ohne Grenze könnte ein Stylesheet, das sich zweimal unter
+/// verschiedenen URLs einbindet, bis zur Tiefe
+/// [`mb_style::MAX_IMPORT_DEPTH`] exponentiell viele Abrufe auslösen.
+pub const MAX_IMPORTS: usize = 1024;
 
 /// So viele Bytes darf eine Seite laden und dekodieren, zusammen: das
 /// Dokument, die Stylesheets, die Bilddateien und die Pixel der Bilder mit
@@ -102,7 +115,13 @@ pub struct Page {
     document: Document,
     /// Die Basis-URL des Dokuments.
     base: Url,
-    stylist: Stylist,
+    /// Was die Stylesheets der Benutzeragenten auswählt.
+    info: DocumentInfo,
+    /// Die Stylesheets der Seite in Baumreihenfolge, mit den Stylesheets
+    /// aus `@import`.
+    sheets: Vec<StyleSheet>,
+    /// Die Regeln für den zuletzt verwendeten Viewport.
+    stylist: Mutex<Option<Arc<Stylist>>>,
     fetch: Fetch,
     /// Die Bilder nach URL ohne Fragment, `None`, wo das Laden scheiterte.
     images: Mutex<BTreeMap<String, Option<Arc<Image>>>>,
@@ -210,12 +229,18 @@ impl Page {
         document.perform_microtask_checkpoint();
         let base = document_base(&document, &url);
         let quirks = document.quirks_mode() == QuirksMode::Quirks;
-        let mut builder = StylistBuilder::new();
-        builder.add_user_agent_sheets(DocumentInfo {
+        let info = DocumentInfo {
             quirks_mode: document.quirks_mode(),
             html_document: document.is_html_document(),
             iso_8859_8: encoding == Encoding::Iso8859_8,
-        });
+        };
+        let mut imports = Imports {
+            fetch: &fetch,
+            budget: &budget,
+            quirks,
+            left: MAX_IMPORTS,
+        };
+        let mut sheets = Vec::new();
         for node in tree_order(&document) {
             let Some(element) = document.element(node) else {
                 continue;
@@ -230,10 +255,12 @@ impl Page {
                     base_url: Some(&base),
                     quirks_mode: quirks,
                 };
-                builder.add(
-                    Origin::Author,
-                    &StyleSheet::parse(&child_text(&document, node), context),
-                );
+                let mut sheet = StyleSheet::parse(&child_text(&document, node), context);
+                imports.load(&mut sheet, encoding, &mut Vec::new(), 0);
+                if let Some(media) = attribute("media") {
+                    sheet.set_media(MediaQueryList::parse(&media));
+                }
+                sheets.push(sheet);
             } else if element.is_html("link") {
                 let rel = attribute("rel").unwrap_or_default().to_ascii_lowercase();
                 let tokens: Vec<&str> = rel.split_ascii_whitespace().collect();
@@ -254,22 +281,51 @@ impl Page {
                 else {
                     continue;
                 };
-                let (text, _) = mb_css::decode_stylesheet(&bytes, None, Some(encoding));
+                let (text, sheet_encoding) =
+                    mb_css::decode_stylesheet(&bytes, None, Some(encoding));
                 let context = ParseContext {
                     base_url: Some(&sheet_url),
                     quirks_mode: quirks,
                 };
-                builder.add(Origin::Author, &StyleSheet::parse(&text, context));
+                let mut sheet = StyleSheet::parse(&text, context);
+                let mut chain = vec![sheet_url.serialize(true)];
+                imports.load(&mut sheet, sheet_encoding, &mut chain, 0);
+                if let Some(media) = attribute("media") {
+                    sheet.set_media(MediaQueryList::parse(&media));
+                }
+                sheets.push(sheet);
             }
         }
         Some(Page {
             document,
             base,
-            stylist: builder.build(),
+            info,
+            sheets,
+            stylist: Mutex::new(None),
             fetch,
             images: Mutex::new(BTreeMap::new()),
             bytes: budget,
         })
+    }
+
+    /// Die Regeln für ein Gerät: die vorigen, wenn jede Media Query dort
+    /// gleich ausfällt, sonst neu zusammengestellt.
+    fn stylist(&self, device: &Device, fonts: &Fonts<'_>) -> Arc<Stylist> {
+        let mut cached = self.stylist.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(stylist) = cached
+            .as_ref()
+            .filter(|stylist| stylist.is_valid_for(device, fonts))
+        {
+            return Arc::clone(stylist);
+        }
+        let mut builder = StylistBuilder::for_device(device, fonts);
+        builder.add_user_agent_sheets(self.info);
+        for sheet in &self.sheets {
+            builder.add(Origin::Author, sheet);
+        }
+        let stylist = Arc::new(builder.build());
+        *cached = Some(Arc::clone(&stylist));
+        stylist
     }
 
     pub fn document(&self) -> &Document {
@@ -311,10 +367,11 @@ impl Page {
             device_pixel_ratio: 1.0,
         };
         let device = device(viewport);
+        let stylist = self.stylist(&device, fonts);
         let images = |url: &Url| self.image(url);
         let tree = mb_layout::layout(&LayoutInput {
             document: &self.document,
-            stylist: &self.stylist,
+            stylist: &stylist,
             device: &device,
             fonts,
             base: &self.base,
@@ -351,10 +408,11 @@ impl Page {
         budget: &Budget,
     ) -> Result<FragmentTree, Exhausted> {
         let device = device(viewport);
+        let stylist = self.stylist(&device, fonts);
         let images = |url: &Url| self.image(url);
         let input = LayoutInput {
             document: &self.document,
-            stylist: &self.stylist,
+            stylist: &stylist,
             device: &device,
             fonts,
             base: &self.base,
@@ -367,6 +425,61 @@ impl Page {
     /// CSS-Pixel nach rechts und unten gescrollt ist.
     pub fn paint(&self, tree: &FragmentTree, scroll: (f64, f64)) -> Scene {
         tree.paint_scrolled(&|url: &Url| self.image(url), scroll)
+    }
+}
+
+/// Lädt die Stylesheets hinter `@import`, aus dem Budget der Seite.
+struct Imports<'a> {
+    fetch: &'a Fetch,
+    budget: &'a Bytes,
+    quirks: bool,
+    /// Wie viele Stylesheets noch geladen werden dürfen, siehe
+    /// [`MAX_IMPORTS`].
+    left: usize,
+}
+
+impl Imports<'_> {
+    /// Lädt die Stylesheets der `@import`-Regeln von `sheet` und darin
+    /// wieder. `encoding` ist die Kodierung von `sheet`, die Ersatzkodierung
+    /// der importierten (CSS Cascade 5), `chain` die URLs der Stylesheets bis
+    /// hierher ohne Fragment und `depth` deren Tiefe.
+    fn load(
+        &mut self,
+        sheet: &mut StyleSheet,
+        encoding: Encoding,
+        chain: &mut Vec<String>,
+        depth: usize,
+    ) {
+        if depth >= MAX_IMPORT_DEPTH {
+            return;
+        }
+        for pending in sheet.pending_imports() {
+            let key = pending.url().serialize(true);
+            if chain.contains(&key) || self.left == 0 {
+                continue;
+            }
+            self.left = self.left.saturating_sub(1);
+            let Some(bytes) =
+                (self.fetch)(pending.url()).filter(|bytes| self.budget.spend(length(bytes)))
+            else {
+                continue;
+            };
+            let (text, imported_encoding) = mb_css::decode_stylesheet(&bytes, None, Some(encoding));
+            let context = ParseContext {
+                base_url: Some(pending.url()),
+                quirks_mode: self.quirks,
+            };
+            let mut imported = StyleSheet::parse(&text, context);
+            chain.push(key);
+            self.load(
+                &mut imported,
+                imported_encoding,
+                chain,
+                depth.saturating_add(1),
+            );
+            chain.pop();
+            pending.load(imported);
+        }
     }
 }
 

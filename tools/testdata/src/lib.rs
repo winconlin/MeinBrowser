@@ -49,6 +49,8 @@ pub const SOURCES: [Source; 8] = [
             "/css/css-text-decor/parsing/",
             "/css/css-ui/parsing/",
             "/css/css-writing-modes/parsing/",
+            // `CSS.supports()`, siehe `crates/mb-style/src/supports/wpt.rs`.
+            "/css/css-conditional/js/",
             // Schriften für die Tests des Schriftlesers in `mb-text`.
             "/fonts/",
             // Die Referenztests für M1 mit ihren Referenzen und Bildern,

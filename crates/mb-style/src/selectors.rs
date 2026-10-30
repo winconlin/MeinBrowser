@@ -366,6 +366,22 @@ impl SelectorList {
         }))
     }
 
+    /// `selector()` in `@supports` (CSS Conditional 4): ob ein
+    /// ⟨complex-selector⟩ unterstützt wird. Er muss gültig sein, ohne dass
+    /// eine *forgiving selector list* einen Teil verwirft, und darf kein
+    /// unbekanntes `::-webkit-…` enthalten.
+    pub(crate) fn supports(values: Values<'_>, namespaces: &Namespaces) -> bool {
+        let values: Vec<ComponentValue<'_>> = values.iter().collect();
+        if values
+            .iter()
+            .any(|value| matches!(value, ComponentValue::Token(Token::Comma)))
+        {
+            return false;
+        }
+        let parser = Parser::new(namespaces, None);
+        parser.complex(&values, Rules::TOP, None).is_some() && !parser.unsupported.get()
+    }
+
     pub fn selectors(&self) -> &[Selector] {
         &self.selectors
     }
@@ -519,6 +535,10 @@ struct Parser<'n> {
     parent: Option<&'n Arc<SelectorList>>,
     /// Die größte Tiefe des Abgleichs bisher, siehe [`SelectorList`].
     depth: Cell<usize>,
+    /// Ob etwas gelesen wurde, das nach CSS Conditional 4 nicht als
+    /// unterstützt gilt: ein Teil einer *forgiving selector list*, der
+    /// wegfiel, oder ein unbekanntes `::-webkit-…`.
+    unsupported: Cell<bool>,
 }
 
 /// Das Token an einer Stelle, falls dort ein Token steht.
@@ -600,6 +620,7 @@ impl<'n> Parser<'n> {
             namespaces,
             parent,
             depth: Cell::new(0),
+            unsupported: Cell::new(false),
         }
     }
 
@@ -663,7 +684,13 @@ impl<'n> Parser<'n> {
     fn forgiving_list(&self, input: &[ComponentValue<'_>], rules: Rules) -> SelectorList {
         let selectors = split_commas(input)
             .into_iter()
-            .filter_map(|part| self.complex(part, rules, None))
+            .filter_map(|part| {
+                let selector = self.complex(part, rules, None);
+                if selector.is_none() {
+                    self.unsupported.set(true);
+                }
+                selector
+            })
             .collect();
         SelectorList {
             selectors,
@@ -1129,7 +1156,10 @@ impl<'n> Parser<'n> {
                     "backdrop" | "file-selector-button" => PseudoTarget::Inactive,
                     _ => match legacy_pseudo_element(&lower) {
                         Some(element) => PseudoTarget::Element(element),
-                        None if lower.starts_with("-webkit-") => PseudoTarget::Inactive,
+                        None if lower.starts_with("-webkit-") => {
+                            self.unsupported.set(true);
+                            PseudoTarget::Inactive
+                        }
                         None => return None,
                     },
                 };

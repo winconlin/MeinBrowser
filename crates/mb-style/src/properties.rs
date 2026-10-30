@@ -23,7 +23,7 @@ mod tests;
 #[cfg(test)]
 mod webref;
 #[cfg(test)]
-mod wpt;
+pub(crate) mod wpt;
 
 pub use logical::FlowMode;
 pub use longhands::{
