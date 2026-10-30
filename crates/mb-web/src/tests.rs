@@ -62,6 +62,34 @@ fn stylesheets_in_tree_order() {
 }
 
 #[test]
+fn meta_charset_decides_the_encoding() {
+    // 0xE9 und 0xFC sind in windows-1252 `é` und `ü`, in UTF-8 ungültig.
+    // Das Stylesheet ohne `@charset` übernimmt die Kodierung des Dokuments.
+    let mut html = b"<!DOCTYPE html><meta charset=windows-1252><link rel=stylesheet href=s.css>\
+                     <style>body { margin: 0 } .\\E9 { height: 10px; background: green }</style>\
+                     <div class=&uuml;></div><div class="
+        .to_vec();
+    html.extend_from_slice(b"\xE9></div>");
+    let page = load(
+        "a.html",
+        &[
+            ("a.html", html),
+            (
+                "s.css",
+                b".\xFC { height: 20px; background: green }".to_vec(),
+            ),
+        ],
+    );
+    assert_eq!(
+        rects(&page),
+        [
+            (Rect::new(0.0, 0.0, 800.0, 20.0), GREEN),
+            (Rect::new(0.0, 20.0, 800.0, 10.0), GREEN),
+        ]
+    );
+}
+
+#[test]
 fn xhtml_and_images() {
     let png = testdata::read_bytes("image-png", "tests/pngsuite/basn2c08.png");
     let page = load(

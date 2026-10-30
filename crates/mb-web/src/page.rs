@@ -8,10 +8,10 @@
 //!   [`PAGE_BYTES`]: Dokument, Stylesheets, Bilddateien und die Pixel der
 //!   Bilder. Ein Bild wird nur dekodiert, wenn das Budget auch für die
 //!   Zwischenpuffer des Dekoders reicht; was nicht mehr passt, fehlt.
-//! - HTML-Bytes werden nach einer BOM dekodiert, sonst als UTF-8. Das ist
-//!   eine Lücke: Es fehlen das Vorab-Lesen von `<meta charset>`
-//!   (*prescan*) und die Ersatzkodierung nach Sprache und Region, die der
-//!   HTML Standard vorsieht.
+//! - Die Kodierung von HTML-Bytes bestimmt [`mb_html::parse_bytes`] aus
+//!   der Byte-Order-Mark, dem Vorab-Lesen (*prescan*) und einem `meta`
+//!   beim Parsen. Ohne Angabe gilt UTF-8; die Ersatzkodierung nach Sprache
+//!   und Region, die der HTML Standard vorschlägt, fehlt noch.
 //! - Stylesheets kommen in Baumreihenfolge aus `<style>` und aus
 //!   `<link rel=stylesheet>` (ohne `alternate`, `disabled` und andere Typen
 //!   als `text/css`), jeweils mit dem Attribut `media`, und aus `@import`
@@ -38,10 +38,10 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use mb_base::{Budget, CodePoint, Exhausted};
+use mb_base::{Budget, Exhausted};
 use mb_dom::{Document, NodeId, NodeKind, QuirksMode};
 use mb_encoding::Encoding;
-use mb_html::{Options, ScriptingMode, parse_document};
+use mb_html::{Options, ScriptingMode, parse_bytes};
 use mb_layout::{Fonts, FragmentTree, LayoutInput};
 use mb_scene::{Image, Scene};
 use mb_style::values::ParseContext;
@@ -213,17 +213,12 @@ impl Page {
             let parsed = mb_xml::parse(&bytes, &mb_xml::Options::default());
             (parsed.document, parsed.encoding.unwrap_or(Encoding::Utf8))
         } else {
-            let (text, encoding) = mb_encoding::decode(&bytes, Encoding::Utf8);
-            let mut document = Document::new();
-            parse_document(
-                &mut document,
-                text.chars().map(CodePoint::from),
-                Options {
-                    scripting: ScriptingMode::Disabled,
-                    collect_errors: false,
-                },
-            );
-            (document, encoding)
+            let options = Options {
+                scripting: ScriptingMode::Disabled,
+                collect_errors: false,
+            };
+            let parsed = parse_bytes(&bytes, Encoding::Utf8, options);
+            (parsed.document, parsed.encoding)
         };
         let mut document = document;
         document.perform_microtask_checkpoint();

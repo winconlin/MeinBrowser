@@ -7,6 +7,7 @@ use mb_base::DomString;
 use mb_dom::{self as dom, Namespace, NodeId, QuirksMode};
 
 use super::{Flow, Formatting, Location, Mode, Scope, ScriptingMode, TreeBuilder, is_whitespace};
+use crate::encoding::{self, Confidence};
 use crate::tokenizer::{Doctype, Tag, Token, TokenizerState};
 
 /// Öffentliche Kennungen, die genau so den Quirks-Modus auslösen.
@@ -349,11 +350,18 @@ impl TreeBuilder<'_> {
                     self.acknowledge_self_closing();
                 }
                 "meta" => {
-                    // Die Eingabe ist schon dekodiert; einen Wechsel der
-                    // Kodierung durch `charset` gibt es noch nicht.
                     self.insert_html_element(&tag);
                     self.pop();
                     self.acknowledge_self_closing();
+                    // Einen *active speculative HTML parser* gibt es nicht.
+                    if let Some((current, Confidence::Tentative)) = self.encoding
+                        && let Some(new) = tag.meta_encoding()
+                    {
+                        match encoding::change(current, new) {
+                            Some(new) => self.restart = Some(new),
+                            None => self.encoding = Some((current, Confidence::Certain)),
+                        }
+                    }
                 }
                 "title" => self.parse_text_element(&tag, TokenizerState::Rcdata),
                 "noscript" if self.scripting != ScriptingMode::Disabled => {

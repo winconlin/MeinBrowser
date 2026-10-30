@@ -16,8 +16,8 @@
 //! - Das Patchen von Inhalten (`<template for>`): Die *insertion target*
 //!   eines `template` bleibt null, und ein `template` mit `for` wird wie
 //!   beim Scheitern von *prepare content patching* normal eingefügt.
-//! - Benutzerdefinierte Elemente, Formularzuordnung, das Zurücksetzen
-//!   (*reset algorithm*) und der Wechsel der Zeichenkodierung durch `meta`.
+//! - Benutzerdefinierte Elemente, Formularzuordnung und das Zurücksetzen
+//!   (*reset algorithm*).
 //! - *iframe srcdoc document* und *parser cannot change the mode flag*:
 //!   Beides gilt als nicht gesetzt.
 
@@ -25,7 +25,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use mb_base::{CodePoint, DomString};
 use mb_dom::{self as dom, Document, Namespace, NodeId, NodeKind};
+use mb_encoding::Encoding;
 
+use crate::encoding::{self, Confidence};
 use crate::error::{ErrorCode, ParseError};
 use crate::tokenizer::{Tag, Token, Tokenizer, TokenizerState};
 
@@ -75,6 +77,58 @@ pub fn parse_document(
     let mut builder = TreeBuilder::new(document, tokenizer, options.scripting);
     builder.run();
     builder.tokenizer.take_errors()
+}
+
+/// Das Ergebnis von [`parse_bytes`].
+pub struct Parsed {
+    /// Ein HTML-Dokument.
+    pub document: Document,
+    /// Die Zeichenkodierung, mit der es dekodiert wurde.
+    pub encoding: Encoding,
+    /// Die Parse-Fehler, falls [`Options::collect_errors`] gesetzt ist.
+    pub errors: Vec<ParseError>,
+}
+
+/// Parst ein ganzes Dokument aus Bytes. Die Kodierung bestimmt
+/// [`encoding::sniff`] mit `fallback` als Ersatzkodierung. Ist sie nicht
+/// sicher und nennt ein `meta` im Dokument eine andere, wird mit dieser neu
+/// geparst (*change the encoding*); danach ist sie sicher, es gibt also
+/// höchstens zwei Durchläufe.
+///
+/// Für Mikroaufgaben gilt dasselbe wie bei [`parse_document`].
+pub fn parse_bytes(bytes: &[u8], fallback: Encoding, options: Options) -> Parsed {
+    let (encoding, confidence) = encoding::sniff(bytes, fallback);
+    match parse_with_encoding(bytes, encoding, confidence, options) {
+        (_, Some(new)) => parse_with_encoding(bytes, new, Confidence::Certain, options).0,
+        (parsed, None) => parsed,
+    }
+}
+
+/// Ein Durchlauf von [`parse_bytes`], dazu die neue Kodierung, wenn ein
+/// `meta` den Durchlauf abgebrochen hat; das Dokument ist dann unfertig.
+fn parse_with_encoding(
+    bytes: &[u8],
+    encoding: Encoding,
+    confidence: Confidence,
+    options: Options,
+) -> (Parsed, Option<Encoding>) {
+    let (text, encoding) = mb_encoding::decode(bytes, encoding);
+    let mut document = Document::new();
+    let mut tokenizer = Tokenizer::from_code_points(text.chars().map(CodePoint::from));
+    if options.collect_errors {
+        tokenizer.collect_errors();
+    }
+    let mut builder = TreeBuilder::new(&mut document, tokenizer, options.scripting);
+    builder.encoding = Some((encoding, confidence));
+    builder.run();
+    let restart = builder.restart;
+    let errors = builder.tokenizer.take_errors();
+    let parsed = Parsed {
+        document,
+        encoding,
+        errors,
+    };
+    (parsed, restart)
 }
 
 /// „HTML fragment parsing algorithm“ mit dem Element `context` aus
@@ -354,6 +408,22 @@ impl Tag {
             .find(|attribute| attribute.name == *name)
             .map(|attribute| &attribute.value)
     }
+
+    /// Die Kodierung, die ein `meta` mit diesen Attributen angibt: aus
+    /// `charset`, sonst aus `content` bei `http-equiv="Content-Type"`.
+    fn meta_encoding(&self) -> Option<Encoding> {
+        if let Some(encoding) = self
+            .attribute("charset")
+            .and_then(encoding::encoding_for_label)
+        {
+            return Some(encoding);
+        }
+        let pragma = self.attribute("http-equiv")?;
+        if !pragma.eq_ignore_ascii_case("content-type") {
+            return None;
+        }
+        encoding::content_encoding(self.attribute("content")?)
+    }
 }
 
 /// Gleicher Name und gleiche Attribute, in beliebiger Reihenfolge (für die
@@ -397,6 +467,12 @@ struct TreeBuilder<'a> {
     /// Das aktuelle Start-Tag hat den Schrägstrich, und der Baumaufbau hat
     /// ihn noch nicht bestätigt (*acknowledge the self-closing flag*).
     self_closing_pending: bool,
+    /// Die Kodierung der Bytes und wie sicher sie ist; keine, wenn die
+    /// Eingabe schon aus Zeichen besteht.
+    encoding: Option<(Encoding, Confidence)>,
+    /// Ein `meta` verlangt, mit dieser Kodierung neu zu parsen; der
+    /// Durchlauf endet dann.
+    restart: Option<Encoding>,
 }
 
 impl<'a> TreeBuilder<'a> {
@@ -424,6 +500,8 @@ impl<'a> TreeBuilder<'a> {
             pending_table_characters: Vec::new(),
             skip_line_feed: false,
             self_closing_pending: false,
+            encoding: None,
+            restart: None,
         }
     }
 
@@ -437,7 +515,7 @@ impl<'a> TreeBuilder<'a> {
             let token = self.tokenizer.next_token();
             let end = token == Token::Eof;
             self.process(token);
-            if end {
+            if end || self.restart.is_some() {
                 break;
             }
         }

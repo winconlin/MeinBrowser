@@ -65,7 +65,8 @@ pub const SOURCES: [Source; 8] = [
         name: "html5lib-tests",
         repository: "https://github.com/html5lib/html5lib-tests",
         commit: "c777c408b61078ea2eb4acefc2535f54dbc8b28a",
-        paths: &["/tokenizer/"],
+        // Die Kodierungstests prüft `crates/mb-html/src/encoding/tests.rs`.
+        paths: &["/tokenizer/", "/encoding/"],
     },
     Source {
         name: "unicodetools",
