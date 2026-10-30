@@ -51,6 +51,11 @@ struct Page {
 }
 
 fn load(html: &str, css: &str) -> Page {
+    load_scaled(html, css, 1.0)
+}
+
+/// Wie [`load`] mit `scale` Gerätepixeln je CSS-Pixel.
+fn load_scaled(html: &str, css: &str, scale: f64) -> Page {
     let mut document = Document::new();
     parse_document(
         &mut document,
@@ -82,7 +87,7 @@ fn load(html: &str, css: &str) -> Page {
     let device = Device {
         viewport_width: 800.0,
         viewport_height: 600.0,
-        device_pixel_ratio: 1.0,
+        device_pixel_ratio: scale,
         system_color,
     };
     let fonts = Fonts::new(library());
@@ -455,6 +460,220 @@ fn transparent_sides_keep_slanted_corners() {
         [Some(
             [(20.0, 20.0), (0.0, 20.0), (10.0, 10.0), (10.0, 10.0)].as_slice()
         )]
+    );
+}
+
+/// Die Vielecke in `color` als umgebende Rechtecke: links, oben, rechts,
+/// unten.
+fn polygon_bounds(scene: &mb_scene::Scene, color: Color) -> Vec<(f32, f32, f32, f32)> {
+    let bounds = |points: &[(f32, f32)]| {
+        points.iter().fold(
+            (
+                f32::INFINITY,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+                f32::NEG_INFINITY,
+            ),
+            |(left, top, right, bottom), &(x, y)| {
+                (left.min(x), top.min(y), right.max(x), bottom.max(y))
+            },
+        )
+    };
+    scene
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Polygon { points, color: c } if *c == color => Some(bounds(points)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn has_rect(scene: &mb_scene::Scene, color: Color) -> bool {
+    scene
+        .items
+        .iter()
+        .any(|item| matches!(item, Item::Rect { color: c, .. } if *c == color))
+}
+
+#[test]
+fn dashed_borders_are_drawn_as_dashes() {
+    // 54 px mit Strichen von 6 px: fünf Striche mit Lücken von 6 px, der
+    // erste und der letzte an den Enden.
+    let page = load(
+        "<div></div>",
+        "body { margin: 0 } div { width: 54px; border-top: 2px dashed red }",
+    );
+    let red = Color::rgb(255, 0, 0);
+    let scene = page.tree.paint(&image);
+    assert!(!has_rect(&scene, red));
+    assert_eq!(
+        polygon_bounds(&scene, red),
+        [
+            (0.0, 0.0, 6.0, 2.0),
+            (12.0, 0.0, 18.0, 2.0),
+            (24.0, 0.0, 30.0, 2.0),
+            (36.0, 0.0, 42.0, 2.0),
+            (48.0, 0.0, 54.0, 2.0),
+        ]
+    );
+}
+
+#[test]
+fn dotted_borders_are_drawn_as_round_dots() {
+    // Rahmen von 4 px um 20 × 20 px: Punkte mit 4 px Durchmesser, je Seite
+    // bei 2, 10, 18 und 26 px. Die äußeren sitzen in der Mitte der Ecken;
+    // die gleichen Seiten treffen sich gerade, die Punkte in den Ecken
+    // zeichnen oben und unten ganz.
+    let page = load(
+        "<div></div>",
+        "body { margin: 0 } div { width: 20px; height: 20px; border: 4px dotted red }",
+    );
+    let red = Color::rgb(255, 0, 0);
+    let scene = page.tree.paint(&image);
+    assert!(!has_rect(&scene, red));
+    let bounds = polygon_bounds(&scene, red);
+    assert_eq!(bounds.len(), 12);
+    for dot in [
+        (0.0, 0.0, 4.0, 4.0),
+        (24.0, 24.0, 28.0, 28.0),
+        (8.0, 0.0, 12.0, 4.0),
+        (16.0, 0.0, 20.0, 4.0),
+        (24.0, 8.0, 28.0, 12.0),
+        (8.0, 24.0, 12.0, 28.0),
+        (0.0, 16.0, 4.0, 20.0),
+    ] {
+        assert!(bounds.contains(&dot), "{dot:?} fehlt in {bounds:?}");
+    }
+    // Alles liegt im Rahmen, nichts im Kasten darin.
+    for item in &scene.items {
+        if let Item::Polygon { points, color } = item
+            && *color == red
+        {
+            for &(x, y) in points {
+                assert!((0.0..=28.0).contains(&x) && (0.0..=28.0).contains(&y));
+                assert!(
+                    !(x > 4.001 && x < 23.999 && y > 4.001 && y < 23.999),
+                    "({x}, {y})"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn thin_dots_are_squares_on_whole_pixels() {
+    let page = load(
+        "<div></div>",
+        "body { margin: 0 } div { width: 9px; border-top: 1px dotted red }",
+    );
+    let red = Color::rgb(255, 0, 0);
+    let scene = page.tree.paint(&image);
+    assert_eq!(
+        polygon_bounds(&scene, red),
+        [
+            (0.0, 0.0, 1.0, 1.0),
+            (2.0, 0.0, 3.0, 1.0),
+            (4.0, 0.0, 5.0, 1.0),
+            (6.0, 0.0, 7.0, 1.0),
+            (8.0, 0.0, 9.0, 1.0),
+        ]
+    );
+}
+
+#[test]
+fn dashed_outlines_bend_around_the_corners() {
+    // Der Umriss liegt bei 8 bis 62 px; die Striche in den Ecken enden an
+    // der Diagonale.
+    let page = load(
+        "<div></div>",
+        "body { margin: 0 } div { width: 50px; height: 50px; margin: 10px;          outline: 2px dashed red }",
+    );
+    let red = Color::rgb(255, 0, 0);
+    let scene = page.tree.paint(&image);
+    assert!(!has_rect(&scene, red));
+    let bounds = polygon_bounds(&scene, red);
+    assert_eq!(bounds.len(), 20);
+    assert_eq!(
+        bounds.get(..5),
+        Some(
+            [
+                (8.0, 8.0, 14.0, 10.0),
+                (20.0, 8.0, 26.0, 10.0),
+                (32.0, 8.0, 38.0, 10.0),
+                (44.0, 8.0, 50.0, 10.0),
+                (56.0, 8.0, 62.0, 10.0),
+            ]
+            .as_slice()
+        )
+    );
+}
+
+#[test]
+fn long_dashed_sides_are_drawn_where_visible() {
+    // Eine Million Pixel breit; gezeichnet wird nur, was im Viewport liegt.
+    let page = load(
+        "<div></div>",
+        "body { margin: 0 } div { width: 1000000px; border-top: 1px dashed red }",
+    );
+    let red = Color::rgb(255, 0, 0);
+    let bounds = polygon_bounds(&page.tree.paint(&image), red);
+    assert!((100..200).contains(&bounds.len()), "{}", bounds.len());
+    assert_eq!(bounds.first(), Some(&(0.0, 0.0, 3.0, 1.0)));
+    let scrolled = polygon_bounds(&page.tree.paint_scrolled(&image, (500000.0, 0.0)), red);
+    assert!((100..200).contains(&scrolled.len()), "{}", scrolled.len());
+}
+
+#[test]
+fn equal_sides_meet_straight() {
+    // Oben und rechts sind gleich: Ihre Ecke gehört ganz der Seite oben.
+    // Unten und links sind gleich, aber anders als die beiden: schräg.
+    let page = load(
+        "<div></div>",
+        "body { margin: 0 } div { width: 10px; height: 10px; border: 2px solid; \
+         border-color: red red lime lime }",
+    );
+    let red = Color::rgb(255, 0, 0);
+    let scene = page.tree.paint(&image);
+    let painted: Vec<&[(f32, f32)]> = scene
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Polygon { points, color } if *color == red => Some(points.as_slice()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        painted,
+        [
+            [(0.0, 0.0), (14.0, 0.0), (14.0, 2.0), (2.0, 2.0)].as_slice(),
+            [(14.0, 2.0), (14.0, 14.0), (12.0, 12.0), (12.0, 2.0)].as_slice(),
+        ]
+    );
+}
+
+#[test]
+fn slanted_corners_fall_on_device_pixels() {
+    // Bei zwei Gerätepixeln je CSS-Pixel ist der Rahmen 0,5 px breit, und
+    // die Ecken liegen auf halben CSS-Pixeln.
+    let page = load_scaled(
+        "<div></div>",
+        "body { margin: 0 } div { width: 10px; height: 10px; border: 0.5px solid;          border-color: red lime lime lime }",
+        2.0,
+    );
+    let red = Color::rgb(255, 0, 0);
+    let scene = page.tree.paint(&image);
+    let top: Vec<&[(f32, f32)]> = scene
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Polygon { points, color } if *color == red => Some(points.as_slice()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        top,
+        [[(0.0, 0.0), (11.0, 0.0), (10.5, 0.5), (0.5, 0.5)].as_slice()]
     );
 }
 
