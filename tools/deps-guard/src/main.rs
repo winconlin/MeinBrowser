@@ -11,6 +11,14 @@
 //!    Auflösen symbolischer Verweise unter der Wurzel des Workspace liegen.
 //!    Pfadabhängigkeiten haben keinen `source`-Eintrag; eine außerhalb des
 //!    Workspace fällt erst hier auf.
+//! 3. `fuzz/Cargo.lock` neben `Cargo.lock`, falls es sie gibt: Der getrennte
+//!    Fuzzing-Workspace darf als einzige Ausnahme `libfuzzer-sys` von
+//!    crates.io nutzen, mit den Crates, die es mitbringt (`docs/architektur.md`,
+//!    Abschnitt 8.2, Punkt 14). Jedes fremde Paket dort muss also über die
+//!    Abhängigkeiten in der Datei von `libfuzzer-sys` aus erreichbar sein, und
+//!    jedes Paket ohne Quelle ist das Fuzzing-Paket selbst oder ein Crate des
+//!    Workspace. Wo dessen Manifeste liegen, sagt die Datei nicht; die
+//!    Metadaten dazu gibt es ohne Netz nur mit geholten Abhängigkeiten.
 //!
 //! Aufruf: `cargo run -p deps-guard [-- <Pfad zu Cargo.lock>]`. Das Manifest
 //! des Workspace liegt neben `Cargo.lock`.
@@ -95,6 +103,166 @@ fn unquote(value: &str) -> &str {
         .strip_prefix('"')
         .and_then(|inner| inner.strip_suffix('"'))
         .unwrap_or(value)
+}
+
+/// Die einzige fremde Crate, die der Fuzzing-Workspace nutzen darf.
+const FUZZ_EXCEPTION: &str = "libfuzzer-sys";
+
+/// Die Quelle von crates.io in `Cargo.lock`.
+const CRATES_IO: &str = "registry+https://github.com/rust-lang/crates.io-index";
+
+/// Ein `[[package]]` oder `[[patch.unused]]` aus `Cargo.lock` mit den Namen
+/// seiner Abhängigkeiten.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Package {
+    name: String,
+    source: Option<String>,
+    dependencies: Vec<String>,
+}
+
+/// Die Einträge von `Cargo.lock`. In `dependencies` steht je Zeile ein
+/// Name, bei mehreren Versionen mit Version und Quelle dahinter.
+fn packages(lock: &str) -> Vec<Package> {
+    let mut packages = Vec::new();
+    let mut current: Option<Package> = None;
+    let mut in_dependencies = false;
+    for line in lock.lines() {
+        let line = line.trim();
+        if line.starts_with('[') && !in_dependencies {
+            packages.extend(current.take());
+            // Wie bei `check`: Auch ein ungenutzter Patch hat eine Quelle.
+            if line == "[[package]]" || line == "[[patch.unused]]" {
+                current = Some(Package::default());
+            }
+            continue;
+        }
+        let Some(package) = current.as_mut() else {
+            continue;
+        };
+        if in_dependencies {
+            if line.starts_with(']') {
+                in_dependencies = false;
+            } else if let Some(name) = unquote(line.trim_end_matches(',')).split(' ').next() {
+                package.dependencies.push(name.to_owned());
+            }
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let value = value.trim();
+        match key.trim() {
+            "name" => package.name = unquote(value).to_owned(),
+            "source" => package.source = Some(unquote(value).to_owned()),
+            "dependencies" => in_dependencies = value == "[",
+            _ => {}
+        }
+    }
+    packages.extend(current);
+    packages
+}
+
+/// Der Name unter `[package]` in einem Manifest.
+fn package_name(manifest: &str) -> Option<String> {
+    let mut in_package = false;
+    for line in manifest.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_package = line == "[package]";
+            continue;
+        }
+        if in_package
+            && let Some((key, value)) = line.split_once('=')
+            && key.trim() == "name"
+        {
+            return Some(unquote(value.trim()).to_owned());
+        }
+    }
+    None
+}
+
+/// Prüft `fuzz/Cargo.lock` (Punkt 3 oben). `workspace` sind die Pakete ohne
+/// Quelle aus der `Cargo.lock` des Workspace, `own` ist der Name des
+/// Fuzzing-Pakets. Liefert die Zahl der fremden Pakete und die Verstöße.
+fn check_fuzz(lock: &str, workspace: &BTreeSet<String>, own: &str) -> (usize, Vec<String>) {
+    let packages = packages(lock);
+    // Was `libfuzzer-sys` mitbringt, über einen eigenen Stapel (RS-8).
+    let mut allowed = BTreeSet::new();
+    let mut pending = vec![FUZZ_EXCEPTION];
+    while let Some(name) = pending.pop() {
+        if !allowed.insert(name) {
+            continue;
+        }
+        for package in packages.iter().filter(|package| package.name == name) {
+            pending.extend(package.dependencies.iter().map(String::as_str));
+        }
+    }
+    let mut external = 0;
+    let mut violations = Vec::new();
+    for package in &packages {
+        let name = &package.name;
+        match &package.source {
+            Some(source) => {
+                external += 1;
+                if source != CRATES_IO {
+                    violations.push(format!("{name} ({source})"));
+                } else if !allowed.contains(name.as_str()) {
+                    violations.push(format!("{name} (nicht von {FUZZ_EXCEPTION} mitgebracht)"));
+                }
+            }
+            None if name == own || workspace.contains(name) => {}
+            None => violations.push(format!(
+                "{name} (ohne Quelle, aber weder das Fuzzing-Paket noch ein Crate des Workspace)"
+            )),
+        }
+    }
+    (external, violations)
+}
+
+/// Punkt 3 für die `Cargo.lock` des Workspace unter `path`: `Ok(None)`, wenn
+/// es kein `fuzz/Cargo.lock` gibt, sonst wie bei [`guard`].
+fn guard_fuzz(path: &Path) -> Result<Option<String>, String> {
+    let directory = path.with_file_name("fuzz");
+    let fuzz_lock = directory.join("Cargo.lock");
+    let lock = match std::fs::read_to_string(&fuzz_lock) {
+        Ok(lock) => lock,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => {
+            return Err(format!(
+                "{} lässt sich nicht lesen: {err}",
+                fuzz_lock.display()
+            ));
+        }
+    };
+    let read = |file: &Path| {
+        std::fs::read_to_string(file)
+            .map_err(|err| format!("{} lässt sich nicht lesen: {err}", file.display()))
+    };
+    let own = package_name(&read(&directory.join("Cargo.toml"))?)
+        .ok_or_else(|| format!("{}: kein Paketname", directory.join("Cargo.toml").display()))?;
+    let workspace: BTreeSet<String> = packages(&read(path)?)
+        .into_iter()
+        .filter(|package| package.source.is_none())
+        .map(|package| package.name)
+        .collect();
+    let (external, violations) = check_fuzz(&lock, &workspace, &own);
+    if !violations.is_empty() {
+        let mut message = format!(
+            "{} Pakete in {} sind nicht erlaubt. Erlaubt ist dort nur {FUZZ_EXCEPTION} von \
+             crates.io mit den Crates, die es mitbringt (docs/architektur.md, Abschnitt 8.2, \
+             Punkt 14):",
+            violations.len(),
+            fuzz_lock.display()
+        );
+        for violation in &violations {
+            message.push_str(&format!("\n  {violation}"));
+        }
+        return Err(message);
+    }
+    Ok(Some(format!(
+        "fuzz/Cargo.lock geprüft: {external} fremde Pakete, alle mit {FUZZ_EXCEPTION} von \
+         crates.io mitgebracht."
+    )))
 }
 
 /// Warum ein Paket aus den Metadaten nicht zum Workspace gehört.
@@ -254,16 +422,18 @@ fn main() -> ExitCode {
         },
         PathBuf::from,
     );
-    match guard(&path) {
-        Ok(message) => {
-            println!("deps-guard: {message}");
-            ExitCode::SUCCESS
-        }
-        Err(message) => {
-            eprintln!("deps-guard: {message}");
-            ExitCode::FAILURE
+    let mut code = ExitCode::SUCCESS;
+    for result in [guard(&path).map(Some), guard_fuzz(&path)] {
+        match result {
+            Ok(Some(message)) => println!("deps-guard: {message}"),
+            Ok(None) => {}
+            Err(message) => {
+                eprintln!("deps-guard: {message}");
+                code = ExitCode::FAILURE;
+            }
         }
     }
+    code
 }
 
 #[cfg(test)]
@@ -577,6 +747,131 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
             "{error}"
         );
         std::fs::remove_dir_all(&base).expect("aufräumen");
+    }
+
+    /// Ein Ausschnitt aus `fuzz/Cargo.lock`: `libfuzzer-sys` mit einer
+    /// mitgebrachten Crate, dazu das Fuzzing-Paket und ein Crate des
+    /// Workspace.
+    const FUZZ_LOCK: &str = r#"version = 4
+
+[[package]]
+name = "cc"
+version = "1.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "libfuzzer-sys"
+version = "0.4.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+dependencies = [
+ "cc",
+]
+
+[[package]]
+name = "mb-base"
+version = "0.0.0"
+
+[[package]]
+name = "meinbrowser-fuzz"
+version = "0.0.0"
+dependencies = [
+ "libfuzzer-sys",
+ "mb-base",
+]
+"#;
+
+    fn fuzz(lock: &str) -> (usize, Vec<String>) {
+        let workspace = BTreeSet::from(["mb-base".to_owned()]);
+        check_fuzz(lock, &workspace, "meinbrowser-fuzz")
+    }
+
+    #[test]
+    fn lock_packages_with_dependencies() {
+        let lock = "[[package]]\nname = \"a\"\ndependencies = [\n \"b 1.0.0\",\n \"c\",\n]\n\n\
+                    [[package]]\nname = \"b\"\nsource = \"registry+x\"\n";
+        assert_eq!(
+            packages(lock),
+            [
+                Package {
+                    name: "a".into(),
+                    source: None,
+                    dependencies: vec!["b".into(), "c".into()],
+                },
+                Package {
+                    name: "b".into(),
+                    source: Some("registry+x".into()),
+                    dependencies: Vec::new(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn libfuzzer_and_what_it_brings_are_allowed() {
+        assert_eq!(fuzz(FUZZ_LOCK), (2, Vec::new()));
+    }
+
+    #[test]
+    fn other_crates_in_the_fuzz_workspace_are_reported() {
+        // Eine weitere Crate direkt im Fuzzing-Paket, eine aus Git, die
+        // `libfuzzer-sys` mitbringt, und ein Pfadpaket von außerhalb.
+        let lock = FUZZ_LOCK
+            .replace(
+                " \"mb-base\",\n]",
+                " \"mb-base\",\n \"serde\",\n \"vendored\",\n]",
+            )
+            .replace(
+                "name = \"cc\"\nversion = \"1.10.0\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"",
+                "name = \"cc\"\nversion = \"1.10.0\"\nsource = \"git+https://example.com/cc.git#0123456\"",
+            )
+            + "\n[[package]]\nname = \"serde\"\nversion = \"1.0.0\"\n\
+               source = \"registry+https://github.com/rust-lang/crates.io-index\"\n\n\
+               [[package]]\nname = \"vendored\"\nversion = \"0.1.0\"\n";
+        assert_eq!(
+            fuzz(&lock),
+            (
+                3,
+                vec![
+                    "cc (git+https://example.com/cc.git#0123456)".to_owned(),
+                    "serde (nicht von libfuzzer-sys mitgebracht)".to_owned(),
+                    "vendored (ohne Quelle, aber weder das Fuzzing-Paket noch ein Crate des \
+                     Workspace)"
+                        .to_owned(),
+                ]
+            )
+        );
+    }
+
+    #[test]
+    fn unused_patches_in_the_fuzz_workspace_are_reported() {
+        let lock = format!("{FUZZ_LOCK}{UNUSED_PATCH}");
+        assert_eq!(
+            fuzz(&lock),
+            (
+                3,
+                vec!["bar (nicht von libfuzzer-sys mitgebracht)".to_owned()]
+            )
+        );
+    }
+
+    #[test]
+    fn package_names_from_manifests() {
+        let manifest = "[workspace]\nname = \"nein\"\n\n[package]\nversion = \"0.0.0\"\n\
+                        name = \"meinbrowser-fuzz\"\n\n[dependencies]\nname = \"nein\"\n";
+        assert_eq!(package_name(manifest).as_deref(), Some("meinbrowser-fuzz"));
+        assert_eq!(package_name("[dependencies]\nname = \"x\"\n"), None);
+    }
+
+    #[test]
+    fn this_fuzz_workspace_follows_the_exception() {
+        let lock = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("Cargo.lock");
+        let message = guard_fuzz(&lock)
+            .expect("fuzz/Cargo.lock")
+            .expect("fuzz/Cargo.lock vorhanden");
+        assert!(message.contains("alle mit libfuzzer-sys"), "{message}");
     }
 
     #[test]
