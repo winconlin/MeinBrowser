@@ -15,7 +15,8 @@
 //!    Fuzzing-Workspace darf als einzige Ausnahme `libfuzzer-sys` von
 //!    crates.io nutzen, mit den Crates, die es mitbringt (`docs/architektur.md`,
 //!    Abschnitt 8.2, Punkt 14). Jedes fremde Paket dort muss also über die
-//!    Abhängigkeiten in der Datei von `libfuzzer-sys` aus erreichbar sein, und
+//!    Abhängigkeiten in der Datei von `libfuzzer-sys` aus erreichbar sein,
+//!    als genau dieser Eintrag mit Name, Version und Quelle, und
 //!    jedes Paket ohne Quelle ist das Fuzzing-Paket selbst oder ein Crate des
 //!    Workspace. Wo dessen Manifeste liegen, sagt die Datei nicht; die
 //!    Metadaten dazu gibt es ohne Netz nur mit geholten Abhängigkeiten.
@@ -111,17 +112,30 @@ const FUZZ_EXCEPTION: &str = "libfuzzer-sys";
 /// Die Quelle von crates.io in `Cargo.lock`.
 const CRATES_IO: &str = "registry+https://github.com/rust-lang/crates.io-index";
 
-/// Ein `[[package]]` oder `[[patch.unused]]` aus `Cargo.lock` mit den Namen
-/// seiner Abhängigkeiten.
+/// Ein `[[package]]` oder `[[patch.unused]]` aus `Cargo.lock` mit seinen
+/// Abhängigkeiten.
 #[derive(Debug, Default, PartialEq, Eq)]
 struct Package {
     name: String,
+    version: Option<String>,
     source: Option<String>,
+    /// Wie in `Cargo.lock`: der Name, bei mehreren Versionen mit Version
+    /// und bei mehreren Quellen mit der Quelle in Klammern dahinter.
     dependencies: Vec<String>,
 }
 
-/// Die Einträge von `Cargo.lock`. In `dependencies` steht je Zeile ein
-/// Name, bei mehreren Versionen mit Version und Quelle dahinter.
+impl Package {
+    /// Name und Version, damit sich zwei Versionen einer Crate
+    /// unterscheiden lassen.
+    fn label(&self) -> String {
+        match &self.version {
+            Some(version) => format!("{} {version}", self.name),
+            None => self.name.clone(),
+        }
+    }
+}
+
+/// Die Einträge von `Cargo.lock`.
 fn packages(lock: &str) -> Vec<Package> {
     let mut packages = Vec::new();
     let mut current: Option<Package> = None;
@@ -142,8 +156,9 @@ fn packages(lock: &str) -> Vec<Package> {
         if in_dependencies {
             if line.starts_with(']') {
                 in_dependencies = false;
-            } else if let Some(name) = unquote(line.trim_end_matches(',')).split(' ').next() {
-                package.dependencies.push(name.to_owned());
+            } else {
+                let dependency = unquote(line.trim_end_matches(','));
+                package.dependencies.push(dependency.to_owned());
             }
             continue;
         }
@@ -153,6 +168,7 @@ fn packages(lock: &str) -> Vec<Package> {
         let value = value.trim();
         match key.trim() {
             "name" => package.name = unquote(value).to_owned(),
+            "version" => package.version = Some(unquote(value).to_owned()),
             "source" => package.source = Some(unquote(value).to_owned()),
             "dependencies" => in_dependencies = value == "[",
             _ => {}
@@ -181,38 +197,61 @@ fn package_name(manifest: &str) -> Option<String> {
     None
 }
 
+/// Der Eintrag, den eine Abhängigkeit aus `dependencies` meint.
+fn resolve(packages: &[Package], dependency: &str) -> Option<usize> {
+    let (name, rest) = dependency.split_once(' ').unwrap_or((dependency, ""));
+    let (version, source) = match rest.split_once(" (") {
+        Some((version, source)) => (version, source.strip_suffix(')')),
+        None => (rest, None),
+    };
+    packages.iter().position(|package| {
+        package.name == name
+            && (version.is_empty() || package.version.as_deref() == Some(version))
+            && source.is_none_or(|source| package.source.as_deref() == Some(source))
+    })
+}
+
 /// Prüft `fuzz/Cargo.lock` (Punkt 3 oben). `workspace` sind die Pakete ohne
 /// Quelle aus der `Cargo.lock` des Workspace, `own` ist der Name des
 /// Fuzzing-Pakets. Liefert die Zahl der fremden Pakete und die Verstöße.
 fn check_fuzz(lock: &str, workspace: &BTreeSet<String>, own: &str) -> (usize, Vec<String>) {
     let packages = packages(lock);
-    // Was `libfuzzer-sys` mitbringt, über einen eigenen Stapel (RS-8).
+    // Die Einträge, die `libfuzzer-sys` mitbringt, nach Name, Version und
+    // Quelle, über einen eigenen Stapel (RS-8).
     let mut allowed = BTreeSet::new();
-    let mut pending = vec![FUZZ_EXCEPTION];
-    while let Some(name) = pending.pop() {
-        if !allowed.insert(name) {
+    let mut pending: Vec<usize> = packages
+        .iter()
+        .enumerate()
+        .filter(|(_, package)| {
+            package.name == FUZZ_EXCEPTION && package.source.as_deref() == Some(CRATES_IO)
+        })
+        .map(|(index, _)| index)
+        .collect();
+    while let Some(index) = pending.pop() {
+        if !allowed.insert(index) {
             continue;
         }
-        for package in packages.iter().filter(|package| package.name == name) {
-            pending.extend(package.dependencies.iter().map(String::as_str));
+        if let Some(package) = packages.get(index) {
+            let dependencies = package.dependencies.iter();
+            pending.extend(dependencies.filter_map(|dependency| resolve(&packages, dependency)));
         }
     }
     let mut external = 0;
     let mut violations = Vec::new();
-    for package in &packages {
-        let name = &package.name;
+    for (index, package) in packages.iter().enumerate() {
+        let (name, label) = (&package.name, package.label());
         match &package.source {
             Some(source) => {
                 external += 1;
                 if source != CRATES_IO {
-                    violations.push(format!("{name} ({source})"));
-                } else if !allowed.contains(name.as_str()) {
-                    violations.push(format!("{name} (nicht von {FUZZ_EXCEPTION} mitgebracht)"));
+                    violations.push(format!("{label} ({source})"));
+                } else if !allowed.contains(&index) {
+                    violations.push(format!("{label} (nicht von {FUZZ_EXCEPTION} mitgebracht)"));
                 }
             }
             None if name == own || workspace.contains(name) => {}
             None => violations.push(format!(
-                "{name} (ohne Quelle, aber weder das Fuzzing-Paket noch ein Crate des Workspace)"
+                "{label} (ohne Quelle, aber weder das Fuzzing-Paket noch ein Crate des Workspace)"
             )),
         }
     }
@@ -787,23 +826,32 @@ dependencies = [
 
     #[test]
     fn lock_packages_with_dependencies() {
-        let lock = "[[package]]\nname = \"a\"\ndependencies = [\n \"b 1.0.0\",\n \"c\",\n]\n\n\
-                    [[package]]\nname = \"b\"\nsource = \"registry+x\"\n";
+        let lock = "[[package]]\nname = \"a\"\ndependencies = [\n \"b 1.0.0 (registry+x)\",\n \"c\",\n]\n\n\
+                    [[package]]\nname = \"b\"\nversion = \"1.0.0\"\nsource = \"registry+x\"\n";
+        let packages = packages(lock);
         assert_eq!(
-            packages(lock),
+            packages,
             [
                 Package {
                     name: "a".into(),
+                    version: None,
                     source: None,
-                    dependencies: vec!["b".into(), "c".into()],
+                    dependencies: vec!["b 1.0.0 (registry+x)".into(), "c".into()],
                 },
                 Package {
                     name: "b".into(),
+                    version: Some("1.0.0".into()),
                     source: Some("registry+x".into()),
                     dependencies: Vec::new(),
                 },
             ]
         );
+        assert_eq!(resolve(&packages, "b"), Some(1));
+        assert_eq!(resolve(&packages, "b 1.0.0"), Some(1));
+        assert_eq!(resolve(&packages, "b 1.0.0 (registry+x)"), Some(1));
+        assert_eq!(resolve(&packages, "b 2.0.0"), None);
+        assert_eq!(resolve(&packages, "b 1.0.0 (registry+y)"), None);
+        assert_eq!(resolve(&packages, "c"), None);
     }
 
     #[test]
@@ -832,10 +880,10 @@ dependencies = [
             (
                 3,
                 vec![
-                    "cc (git+https://example.com/cc.git#0123456)".to_owned(),
-                    "serde (nicht von libfuzzer-sys mitgebracht)".to_owned(),
-                    "vendored (ohne Quelle, aber weder das Fuzzing-Paket noch ein Crate des \
-                     Workspace)"
+                    "cc 1.10.0 (git+https://example.com/cc.git#0123456)".to_owned(),
+                    "serde 1.0.0 (nicht von libfuzzer-sys mitgebracht)".to_owned(),
+                    "vendored 0.1.0 (ohne Quelle, aber weder das Fuzzing-Paket noch ein Crate \
+                     des Workspace)"
                         .to_owned(),
                 ]
             )
@@ -849,7 +897,34 @@ dependencies = [
             fuzz(&lock),
             (
                 3,
-                vec!["bar (nicht von libfuzzer-sys mitgebracht)".to_owned()]
+                vec!["bar 0.2.0 (nicht von libfuzzer-sys mitgebracht)".to_owned()]
+            )
+        );
+    }
+
+    #[test]
+    fn other_versions_of_brought_crates_are_reported() {
+        // Eine zweite Version von `cc`, die das Fuzzing-Paket selbst nutzt,
+        // mit einer Abhängigkeit, die auch `libfuzzer-sys` nicht mitbringt.
+        let lock = FUZZ_LOCK
+            .replace(" \"cc\",\n]", " \"cc 1.10.0\",\n]")
+            .replace(
+                " \"libfuzzer-sys\",\n \"mb-base\",\n]",
+                " \"cc 1.0.0\",\n \"libfuzzer-sys\",\n \"mb-base\",\n]",
+            )
+            + "\n[[package]]\nname = \"cc\"\nversion = \"1.0.0\"\n\
+               source = \"registry+https://github.com/rust-lang/crates.io-index\"\n\
+               dependencies = [\n \"shlex\",\n]\n\n\
+               [[package]]\nname = \"shlex\"\nversion = \"1.3.0\"\n\
+               source = \"registry+https://github.com/rust-lang/crates.io-index\"\n";
+        assert_eq!(
+            fuzz(&lock),
+            (
+                4,
+                vec![
+                    "cc 1.0.0 (nicht von libfuzzer-sys mitgebracht)".to_owned(),
+                    "shlex 1.3.0 (nicht von libfuzzer-sys mitgebracht)".to_owned(),
+                ]
             )
         );
     }
