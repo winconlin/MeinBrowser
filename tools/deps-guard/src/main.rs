@@ -5,11 +5,12 @@
 //!    außerhalb (crates.io, Git oder eine andere Registry) und verstößt gegen
 //!    den Grundsatz, alles selbst zu bauen.
 //! 2. Die Metadaten von Cargo (`cargo metadata`, das keine Build-Skripte
-//!    ausführt): Jedes Paket im Abhängigkeitsgraphen, auch Entwicklungs- und
-//!    Build-Abhängigkeiten, muss ein Mitglied des Workspace sein, ohne
-//!    Quelle, und sein Manifest muss nach dem Auflösen symbolischer Verweise
-//!    unter der Wurzel des Workspace liegen. Pfadabhängigkeiten haben keinen
-//!    `source`-Eintrag; eine außerhalb des Workspace fällt erst hier auf.
+//!    ausführt) mit allen Features: Jedes Paket im Abhängigkeitsgraphen, auch
+//!    Entwicklungs-, Build- und optionale Abhängigkeiten, muss ein Mitglied
+//!    des Workspace sein, ohne Quelle, und sein Manifest muss nach dem
+//!    Auflösen symbolischer Verweise unter der Wurzel des Workspace liegen.
+//!    Pfadabhängigkeiten haben keinen `source`-Eintrag; eine außerhalb des
+//!    Workspace fällt erst hier auf.
 //!
 //! Aufruf: `cargo run -p deps-guard [-- <Pfad zu Cargo.lock>]`. Das Manifest
 //! des Workspace liegt neben `Cargo.lock`.
@@ -180,11 +181,13 @@ fn check_metadata(metadata: &Value) -> Result<(usize, Vec<Outsider>), String> {
 }
 
 /// Die Metadaten des Workspace mit diesem Manifest, ohne Netz und ohne
-/// `Cargo.lock` zu ändern.
+/// `Cargo.lock` zu ändern. Mit allen Features, sonst fehlen optionale
+/// Abhängigkeiten, die kein Standard-Feature einschaltet.
 fn metadata(manifest: &Path) -> Result<Value, String> {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let output = Command::new(cargo)
-        .args(["metadata", "--format-version", "1", "--locked", "--offline"])
+        .args(["metadata", "--format-version", "1", "--all-features"])
+        .args(["--locked", "--offline"])
         .arg("--manifest-path")
         .arg(manifest)
         .output()
@@ -538,6 +541,37 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
         let lock = std::fs::read_to_string(root.join("Cargo.lock")).expect("lesen");
         assert_eq!(check(&lock).external, Vec::new());
         let error = guard(&root.join("Cargo.lock")).expect_err("Pfad nach draußen");
+        assert!(
+            error.contains("foreign (außerhalb des Workspace"),
+            "{error}"
+        );
+        std::fs::remove_dir_all(&base).expect("aufräumen");
+    }
+
+    #[test]
+    fn optional_path_dependency_outside_the_workspace_is_found() {
+        // Ohne eingeschaltetes Feature fehlt das Paket in den Metadaten.
+        let base = directory("optional");
+        let root = base.join("ws");
+        package(&base.join("foreign"), "foreign", "");
+        package(
+            &root.join("app"),
+            "app",
+            "foreign = { path = \"../../foreign\", optional = true }\n",
+        );
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"app\"]\nresolver = \"3\"\n",
+        )
+        .expect("schreiben");
+        std::fs::write(
+            root.join("Cargo.lock"),
+            "version = 4\n\n[[package]]\nname = \"app\"\nversion = \"0.0.0\"\n\
+             dependencies = [\n \"foreign\",\n]\n\n\
+             [[package]]\nname = \"foreign\"\nversion = \"0.0.0\"\n",
+        )
+        .expect("schreiben");
+        let error = guard(&root.join("Cargo.lock")).expect_err("optionaler Pfad nach draußen");
         assert!(
             error.contains("foreign (außerhalb des Workspace"),
             "{error}"

@@ -51,7 +51,7 @@ Ganz ohne fremden Code kann kein Programm laufen: Um ein Fenster zu öffnen, ins
 | Testsammlungen | Annahme: erlaubt. web-platform-tests, Test262, html5lib-tests und andere sind Prüfmaßstab, kein Bestandteil des Browsers. |
 | Datensätze, die man nicht erfinden kann | Annahme: erlaubt, eingelesen mit eigenen Generatoren. Dazu gehören die Unicode-Zeichendatenbank, CLDR, die IANA-Zeitzonendatenbank, die Public Suffix List, die Liste vertrauenswürdiger Wurzelzertifikate, die HSTS-Preload-Liste, Silbentrennmuster und die IDL-Blöcke aus den Spezifikationen. Die Lizenzen jedes Datensatzes dokumentieren wir im Repository. |
 
-**Durchsetzung:** Eine CI-Prüfung (`tools/deps-guard`) lehnt jeden Pull Request ab, dessen `Cargo.lock` ein Paket mit externer Quelle enthält (also mit einem `source`-Eintrag). Weil Pfadabhängigkeiten keinen solchen Eintrag haben, prüft sie zusätzlich die Metadaten von Cargo: Jedes Paket im Abhängigkeitsgraphen muss ein Mitglied des Workspace sein, und sein Manifest muss nach dem Auflösen symbolischer Verweise im Workspace liegen. So bleibt die Regel nicht nur ein Vorsatz.
+**Durchsetzung:** Eine CI-Prüfung (`tools/deps-guard`) lehnt jeden Pull Request ab, dessen `Cargo.lock` ein Paket mit externer Quelle enthält (also mit einem `source`-Eintrag). Weil Pfadabhängigkeiten keinen solchen Eintrag haben, prüft sie zusätzlich die Metadaten von Cargo mit allen Features: Jedes Paket im Abhängigkeitsgraphen, auch optionale Abhängigkeiten, muss ein Mitglied des Workspace sein, und sein Manifest muss nach dem Auflösen symbolischer Verweise im Workspace liegen. So bleibt die Regel nicht nur ein Vorsatz.
 
 ### 1.2 Neu, wo es nützt, und exakt, wo das Web es verlangt
 
