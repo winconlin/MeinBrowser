@@ -214,13 +214,23 @@ pub struct Inflated {
 /// Dekodiert Deflate-Daten. Mehr als `limit` Bytes Ausgabe sind ein
 /// Fehler, damit kleine Eingaben nicht beliebig viel Speicher belegen.
 pub fn inflate(input: &[u8], limit: usize) -> Result<Inflated, Error> {
+    inflate_with_capacity(input, limit, 0)
+}
+
+/// Wie [`inflate`], aber mit Speicher für `capacity` Bytes Ausgabe von
+/// Anfang an. Ist `capacity` die Grenze, wächst die Ausgabe nicht nach.
+pub(crate) fn inflate_with_capacity(
+    input: &[u8],
+    limit: usize,
+    capacity: usize,
+) -> Result<Inflated, Error> {
     let mut bits = Bits {
         input,
         pos: 0,
         buffer: 0,
         count: 0,
     };
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(capacity);
     let incomplete = |data| Inflated {
         data,
         consumed: input.len(),

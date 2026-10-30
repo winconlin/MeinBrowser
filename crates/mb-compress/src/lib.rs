@@ -80,6 +80,17 @@ impl std::error::Error for Error {}
 /// Dekodiert einen zlib-Strom (RFC 1950) mit höchstens `limit` Bytes
 /// Ausgabe. Was nach der Prüfsumme kommt, zählt nicht.
 pub fn zlib_decompress(input: &[u8], limit: usize) -> Result<Vec<u8>, Error> {
+    zlib(input, limit, 0)
+}
+
+/// Wie [`zlib_decompress`] für eine Ausgabe, deren Größe der Aufrufer
+/// kennt: Der Speicher für `size` Bytes wird gleich belegt und wächst nicht
+/// nach; mehr als `size` Bytes sind ein Fehler.
+pub fn zlib_decompress_sized(input: &[u8], size: usize) -> Result<Vec<u8>, Error> {
+    zlib(input, size, size)
+}
+
+fn zlib(input: &[u8], limit: usize, capacity: usize) -> Result<Vec<u8>, Error> {
     let Some(&[method, flags]) = input.get(..2) else {
         return Err(Error::UnexpectedEnd);
     };
@@ -93,7 +104,7 @@ pub fn zlib_decompress(input: &[u8], limit: usize) -> Result<Vec<u8>, Error> {
         return Err(Error::Dictionary);
     }
     let body = input.get(2..).unwrap_or_default();
-    let inflated = inflate(body, limit)?;
+    let inflated = inflate::inflate_with_capacity(body, limit, capacity)?;
     if !inflated.finished {
         return Err(Error::UnexpectedEnd);
     }

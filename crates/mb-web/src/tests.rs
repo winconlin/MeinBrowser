@@ -294,3 +294,28 @@ fn special_files_are_refused_at_once() {
     assert_eq!(read_file(&file_url(&fifo).expect("URL")), None);
     std::fs::remove_dir_all(&directory).expect("aufräumen");
 }
+
+/// Die Zahl der Bilder in der Szene der Seite.
+fn image_count(page: &Page) -> usize {
+    let library = FontLibrary::new(Box::new(|_| None));
+    let fonts = Fonts::new(&library);
+    page.render(&fonts, 800.0, 600.0)
+        .items
+        .iter()
+        .filter(|item| matches!(item, Item::Image { .. }))
+        .count()
+}
+
+#[test]
+fn images_are_decoded_only_within_the_budget() {
+    let html = b"<!DOCTYPE html><img src=i.png>".to_vec();
+    // 32 × 32 Pixel mit 16 Bit RGBA.
+    let png = testdata::read_bytes("image-png", "tests/pngsuite/basn6a16.png");
+    let files = [("a.html", html.clone()), ("i.png", png.clone())];
+    let length = |bytes: &[u8]| u64::try_from(bytes.len()).expect("Länge");
+    // Dokument, Bilddatei, die Kopie der Bilddaten im Dekoder und dessen
+    // Puffer.
+    let needed = length(&html) + 2 * length(&png) + 32 * 32 * mb_image::png::DECODE_BYTES_PER_PIXEL;
+    assert_eq!(image_count(&load_within("a.html", &files, needed)), 1);
+    assert_eq!(image_count(&load_within("a.html", &files, needed - 1)), 0);
+}

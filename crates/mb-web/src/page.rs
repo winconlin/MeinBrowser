@@ -52,11 +52,6 @@ const MAX_IMAGE_PIXELS: u64 = 1 << 26;
 /// vielen Bildern, aber auch für Geräte mit wenig Speicher.
 pub const PAGE_BYTES: u64 = 256 << 20;
 
-/// So viele Bytes braucht das Dekodieren eines PNG höchstens je Pixel:
-/// entpackte und rekonstruierte Daten mit je bis zu acht Bytes (16 Bit
-/// RGBA), dazu vier für das Ergebnis.
-const DECODE_BYTES_PER_PIXEL: u64 = 20;
-
 /// So viele Arbeitsschritte dürfen Stil und Layout einer Seite kosten (siehe
 /// `mb_base::budget`). Festgelegt von diesem Browser nach Messungen vom
 /// 30.10.2026 (Release-Build): Die 796 Dateien der Referenztests für M1
@@ -278,8 +273,10 @@ impl Page {
             .filter(|bytes| self.bytes.spend(length(bytes)))
             .and_then(|bytes| {
                 // Nur so viele Pixel, wie das Budget mit den Puffern des
-                // Dekoders erlaubt; bezahlt werden danach die des Ergebnisses.
-                let pixels = MAX_IMAGE_PIXELS.min(self.bytes.left() / DECODE_BYTES_PER_PIXEL);
+                // Dekoders und seiner Kopie der Bilddaten erlaubt; bezahlt
+                // werden danach die Pixel des Ergebnisses.
+                let left = self.bytes.left().saturating_sub(length(&bytes));
+                let pixels = MAX_IMAGE_PIXELS.min(left / mb_image::png::DECODE_BYTES_PER_PIXEL);
                 decode_image(&bytes, pixels)
             })
             .filter(|image| {
