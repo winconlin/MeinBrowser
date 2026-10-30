@@ -89,6 +89,9 @@ version = "0.0.0"
 [[package]]
 name = "mb-js"
 version = "0.0.0"
+dependencies = [
+ "mb-unicode",
+]
 
 [[package]]
 name = "mb-json"
