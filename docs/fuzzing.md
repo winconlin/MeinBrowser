@@ -2,7 +2,7 @@
 
 Die Parser werden mit `cargo-fuzz` und libFuzzer geprüft. `libfuzzer-sys` ist dafür als einzige Ausnahme von der Regel „keine fremden Crates“ zugelassen (entschieden am 30.10.2026, siehe `docs/architektur.md`, Abschnitt 14). Die Ausnahme gilt nur für dieses Entwicklungswerkzeug; weitere fremde Crates deckt sie nicht.
 
-Das Werkzeug liegt in einem eigenen Cargo-Workspace unter `fuzz/`, mit eigenem Lockfile. Die Browser-Crates und ihr Lockfile bleiben frei von fremden Abhängigkeiten; der normale Abhängigkeitswächter bleibt aktiv.
+Das Werkzeug liegt in einem eigenen Cargo-Workspace unter `fuzz/`, mit eigenem Lockfile. Die Browser-Crates und ihr Lockfile bleiben frei von fremden Abhängigkeiten; der normale Abhängigkeitswächter bleibt aktiv. Er prüft auch `fuzz/Cargo.lock`: Fremd darf dort nur sein, was `libfuzzer-sys` von crates.io über die Abhängigkeiten in dieser Datei mitbringt.
 
 libFuzzer verändert Eingaben anhand der gemessenen Codeabdeckung. Die Ziele prüfen die echten Parser und zusätzliche Eigenschaften, beispielsweise begrenzte Dekoderausgaben. Abstürze, verletzte Zusicherungen und überschrittene Ressourcenlimits lassen den Lauf fehlschlagen. Ein erfolgreicher begrenzter Lauf beweist keine Fehlerfreiheit.
 
