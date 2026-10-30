@@ -47,7 +47,7 @@ Ganz ohne fremden Code kann kein Programm laufen: Um ein Fenster zu öffnen, ins
 | Rust-Sprache und Standardbibliothek | Erlaubt (`core`, `alloc`, `std`). |
 | Schnittstellen des Betriebssystems | Erlaubt: Systemaufrufe, Fenster und Eingabe, Zwischenablage, Barrierefreiheit, Zertifikatsspeicher, Schlüsselbund. Die Anbindung (FFI-Deklarationen) schreiben wir selbst, also keine Crates wie `libc`, `windows-sys` oder `objc`. |
 | Grafiktreiber-Schnittstellen | Erlaubt: Vulkan, Metal, Direct3D 12. |
-| Werkzeuge, die nicht ausgeliefert werden | Annahme: erlaubt. Gemeint sind Compiler, Cargo, Git, Profiler und Fuzzing-Werkzeuge der Toolchain. |
+| Werkzeuge, die nicht ausgeliefert werden | Annahme: erlaubt. Gemeint sind Compiler, Cargo, Git, Profiler und Fuzzing-Werkzeuge der Toolchain. Dazu kommt als einzige fremde Crate `libfuzzer-sys` im getrennten Fuzzing-Workspace `fuzz/` (entschieden am 30.10.2026, [14](#14-offene-entscheidungen)). |
 | Testsammlungen | Annahme: erlaubt. web-platform-tests, Test262, html5lib-tests und andere sind Prüfmaßstab, kein Bestandteil des Browsers. |
 | Datensätze, die man nicht erfinden kann | Annahme: erlaubt, eingelesen mit eigenen Generatoren. Dazu gehören die Unicode-Zeichendatenbank, CLDR, die IANA-Zeitzonendatenbank, die Public Suffix List, die Liste vertrauenswürdiger Wurzelzertifikate, die HSTS-Preload-Liste, Silbentrennmuster und die IDL-Blöcke aus den Spezifikationen. Die Lizenzen jedes Datensatzes dokumentieren wir im Repository. |
 
@@ -480,8 +480,8 @@ Jede Schicht soll auch dann noch schützen, wenn die davor versagt hat.
 10. **Oberfläche:** Die Adresszeile zeigt die Herkunft eindeutig. Internationale Domainnamen, die mit verwechselbaren Zeichen arbeiten, werden nach den Regeln von UTS #39 (Unicode Security Mechanisms) als Punycode angezeigt. Die Oberfläche des Browsers liegt immer außerhalb des Bereichs, in den eine Seite zeichnen kann. Vollbild und Mauszeigersperre werden deutlich angekündigt.
 11. **Erweiterungen, Mods und Skins:** Berechtigungen werden vor der Installation angezeigt, Zugriff auf Websites lässt sich auch erst bei Bedarf erteilen. Erweiterungen laufen in eigenen Zellen, Inhalts-Skripte in isolierten Welten. Mods laufen in der WebAssembly-Sandbox und bekommen nur die Fähigkeiten, die der Nutzer freigibt. Skins sind reine Daten ohne Code und dürfen nur lokale Ressourcen laden, damit sie weder nachladen noch mitlesen können.
 12. **Datenschutz:** Vorschlag: Speicher und Cookies werden standardmäßig nach der obersten Website getrennt (Partitionierung), damit eingebettete Inhalte Nutzer nicht über Websites hinweg verfolgen können.
-13. **Lieferkette:** keine fremden Crates (der Abhängigkeitswächter läuft bereits in der CI), keine fremden GitHub Actions (die CI holt den Quelltext selbst mit git; braucht es doch einmal eine Action, wird sie auf einen festen Commit-Hash festgelegt), reproduzierbare Builds als Ziel, Updates signiert mit einem Schlüssel, der nicht auf dem Build-Server liegt.
-14. **Fehler finden, bevor andere es tun:** Fuzzing für jeden Parser ab dem ersten Tag (HTML, CSS, URL, JavaScript, Bilder, Schriften, Kompression, TLS, IPC-Nachrichten), nächtlich in der CI. Verbreitete Rust-Fuzzer werden als Crate eingebunden und fallen damit unter die Regel „keine fremden Crates“. Deshalb entsteht ein eigener Fuzzer im Workspace, abdeckungsgesteuert über die SanitizerCoverage von LLVM ([Abschnitt 14](#14-offene-entscheidungen)). Umgesetzt ist er noch nicht.
+13. **Lieferkette:** keine fremden Crates (der Abhängigkeitswächter läuft bereits in der CI; die Ausnahme für den Fuzzing-Workspace `fuzz/` steht in Punkt 14), keine fremden GitHub Actions (die CI holt den Quelltext selbst mit git; braucht es doch einmal eine Action, wird sie auf einen festen Commit-Hash festgelegt), reproduzierbare Builds als Ziel, Updates signiert mit einem Schlüssel, der nicht auf dem Build-Server liegt.
+14. **Fehler finden, bevor andere es tun:** Fuzzing für jeden Parser ab dem ersten Tag (HTML, CSS, URL, JavaScript, Bilder, Schriften, Kompression, TLS, IPC-Nachrichten), nächtlich in der CI. Dafür gibt es `cargo-fuzz` mit libFuzzer in einem eigenen Cargo-Workspace unter `fuzz/`, mit eigenem Lockfile. `libfuzzer-sys` und die Crates, die es mitbringt, sind dort als einzige Ausnahme von „keine fremden Crates“ zugelassen; kein Crate des Browsers hängt von `fuzz/` ab, und weitere fremde Crates deckt die Ausnahme nicht ([Abschnitt 14](#14-offene-entscheidungen)). Ziele, Grenzen und der Umgang mit Funden stehen in `docs/fuzzing.md`.
 15. **Begrenzte Arbeit:** Was eine Seite an Rechenarbeit auslöst, bezahlt sie aus einem Budget mit festen Messstellen; ist es verbraucht oder bricht die Oberfläche den Auftrag ab, endet er mit einem Fehler statt weiterzurechnen. Bisher gilt das für Stil und Layout (`mb_base::Budget`). Ebenso hat eine Seite ein Budget an Bytes für alles, was sie lädt und dekodiert (`mb_web::PAGE_BYTES`), und von lokalen Dateien liest sie nur normale Dateien, keine Geräte oder Pipes, mit einer Grenze je Datei (`mb_web::read_file`). Wiederholte Arbeit wie verschachtelte Selektoren wird innerhalb eines Auftrags gemerkt, damit das Budget nicht schon bei gewöhnlichen Seiten ausgeht.
 16. **Umgang mit gemeldeten Lücken:** eine `SECURITY.md` mit vertraulichem Meldeweg (die private Schwachstellenmeldung von GitHub), Sicherheitshinweise zu jeder behobenen Lücke und schnelle Sicherheitsupdates. Vor Version 1.0 prüft ein externes Audit Kryptografie, Sandbox, IPC und JIT.
 
@@ -490,7 +490,7 @@ Jede Schicht soll auch dann noch schützen, wenn die davor versagt hat.
 | Meilenstein | Sicherheitsaufgaben |
 |---|---|
 | M0 | `SECURITY.md` und Meldeweg (erledigt), Abhängigkeitswächter (erledigt), keine fremden GitHub Actions (erledigt) |
-| M1 | Grenzen für Arbeit und Speicher je Seite (erledigt), Fuzzing für alle Parser, nächtlich in der CI (offen) |
+| M1 | Grenzen für Arbeit und Speicher je Seite (erledigt), Fuzzing für alle Parser, nächtlich in der CI (erledigt mit `fuzz/`) |
 | M2 | Belastungstests für den Garbage Collector, differentielle Tests der JavaScript-Engine |
 | M3 | TLS gegen Testvektoren, HSTS-Preload, Certificate Transparency und Widerrufsprüfung |
 | M5 | Zellen pro Website und Sandbox auf allen Stufe-1-Systemen, Prüfung aller IPC-Nachrichten, Berechtigungsdialoge, Regeln für die Adresszeile |
@@ -597,6 +597,7 @@ MeinBrowser/
 │   ├── deps-guard/          CI-Prüfung: keine externen Abhängigkeiten
 │   ├── testdata/            holt externe Testsammlungen in fester Version
 │   └── testrunner/          WPT- und Test262-Läufer
+├── fuzz/                    Fuzzing mit cargo-fuzz, eigener Workspace
 ├── data/                    Rohdaten mit Lizenzhinweisen
 ├── docs/                    Dokumentation (dieses Dokument)
 └── tests/                   eigene Tests
@@ -651,7 +652,7 @@ Was daraus folgt:
 
 - **Grenze des Eigenbaus:** Rust-Standardbibliothek sowie Betriebssystem- und Grafikschnittstellen sind erlaubt, alles andere ist eigen ([1.1](#11-was-komplett-eigen-hier-bedeutet)).
 - **Kryptografie und TLS:** selbst geschrieben, mit Testvektoren, Fuzzing und externem Audit ([4.11](#411-netzwerk-und-kryptografie)).
-- **Fuzzing-Werkzeug (30.10.2026):** ein eigener Fuzzer im Workspace, ohne Ausnahme von „keine fremden Crates“ ([8.2](#82-schutzschichten), Punkt 14).
+- **Fuzzing-Werkzeug (30.10.2026):** `cargo-fuzz` mit libFuzzer im getrennten Workspace `fuzz/`, mit `libfuzzer-sys` als einziger Ausnahme von „keine fremden Crates“ ([8.2](#82-schutzschichten), Punkt 14). Zuvor (PR #40) war ein eigener Fuzzer ohne Ausnahme vorgesehen.
 
 **Noch offen**
 
