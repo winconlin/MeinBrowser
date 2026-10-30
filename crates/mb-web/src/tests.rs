@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use mb_base::{Budget, Cancel, Exhausted};
 use mb_layout::Fonts;
@@ -355,4 +356,130 @@ fn pages_scroll_and_know_the_device_pixel_ratio() {
         })
         .collect();
     assert_eq!(rects, [(Rect::new(0.0, -100.0, 400.0, 0.5), GREEN)]);
+}
+
+/// Die Rechtecke der Szene in einem Viewport von `width` × 300 CSS-Pixeln.
+fn rects_at(page: &Page, width: f64) -> Vec<(Rect, Color)> {
+    let library = FontLibrary::new(Box::new(|_| None));
+    let fonts = Fonts::new(&library);
+    page.render(&fonts, width, 300.0)
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Rect { rect, color } => Some((*rect, *color)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn media_attributes_and_queries_follow_the_viewport() {
+    let page = load(
+        "a.html",
+        &[
+            (
+                "a.html",
+                b"<!DOCTYPE html><style>body { margin: 0 } div { height: 10px }</style>\
+                  <style media='(min-width: 500px)'>div { background: green }</style>\
+                  <style media=print>div { background: red }</style>\
+                  <link rel=stylesheet href=s.css media='(max-width: 499px)'>\
+                  <style>@media (max-width: 499px) { div { height: 20px } }</style><div></div>"
+                    .to_vec(),
+            ),
+            ("s.css", b"div { background: blue }".to_vec()),
+        ],
+    );
+    let blue = Color::rgb(0, 0, 255);
+    assert_eq!(
+        rects_at(&page, 800.0),
+        [(Rect::new(0.0, 0.0, 800.0, 10.0), GREEN)]
+    );
+    // Ein schmaler Viewport stellt die Regeln neu zusammen, ein breiter
+    // wieder zurück.
+    assert_eq!(
+        rects_at(&page, 400.0),
+        [(Rect::new(0.0, 0.0, 400.0, 20.0), blue)]
+    );
+    assert_eq!(
+        rects_at(&page, 600.0),
+        [(Rect::new(0.0, 0.0, 600.0, 10.0), GREEN)]
+    );
+}
+
+#[test]
+fn imports_load_once_per_rule_without_cycles() {
+    let files: BTreeMap<String, Vec<u8>> = [
+        (
+            "a.html",
+            "<!DOCTYPE html><link rel=stylesheet href=css/main.css>\
+             <style>@import 'css/inline.css' layer(x);</style><div class=é></div>"
+                .as_bytes()
+                .to_vec(),
+        ),
+        (
+            "css/main.css",
+            b"@charset \"iso-8859-1\"; @import 'parts/size.css'; \
+              @import url(parts/never.css) supports(colour: red); @import 'main.css'; \
+              @import 'parts/narrow.css' (max-width: 499px); body { margin: 0 }"
+                .to_vec(),
+        ),
+        (
+            "css/parts/size.css",
+            b"@import '../main.css'; @import 'deep.css'; div { height: 10px }".to_vec(),
+        ),
+        // In der Kodierung von `main.css`, die über `size.css` weitergeht.
+        (
+            "css/parts/deep.css",
+            b".\xE9 { background: green }".to_vec(),
+        ),
+        ("css/parts/narrow.css", b"div { height: 30px }".to_vec()),
+        ("css/parts/never.css", b"div { background: red }".to_vec()),
+        (
+            "css/inline.css",
+            b"div { background: red; height: 50px }".to_vec(),
+        ),
+    ]
+    .into_iter()
+    .map(|(name, bytes)| (format!("file:///t/{name}"), bytes))
+    .collect();
+    let fetched = Arc::new(Mutex::new(Vec::new()));
+    let log = Arc::clone(&fetched);
+    let url = Url::parse("file:///t/a.html", None).expect("URL");
+    let page = Page::load(
+        url,
+        Box::new(move |url: &Url| {
+            let key = url.serialize(true);
+            log.lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(key.trim_start_matches("file:///t/").to_owned());
+            files.get(&key).cloned()
+        }),
+    )
+    .expect("Seite");
+    let fetched = fetched
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone();
+    // Nicht geladen werden `never.css` (`supports()` ist nicht erfüllt) und
+    // die Stylesheets, die sich selbst einbinden würden.
+    assert_eq!(
+        fetched,
+        [
+            "a.html",
+            "css/main.css",
+            "css/parts/size.css",
+            "css/parts/deep.css",
+            "css/parts/narrow.css",
+            "css/inline.css",
+        ]
+    );
+    // Die Ebene `x` verliert gegen die Regeln ohne Ebene.
+    assert_eq!(
+        rects_at(&page, 800.0),
+        [(Rect::new(0.0, 0.0, 800.0, 10.0), GREEN)]
+    );
+    assert_eq!(
+        rects_at(&page, 400.0),
+        [(Rect::new(0.0, 0.0, 400.0, 30.0), GREEN)]
+    );
 }

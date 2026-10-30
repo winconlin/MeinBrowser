@@ -18,8 +18,8 @@ mod tests;
 
 pub use anb::{AnPlusB, parse_an_plus_b};
 pub use parser::{
-    AtRule, BlockKind, ComponentValue, ComponentValues, Context, Declaration, Iter, QualifiedRule,
-    Rule, RuleId, RuleTree, Syntax, SyntaxError, Values,
+    AtRule, BlockKind, ComponentValue, ComponentValues, Context, Declaration, DeclarationValues,
+    Iter, QualifiedRule, Rule, RuleId, RuleTree, Syntax, SyntaxError, Values,
     parse_comma_separated_component_value_list, parse_component_value, parse_component_value_list,
     parse_declaration, parse_declaration_list, parse_rule, parse_stylesheet,
 };

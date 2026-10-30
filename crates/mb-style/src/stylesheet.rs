@@ -3,11 +3,15 @@
 //!
 //! Unterstützt sind Stilregeln mit Verschachtelung nach CSS Nesting
 //! (verschachtelte Stilregeln, *nested group rules* und *nested declarations
-//! rules*), `@layer` als Block und als Anweisung (CSS Cascade 5) und
-//! `@namespace` (CSS Namespaces 3). `@import` wird erkannt, aber noch nicht
-//! geladen. Alle anderen At-Regeln fallen bisher weg, auch `@media` und
-//! `@supports`; sie ändern dann auch nicht, ob später noch `@namespace`
-//! stehen darf.
+//! rules*), `@layer` als Block und als Anweisung und `@import` (CSS Cascade
+//! 5), `@namespace` (CSS Namespaces 3) sowie `@media` und `@supports` (CSS
+//! Conditional 3). Alle anderen At-Regeln fallen bisher weg; sie ändern dann
+//! auch nicht, ob später noch `@import` und `@namespace` stehen dürfen.
+//!
+//! Die Stylesheets hinter `@import` lädt der Aufrufer
+//! ([`StyleSheet::pending_imports`]). Ob die Bedingungen in `@media` und
+//! nach `@import` zutreffen, entscheidet erst die Kaskade für ein Gerät; die
+//! Bedingungen in `@supports` und `supports()` stehen schon beim Lesen fest.
 
 use std::sync::Arc;
 
@@ -15,19 +19,33 @@ use mb_css::{
     AtRule, ComponentValue, ComponentValues, Context, Declaration, QualifiedRule, Rule, RuleId,
     RuleTree, Source, Token, parse_stylesheet,
 };
+use mb_url::Url;
 
 use crate::declarations::{Declared, parse_declaration, parse_declarations};
+use crate::media::MediaQueryList;
 use crate::selectors::{Namespaces, SelectorList};
+use crate::supports;
 use crate::values::{ParseContext, is_css_wide_keyword};
 
 /// Wie tief Regeln verschachtelt sein dürfen; tiefere fallen weg. Das
 /// Lesen steigt rekursiv ab, die Grenze schützt vor einem Stapelüberlauf.
 const MAX_DEPTH: usize = 100;
 
+/// Wie tief Stylesheets mit `@import` ineinander stecken dürfen; tiefere
+/// lädt der Aufrufer nicht, und die Kaskade liest sie nicht. Festgelegt von
+/// diesem Browser; CSS Cascade 5 nennt keine Grenze.
+pub const MAX_IMPORT_DEPTH: usize = 32;
+
 /// Ein gelesenes Stylesheet.
 #[derive(Clone, Debug, Default)]
 pub struct StyleSheet {
     pub(crate) rules: Vec<CssRule>,
+    /// Die gültigen `@import`-Regeln. Sie stehen hinter den ersten
+    /// `import_position` Regeln, die alle `@layer`-Anweisungen sind.
+    pub(crate) imports: Vec<ImportRule>,
+    pub(crate) import_position: usize,
+    /// Die Media Queries des Elements, das auf das Stylesheet verweist.
+    pub(crate) media: Option<Arc<MediaQueryList>>,
 }
 
 /// Eine Regel eines Stylesheets.
@@ -45,6 +63,51 @@ pub(crate) enum CssRule {
     /// Stilregel oder einer *nested group rule*. Sie gelten mit den
     /// Selektoren der nächsten Stilregel darüber.
     NestedDeclarations(Arc<[Declared]>),
+    /// `@media`
+    Media {
+        queries: Arc<MediaQueryList>,
+        rules: Vec<CssRule>,
+    },
+    /// `@supports` mit dem Ergebnis der Bedingung
+    Supports {
+        matches: bool,
+        rules: Vec<CssRule>,
+    },
+}
+
+/// Eine `@import`-Regel.
+#[derive(Clone, Debug)]
+pub(crate) struct ImportRule {
+    /// `None`, wenn die URL leer ist oder sich nicht auflösen lässt.
+    pub url: Option<Url>,
+    /// `layer` (`Some(None)`, eine anonyme Ebene) oder `layer(<name>)`.
+    pub layer: Option<Option<LayerName>>,
+    /// Ob die Bedingung in `supports()` erfüllt ist; ohne sie `true`.
+    pub supports: bool,
+    pub media: Arc<MediaQueryList>,
+    /// Das geladene Stylesheet.
+    pub sheet: Option<Box<StyleSheet>>,
+}
+
+/// Eine `@import`-Regel, deren Stylesheet noch geladen werden soll.
+#[derive(Debug)]
+pub struct PendingImport<'s> {
+    url: Url,
+    rule: &'s mut ImportRule,
+}
+
+impl PendingImport<'_> {
+    /// Die URL des Stylesheets, aufgelöst zur Basis des importierenden.
+    pub fn url(&self) -> &Url {
+        &self.url
+    }
+
+    /// Setzt das geladene Stylesheet ein. Es gilt mit dem Ursprung und an
+    /// der Stelle der Regel, auch wenn dasselbe Stylesheet noch anderswo
+    /// eingebunden ist (CSS Cascade 5).
+    pub fn load(self, sheet: StyleSheet) {
+        self.rule.sheet = Some(Box::new(sheet));
+    }
 }
 
 /// Eine Stilregel (*style rule*).
@@ -73,9 +136,28 @@ impl StyleSheet {
             namespaces: Namespaces::default(),
             values: context,
         };
-        StyleSheet {
-            rules: reader.top_level(),
-        }
+        reader.top_level()
+    }
+
+    /// Setzt die Media Queries des Elements, das auf das Stylesheet
+    /// verweist, etwa aus dem Attribut `media`.
+    pub fn set_media(&mut self, media: MediaQueryList) {
+        self.media = Some(Arc::new(media));
+    }
+
+    /// Die `@import`-Regeln, deren Stylesheet noch geladen werden soll: mit
+    /// einer URL und ohne eine Bedingung in `supports()`, die nicht erfüllt
+    /// ist; dann darf es nicht geladen werden (CSS Cascade 5). Media Queries
+    /// verhindern das Laden nicht, denn sie können sich ändern.
+    pub fn pending_imports(&mut self) -> Vec<PendingImport<'_>> {
+        self.imports
+            .iter_mut()
+            .filter(|rule| rule.supports && rule.sheet.is_none())
+            .filter_map(|rule| {
+                let url = rule.url.clone()?;
+                Some(PendingImport { url, rule })
+            })
+            .collect()
     }
 }
 
@@ -141,7 +223,9 @@ impl<'a> Context for Grammar<'a> {
 
 /// Die unterstützten Gruppenregeln, deren Block Regeln enthält.
 fn is_group_rule(name: &str) -> bool {
-    name.eq_ignore_ascii_case("layer")
+    ["layer", "media", "supports"]
+        .iter()
+        .any(|group| name.eq_ignore_ascii_case(group))
 }
 
 /// Wie weit ein Stylesheet ist: `@import` und `@namespace` dürfen nur am
@@ -166,9 +250,11 @@ struct Reader<'t, 'v> {
 type Parent<'p> = Option<&'p Arc<SelectorList>>;
 
 impl Reader<'_, '_> {
-    /// Die Regeln auf oberster Ebene.
-    fn top_level(mut self) -> Vec<CssRule> {
+    /// Das Stylesheet aus den Regeln auf oberster Ebene.
+    fn top_level(mut self) -> StyleSheet {
         let mut rules = Vec::new();
+        let mut imports = Vec::new();
+        let mut import_position = 0;
         let mut stage = Stage::Start;
         for &id in self.tree.roots() {
             let Some(rule) = self.tree.get(id) else {
@@ -176,7 +262,14 @@ impl Reader<'_, '_> {
             };
             match rule {
                 Rule::At(at) if at.name.eq_ignore_ascii_case("import") => {
-                    if stage <= Stage::Imports && at.block.is_none() && is_import(&at.prelude) {
+                    if stage <= Stage::Imports
+                        && at.block.is_none()
+                        && let Some(import) = self.import(&at.prelude)
+                    {
+                        if imports.is_empty() {
+                            import_position = rules.len();
+                        }
+                        imports.push(import);
                         stage = Stage::Imports;
                     }
                 }
@@ -200,7 +293,69 @@ impl Reader<'_, '_> {
                 }
             }
         }
-        rules
+        StyleSheet {
+            rules,
+            imports,
+            import_position,
+            media: None,
+        }
+    }
+
+    /// Wofür Bedingungen in `@supports` gelesen werden.
+    fn supports_environment(&self) -> supports::Environment<'_> {
+        supports::Environment {
+            namespaces: &self.namespaces,
+            values: self.values,
+        }
+    }
+
+    /// `@import [ <url> | <string> ] [ layer | layer(<layer-name>) ]?
+    /// <import-conditions>`. Ein ungültiges `layer()` oder `supports()`
+    /// gehört dann zu den Media Queries, als ⟨general-enclosed⟩.
+    fn import(&self, prelude: &ComponentValues) -> Option<ImportRule> {
+        let values = trimmed(prelude);
+        let (first, rest) = values.split_first()?;
+        let text = url_text(first)?;
+        let url = if text.is_empty() {
+            None
+        } else {
+            Url::parse(text, self.values.base_url).ok()
+        };
+        let mut rest = skip_whitespace(rest);
+        let mut layer = None;
+        match rest.split_first() {
+            Some((ComponentValue::Token(Token::Ident(keyword)), tail))
+                if keyword.eq_ignore_ascii_case("layer") =>
+            {
+                layer = Some(None);
+                rest = skip_whitespace(tail);
+            }
+            Some((ComponentValue::Function { name, value }, tail))
+                if name.eq_ignore_ascii_case("layer") =>
+            {
+                let arguments: Vec<ComponentValue<'_>> = value.iter().collect();
+                if let Some(name) = layer_name(&arguments) {
+                    layer = Some(Some(name));
+                    rest = skip_whitespace(tail);
+                }
+            }
+            _ => {}
+        }
+        let mut matches = true;
+        if let Some((ComponentValue::Function { name, value }, tail)) = rest.split_first()
+            && name.eq_ignore_ascii_case("supports")
+            && let Some(result) = supports::import_condition(*value, self.supports_environment())
+        {
+            matches = result;
+            rest = tail;
+        }
+        Some(ImportRule {
+            url,
+            layer,
+            supports: matches,
+            media: Arc::new(MediaQueryList::from_values(rest)),
+            sheet: None,
+        })
     }
 
     /// Eine Regel in einem Stylesheet, einer Gruppenregel oder einer
@@ -213,6 +368,25 @@ impl Reader<'_, '_> {
             Rule::Qualified(rule) => self.style_rule(rule, parent, depth).map(CssRule::Style),
             Rule::At(rule) if rule.name.eq_ignore_ascii_case("layer") => {
                 self.layer(rule, parent, depth)
+            }
+            Rule::At(rule) if rule.name.eq_ignore_ascii_case("media") => {
+                let block = rule.block.as_ref()?;
+                let prelude: Vec<ComponentValue<'_>> = rule.prelude.iter().collect();
+                Some(CssRule::Media {
+                    queries: Arc::new(MediaQueryList::from_values(&prelude)),
+                    rules: self.children(block, parent, depth),
+                })
+            }
+            // Mit einer Bedingung, die nicht zur Grammatik passt, fällt die
+            // Regel samt Inhalt weg.
+            Rule::At(rule) if rule.name.eq_ignore_ascii_case("supports") => {
+                let block = rule.block.as_ref()?;
+                let prelude: Vec<ComponentValue<'_>> = rule.prelude.iter().collect();
+                let matches = supports::condition(&prelude, self.supports_environment())?;
+                Some(CssRule::Supports {
+                    matches,
+                    rules: self.children(block, parent, depth),
+                })
             }
             Rule::At(_) => None,
             // Deklarationen zwischen Regeln gibt es nur in Stilregeln und
@@ -284,14 +458,33 @@ fn trimmed<'a>(prelude: &'a ComponentValues) -> Vec<ComponentValue<'a>> {
     }
 }
 
-/// Ob ein Prelude zu `@import` passt: Es beginnt mit einer URL oder einer
-/// Zeichenkette. Was danach kommt (Ebene, Bedingungen), prüft noch niemand,
-/// denn geladen wird es ohnehin noch nicht.
-fn is_import(prelude: &ComponentValues) -> bool {
-    match trimmed(prelude).first() {
-        Some(ComponentValue::Token(Token::String(_) | Token::Url(_))) => true,
-        Some(ComponentValue::Function { name, .. }) => name.eq_ignore_ascii_case("url"),
-        _ => false,
+/// Ohne Leerraum am Anfang.
+fn skip_whitespace<'v, 'a>(values: &'v [ComponentValue<'a>]) -> &'v [ComponentValue<'a>] {
+    let start = values
+        .iter()
+        .position(|value| !matches!(value, ComponentValue::Token(Token::Whitespace)))
+        .unwrap_or(values.len());
+    values.get(start..).unwrap_or_default()
+}
+
+/// Der Text eines ⟨url⟩ oder ⟨string⟩: `url( <string> )`, `src( <string> )`
+/// oder ein ⟨url-token⟩ (Values 4, ohne ⟨url-modifier⟩).
+fn url_text<'a>(value: &ComponentValue<'a>) -> Option<&'a str> {
+    match value {
+        ComponentValue::Token(Token::String(text) | Token::Url(text)) => Some(text.as_str()),
+        ComponentValue::Function { name, value }
+            if name.eq_ignore_ascii_case("url") || name.eq_ignore_ascii_case("src") =>
+        {
+            let arguments: Vec<ComponentValue<'a>> = value
+                .iter()
+                .filter(|value| !matches!(value, ComponentValue::Token(Token::Whitespace)))
+                .collect();
+            match arguments.as_slice() {
+                [ComponentValue::Token(Token::String(text))] => Some(text.as_str()),
+                _ => None,
+            }
+        }
+        _ => None,
     }
 }
 
@@ -398,6 +591,10 @@ mod tests {
                 CssRule::NestedDeclarations(declarations) => {
                     format!("decls({})", declarations.len())
                 }
+                CssRule::Media { rules, .. } => format!("media({})", describe(rules)),
+                CssRule::Supports { matches, rules } => {
+                    format!("supports {matches}({})", describe(rules))
+                }
             });
         }
         parts.join(" ")
@@ -462,5 +659,111 @@ mod tests {
         );
         assert_eq!(rules("@namespace svg; svg|a {}"), 0);
         assert_eq!(rules("@namespace svg 'x' 'y'; svg|a {}"), 0);
+    }
+
+    #[test]
+    fn conditional_group_rules() {
+        let sheet = sheet(
+            "@media screen { a {} @layer x { b {} } } @media; @media {} \
+             @supports (color: red) { c {} } @supports (colour: red) { d {} } \
+             @supports foo { e {} } @supports (a: b) and (c: d) or (e: f) { f {} } \
+             .a { @media print { color: red; } @supports not (color: red) { g {} } }",
+        );
+        assert_eq!(
+            describe(&sheet.rules),
+            "media(style(0; ) layer x(style(0; ))) media() supports true(style(0; )) \
+             supports false(style(0; )) style(0; media(decls(1)) supports false(style(0; )))"
+        );
+    }
+
+    /// Die `@import`-Regeln: Ebene, ob `supports()` erfüllt ist und ob die
+    /// Media Queries auf dem Gerät für Tests zutreffen.
+    fn imports(text: &str) -> Vec<String> {
+        use crate::computed::{NoFonts, test_device};
+        sheet(text)
+            .imports
+            .iter()
+            .map(|import| {
+                let layer = match &import.layer {
+                    None => "-".to_owned(),
+                    Some(None) => "anonym".to_owned(),
+                    Some(Some(name)) => name.join("."),
+                };
+                let media = import.media.matches(&test_device(), &NoFonts);
+                format!("{layer} {} {media}", import.supports)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn import_rules() {
+        assert_eq!(
+            imports(
+                "@import 'a' LAYER; @import url('b') layer(x.y) supports(color: red) screen; \
+                 @import url(c) supports(colour: red) print; @import 'd' supports((color: red)); \
+                 @import src('e') supports(color: red !important) (min-width: 1px);"
+            ),
+            [
+                "anonym true true",
+                "x.y true true",
+                "- false false",
+                "- true true",
+                "- true true",
+            ]
+        );
+        // Ein ungültiges `layer()` oder `supports()` gehört zu den Media
+        // Queries und trifft nie zu; `layer` nach `supports()` auch nicht.
+        assert_eq!(
+            imports(
+                "@import 'a' layer(1); @import 'b' supports(foo bar); \
+                 @import 'c' supports(color: red) layer; @import 'd' layer screen;"
+            ),
+            [
+                "- true false",
+                "- true false",
+                "- true false",
+                "anonym true true"
+            ]
+        );
+        // Nur vor allen anderen Regeln außer `@layer`-Anweisungen, und ohne
+        // Regeln dazwischen.
+        assert!(imports("a {} @import 'x';").is_empty());
+        assert_eq!(imports("@layer a; @import 'x'; @import 'y';").len(), 2);
+        assert_eq!(imports("@import 'x'; @layer a; @import 'y';").len(), 1);
+        assert_eq!(
+            imports("@import 'x'; @namespace y 'z'; @import 'y';").len(),
+            1
+        );
+        assert!(imports("@import; @import x; @import 'x' {}").is_empty());
+        let sheet = sheet("@layer a, b; @layer c; @import 'x'; d {}");
+        assert_eq!(sheet.import_position, 2);
+    }
+
+    #[test]
+    fn pending_imports() {
+        let base = Url::parse("http://example.test/css/main.css", None).expect("URL");
+        let context = ParseContext {
+            base_url: Some(&base),
+            quirks_mode: false,
+        };
+        let mut sheet = StyleSheet::parse(
+            "@import 'a.css'; @import url(../b.css) print; @import 'c.css' supports(colour: red); \
+             @import ''; @import 'http://[';",
+            context,
+        );
+        let urls: Vec<String> = sheet
+            .pending_imports()
+            .iter()
+            .map(|pending| pending.url().href())
+            .collect();
+        assert_eq!(
+            urls,
+            ["http://example.test/css/a.css", "http://example.test/b.css"]
+        );
+        for pending in sheet.pending_imports() {
+            pending.load(StyleSheet::default());
+        }
+        assert!(sheet.pending_imports().is_empty());
+        assert_eq!(sheet.imports.len(), 5);
     }
 }

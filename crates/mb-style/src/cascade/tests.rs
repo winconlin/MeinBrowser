@@ -8,7 +8,10 @@ use mb_css::{Source, parse_component_value_list};
 use mb_dom::{Document, NodeId};
 use mb_html::{Options, ScriptingMode, parse_document};
 
+use mb_url::Url;
+
 use super::*;
+use crate::computed::test_device;
 use crate::declarations::parse_declaration_block;
 use crate::properties::{Direction, PropertyId, TextOrientation, WritingMode};
 use crate::values::{ParseContext, ToCss};
@@ -556,4 +559,140 @@ fn user_agent_sheet() {
     // Im *quirks mode* hat `form` unten einen Rand.
     let quirks = load(html, &[], true);
     quirks.check(&[("f", Longhand::MarginBottom, "1em")]);
+}
+
+/// Kaskadiert für ein Gerät, ohne die Stylesheets des HTML Standard.
+fn on_device(device: &Device, html: &str, sheets: &[&StyleSheet]) -> Page {
+    let document = document(html);
+    let mut builder = StylistBuilder::for_device(device, &NoFonts);
+    for sheet in sheets {
+        builder.add(Origin::Author, sheet);
+    }
+    Page {
+        document,
+        stylist: builder.build(),
+    }
+}
+
+#[test]
+fn conditional_rules() {
+    let sheet = StyleSheet::parse(
+        "@media (min-width: 500px) { #a { color: green } }
+         @media (max-width: 499px) { #a { color: red } }
+         @supports (color: red) { #b { color: green } }
+         @supports (colour: red) { #b { color: red } }
+         #c { color: green } @supports color: red { #c { color: red } }
+         @media print { @layer x { #d { color: red } } }
+         @layer y { #d { color: red } } @layer x { #d { color: green } }
+         #e { @media screen { color: green; } @media print { color: red; } }",
+        ParseContext::default(),
+    );
+    let page = on_device(
+        &test_device(),
+        "<div id=a></div><div id=b></div><div id=c></div><div id=d></div><div id=e></div>",
+        &[&sheet],
+    );
+    page.check(&[
+        ("a", Longhand::Color, "green"),
+        ("b", Longhand::Color, "green"),
+        // Eine ungültige Bedingung nimmt die Regel samt Inhalt weg.
+        ("c", Longhand::Color, "green"),
+        // Ebenen in Regeln, deren Bedingung nicht zutrifft, zählen nicht.
+        ("d", Longhand::Color, "green"),
+        ("e", Longhand::Color, "green"),
+    ]);
+}
+
+#[test]
+fn media_depends_on_the_device() {
+    let mut sheet = StyleSheet::parse(
+        "@media (min-width: 500px) { #a { color: green } }",
+        ParseContext::default(),
+    );
+    let wide = test_device();
+    let mut builder = StylistBuilder::for_device(&wide, &NoFonts);
+    builder.add(Origin::Author, &sheet);
+    let stylist = builder.build();
+    let mut narrow = test_device();
+    narrow.viewport_width = 400.0;
+    let mut wider = test_device();
+    wider.viewport_width = 1000.0;
+    assert!(stylist.is_valid_for(&wide, &NoFonts));
+    assert!(stylist.is_valid_for(&wider, &NoFonts));
+    assert!(!stylist.is_valid_for(&narrow, &NoFonts));
+    let page = on_device(&narrow, "<div id=a></div>", &[&sheet]);
+    page.check(&[("a", Longhand::Color, "-")]);
+    // Das Attribut `media` gilt für das ganze Stylesheet.
+    sheet.set_media(MediaQueryList::parse("print"));
+    let page = on_device(&wide, "<div id=a></div>", &[&sheet]);
+    page.check(&[("a", Longhand::Color, "-")]);
+    // Ohne Gerät gilt ein Viewport ohne Fläche.
+    let mut builder = StylistBuilder::new();
+    builder.add(
+        Origin::Author,
+        &StyleSheet::parse("@media (width: 0) { a {} }", ParseContext::default()),
+    );
+    let stylist = builder.build();
+    assert!(!stylist.is_valid_for(&wide, &NoFonts));
+}
+
+#[test]
+fn imports() {
+    let base = Url::parse("http://example.test/css/main.css", None).expect("URL");
+    fn context(base: &Url) -> ParseContext<'_> {
+        ParseContext {
+            base_url: Some(base),
+            quirks_mode: false,
+        }
+    }
+    let mut sheet = StyleSheet::parse(
+        "@layer first;
+         @import url(a.css) layer(lib);
+         @import 'b.css' supports(display: block) (min-width: 500px);
+         @import 'c.css' supports(colour: red);
+         @import 'd.css' print;
+         @import 'missing.css' layer(gone);
+         @layer first { #a { color: red } #h { color: red } }
+         @layer other { #g { color: green } } @layer gone { #g { color: red } }",
+        context(&base),
+    );
+    let files = [
+        (
+            "a.css",
+            "#a { color: green } @layer inner { #h { color: green } }",
+        ),
+        ("b.css", "#b { color: green }"),
+        ("c.css", "#c { color: red }"),
+        ("d.css", "#e { color: red }"),
+    ];
+    let mut loaded = Vec::new();
+    for pending in sheet.pending_imports() {
+        let url = pending.url().clone();
+        let name = url.pathname();
+        if let Some((file, text)) = files
+            .iter()
+            .find(|(file, _)| name == format!("/css/{file}"))
+        {
+            loaded.push(*file);
+            pending.load(StyleSheet::parse(text, context(&url)));
+        }
+    }
+    // Mit einer Bedingung in `supports()`, die nicht erfüllt ist, wird
+    // nicht geladen.
+    assert_eq!(loaded, ["a.css", "b.css", "d.css"]);
+    let html = "<div id=a></div><div id=b></div><div id=e></div><div id=g></div><div id=h></div>";
+    let page = on_device(&test_device(), html, &[&sheet]);
+    page.check(&[
+        // Die Ebene des Imports steht nach `first`, mit ihren Unterebenen.
+        ("a", Longhand::Color, "green"),
+        ("h", Longhand::Color, "green"),
+        ("b", Longhand::Color, "green"),
+        ("e", Longhand::Color, "-"),
+        // Die Ebene gibt es auch, wenn das Laden scheitert.
+        ("g", Longhand::Color, "green"),
+    ]);
+    let mut narrow = test_device();
+    narrow.viewport_width = 400.0;
+    let page = on_device(&narrow, html, &[&sheet]);
+    page.check(&[("b", Longhand::Color, "-")]);
 }

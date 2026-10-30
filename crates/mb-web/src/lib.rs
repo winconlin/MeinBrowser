@@ -14,4 +14,4 @@ mod page;
 mod tests;
 
 pub use files::{MAX_FILE_BYTES, read_file};
-pub use page::{Fetch, PAGE_BYTES, Page, RENDER_STEPS, Viewport, file_url};
+pub use page::{Fetch, MAX_IMPORTS, PAGE_BYTES, Page, RENDER_STEPS, Viewport, file_url};

@@ -363,6 +363,26 @@ impl FontBasis<'_> {
     }
 }
 
+/// Eine Länge in `px`; schriftbezogene Einheiten beziehen sich auf die
+/// Anfangswerte, wie in Media Queries (Media Queries 5, „Units“).
+pub(crate) fn initial_px(
+    length: Length,
+    device: &Device,
+    fonts: &dyn FontMetricsSource,
+) -> Result<f64, MissingFontMetric> {
+    let initial = FontBasis::initial();
+    Units {
+        font: initial,
+        lines: initial,
+        root_font: initial,
+        root_lines: initial,
+        horizontal: true,
+        device,
+        fonts,
+    }
+    .px(length)
+}
+
 /// Wonach Längen aufgelöst werden.
 #[derive(Clone, Copy)]
 struct Units<'a> {

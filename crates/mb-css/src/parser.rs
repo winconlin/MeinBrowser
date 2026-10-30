@@ -110,6 +110,125 @@ impl<'a> IntoIterator for Values<'a> {
     }
 }
 
+/// Eine Deklaration aus Komponentenwerten, etwa in einer Bedingung von
+/// `@supports`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DeclarationValues<'a> {
+    pub name: &'a str,
+    /// Der Wert ohne Leerraum am Anfang und am Ende und ohne `!important`.
+    pub value: Values<'a>,
+    pub important: bool,
+}
+
+impl<'a> Values<'a> {
+    /// Liest die Werte als eine Deklaration, so wie *consume a declaration*
+    /// sie läse, ohne die Prüfung des Kontexts am Ende: Leerraum, ein
+    /// Bezeichner, Leerraum, ein Doppelpunkt, dann der Wert bis zum Ende.
+    /// `None`, wenn das nicht passt, wenn ein Semikolon die Deklaration vor
+    /// dem Ende beendete oder wenn im Wert einer Eigenschaft, die keine
+    /// eigene ist, ein {}-Block neben anderen Werten steht.
+    pub fn declaration(self) -> Option<DeclarationValues<'a>> {
+        // Die Werte der obersten Ebene als Bereiche in `nodes`.
+        let mut items = Vec::new();
+        let mut index = 0;
+        while let Some(node) = self.nodes.get(index) {
+            let len = match node {
+                Node::Token(_) => 1,
+                Node::Function { len, .. } | Node::Block { len, .. } => len.saturating_add(1),
+            };
+            let end = index.saturating_add(len).min(self.nodes.len());
+            items.push(index..end);
+            index = end;
+        }
+        let token = |item: &Range<usize>| match self.nodes.get(item.start) {
+            Some(Node::Token(token)) => Some(token),
+            _ => None,
+        };
+        let is_space = |item: &Range<usize>| token(item) == Some(&Token::Whitespace);
+        let mut rest = items.as_slice();
+        while let [first, tail @ ..] = rest
+            && is_space(first)
+        {
+            rest = tail;
+        }
+        let [first, tail @ ..] = rest else {
+            return None;
+        };
+        let Some(Token::Ident(name)) = token(first) else {
+            return None;
+        };
+        rest = tail;
+        while let [first, tail @ ..] = rest
+            && is_space(first)
+        {
+            rest = tail;
+        }
+        let [colon, tail @ ..] = rest else {
+            return None;
+        };
+        if token(colon) != Some(&Token::Colon) {
+            return None;
+        }
+        rest = tail;
+        if rest
+            .iter()
+            .any(|item| token(item) == Some(&Token::Semicolon))
+        {
+            return None;
+        }
+        while let [first, tail @ ..] = rest
+            && is_space(first)
+        {
+            rest = tail;
+        }
+        rest = trim_end(self.nodes, rest);
+        // Die letzten zwei Werte außer Leerraum: `!` und `important`.
+        let mut important = false;
+        if let [head @ .., bang, ident] = rest
+            && let Some(Token::Ident(value)) = token(ident)
+            && value.eq_ignore_ascii_case("important")
+        {
+            let before = if is_space(bang) {
+                trim_end(self.nodes, head)
+            } else {
+                rest.get(..rest.len().saturating_sub(1)).unwrap_or_default()
+            };
+            if let [head @ .., bang] = before
+                && token(bang) == Some(&Token::Delim('!'))
+            {
+                rest = trim_end(self.nodes, head);
+                important = true;
+            }
+        }
+        if !is_custom_property_name(name) {
+            let brace = rest.iter().any(|item| {
+                matches!(
+                    self.nodes.get(item.start),
+                    Some(Node::Block {
+                        kind: BlockKind::Brace,
+                        ..
+                    })
+                )
+            });
+            let significant = rest.iter().filter(|item| !is_space(item)).count();
+            if brace && significant > 1 {
+                return None;
+            }
+        }
+        let range = match (rest.first(), rest.last()) {
+            (Some(first), Some(last)) => first.start..last.end,
+            _ => 0..0,
+        };
+        Some(DeclarationValues {
+            name,
+            value: Values {
+                nodes: self.nodes.get(range).unwrap_or_default(),
+            },
+            important,
+        })
+    }
+}
+
 /// Durchläuft eine Liste auf ihrer obersten Ebene.
 #[derive(Clone, Debug)]
 pub struct Iter<'a> {
@@ -137,6 +256,16 @@ impl<'a> Iterator for Iter<'a> {
         self.nodes = rest;
         Some(value)
     }
+}
+
+/// Die Werte ohne Leerraum am Ende.
+fn trim_end<'r>(nodes: &[Node], mut items: &'r [Range<usize>]) -> &'r [Range<usize>] {
+    while let [head @ .., last] = items
+        && matches!(nodes.get(last.start), Some(Node::Token(Token::Whitespace)))
+    {
+        items = head;
+    }
+    items
 }
 
 fn split(nodes: &[Node], len: usize) -> (&[Node], &[Node]) {
@@ -1420,6 +1549,34 @@ mod tests {
         // Ungültig, also noch einmal als Regel gelesen.
         let tree = parse_stylesheet(&Source::new("a { foo: {}; b: c }"), &Picky);
         assert_eq!(describe(&tree), "a {foo: {}[b:c;]}");
+    }
+
+    #[test]
+    fn declarations_from_component_values() {
+        let declaration = |text: &str| {
+            let values = parse_component_value_list(&Source::new(text));
+            values.values().declaration().map(|declaration| {
+                format!(
+                    "{}={}{}",
+                    declaration.name,
+                    describe_values(declaration.value),
+                    if declaration.important { "!" } else { "" }
+                )
+            })
+        };
+        assert_eq!(declaration(" color : red "), Some("color=red".to_owned()));
+        assert_eq!(
+            declaration("a: b c ! IMPORTANT "),
+            Some("a=b c!".to_owned())
+        );
+        assert_eq!(declaration("a:"), Some("a=".to_owned()));
+        assert_eq!(declaration("--x: {} y"), Some("--x={} y".to_owned()));
+        assert_eq!(declaration("a: {}"), Some("a={}".to_owned()));
+        assert_eq!(declaration("a: {} y"), None);
+        assert_eq!(declaration("a: b; c: d"), None);
+        assert_eq!(declaration("a b"), None);
+        assert_eq!(declaration("1: b"), None);
+        assert_eq!(declaration(""), None);
     }
 
     #[test]

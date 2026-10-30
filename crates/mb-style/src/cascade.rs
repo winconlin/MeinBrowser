@@ -10,6 +10,12 @@
 //! logischen und der zugeordneten physischen Langform zusammen kaskadiert
 //! (CSS Logical 1); dafür muss vorher der Schreibmodus feststehen.
 //!
+//! Die Media Queries in `@media`, nach `@import` und im Attribut `media`
+//! wertet der [`StylistBuilder`] für ein Gerät aus; Regeln, deren
+//! Bedingungen nicht zutreffen, und die Ebenen darin zählen nicht. Ob ein
+//! [`Stylist`] auch für ein anderes Gerät gilt, sagt
+//! [`Stylist::is_valid_for`].
+//!
 //! Es fehlen die Ursprünge für Animationen und Übergänge, Shadow Trees
 //! (*context*) und `@scope`.
 //!
@@ -29,13 +35,16 @@ use std::sync::Arc;
 use mb_base::DomString;
 use mb_dom::NodeId;
 
+use crate::computed::{Device, FontMetricsSource, NoFonts};
 use crate::declarations::Declared;
+use crate::media::MediaQueryList;
 use crate::properties::{
     CssWideKeyword, DeclaredValue, FlowMode, Longhand, PropertyDeclaration, SpecifiedValue,
 };
 use crate::selectors::{Key, MatchingContext, PseudoElement, SelectorList, Specificity};
-use crate::stylesheet::{CssRule, LayerName, StyleSheet};
+use crate::stylesheet::{CssRule, LayerName, MAX_IMPORT_DEPTH, StyleSheet};
 use crate::ua::{DocumentInfo, sheets_for};
+use crate::values::color::{Rgba, SystemColor};
 
 /// Woher ein Stylesheet kommt (*cascade origin*).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -240,24 +249,71 @@ struct Candidate {
     selector: u32,
 }
 
-/// Sammelt die Stylesheets für einen [`Stylist`].
-#[derive(Debug)]
-pub struct StylistBuilder {
+/// Sammelt die Stylesheets für einen [`Stylist`] und wertet dabei die
+/// Media Queries für ein Gerät aus.
+pub struct StylistBuilder<'a> {
+    device: &'a Device,
+    fonts: &'a dyn FontMetricsSource,
     layers: [Layers; 4],
     entries: Vec<Entry>,
+    /// Die ausgewerteten Media Queries mit ihrem Ergebnis.
+    media: Vec<(Arc<MediaQueryList>, bool)>,
 }
 
-impl Default for StylistBuilder {
-    fn default() -> StylistBuilder {
+impl std::fmt::Debug for StylistBuilder<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("StylistBuilder")
+            .field("device", self.device)
+            .field("layers", &self.layers)
+            .field("entries", &self.entries)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Default for StylistBuilder<'static> {
+    fn default() -> StylistBuilder<'static> {
         StylistBuilder::new()
     }
 }
 
-impl StylistBuilder {
-    pub fn new() -> StylistBuilder {
+/// Das Gerät von [`StylistBuilder::new`]: ein Viewport ohne Fläche.
+static NO_DEVICE: Device = Device {
+    viewport_width: 0.0,
+    viewport_height: 0.0,
+    device_pixel_ratio: 1.0,
+    system_color: black,
+};
+
+/// Die Systemfarben von [`NO_DEVICE`]; berechnete Werte entstehen damit
+/// nicht.
+fn black(_: SystemColor) -> Rgba {
+    Rgba {
+        red: 0,
+        green: 0,
+        blue: 0,
+        alpha: 255,
+    }
+}
+
+impl StylistBuilder<'static> {
+    /// Ohne Gerät: Media Queries gelten für einen Viewport ohne Fläche und
+    /// ohne Schriften.
+    pub fn new() -> StylistBuilder<'static> {
+        StylistBuilder::for_device(&NO_DEVICE, &NoFonts)
+    }
+}
+
+impl<'a> StylistBuilder<'a> {
+    /// Media Queries gelten für `device`; die Maße der Schriften für
+    /// schriftbezogene Einheiten darin kommen aus `fonts`.
+    pub fn for_device(device: &'a Device, fonts: &'a dyn FontMetricsSource) -> StylistBuilder<'a> {
         StylistBuilder {
+            device,
+            fonts,
             layers: [Layers::new(), Layers::new(), Layers::new(), Layers::new()],
             entries: Vec::new(),
+            media: Vec::new(),
         }
     }
 
@@ -272,7 +328,50 @@ impl StylistBuilder {
     /// Ein Stylesheet; die Reihenfolge der Aufrufe ist die Reihenfolge des
     /// Erscheinens (*final CSS style sheets*).
     pub fn add(&mut self, origin: Origin, sheet: &StyleSheet) {
-        self.rules(origin, &sheet.rules, 0, None);
+        self.sheet(origin, sheet, 0, 0);
+    }
+
+    /// Ein Stylesheet mit den Stylesheets seiner `@import`-Regeln an deren
+    /// Stelle, mit seinem Ursprung. Wie tief, begrenzt [`MAX_IMPORT_DEPTH`].
+    fn sheet(&mut self, origin: Origin, sheet: &StyleSheet, layer: usize, depth: usize) {
+        if let Some(media) = &sheet.media
+            && !self.evaluate(media)
+        {
+            return;
+        }
+        let (before, after) = sheet
+            .rules
+            .split_at_checked(sheet.import_position)
+            .unwrap_or((&sheet.rules, &[]));
+        self.rules(origin, before, layer, None);
+        for import in &sheet.imports {
+            if !import.supports || !self.evaluate(&import.media) {
+                continue;
+            }
+            // Die Ebene gibt es auch, wenn das Laden scheiterte, aber nur,
+            // wenn die Bedingungen zutreffen.
+            let node = match &import.layer {
+                None => layer,
+                Some(Some(name)) => self.layers_mut(origin).path(layer, name),
+                Some(None) => self.layers_mut(origin).child(layer, None),
+            };
+            if let Some(imported) = &import.sheet
+                && depth < MAX_IMPORT_DEPTH
+            {
+                self.sheet(origin, imported, node, depth.saturating_add(1));
+            }
+        }
+        self.rules(origin, after, layer, None);
+    }
+
+    /// Wertet Media Queries für das Gerät aus und merkt sich das Ergebnis.
+    fn evaluate(&mut self, queries: &Arc<MediaQueryList>) -> bool {
+        if queries.is_empty() {
+            return true;
+        }
+        let matches = queries.matches(self.device, self.fonts);
+        self.media.push((Arc::clone(queries), matches));
+        matches
     }
 
     /// Steigt rekursiv ab; wie tief, begrenzt schon das Lesen des
@@ -307,6 +406,16 @@ impl StylistBuilder {
                     let layers = self.layers_mut(origin);
                     for name in names {
                         layers.path(layer, name);
+                    }
+                }
+                CssRule::Media { queries, rules } => {
+                    if self.evaluate(queries) {
+                        self.rules(origin, rules, layer, parent);
+                    }
+                }
+                CssRule::Supports { matches, rules } => {
+                    if *matches {
+                        self.rules(origin, rules, layer, parent);
                     }
                 }
             }
@@ -375,7 +484,11 @@ impl StylistBuilder {
                 bucket.push(candidate);
             }
         }
-        Stylist { entries, index }
+        Stylist {
+            entries,
+            index,
+            media: self.media,
+        }
     }
 }
 
@@ -398,6 +511,9 @@ struct Index {
 pub struct Stylist {
     entries: Vec<Entry>,
     index: Index,
+    /// Die Media Queries, die beim Bauen ausgewertet wurden, mit ihrem
+    /// Ergebnis.
+    media: Vec<(Arc<MediaQueryList>, bool)>,
 }
 
 /// Leerraum in den Werten von `class` (ASCII whitespace).
@@ -406,6 +522,15 @@ fn is_whitespace(unit: u16) -> bool {
 }
 
 impl Stylist {
+    /// Ob die Regeln auch für ein anderes Gerät gelten: Jede Media Query,
+    /// die beim Bauen ausgewertet wurde, ergibt dort dasselbe. Sonst muss
+    /// ein neuer [`Stylist`] her.
+    pub fn is_valid_for(&self, device: &Device, fonts: &dyn FontMetricsSource) -> bool {
+        self.media
+            .iter()
+            .all(|(queries, matches)| queries.matches(device, fonts) == *matches)
+    }
+
     /// Die Deklarationen, die für ein Element oder eines seiner
     /// Pseudoelemente gelten, sortiert. `hints` sind die *presentational
     /// hints* aus den Attributen des Elements, die nicht als Regeln in den

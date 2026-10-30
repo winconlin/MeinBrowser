@@ -4,7 +4,8 @@
 //! nach Selectors Level 4 mit Parser, Spezifität und Abgleich gegen den
 //! Dokumentspeicher, die Werte und Eigenschaften der ersten Ausbaustufe mit
 //! Parsen und Serialisieren, Deklarationsblöcke nach CSSOM, Stylesheets mit
-//! Verschachtelung, `@layer` und `@namespace`, das Stylesheet der
+//! Verschachtelung, `@layer`, `@namespace`, `@import`, `@media` und
+//! `@supports` samt Media Queries und `CSS.supports()`, das Stylesheet der
 //! Benutzeragenten aus dem HTML Standard, die Kaskade bis zum kaskadierten
 //! Wert und daraus die berechneten Werte mit den Werten für
 //! `getComputedStyle()`, soweit sie nicht vom Layout abhängen.
@@ -14,9 +15,11 @@
 mod cascade;
 mod computed;
 mod declarations;
+mod media;
 pub mod properties;
 mod selectors;
 mod stylesheet;
+mod supports;
 mod ua;
 pub mod values;
 #[cfg(test)]
@@ -30,9 +33,11 @@ pub use computed::{
     MEDIUM_FONT_SIZE, MissingFontMetric, NeedsLayout, NoFonts, flow_mode,
 };
 pub use declarations::{DeclarationBlock, Declared, parse_declaration_block};
+pub use media::MediaQueryList;
 pub use selectors::{
     InvalidSelector, MatchingContext, MatchingPass, Namespaces, PseudoElement, Selector,
     SelectorList, Specificity,
 };
-pub use stylesheet::StyleSheet;
+pub use stylesheet::{MAX_IMPORT_DEPTH, PendingImport, StyleSheet};
+pub use supports::{supports_condition, supports_declaration};
 pub use ua::DocumentInfo;
