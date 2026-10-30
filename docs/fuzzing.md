@@ -30,7 +30,7 @@ Das Fuzzing-Lockfile legt die vollständigen Entwicklungsabhängigkeiten fest, d
 
 | Ziel | Geprüfter Einstieg |
 | --- | --- |
-| `html` | HTML-Tokenizer und Dokumentaufbau ohne Skriptausführung |
+| `html` | HTML-Tokenizer und Dokumentaufbau ohne Skriptausführung, mit der Kodierung aus den Bytes (Byte-Order-Mark, Vorab-Lesen, `meta`) |
 | `css` | CSS-Syntax, Stylesheets, Selektoren und Eigenschaften |
 | `url` | URL-Parser und Serialisierung |
 | `xml` | XML-/XHTML-Parser, einschließlich interner Entitäten |
@@ -41,12 +41,15 @@ Das Fuzzing-Lockfile legt die vollständigen Entwicklungsabhängigkeiten fest, d
 | `json` | JSON-Parser |
 | `encoding` | Zeichenkodierungen und Streaming-Dekodierung |
 | `unicode` | Normalisierung und weitere vorhandene Unicode-Algorithmen |
+| `page` | Eine Seite mit Stylesheets und Bildern laden, Kaskade, Layout und Zeichnen in zwei Viewports |
 
 Die eingecheckten Startkorpora liegen unter `fuzz/seeds/ZIEL/`. Der Läufer kopiert sie in das veränderliche, ignorierte Arbeitskorpus `fuzz/corpus/ZIEL/`. Nach dem Einrichten der Werkzeuge und Abhängigkeiten brauchen die Testläufe keine externen Testsammlungen oder Netzverbindungen. Generierte Korpora, Rohprotokolle, Buildausgaben und Fehlerdateien bleiben in ignorierten lokalen Verzeichnissen.
 
 Der Läufer begrenzt die Eingaben auf 4 KiB, beim Schriftziel auf 64 KiB. Deflate/zlib darf höchstens 64 KiB Ausgabe erzeugen; PNG und GIF werden mit höchstens 4.096 Pixeln dekodiert. Pro Eingabe gelten zehn Sekunden und für den Fuzzer eine RSS-Grenze von 512 MiB. Das RSS-Limit wird von libFuzzer überwacht und ist keine Betriebssystem-Sandbox. Der festgelegte Zufallsseed erleichtert den Vergleich von Läufen; Laufzeiten und die erzeugten Korpora können trotzdem variieren.
 
-Die Grenzen halten kurze Prüfläufe praktikabel. Sie decken keine beliebig großen Dokumente oder alle möglichen Ressourcenangriffe ab. Die Ziele laden keine Ressourcen aus Dateien oder dem Netz und prüfen bisher nicht die vollständige Layout-/Darstellungspipeline. JavaScript, TLS und IPC erhalten Fuzzing-Ziele, sobald ihre Implementierungen vorhanden sind. Konformitätstests und Regressionstests bleiben zusätzlich erforderlich. Die eigenen Startkorpora lassen sich mit `python3 fuzz/seed_corpus.py` neu erzeugen; sie enthalten keine fremden Schriften.
+Beim Ziel `page` ist die Eingabe eine kleine Website. Je zwei Bytes 0x1F trennen ihre Teile: Teil 0 ist das Dokument, und jede URL unter `https://example.test/`, deren Pfad mit einer Zahl N beginnt, liefert Teil N, etwa `1.css` oder `2.png`. Beginnt das Dokument mit `<?xml`, wird es als XHTML gelesen, sonst als HTML. Die Seite darf zusammen 1 MiB laden und dekodieren. Stil und Layout dürfen je Viewport eine Million Arbeitsschritte kosten; die Viewports sind 800 × 600 CSS-Pixel und 320 × 480 mit zwei Gerätepixeln je CSS-Pixel, gezeichnet wird beim zweiten am Ende des Scrollbereichs. Die einzige Schrift ist die synthetische aus dem Startkorpus von `font`. Mit AddressSanitizer brauchte die langsamste von mehreren gemessenen 4-KiB-Eingaben (eine Tabelle mit 400 Zeilen) zwei Sekunden.
+
+Die Grenzen halten kurze Prüfläufe praktikabel. Sie decken keine beliebig großen Dokumente oder alle möglichen Ressourcenangriffe ab. Die Ziele laden keine Ressourcen aus Dateien oder dem Netz; `page` holt Stylesheets und Bilder aus seiner Eingabe. JavaScript, TLS und IPC erhalten Fuzzing-Ziele, sobald ihre Implementierungen vorhanden sind. Konformitätstests und Regressionstests bleiben zusätzlich erforderlich. Die eigenen Startkorpora lassen sich mit `python3 fuzz/seed_corpus.py` neu erzeugen; sie enthalten keine fremden Schriften.
 
 ## Automatisierte Läufe
 

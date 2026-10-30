@@ -23,13 +23,17 @@ def font():
     struct.pack_into(">hh", hhea, 4, 800, -200)
     struct.pack_into(">H", hhea, 34, 1)
     cmap = struct.pack(">6H", 0, 1, 3, 1, 0, 12)
-    cmap += struct.pack(">12H", 4, 24, 0, 2, 2, 0, 0, 0xFFFF, 0, 0xFFFF, 1, 0)
+    # Printable ASCII maps to glyph 1, then the final segment for U+FFFF.
+    cmap += struct.pack(">16H", 4, 32, 0, 4, 4, 1, 0, 0x7E, 0xFFFF, 0, 0x20, 0xFFFF, 0xFFE1, 1, 0, 0)
     glyph = struct.pack(">5h2H", 1, 0, 0, 10, 10, 3, 0)
     glyph += bytes([0x31, 0x33, 0x35, 0x23, 10, 10, 10, 0])
+    # A family name, so the page target's font library selects this face.
+    family = "Fuzz".encode("utf-16-be")
+    name = struct.pack(">9H", 0, 1, 18, 3, 1, 0x409, 1, len(family), 0) + family
     tables = {
-        b"cmap": cmap, b"glyf": glyph, b"head": head, b"hhea": hhea,
-        b"hmtx": struct.pack(">Hh", 500, 0), b"loca": struct.pack(">II", 0, len(glyph)),
-        b"maxp": struct.pack(">IH", 0x00005000, 1),
+        b"cmap": cmap, b"glyf": glyph + glyph, b"head": head, b"hhea": hhea,
+        b"hmtx": struct.pack(">Hhh", 500, 0, 0), b"loca": struct.pack(">III", 0, len(glyph), 2 * len(glyph)),
+        b"maxp": struct.pack(">IH", 0x00005000, 2), b"name": name,
     }
     header = struct.pack(">I4H", 0x00010000, len(tables), 0, 0, 0)
     directory = bytearray()
@@ -74,6 +78,17 @@ def main():
         write("encoding", f"encoding-{selector:02}", bytes([selector]) + b"a\xe2\x82\xac\xff\0\x1b$B")
     write("unicode", "combining", "e\u0301 A\u030a\r\n\U0001f600")
     write("unicode", "idna", "xn--bcher-kva.example")
+    part = b"\x1f\x1f"  # PART_SEPARATOR in src/lib.rs
+    write("page", "document", "<!doctype html><style>@media (max-width: 400px) { p { margin: 0 } }"
+          " p { border: 2px dashed red; padding: 4px; font-style: italic }"
+          " div { overflow: scroll; height: 20px }</style><p>Text <b>bold</b></p><div>x<br>y</div>")
+    write("page", "resources", b"<!doctype html><link rel=stylesheet href=1.css><p>Text</p><img src=2.png>"
+          + part + b'@import "3.css"; img { width: 10px; height: 10px }' + part + png
+          + part + b"p { background: rgb(0, 128, 0) }")
+    write("page", "xhtml", '<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml">'
+          "<head><style>p { color: blue }</style></head><body><p>x</p></body></html>")
+    write("page", "charset", b"<meta charset=windows-1252><link rel=stylesheet href=1><p>\xe9</p>"
+          + part + b'p::after { content: "\xfc" }')
 
 
 if __name__ == "__main__":

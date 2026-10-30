@@ -17,16 +17,20 @@ libfuzzer-sys = "=0.4.13"
 mb-base = { path = "../crates/mb-base" }
 mb-compress = { path = "../crates/mb-compress" }
 mb-css = { path = "../crates/mb-css" }
-mb-dom = { path = "../crates/mb-dom" }
 mb-encoding = { path = "../crates/mb-encoding" }
 mb-html = { path = "../crates/mb-html" }
 mb-image = { path = "../crates/mb-image" }
 mb-json = { path = "../crates/mb-json" }
+mb-layout = { path = "../crates/mb-layout" }
 mb-style = { path = "../crates/mb-style" }
 mb-text = { path = "../crates/mb-text" }
 mb-unicode = { path = "../crates/mb-unicode" }
 mb-url = { path = "../crates/mb-url" }
+mb-web = { path = "../crates/mb-web" }
 mb-xml = { path = "../crates/mb-xml" }
+
+[dev-dependencies]
+mb-scene = { path = "../crates/mb-scene" }
 
 [profile.release]
 debug = 1
@@ -104,6 +108,13 @@ bench = false
 [[bin]]
 name = "unicode"
 path = "fuzz_targets/unicode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "page"
+path = "fuzz_targets/page.rs"
 test = false
 doc = false
 bench = false
