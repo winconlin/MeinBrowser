@@ -36,6 +36,15 @@ fn numbers_become_strings() {
         (1.5e-7, "1.5e-7"),
         (5e-324, "5e-324"),
         (f64::MIN_POSITIVE, "2.2250738585072014e-308"),
+        // Genau in der Mitte zwischen zwei kürzesten Folgen gilt die gerade
+        // (Anmerkung zu Number::toString, so auch V8); `{:e}` nähme die
+        // obere. Die Summen sind exakt.
+        (1e15 + 0.25, "1000000000000000.2"),
+        (1e15 + 0.75, "1000000000000000.8"),
+        (1_000_000_000_000_001.0 + 0.25, "1000000000000001.2"),
+        (1_059_438_285_926_254.0 + 0.25, "1059438285926254.2"),
+        (26_363_981_746_409.0 + 0.3125, "26363981746409.312"),
+        (-(1e15 + 0.25), "-1000000000000000.2"),
     ];
     for (number, expected) in cases {
         assert_eq!(to_string(number), expected, "{number:e}");

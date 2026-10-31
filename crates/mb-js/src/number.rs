@@ -128,10 +128,92 @@ pub fn to_int32(number: f64) -> i32 {
     i32::from_ne_bytes(to_uint32(number).to_ne_bytes())
 }
 
-/// Number::toString (Abschnitt 6.1.6.1.20) zur Basis 10. Die Ziffern sind
-/// die kürzesten, die zur selben Zahl zurückführen, und davon die nächste;
-/// so empfiehlt es die Anmerkung der Spezifikation. Rust liefert genau sie
-/// mit `{:e}`, hier wird nur die Form zusammengesetzt.
+/// Die Ziffern aus Schritt 5 von Number::toString für eine endliche Zahl
+/// über null und der Exponent der ersten Ziffer. Die Anmerkung zu
+/// Number::toString empfiehlt die kürzesten Ziffern, die zur selben Zahl
+/// zurückführen, davon die nächsten und bei Gleichstand die gerade Folge;
+/// so rechnet auch V8. Rust liefert mit `{:e}` die kürzesten und nächsten
+/// Ziffern, bei Gleichstand aber die obere Folge.
+fn shortest_digits(x: f64) -> (Vec<u8>, i64) {
+    let (mut digits, exponent) = scientific_digits(&format!("{x:e}"));
+    if let Some(even) = even_neighbour(x, &digits, exponent) {
+        digits = even;
+    }
+    (digits, exponent)
+}
+
+/// Ziffern und Exponent aus der Schreibweise `d.ddde±x` von Rust.
+fn scientific_digits(text: &str) -> (Vec<u8>, i64) {
+    let (mantissa, exponent) = text.split_once('e').unwrap_or((text, "0"));
+    let digits = mantissa.bytes().filter(u8::is_ascii_digit).collect();
+    // Der Exponent von f64 liegt weit innerhalb von i64.
+    (digits, exponent.parse().unwrap_or(0))
+}
+
+/// Die gerade Ziffernfolge gleicher Länge, wenn `x` genau in der Mitte
+/// zwischen ihr und der ungeraden Folge `digits` liegt und ebenfalls zu `x`
+/// zurückführt.
+fn even_neighbour(x: f64, digits: &[u8], exponent: i64) -> Option<Vec<u8>> {
+    let (&last, _) = digits.split_last()?;
+    // `b'0'` ist gerade, das Byte hat also die Parität der Ziffer.
+    if last % 2 == 0 {
+        return None;
+    }
+    // In der Mitte liegt `x` nur, wenn sein genauer Dezimalwert eine Ziffer
+    // mehr hat und auf 5 endet. Erst eine Ziffer mehr runden, dann den
+    // ganzen Wert prüfen: Ein f64 hat höchstens 767 gültige Dezimalziffern.
+    let length = digits.len();
+    let (rounded, rounded_exponent) = scientific_digits(&format!("{x:.length$e}"));
+    if rounded_exponent != exponent || rounded.last() != Some(&b'5') {
+        return None;
+    }
+    let (exact, _) = scientific_digits(&format!("{x:.800e}"));
+    let (head, tail) = exact.split_at_checked(length.checked_add(1)?)?;
+    if head != rounded.as_slice() || tail.iter().any(|&digit| digit != b'0') {
+        return None;
+    }
+    // Die beiden Nachbarn sind die abgeschnittenen Ziffern und die Folge
+    // eins darüber; `digits` ist einer von ihnen.
+    let mut lower = rounded;
+    lower.pop();
+    let neighbour = if lower.as_slice() == digits {
+        increment(&lower)?
+    } else {
+        lower
+    };
+    if neighbour.last() == Some(&b'0') || neighbour.len() != length {
+        return None;
+    }
+    let mut text = String::new();
+    for (index, &digit) in neighbour.iter().enumerate() {
+        if index == 1 {
+            text.push('.');
+        }
+        text.push(char::from(digit));
+    }
+    let back: f64 = format!("{text}e{exponent}").parse().ok()?;
+    if back.to_bits() != x.to_bits() {
+        return None;
+    }
+    Some(neighbour)
+}
+
+/// Die Dezimalziffern `digits` plus eins, ohne neue Stelle.
+fn increment(digits: &[u8]) -> Option<Vec<u8>> {
+    let mut result = digits.to_vec();
+    for digit in result.iter_mut().rev() {
+        if *digit == b'9' {
+            *digit = b'0';
+        } else {
+            *digit = digit.checked_add(1)?;
+            return Some(result);
+        }
+    }
+    None
+}
+
+/// Number::toString (Abschnitt 6.1.6.1.20) zur Basis 10, mit den Ziffern
+/// aus [`shortest_digits`]; hier wird nur die Form zusammengesetzt.
 pub fn to_string(x: f64) -> String {
     if x.is_nan() {
         return "NaN".to_owned();
@@ -145,11 +227,9 @@ pub fn to_string(x: f64) -> String {
     if x.is_infinite() {
         return "Infinity".to_owned();
     }
-    let scientific = format!("{x:e}");
-    let (mantissa, exponent) = scientific.split_once('e').unwrap_or((&scientific, "0"));
-    let digits: String = mantissa.chars().filter(char::is_ascii_digit).collect();
-    // Der Exponent von f64 liegt weit innerhalb von i64.
-    let exponent: i64 = exponent.parse().unwrap_or(0);
+    let (digits, exponent) = shortest_digits(x);
+    // Ziffern sind ASCII.
+    let digits = String::from_utf8(digits).unwrap_or_default();
     let k = i64::try_from(digits.len()).unwrap_or(i64::MAX);
     let n = exponent.saturating_add(1);
     let zeros = |count: i64| "0".repeat(usize::try_from(count).unwrap_or(0));
