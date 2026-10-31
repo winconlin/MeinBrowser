@@ -141,6 +141,26 @@ fn cycles_survive_while_reachable() {
 }
 
 #[test]
+fn handles_belong_to_the_scope_they_were_made_for() {
+    let mut heap = checked();
+    heap.scope(|heap, outer| {
+        let early = heap.alloc_string(outer, &units("früh")).expect("Speicher");
+        let handle = heap.scope(|heap, inner| {
+            heap.alloc_string(inner, &units("innen")).expect("Speicher");
+            heap.alloc_string(outer, &units("außen")).expect("Speicher")
+        });
+        // Ein späteres Handle darf den Platz des äußeren nicht übernehmen.
+        let late = heap.alloc_string(outer, &units("spät")).expect("Speicher");
+        heap.collect();
+        assert_eq!(heap.string_units(string(heap.get(handle))), units("außen"));
+        assert_eq!(heap.string_units(string(heap.get(early))), units("früh"));
+        assert_eq!(heap.string_units(string(heap.get(late))), units("spät"));
+        // Nur die Zeichenkette des inneren Bereichs ist frei geworden.
+        assert_eq!(heap.used_bytes(), 48);
+    });
+}
+
+#[test]
 fn persistent_handles_outlive_scopes() {
     let mut heap = checked();
     let handle = heap.scope(|heap, scope| {

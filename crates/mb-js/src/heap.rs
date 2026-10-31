@@ -16,7 +16,10 @@
 //! Schreibbarriere ansetzt.
 //!
 //! Wurzeln sind die Handles: [`Local`] in einem Bereich ([`Heap::scope`]) und
-//! [`Persistent`] für langlebige Verweise. Gelesene Werte ([`Value`]) leihen
+//! [`Persistent`] für langlebige Verweise. Jeder offene Bereich hat eine
+//! eigene Liste von Handles. Ein Handle gehört dem Bereich, für den es
+//! angelegt wurde, auch wenn das in einem inneren Bereich geschieht, und
+//! endet erst mit ihm. Gelesene Werte ([`Value`]) leihen
 //! sich den Heap, jede Anforderung braucht `&mut Heap`. So verhindert der
 //! Borrow-Checker, dass Rust-Code einen Verweis über eine Sammlung hinweg
 //! hält:
@@ -156,13 +159,16 @@ impl std::error::Error for OutOfMemory {}
 
 /// Ein Bereich für Handles, siehe [`Heap::scope`].
 pub struct Scope {
-    _private: (),
+    /// Die Nummer des Bereichs, 0 für den äußersten. Innere Bereiche enden
+    /// vor den äußeren, also ist die Nummer eindeutig, solange er offen ist.
+    depth: usize,
 }
 
 /// Ein Handle in einem Bereich. Der Garbage Collector führt es beim
 /// Verschieben nach, und es gilt, bis sein Bereich endet.
 #[derive(Clone, Copy, Debug)]
 pub struct Local<'s> {
+    depth: usize,
     index: usize,
     scope: PhantomData<&'s Scope>,
 }
@@ -190,8 +196,9 @@ pub struct Heap {
     small: Vec<usize>,
     /// Seiten mit einer großen Zelle, ebenfalls in Reihenfolge.
     large: Vec<usize>,
-    /// Handles aller offenen Bereiche.
-    stack: RefCell<Vec<u64>>,
+    /// Die Handles der offenen Bereiche, eine Liste je Bereich, der innerste
+    /// zuletzt.
+    roots: RefCell<Vec<Vec<u64>>>,
     persistent: Vec<u64>,
     free_persistent: Vec<usize>,
     /// Bytes in Zellen.
@@ -223,7 +230,7 @@ impl Heap {
             free_pages: Vec::new(),
             small: Vec::new(),
             large: Vec::new(),
-            stack: RefCell::new(Vec::new()),
+            roots: RefCell::new(Vec::new()),
             persistent: Vec::new(),
             free_persistent: Vec::new(),
             used: 0,
@@ -245,34 +252,52 @@ impl Heap {
 
     // Handles
 
-    /// Führt `f` in einem neuen Bereich aus. Handles, die `f` darin anlegt,
+    /// Führt `f` in einem neuen Bereich aus. Handles für diesen Bereich
     /// gelten bis zum Ende von `f`; die Typen verhindern, dass sie
-    /// entkommen. Bereiche lassen sich schachteln.
+    /// entkommen. Bereiche lassen sich schachteln, und in einem inneren
+    /// Bereich lassen sich Handles für einen äußeren anlegen.
     pub fn scope<R, F: FnOnce(&mut Heap, &Scope) -> R>(&mut self, f: F) -> R {
-        let mark = self.stack.get_mut().len();
-        let result = f(self, &Scope { _private: () });
-        self.stack.get_mut().truncate(mark);
+        let roots = self.roots.get_mut();
+        let depth = roots.len();
+        roots.push(Vec::new());
+        let result = f(self, &Scope { depth });
+        // Alle inneren Bereiche sind schon beendet.
+        self.roots.get_mut().truncate(depth);
         result
     }
 
     /// Hält `value` in einem Handle des Bereichs `scope`.
-    pub fn local<'s>(&self, _scope: &'s Scope, value: Value<'_>) -> Local<'s> {
-        let mut stack = self.stack.borrow_mut();
-        let index = stack.len();
-        stack.push(value.bits());
+    pub fn local<'s>(&self, scope: &'s Scope, value: Value<'_>) -> Local<'s> {
+        let mut roots = self.roots.borrow_mut();
+        // Ohne Liste stammt `scope` aus einem anderen Heap, das Handle liest
+        // dann *undefined*.
+        let index = roots.get_mut(scope.depth).map_or(0, |list| {
+            let index = list.len();
+            list.push(value.bits());
+            index
+        });
         Local {
+            depth: scope.depth,
             index,
             scope: PhantomData,
         }
     }
 
     pub fn get(&self, local: Local<'_>) -> Value<'_> {
-        let bits = self.stack.borrow().get(local.index).copied();
+        let roots = self.roots.borrow();
+        let bits = roots
+            .get(local.depth)
+            .and_then(|list| list.get(local.index))
+            .copied();
         Value::from_bits(bits.unwrap_or(Value::UNDEFINED.bits()))
     }
 
     pub fn set(&self, local: Local<'_>, value: Value<'_>) {
-        if let Some(slot) = self.stack.borrow_mut().get_mut(local.index) {
+        let mut roots = self.roots.borrow_mut();
+        if let Some(slot) = roots
+            .get_mut(local.depth)
+            .and_then(|list| list.get_mut(local.index))
+        {
             *slot = value.bits();
         }
     }
@@ -542,11 +567,11 @@ impl Heap {
         let old_large = std::mem::take(&mut self.large);
         self.used = 0;
 
-        let mut stack = std::mem::take(self.stack.get_mut());
-        for slot in &mut stack {
+        let mut roots = std::mem::take(self.roots.get_mut());
+        for slot in roots.iter_mut().flatten() {
             *slot = self.evacuate(*slot);
         }
-        *self.stack.get_mut() = stack;
+        *self.roots.get_mut() = roots;
         let mut persistent = std::mem::take(&mut self.persistent);
         for slot in &mut persistent {
             *slot = self.evacuate(*slot);
@@ -698,7 +723,7 @@ impl Heap {
                 )),
             }
         };
-        for &bits in self.stack.borrow().iter() {
+        for &bits in self.roots.borrow().iter().flatten() {
             check(bits, "Handle")?;
         }
         for &bits in &self.persistent {
