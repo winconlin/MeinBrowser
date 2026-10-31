@@ -1,0 +1,1 @@
+var o={m(x,y){return x+y;},get v(){return 1;},set v(x){}};o.m(1,2);o?.m?.(3);o.v+=1;
