@@ -104,6 +104,7 @@ const KIND_SHAPE: u64 = 6;
 const KIND_WEAK: u64 = 7;
 const KIND_SPARSE: u64 = 8;
 const KIND_OBJECT: u64 = 9;
+const KIND_ARRAY: u64 = 10;
 
 /// Die Kennzeichen stehen in den Bits 8 bis 31 des Kopfworts.
 const FLAG_SHIFT: u32 = 8;
@@ -141,7 +142,7 @@ fn is_value_cell(kind: u64) -> bool {
 }
 
 /// Die Arten der Objektzellen.
-const OBJECT_KINDS: [u64; 1] = [KIND_OBJECT];
+const OBJECT_KINDS: [u64; 2] = [KIND_OBJECT, KIND_ARRAY];
 
 fn is_object(kind: u64) -> bool {
     OBJECT_KINDS.contains(&kind)

@@ -7,7 +7,7 @@ const PRECISION: u32 = 53;
 
 /// Der Wert der Ziffern `digits` (ASCII, ohne Präfix und Trennzeichen) zur
 /// Basis `radix`, die eine Zweierpotenz sein muss.
-pub(super) fn from_power_of_two_radix(digits: &str, radix: u32) -> f64 {
+pub(crate) fn from_power_of_two_radix(digits: &str, radix: u32) -> f64 {
     let bits_per_digit = radix.trailing_zeros();
     // Die ersten bis zu 64 signifikanten Bits, dahinter nur, wie viele
     // Bits es noch sind und ob eines davon gesetzt ist.

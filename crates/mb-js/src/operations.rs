@@ -1,5 +1,5 @@
-//! Operationen auf Objekten (Abschnitt 7.3) und IsCallable (Abschnitt
-//! 7.2.3).
+//! Operationen auf Objekten (Abschnitt 7.3), IsArray (Abschnitt 7.2.2) und
+//! IsCallable (Abschnitt 7.2.3).
 
 #![forbid(unsafe_code)]
 
@@ -10,13 +10,22 @@ use crate::key::PropertyKey;
 use crate::object;
 use crate::value::{Kind, Value};
 
+/// IsArray (Abschnitt 7.2.2). Proxys, die das Ergebnis ihres Ziels
+/// liefern, kommen mit den Proxy-Objekten.
+pub fn is_array(heap: &Heap, value: Value<'_>) -> bool {
+    match value.kind() {
+        Kind::Object(object) => heap.object_class(object) == Some(ObjectClass::Array),
+        _ => false,
+    }
+}
+
 /// IsCallable (Abschnitt 7.2.3).
 pub fn is_callable(heap: &Heap, value: Value<'_>) -> bool {
     match value.kind() {
         // Gewöhnliche Objekte haben kein [[Call]]. Funktionsobjekte kommen
         // mit Schritt 4 des Entwurfs.
         Kind::Object(object) => match heap.object_class(object) {
-            Some(ObjectClass::Ordinary) | None => false,
+            Some(ObjectClass::Ordinary | ObjectClass::Array) | None => false,
         },
         _ => false,
     }
@@ -46,6 +55,26 @@ pub fn get<'s>(
     key: PropertyKey<'_>,
 ) -> Completion<Local<'s>> {
     object::get(agent, scope, object, key, object)
+}
+
+/// GetMethod (Abschnitt 7.3.10) für ein Objekt: `None` steht für
+/// *undefined*. Für andere Werte braucht GetV (Abschnitt 7.3.3) ToObject,
+/// das mit den Realms kommt; bis dahin wirft es einen TypeError.
+pub fn get_method<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    object: Local<'_>,
+    key: PropertyKey<'_>,
+) -> Completion<Option<Local<'s>>> {
+    let function = get(agent, scope, object, key)?;
+    let value = agent.heap().get(function);
+    if value.is_undefined() || value.is_null() {
+        return Ok(None);
+    }
+    if !is_callable(agent.heap(), value) {
+        return Err(agent.throw_error(ErrorKind::TypeError));
+    }
+    Ok(Some(function))
 }
 
 /// Set (Abschnitt 7.3.4).

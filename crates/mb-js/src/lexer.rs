@@ -20,7 +20,7 @@
 
 use std::ops::Range;
 
-mod number;
+pub(crate) mod number;
 #[cfg(test)]
 mod tests;
 
@@ -1023,13 +1023,13 @@ enum Escape {
 }
 
 /// *WhiteSpace* (Abschnitt 12.2).
-fn is_white_space(c: u32) -> bool {
+pub(crate) fn is_white_space(c: u32) -> bool {
     matches!(c, TAB | VT | FF | ZWNBSP)
         || mb_unicode::general_category(c) == mb_unicode::GeneralCategory::SpaceSeparator
 }
 
 /// *LineTerminator* (Abschnitt 12.3).
-fn is_line_terminator(c: u32) -> bool {
+pub(crate) fn is_line_terminator(c: u32) -> bool {
     matches!(c, LF | CR | LS | PS)
 }
 
