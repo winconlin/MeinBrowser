@@ -49,7 +49,66 @@ def font():
     return header + directory + body
 
 
+def runtime_seeds():
+    """Operation programs for the runtime models, not JavaScript source."""
+    def heap(name, commands):
+        write("js-runtime", name, bytes([0]) + bytes(value for command in commands for value in command))
+
+    def objects(name, commands):
+        write("js-runtime", name, bytes([1]) + bytes(value for command in commands for value in command))
+
+    heap("heap-cycle", [
+        (1, 0, 2, 0), (1, 1, 1, 0), (2, 0, 0, 1), (2, 1, 0, 0),
+        (4, 2, 0, 0), (5, 0, 0, 0), (5, 1, 0, 0), (6, 0, 0, 0),
+        (5, 2, 0, 0), (6, 0, 0, 0),
+    ])
+    heap("heap-strings", [
+        (1, 0, 4, 0), (0, 1, 7, 65), (0, 2, 0xD8, 0),
+        (2, 0, 0, 1), (2, 0, 1, 2), (5, 1, 0, 0), (5, 2, 0, 0),
+        (6, 0, 0, 0), (3, 0, 0, 255), (6, 0, 0, 0),
+        (5, 0, 0, 0), (6, 0, 0, 0),
+    ])
+    heap("heap-nested-scopes", [
+        (7, 0, 16, 32), (4, 1, 0, 0), (6, 0, 0, 0), (5, 0, 0, 0),
+        (0, 0, 0, 0), (4, 3, 1, 0), (6, 0, 0, 0),
+        (5, 1, 0, 0), (5, 3, 0, 0), (6, 0, 0, 0),
+    ])
+    heap("heap-boundaries", [
+        (0, 0, 0, 0), (1, 1, 0, 0), (2, 1, 0, 0), (3, 1, 4, 128),
+        (1, 2, 4, 0), (2, 2, 4, 0), (2, 2, 3, 15), (6, 0, 0, 0),
+        (4, 0, 15, 0), (5, 1, 0, 0), (6, 0, 0, 0),
+    ])
+
+    # Full data descriptors: low three bits are the opcode, bits 3..5 W/E/C.
+    objects("object-descriptors", [
+        (56, 0, 7, 42), (24, 0, 8, 1), (24, 0, 8, 2),
+        (16, 0, 8, 2), (1, 0, 8, 3), (2, 0, 8, 0),
+        (56, 0, 8, 2), (0, 0, 9, 0), (5, 0, 0, 0),
+        (4, 0, 0, 0), (56, 0, 10, 9), (1, 0, 7, 43),
+        (2, 0, 7, 0), (56, 0, 7, 44),
+    ])
+    objects("object-key-order", [
+        (56, 0, key, key) for key in reversed(range(16))
+    ] + [
+        (2, 0, 8, 0), (56, 0, 8, 33),
+        (2, 0, 15, 0), (56, 0, 15, 34),
+        (5, 0, 0, 0), (7, 0, 0, 0),
+    ])
+    objects("object-prototypes", [
+        (48, 0, 7, 12), (3, 1, 0, 0), (1, 1, 7, 13),
+        (56, 0, 8, 22), (1, 1, 8, 23), (3, 2, 1, 0),
+        (3, 0, 2, 0), (4, 1, 0, 0), (3, 1, 0, 0),
+        (3, 1, 3, 0), (5, 0, 0, 0), (7, 2, 8, 0),
+    ])
+    objects("object-utf16-symbols", [
+        (62, 0, 13, 2), (62, 0, 14, 3), (62, 0, 15, 1),
+        (3, 3, 0, 0), (5, 0, 0, 0), (1, 3, 14, 255),
+        (2, 0, 15, 0), (62, 0, 15, 255), (5, 0, 0, 0),
+    ])
+
+
 def main():
+    runtime_seeds()
     write("html", "document", "<!doctype html><table><tr><td>x</table><template><p>y</template>")
     write("html", "text-modes", "<textarea>&amp;</textarea><script>'<&'</script><svg><title>x</title></svg>")
     write("css", "stylesheet", "@layer a { div:nth-child(2n+1) { color: red; width: 10px } }")

@@ -1,10 +1,10 @@
-# Parser mit libFuzzer prüfen
+# Parser und JavaScript-Laufzeit mit libFuzzer prüfen
 
-Die Parser werden mit `cargo-fuzz` und libFuzzer geprüft. `libfuzzer-sys` ist dafür als einzige Ausnahme von der Regel „keine fremden Crates“ zugelassen (entschieden am 30.10.2026, siehe `docs/architektur.md`, Abschnitt 14). Die Ausnahme gilt nur für dieses Entwicklungswerkzeug; weitere fremde Crates deckt sie nicht.
+Parser und vorhandene Teile der JavaScript-Laufzeit werden mit `cargo-fuzz` und libFuzzer geprüft. `libfuzzer-sys` ist dafür als einzige Ausnahme von der Regel „keine fremden Crates“ zugelassen (entschieden am 30.10.2026, siehe `docs/architektur.md`, Abschnitt 14). Die Ausnahme gilt nur für dieses Entwicklungswerkzeug; weitere fremde Crates deckt sie nicht.
 
 Das Werkzeug liegt in einem eigenen Cargo-Workspace unter `fuzz/`, mit eigenem Lockfile. Die Browser-Crates und ihr Lockfile bleiben frei von fremden Abhängigkeiten; der normale Abhängigkeitswächter bleibt aktiv. Er prüft auch `fuzz/Cargo.lock`: Fremd darf dort nur sein, was `libfuzzer-sys` von crates.io über die Abhängigkeiten in dieser Datei mitbringt.
 
-libFuzzer verändert Eingaben anhand der gemessenen Codeabdeckung. Die Ziele prüfen die echten Parser und zusätzliche Eigenschaften, beispielsweise begrenzte Dekoderausgaben. Abstürze, verletzte Zusicherungen und überschrittene Ressourcenlimits lassen den Lauf fehlschlagen. Ein erfolgreicher begrenzter Lauf beweist keine Fehlerfreiheit.
+libFuzzer verändert Eingaben anhand der gemessenen Codeabdeckung. Die Ziele prüfen die echten Parser und zusätzliche Eigenschaften, beispielsweise begrenzte Dekoderausgaben. Das Ziel `js-runtime` prüft außerdem Operationsfolgen auf der vorhandenen JavaScript-Laufzeit. Abstürze, verletzte Zusicherungen und überschrittene Ressourcenlimits lassen den Lauf fehlschlagen. Ein erfolgreicher begrenzter Lauf beweist keine Fehlerfreiheit.
 
 ## Einrichten und starten
 
@@ -24,7 +24,7 @@ CARGO_NET_OFFLINE=true cargo +nightly-2026-10-27 fuzz build
 python3 fuzz/run.py html --seconds 30
 ```
 
-Das Fuzzing-Lockfile legt die vollständigen Entwicklungsabhängigkeiten fest, darunter `libfuzzer-sys` 0.4.13. `cargo-fuzz` 0.13.2 hat keinen `--locked`-Schalter: Die Abhängigkeiten werden deshalb zuerst mit `cargo fetch --locked` geholt, anschließend wird offline gebaut. Der Läufer prüft das Lockfile ebenfalls und führt cargo-fuzz offline aus. Toolchain, Werkzeug und Lockfile gemeinsam prüfen, wenn sie aktualisiert werden. Der Build instrumentiert die Parser für libFuzzer und AddressSanitizer und aktiviert Debug-Zusicherungen sowie Überlaufprüfungen; dafür wird kein Browserfenster oder X-Server benötigt.
+Das Fuzzing-Lockfile legt die vollständigen Entwicklungsabhängigkeiten fest, darunter `libfuzzer-sys` 0.4.13. `cargo-fuzz` 0.13.2 hat keinen `--locked`-Schalter: Die Abhängigkeiten werden deshalb zuerst mit `cargo fetch --locked` geholt, anschließend wird offline gebaut. Der Läufer prüft das Lockfile ebenfalls und führt cargo-fuzz offline aus. Toolchain, Werkzeug und Lockfile gemeinsam prüfen, wenn sie aktualisiert werden. Der Build instrumentiert die geprüften Komponenten für libFuzzer und AddressSanitizer und aktiviert Debug-Zusicherungen sowie Überlaufprüfungen; dafür wird kein Browserfenster oder X-Server benötigt.
 
 ## Ziele und Grenzen
 
@@ -43,6 +43,7 @@ Das Fuzzing-Lockfile legt die vollständigen Entwicklungsabhängigkeiten fest, d
 | `unicode` | Normalisierung und weitere vorhandene Unicode-Algorithmen |
 | `page` | Eine Seite mit Stylesheets und Bildern laden, Kaskade, Layout und Zeichnen in zwei Viewports |
 | `js` | JavaScript-Lexer und -Parser für Scripts und Module und der Parser für Muster regulärer Ausdrücke, mit der Eingabe als UTF-8 und als UTF-16LE |
+| `js-runtime` | Operationsfolgen mit gewöhnlichen Objekten, Eigenschaftsschlüsseln, Handles und Garbage Collection; Vergleich eigener Ausführungen bei unterschiedlichen Sammelzeitpunkten |
 
 Die eingecheckten Startkorpora liegen unter `fuzz/seeds/ZIEL/`. Der Läufer kopiert sie in das veränderliche, ignorierte Arbeitskorpus `fuzz/corpus/ZIEL/`. Nach dem Einrichten der Werkzeuge und Abhängigkeiten brauchen die Testläufe keine externen Testsammlungen oder Netzverbindungen. Generierte Korpora, Rohprotokolle, Buildausgaben und Fehlerdateien bleiben in ignorierten lokalen Verzeichnissen.
 
@@ -52,7 +53,13 @@ Beim Ziel `page` ist die Eingabe eine kleine Website. Je zwei Bytes 0x1F trennen
 
 Beim Ziel `js` wird die Eingabe zweimal gelesen: als UTF-8-Text und als Folge von UTF-16-Codeeinheiten in Little Endian, damit auch einzelne Surrogate den Lexer erreichen. Jede Fassung durchläuft den Lexer mit vier festen Zielen, als Script und als Modul, und den Parser als Script und als Modul. Geprüft wird, dass Tokens und Anweisungen in der Reihenfolge des Quelltexts und innerhalb seiner Grenzen liegen und dass jedes Token außer dem Ende Eingabe verbraucht. Läuft der Stapel bei tiefer Verschachtelung über, schlägt der Lauf fehl; der Parser muss dann `TooDeep` melden. Außerdem liest der Parser für Muster regulärer Ausdrücke jede Fassung als Muster ohne Flags, mit `u` und mit `v`; ein Muster muss eine Disjunktion ergeben, ein Fehler innerhalb der Eingabe liegen. Gruppen und Klassen liest dieser Parser ohne Rekursion, tiefe Verschachtelung darf ihn also nicht scheitern lassen.
 
-Die Grenzen halten kurze Prüfläufe praktikabel. Sie decken keine beliebig großen Dokumente oder alle möglichen Ressourcenangriffe ab. Die Ziele laden keine Ressourcen aus Dateien oder dem Netz; `page` holt Stylesheets und Bilder aus seiner Eingabe. TLS und IPC erhalten Fuzzing-Ziele, sobald ihre Implementierungen vorhanden sind; von der JavaScript-Engine prüft `js` bisher nur Lexer, Parser und die Muster regulärer Ausdrücke. Konformitätstests und Regressionstests bleiben zusätzlich erforderlich. Die eigenen Startkorpora lassen sich mit `python3 fuzz/seed_corpus.py` neu erzeugen; sie enthalten keine fremden Schriften.
+Beim Ziel `js-runtime` wählt das erste Byte den Modus: gerade Werte prüfen einen Heap-Graphen, ungerade gewöhnliche Objekte. Je vier weitere Bytes beschreiben eine Operation; ein unvollständiger Rest bleibt unbenutzt. Die gesamte Eingabe ist wie bei den Parserzielen auf 4 KiB begrenzt. Jeder Ablauf wird mit normaler Sammlung und im GC-Belastungsmodus ausgeführt; der Heap-Prüfmodus ist in beiden eingeschaltet. Pro Ausführung gilt ein Heapbudget von 1 MiB. Dieses Budget erfasst den logischen Heap, nicht den gesamten Prozessspeicher; zusätzlich gelten die oben genannten Laufzeit- und RSS-Grenzen.
+
+Der Graphmodus verarbeitet höchstens 128 Operationen mit bis zu 16 dauerhaften Wurzeln und 128 Modellknoten. Zeichenketten enthalten höchstens 16 UTF-16-Codeeinheiten, Feldzellen höchstens vier Plätze. Ein unabhängiges Graphmodell prüft Inhalte und gemeinsam referenzierte Zellen. Nach expliziter Sammlung werden die erreichbaren Zellbytes gegen das Modell geprüft; nach Freigabe aller Wurzeln muss der Heap leer sein. Lokale Handles entstehen in kurzen Bereichen, damit nicht versehentlich alle Zwischenwerte bis zum Ende verwurzelt bleiben.
+
+Der Objektmodus verarbeitet höchstens 64 Operationen auf vier dauerhaft verwurzelten gewöhnlichen Objekten und 16 festen Index-, Zeichenketten- und Symbolschlüsseln. Geprüft werden Dateneigenschaften mit ihren Attributen, Schreiben, Löschen, das Verhindern neuer Eigenschaften und Änderungen der Prototypkette einschließlich der Ablehnung von Zyklen. Ein eigenes Modell prüft Ergebnisse, Deskriptoren, Schlüsselreihenfolge sowie Lesen und Existenzprüfung entlang der Prototypkette. Zugriffseigenschaften und Funktionsaufrufe sind nicht Teil dieses Ziels. Die [Übergabe für die M2-Prüfung](m2-runtime-fuzzing.md) beschreibt die Abgrenzung und den weiteren Ausbau.
+
+Die Grenzen halten kurze Prüfläufe praktikabel. Sie decken keine beliebig großen Dokumente oder alle möglichen Ressourcenangriffe ab. Die Ziele laden keine Ressourcen aus Dateien oder dem Netz; `page` holt Stylesheets und Bilder aus seiner Eingabe. TLS und IPC erhalten Fuzzing-Ziele, sobald ihre Implementierungen vorhanden sind; von der JavaScript-Engine prüft `js` Lexer, Parser und die Muster regulärer Ausdrücke, `js-runtime` die bereits vorhandenen Laufzeitbausteine. Bytecode und Interpreter fehlen weiterhin; das Laufzeitziel führt noch keinen JavaScript-Quelltext aus. Die Vergleiche eigener Ausführungswege sind kein Nachweis der ECMAScript-Konformität. Konformitätstests und Regressionstests bleiben zusätzlich erforderlich. Die eigenen Startkorpora lassen sich mit `python3 fuzz/seed_corpus.py` neu erzeugen; sie enthalten keine fremden Schriften.
 
 ## Automatisierte Läufe
 

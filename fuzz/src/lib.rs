@@ -5,6 +5,9 @@
 
 use std::hint::black_box;
 
+mod runtime;
+pub use runtime::js_runtime;
+
 pub const MAX_INPUT: usize = 4096;
 pub const MAX_FONT_INPUT: usize = 65536;
 const MAX_PIXELS: u64 = 4096;
@@ -219,8 +222,10 @@ pub fn unicode(data: &[u8]) {
 
 /// The input as UTF-16LE code units; a trailing odd byte is dropped.
 fn utf16le(data: &[u8]) -> Vec<u16> {
-    data.chunks_exact(2)
-        .map(|pair| u16::from_le_bytes(<[u8; 2]>::try_from(pair).unwrap_or_default()))
+    data.as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| u16::from_le_bytes(*pair))
         .collect()
 }
 
@@ -494,7 +499,7 @@ mod tests {
     #[test]
     fn start_corpora_and_empty_inputs_exercise_all_harnesses() {
         type Harness = fn(&[u8]);
-        let targets: [(&str, Harness); 13] = [
+        let targets: [(&str, Harness); 14] = [
             ("html", html),
             ("css", css),
             ("url", url),
@@ -508,6 +513,7 @@ mod tests {
             ("unicode", unicode),
             ("page", page),
             ("js", js),
+            ("js-runtime", js_runtime),
         ];
         for (name, check) in targets {
             check(&[]);
