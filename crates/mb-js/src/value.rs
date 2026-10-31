@@ -192,6 +192,16 @@ impl<'h> Value<'h> {
         Value::from_bits(boxed(kind.tag(), u64::from(offset)))
     }
 
+    /// Ein Verweis auf ein Objekt.
+    pub(crate) fn object(object: Ref<'h>) -> Value<'h> {
+        Value::reference(RefKind::Object, object.offset())
+    }
+
+    /// Ein Verweis auf eine interne Zelle.
+    pub(crate) fn internal(cell: Ref<'h>) -> Value<'h> {
+        Value::reference(RefKind::Internal, cell.offset())
+    }
+
     /// Art und Abstand, wenn der Wert ein Verweis ist.
     pub(crate) fn reference_parts(self) -> Option<(RefKind, u32)> {
         let kind = match self.tag()? {

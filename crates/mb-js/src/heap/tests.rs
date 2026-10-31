@@ -141,6 +141,32 @@ fn cycles_survive_while_reachable() {
 }
 
 #[test]
+fn weak_fields_forget_unreachable_cells() {
+    let mut heap = checked();
+    heap.scope(|heap, scope| {
+        let weak = heap.alloc_cell(scope, CellKind::Weak, 3).expect("Speicher");
+        let kept = heap.alloc_slots(scope, 1).expect("Speicher");
+        heap.scope(|heap, scope| {
+            let lost = heap.alloc_slots(scope, 1).expect("Speicher");
+            let table = cell(heap.get(weak));
+            heap.set_field(table, 0, heap.get(kept));
+            heap.set_field(table, 1, heap.get(lost));
+            heap.set_field(table, 2, Value::int32(7));
+        });
+        heap.collect();
+        let table = cell(heap.get(weak));
+        assert_eq!(
+            heap.field(table, 0).map(Value::kind),
+            Some(Kind::Internal(cell(heap.get(kept))))
+        );
+        assert!(heap.field(table, 1).is_some_and(Value::is_undefined));
+        assert_eq!(heap.field(table, 2).and_then(Value::as_int32), Some(7));
+        // Die schwache Zelle mit drei Feldern und die gehaltene mit einem.
+        assert_eq!(heap.used_bytes(), 32 + 16);
+    });
+}
+
+#[test]
 fn handles_belong_to_the_scope_they_were_made_for() {
     let mut heap = checked();
     heap.scope(|heap, outer| {
