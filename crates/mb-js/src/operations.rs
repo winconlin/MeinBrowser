@@ -6,6 +6,7 @@
 use crate::agent::{Agent, Completion, ErrorKind};
 use crate::descriptor::PropertyDescriptor;
 use crate::heap::{Heap, Local, ObjectClass, Scope};
+use crate::interpreter::call_function;
 use crate::key::PropertyKey;
 use crate::object;
 use crate::value::{Kind, Value};
@@ -19,19 +20,19 @@ pub fn is_array(heap: &Heap, value: Value<'_>) -> bool {
     }
 }
 
-/// IsCallable (Abschnitt 7.2.3).
+/// IsCallable (Abschnitt 7.2.3). Bisher haben nur ECMAScript-
+/// Funktionsobjekte [[Call]].
 pub fn is_callable(heap: &Heap, value: Value<'_>) -> bool {
     match value.kind() {
-        // Gewöhnliche Objekte haben kein [[Call]]. Funktionsobjekte kommen
-        // mit Schritt 4 des Entwurfs.
         Kind::Object(object) => match heap.object_class(object) {
+            Some(ObjectClass::Function) => true,
             Some(ObjectClass::Ordinary | ObjectClass::Array) | None => false,
         },
         _ => false,
     }
 }
 
-/// Call (Abschnitt 7.3.13).
+/// Call (Abschnitt 7.3.13) aus Rust-Code: ein neuer Lauf des Interpreters.
 pub fn call<'s>(
     agent: &mut Agent,
     scope: &'s Scope,
@@ -42,9 +43,7 @@ pub fn call<'s>(
     if !is_callable(agent.heap(), agent.heap().get(function)) {
         return Err(agent.throw_error(ErrorKind::TypeError));
     }
-    // Bis es Funktionsobjekte gibt, ist nichts aufrufbar.
-    let _ = (scope, this, arguments);
-    Err(agent.throw_error(ErrorKind::TypeError))
+    call_function(agent, scope, function, this, arguments)
 }
 
 /// Get (Abschnitt 7.3.2).

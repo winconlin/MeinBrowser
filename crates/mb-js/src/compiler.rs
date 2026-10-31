@@ -1,23 +1,36 @@
-//! Der Übersetzer vom Syntaxbaum zum Bytecode, bisher für Scripts ohne
-//! Funktionen. Was er noch nicht kann, meldet er als
+//! Der Übersetzer vom Syntaxbaum zum Bytecode, für Scripts und Funktionen
+//! ohne Closures. Was er noch nicht kann, meldet er als
 //! [`CompileError::Unsupported`] mit der Lage im Quelltext.
 //!
-//! Bereichsanalyse: Ein Script bindet `var` im globalen Objekt und `let`
-//! und `const` auf oberster Ebene im deklarativen Record der globalen
-//! Umgebung. Beides legt GlobalDeclarationInstantiation (Abschnitt 16.1.7)
-//! zur Laufzeit an, der Übersetzer sammelt dafür die Namen. Bindungen in
-//! Blöcken, im Kopf von `for` und in `switch` liegen in Registern, denn
-//! ohne Funktionen fängt sie keine Closure. Beim Betreten eines Blocks
-//! bekommen sie die Lücke (BlockDeclarationInstantiation, Abschnitt
-//! 14.2.3). Gelesen und geschrieben wird mit [`Op::CheckHole`] davor, außer
-//! wenn die Stelle im Quelltext hinter der Deklaration liegt und kein
-//! `switch` dazwischen springen kann; dann ist die Bindung sicher
-//! initialisiert.
+//! Funktionen übersetzt er einzeln mit [`compile_function`], erst wenn sie
+//! das erste Mal aufgerufen werden. Der Code, der sie anlegt, nennt sie mit
+//! einer [`FunctionTemplate`].
+//!
+//! Bereichsanalyse: Ein Script bindet `var` und Funktionsdeklarationen im
+//! globalen Objekt und `let` und `const` auf oberster Ebene im deklarativen
+//! Record der globalen Umgebung. Beides legt
+//! GlobalDeclarationInstantiation (Abschnitt 16.1.7) zur Laufzeit an, der
+//! Übersetzer sammelt dafür die Namen. Alle anderen Bindungen liegen in
+//! Registern: in Funktionen die Parameter, `var`, Funktionsdeklarationen
+//! und `let` und `const` auf oberster Ebene (FunctionDeclarationInstantiation,
+//! Abschnitt 10.2.11), überall die Bindungen in Blöcken, im Kopf von `for`
+//! und in `switch`. Beim Betreten eines Blocks bekommen sie die Lücke
+//! (BlockDeclarationInstantiation, Abschnitt 14.2.3). Gelesen und
+//! geschrieben wird mit [`Op::CheckHole`] davor, außer wenn die Stelle im
+//! Quelltext hinter der Deklaration liegt und kein `switch` dazwischen
+//! springen kann; dann ist die Bindung sicher initialisiert.
+//!
+//! Closures gibt es noch nicht: Greift eine Funktion auf eine Bindung zu,
+//! die der umgebende Code in einem Register hält, meldet der Übersetzer
+//! das als nicht unterstützt. Ebenso `arguments`, Pfeilfunktionen,
+//! Generatoren, `async`, Klassen, Parameter mit Vorgabewerten, Mustern oder
+//! Rest und Funktionsdeklarationen in Blöcken (Anhang B.3.2).
 //!
 //! Abschlusswert: Scripts führen ein Register dafür (UpdateEmpty, Abschnitt
 //! 6.2.4.4). Jede Ausdrucksanweisung schreibt ihren Wert hinein. `if`,
 //! Schleifen und `switch` liefern nie ~empty~, sondern ohne eigenen Wert
 //! *undefined*; sie setzen das Register darum zu Beginn auf *undefined*.
+//! Funktionen brauchen keinen Abschlusswert.
 //!
 //! Eigenschaften: Eine Referenz auf eine Eigenschaft hält ihre Basis und
 //! bei berechneten Namen den Namen in Registern. ToObject und
@@ -25,21 +38,28 @@
 //! (Abschnitte 6.2.5.5 und 6.2.5.6), also nach der rechten Seite einer
 //! Zuweisung.
 //!
-//! Tiefe: Ketten zweistelliger Operatoren und Ketten von Zugriffen wie
-//! `a.b[c]?.d` baut der Parser in Schleifen, sie werden beliebig tief. Der
-//! Übersetzer liest sie mit einem eigenen Stapel oder entlang der Kette.
-//! Alles andere begrenzt der Parser mit `MAX_DEPTH`, das übersetzt er
-//! rekursiv (RS-8).
+//! Aufrufe: Funktion, `this` und Argumente liegen in Registern
+//! hintereinander ([`Op::Call`]). Ist die Funktion eine Eigenschaft, ist
+//! ihre Basis `this`; das gilt auch in Klammern, `(a.b)()` ruft mit `a` als
+//! `this` auf.
+//!
+//! Tiefe: Ketten zweistelliger Operatoren und Ketten von Zugriffen und
+//! Aufrufen wie `a.b(c)[d]?.e` baut der Parser in Schleifen, sie werden
+//! beliebig tief. Der Übersetzer liest sie mit einem eigenen Stapel oder
+//! entlang der Kette. Alles andere begrenzt der Parser mit `MAX_DEPTH`, das
+//! übersetzt er rekursiv (RS-8).
 
 #![forbid(unsafe_code)]
 
-use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
+use std::collections::{BTreeMap, BTreeSet};
+use std::rc::Rc;
 
 use crate::ast::{
-    AssignOperator, Ast, Atom, BinaryOperator, DeclarationKind, List, Node, NodeId, PropertyKind,
-    UnaryOperator, UpdateOperator,
+    AssignOperator, Ast, Atom, BinaryOperator, DeclarationKind, FunctionId, FunctionKind, List,
+    Node, NodeId, PropertyKind, UnaryOperator, UpdateOperator,
 };
-use crate::bytecode::{Code, Constant, Emitter, Label, Op, TooLarge};
+use crate::bytecode::{Code, Constant, Emitter, FunctionTemplate, Label, Op, TooLarge};
 use crate::number;
 use crate::value::Value;
 
@@ -65,27 +85,57 @@ type Result<T> = std::result::Result<T, CompileError>;
 #[derive(Clone, Debug, PartialEq)]
 pub struct Script {
     pub code: Code,
-    /// VarDeclaredNames ohne Wiederholungen, in der Reihenfolge des
-    /// Quelltexts.
+    /// VarDeclaredNames ohne Wiederholungen und ohne die Namen der
+    /// Funktionen, in der Reihenfolge des Quelltexts (declaredVarNames).
     pub var_names: Vec<Vec<u16>>,
     /// Die lexikalischen Deklarationen auf oberster Ebene, `true` für
     /// `const`.
     pub lexical_names: Vec<(Vec<u16>, bool)>,
+    /// Die Funktionsdeklarationen auf oberster Ebene mit ihrem Namen, von
+    /// mehreren mit demselben Namen die letzte, in der Reihenfolge des
+    /// Quelltexts (functionsToInitialize).
+    pub functions: Vec<(Vec<u16>, FunctionId)>,
 }
 
 /// Register für `this`.
 const THIS: i64 = 0;
-/// Register für den Abschlusswert.
+/// Register für den Abschlusswert eines Scripts.
 const COMPLETION: i64 = 1;
+
+/// Wie eine Bindung in einem Register auf Zuweisungen reagiert.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BindingKind {
+    Mutable,
+    /// Aus `const`: Zuweisen wirft einen TypeError.
+    Const,
+    /// Der Name eines benannten Funktionsausdrucks in seinem Rumpf
+    /// (Abschnitt 15.2.5): Zuweisen wirft nur im strikten Modus einen
+    /// TypeError, sonst geschieht nichts (SetMutableBinding, Abschnitt
+    /// 9.1.1.1.5).
+    FunctionName,
+}
 
 #[derive(Clone, Copy, Debug)]
 struct LocalBinding {
     register: u32,
-    constant: bool,
+    kind: BindingKind,
     /// Ab hier im Quelltext ist die Bindung initialisiert, wenn kein
     /// `switch` dorthin springt.
     initialized_from: usize,
     in_switch: bool,
+}
+
+impl LocalBinding {
+    /// Eine Bindung, die von Anfang an einen Wert hat: Parameter, `var`,
+    /// Funktionen und der Name eines Funktionsausdrucks.
+    fn initialized(register: u32, kind: BindingKind) -> LocalBinding {
+        LocalBinding {
+            register,
+            kind,
+            initialized_from: 0,
+            in_switch: false,
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -150,6 +200,27 @@ enum Access {
     Keyed(NodeId),
 }
 
+/// Wie eine Kette aus Zugriffen und Aufrufen endet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ChainEnd {
+    /// Mit ihrem Wert.
+    Value,
+    /// Mit `delete` auf den letzten Zugriff.
+    Delete,
+    /// Ihr Wert wird aufgerufen: Ein Zugriff am Ende legt seine Basis als
+    /// `this` in das Register.
+    Callee(u32),
+}
+
+/// Der Name, den ein neues Funktionsobjekt bekommt, wenn die Funktion
+/// keinen eigenen hat (NamedEvaluation, Abschnitt 8.4.5).
+#[derive(Clone, Copy)]
+enum ClosureName<'n> {
+    Static(&'n [u16]),
+    /// Der Schlüssel im Register.
+    Keyed(u32),
+}
+
 /// Ein Schritt beim Übersetzen einer Kette zweistelliger Operatoren.
 enum Task {
     Visit(NodeId),
@@ -173,6 +244,13 @@ struct Compiler<'a> {
     scopes: Vec<BlockScope>,
     targets: Vec<Target>,
     strict: bool,
+    /// Das Register für den Abschlusswert, nur in Scripts.
+    completion: Option<i64>,
+    /// Ob `arguments` ohne eigene Bindung das Objekt der Argumente meint,
+    /// das es noch nicht gibt.
+    arguments: bool,
+    /// Die Namen, die der umgebende Code in Registern hält.
+    outer: Rc<BTreeSet<Atom>>,
 }
 
 /// Übersetzt ein Script (Abschnitt 16.1).
@@ -180,43 +258,164 @@ pub fn compile_script(ast: &Ast) -> Result<Script> {
     if ast.is_module() {
         return Err(CompileError::Unsupported(0));
     }
-    let mut compiler = Compiler {
-        ast,
-        emitter: Emitter::default(),
-        constants: Vec::new(),
-        constant_index: BTreeMap::new(),
-        next_register: 0,
-        register_count: 0,
-        scopes: Vec::new(),
-        targets: Vec::new(),
-        strict: ast.is_strict(),
-    };
+    let mut compiler = Compiler::new(ast, ast.is_strict(), Rc::default());
     // `this` und der Abschlusswert.
     compiler.allocate()?;
     compiler.allocate()?;
+    compiler.completion = Some(COMPLETION);
     let body = ast.body();
     let lexical_names = compiler.top_level_lexical_names(body)?;
+    let functions = compiler.top_level_functions(body)?;
+    let mut var_atoms = Vec::new();
+    for &item in body {
+        compiler.var_declared_names(item, &mut var_atoms)?;
+    }
+    let var_names = var_atoms
+        .into_iter()
+        .filter(|&atom| !functions.iter().any(|&(name, _, _)| name == atom))
+        .map(|atom| ast.atom(atom).to_vec())
+        .collect();
+    for &item in body {
+        compiler.top_level_item(item)?;
+    }
+    compiler.emit(Op::Ldar, &[COMPLETION])?;
+    compiler.emit(Op::Return, &[])?;
+    let functions = functions
+        .into_iter()
+        .map(|(name, id, _)| (ast.atom(name).to_vec(), id))
+        .collect();
+    Ok(Script {
+        code: compiler.finish(),
+        var_names,
+        lexical_names,
+        functions,
+    })
+}
+
+/// Übersetzt eine Funktion für ihren ersten Aufruf, mit
+/// FunctionDeclarationInstantiation (Abschnitt 10.2.11) für einfache
+/// Parameterlisten. Die Register: `this`, das Funktionsobjekt, die
+/// Parameter, dann `var` und die Funktionen des Rumpfs, dann seine
+/// lexikalischen Bindungen.
+pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> {
+    let Some(function) = ast.function(template.function) else {
+        return Err(CompileError::Unsupported(0));
+    };
+    let position = function.range.start;
+    let supported = matches!(
+        function.kind,
+        FunctionKind::Normal | FunctionKind::Method | FunctionKind::Getter | FunctionKind::Setter
+    ) && !function.generator
+        && !function.is_async
+        && function.simple_parameters;
+    if !supported {
+        return Err(CompileError::Unsupported(position));
+    }
+    let mut compiler = Compiler::new(ast, function.strict, Rc::clone(&template.outer));
+    compiler.allocate()?;
+    let callee = compiler.allocate()?;
+    let mut scope = BlockScope::default();
+    let parameters = ast.list(function.parameters);
+    for &parameter in parameters {
+        let Node::BindingIdentifier(atom) = *ast.node(parameter) else {
+            return Err(compiler.unsupported(parameter));
+        };
+        // Bei doppelten Namen gilt der letzte Parameter.
+        let register = compiler.allocate()?;
+        let binding = LocalBinding::initialized(register, BindingKind::Mutable);
+        scope.bindings.insert(atom, binding);
+    }
+    let body = ast.list(function.body);
+    let functions = compiler.top_level_functions(body)?;
     let mut var_names = Vec::new();
     for &item in body {
         compiler.var_declared_names(item, &mut var_names)?;
     }
-    for &item in body {
-        compiler.statement(item)?;
+    let items: Vec<NodeId> = body
+        .iter()
+        .copied()
+        .filter(|&item| !matches!(ast.node(item), Node::FunctionDeclaration(_)))
+        .collect();
+    let mut lexical_names = Vec::new();
+    for &item in &items {
+        lexical_names.extend(compiler.lexical_declarations(item)?);
     }
-    compiler.emit(Op::Ldar, &[COMPLETION])?;
+    // argumentsObjectNeeded: Ein Parameter, eine Funktion oder eine
+    // lexikalische Deklaration mit dem Namen ersetzt das Objekt, `var` nicht.
+    compiler.arguments = !scope
+        .bindings
+        .keys()
+        .any(|&atom| compiler.is_arguments(atom))
+        && !functions
+            .iter()
+            .any(|&(name, _, _)| compiler.is_arguments(name))
+        && !lexical_names
+            .iter()
+            .any(|&(atom, _, _)| compiler.is_arguments(atom));
+    if compiler.arguments && var_names.iter().any(|&atom| compiler.is_arguments(atom)) {
+        return Err(CompileError::Unsupported(position));
+    }
+    for atom in var_names
+        .into_iter()
+        .chain(functions.iter().map(|&(name, _, _)| name))
+    {
+        if let Entry::Vacant(entry) = scope.bindings.entry(atom) {
+            let register = compiler.allocate()?;
+            entry.insert(LocalBinding::initialized(register, BindingKind::Mutable));
+        }
+    }
+    // Der Name eines Funktionsausdrucks liegt außen (funcEnv, Abschnitt
+    // 15.2.5); das Objekt `arguments` verdeckt ihn.
+    if template.binds_name
+        && let Some(name) = function.name
+        && !(compiler.arguments && compiler.is_arguments(name))
+    {
+        let mut outer = BlockScope::default();
+        let binding = LocalBinding::initialized(callee, BindingKind::FunctionName);
+        outer.bindings.insert(name, binding);
+        compiler.scopes.push(outer);
+    }
+    compiler.scopes.push(scope);
+    compiler.enter_block(&items, false)?;
+    for &(name, id, node) in &functions {
+        compiler.function_declaration(node, id)?;
+        if let Some(binding) = compiler.lookup(name) {
+            compiler.emit(Op::Star, &[i64::from(binding.register)])?;
+        }
+    }
+    for &item in body {
+        compiler.top_level_item(item)?;
+    }
+    compiler.emit(Op::LdaUndefined, &[])?;
     compiler.emit(Op::Return, &[])?;
-    let code =
-        compiler
-            .emitter
-            .finish(compiler.constants, compiler.register_count, compiler.strict);
-    Ok(Script {
-        code,
-        var_names,
-        lexical_names,
-    })
+    let mut code = compiler.finish();
+    code.parameters = u32::try_from(parameters.len()).map_err(|_| CompileError::TooLarge)?;
+    Ok(code)
 }
 
-impl Compiler<'_> {
+impl<'a> Compiler<'a> {
+    fn new(ast: &'a Ast, strict: bool, outer: Rc<BTreeSet<Atom>>) -> Compiler<'a> {
+        Compiler {
+            ast,
+            emitter: Emitter::default(),
+            constants: Vec::new(),
+            constant_index: BTreeMap::new(),
+            next_register: 0,
+            register_count: 0,
+            scopes: Vec::new(),
+            targets: Vec::new(),
+            strict,
+            completion: None,
+            arguments: false,
+            outer,
+        }
+    }
+
+    fn finish(self) -> Code {
+        self.emitter
+            .finish(self.constants, self.register_count, self.strict)
+    }
+
     fn unsupported(&self, node: NodeId) -> CompileError {
         CompileError::Unsupported(self.ast.range(node).start)
     }
@@ -259,13 +458,16 @@ impl Compiler<'_> {
         self.next_register = mark;
     }
 
+    /// Eine Konstante. Gleiche Zahlen, Zeichenketten und Namen teilen sich
+    /// eine, jede Funktion bekommt eine eigene.
     fn constant(&mut self, constant: Constant) -> Result<i64> {
         let key = match &constant {
-            Constant::Number(number) => ConstantKey::Number(number.to_bits()),
-            Constant::String(units) => ConstantKey::String(units.clone()),
-            Constant::Name(units) => ConstantKey::Name(units.clone()),
+            Constant::Number(number) => Some(ConstantKey::Number(number.to_bits())),
+            Constant::String(units) => Some(ConstantKey::String(units.clone())),
+            Constant::Name(units) => Some(ConstantKey::Name(units.clone())),
+            Constant::Function(_) => None,
         };
-        if let Some(&index) = self.constant_index.get(&key) {
+        if let Some(&index) = key.as_ref().and_then(|key| self.constant_index.get(key)) {
             return Ok(index);
         }
         let index = i64::try_from(self.constants.len())
@@ -273,7 +475,9 @@ impl Compiler<'_> {
             .filter(|&index| u32::try_from(index).is_ok())
             .ok_or(CompileError::TooLarge)?;
         self.constants.push(constant);
-        self.constant_index.insert(key, index);
+        if let Some(key) = key {
+            self.constant_index.insert(key, index);
+        }
         Ok(index)
     }
 
@@ -290,15 +494,56 @@ impl Compiler<'_> {
     // Bereiche
 
     /// LexicallyDeclaredNames auf oberster Ebene des Scripts mit
-    /// IsConstantDeclaration.
+    /// IsConstantDeclaration. Funktionen sind dort keine lexikalischen
+    /// Deklarationen.
     fn top_level_lexical_names(&self, body: &[NodeId]) -> Result<Vec<(Vec<u16>, bool)>> {
         let mut names = Vec::new();
         for &item in body {
+            if matches!(self.ast.node(item), Node::FunctionDeclaration(_)) {
+                continue;
+            }
             for (atom, constant, _) in self.lexical_declarations(item)? {
                 names.push((self.ast.atom(atom).to_vec(), constant));
             }
         }
         Ok(names)
+    }
+
+    /// functionsToInitialize (Abschnitte 10.2.11 und 16.1.7): die
+    /// Funktionsdeklarationen auf oberster Ebene, von mehreren mit
+    /// demselben Namen die letzte, in der Reihenfolge des Quelltexts.
+    fn top_level_functions(&self, body: &[NodeId]) -> Result<Vec<(Atom, FunctionId, NodeId)>> {
+        let mut functions = Vec::new();
+        let mut names = BTreeSet::new();
+        for &item in body.iter().rev() {
+            let Node::FunctionDeclaration(id) = *self.ast.node(item) else {
+                continue;
+            };
+            let function = self
+                .ast
+                .function(id)
+                .ok_or_else(|| self.unsupported(item))?;
+            if function.generator || function.is_async {
+                return Err(self.unsupported(item));
+            }
+            let Some(name) = function.name else {
+                return Err(self.unsupported(item));
+            };
+            if names.insert(name) {
+                functions.push((name, id, item));
+            }
+        }
+        functions.reverse();
+        Ok(functions)
+    }
+
+    /// Eine Anweisung auf oberster Ebene eines Scripts oder Funktionsrumpfs.
+    /// Die Funktionsdeklarationen dort sind zu Beginn schon angelegt.
+    fn top_level_item(&mut self, item: NodeId) -> Result<()> {
+        if matches!(self.ast.node(item), Node::FunctionDeclaration(_)) {
+            return Ok(());
+        }
+        self.statement(item)
     }
 
     /// Die lexikalischen Bindungen, die `item` in seinem Block deklariert:
@@ -330,13 +575,12 @@ impl Compiler<'_> {
         Ok(bindings)
     }
 
-    /// VarDeclaredNames (Abschnitt 8.2.8) der Anweisung, angehängt an
-    /// `names`, ohne Wiederholungen.
-    fn var_declared_names(&self, node: NodeId, names: &mut Vec<Vec<u16>>) -> Result<()> {
+    /// VarDeclaredNames (Abschnitt 8.2.8) der Anweisung ohne die Namen der
+    /// Funktionen, angehängt an `names`, ohne Wiederholungen.
+    fn var_declared_names(&self, node: NodeId, names: &mut Vec<Atom>) -> Result<()> {
         let mut add = |atom: Atom| {
-            let units = self.ast.atom(atom).to_vec();
-            if !names.contains(&units) {
-                names.push(units);
+            if !names.contains(&atom) {
+                names.push(atom);
             }
         };
         match *self.ast.node(node) {
@@ -403,11 +647,16 @@ impl Compiler<'_> {
             for (atom, constant, end) in self.lexical_declarations(item)? {
                 let register = self.allocate()?;
                 registers.push(register);
+                let kind = if constant {
+                    BindingKind::Const
+                } else {
+                    BindingKind::Mutable
+                };
                 scope.bindings.insert(
                     atom,
                     LocalBinding {
                         register,
-                        constant,
+                        kind,
                         initialized_from: end,
                         in_switch,
                     },
@@ -436,6 +685,41 @@ impl Compiler<'_> {
             .find_map(|scope| scope.bindings.get(&atom).copied())
     }
 
+    fn is_arguments(&self, atom: Atom) -> bool {
+        self.ast
+            .atom(atom)
+            .iter()
+            .copied()
+            .eq("arguments".encode_utf16())
+    }
+
+    /// ResolveBinding (Abschnitt 9.4.2) beim Übersetzen: eine Bindung in
+    /// einem Register oder `None` für die globale Umgebung. Eine Bindung
+    /// aus einem Register des umgebenden Codes bräuchte eine Closure, das
+    /// Objekt `arguments` fehlt noch.
+    fn resolve(&self, atom: Atom, node: NodeId) -> Result<Option<LocalBinding>> {
+        if let Some(binding) = self.lookup(atom) {
+            return Ok(Some(binding));
+        }
+        if self.outer.contains(&atom) || (self.arguments && self.is_arguments(atom)) {
+            return Err(self.unsupported(node));
+        }
+        Ok(None)
+    }
+
+    /// Die Namen, die eine Funktion sähe, die hier entsteht: die Bindungen
+    /// aller offenen Bereiche und die des umgebenden Codes.
+    fn visible_names(&self) -> Rc<BTreeSet<Atom>> {
+        if self.scopes.iter().all(|scope| scope.bindings.is_empty()) {
+            return Rc::clone(&self.outer);
+        }
+        let mut names = BTreeSet::clone(&self.outer);
+        for scope in &self.scopes {
+            names.extend(scope.bindings.keys().copied());
+        }
+        Rc::new(names)
+    }
+
     /// Ob eine Stelle im Quelltext die Bindung vor ihrer Initialisierung
     /// erreichen kann.
     fn needs_hole_check(binding: LocalBinding, position: usize) -> bool {
@@ -449,7 +733,10 @@ impl Compiler<'_> {
         match *self.ast.node(node) {
             Node::Expression(expression) => {
                 self.expression(expression)?;
-                self.emit(Op::Star, &[COMPLETION])
+                match self.completion {
+                    Some(completion) => self.emit(Op::Star, &[completion]),
+                    None => Ok(()),
+                }
             }
             Node::Variables { kind, declarators } => self.variables(kind, declarators),
             Node::Block(list) => {
@@ -479,13 +766,25 @@ impl Compiler<'_> {
                 self.position(node)?;
                 self.emit(Op::Throw, &[])
             }
+            // Der Parser lässt `return` nur in Funktionen zu.
+            Node::Return(argument) => {
+                match argument {
+                    Some(argument) => self.expression(argument)?,
+                    None => self.emit(Op::LdaUndefined, &[])?,
+                }
+                self.position(node)?;
+                self.emit(Op::Return, &[])
+            }
             _ => Err(self.unsupported(node)),
         }
     }
 
     fn reset_completion(&mut self) -> Result<()> {
+        let Some(completion) = self.completion else {
+            return Ok(());
+        };
         self.emit(Op::LdaUndefined, &[])?;
-        self.emit(Op::Star, &[COMPLETION])
+        self.emit(Op::Star, &[completion])
     }
 
     /// `var`, `let` und `const` (Abschnitte 14.3.1.2 und 14.3.2.1).
@@ -498,26 +797,33 @@ impl Compiler<'_> {
             let Node::BindingIdentifier(atom) = *self.ast.node(target) else {
                 return Err(self.unsupported(target));
             };
+            let units = ast.atom(atom);
             match kind {
                 DeclarationKind::Var => {
                     // Ohne Initialisierer tut die Deklaration hier nichts.
                     // Mit ihm wird erst der Name aufgelöst, dann gelesen
-                    // und geschrieben; Namen aus `var` liegen immer in der
-                    // globalen Umgebung.
+                    // und geschrieben. In einer Funktion liegt er in einem
+                    // Register, in einem Script in der globalen Umgebung.
                     let Some(init) = init else {
                         continue;
                     };
+                    if let Some(binding) = self.resolve(atom, target)? {
+                        self.named_expression(init, units)?;
+                        self.position(declarator)?;
+                        self.store_local(binding, atom, self.ast.range(declarator).end)?;
+                        continue;
+                    }
                     let name = self.name(atom)?;
                     let register = self.allocate()?;
                     self.emit(Op::ResolveGlobal, &[name, i64::from(register)])?;
-                    self.expression(init)?;
+                    self.named_expression(init, units)?;
                     self.position(declarator)?;
                     self.emit(Op::StaGlobal, &[name, i64::from(register)])?;
                     self.release(register);
                 }
                 DeclarationKind::Let | DeclarationKind::Const => {
                     match init {
-                        Some(init) => self.expression(init)?,
+                        Some(init) => self.named_expression(init, units)?,
                         None => self.emit(Op::LdaUndefined, &[])?,
                     }
                     // InitializeReferencedBinding.
@@ -866,9 +1172,113 @@ impl Compiler<'_> {
             }
             Node::Object(list) => self.object_literal(list),
             Node::Array(list) => self.array_literal(list),
-            Node::Member { .. } | Node::ComputedMember { .. } => self.member_expression(node),
-            Node::Chain(chain) => self.member_expression(chain),
+            Node::Member { .. } | Node::ComputedMember { .. } | Node::Call { .. } => {
+                self.chain(node, ChainEnd::Value).map(|_| ())
+            }
+            Node::Chain(chain) => self.chain(chain, ChainEnd::Value).map(|_| ()),
+            Node::Function(id) => self.closure(node, id, ClosureName::Static(&[])),
             _ => Err(self.unsupported(node)),
+        }
+    }
+
+    /// IsAnonymousFunctionDefinition (Abschnitt 8.4.3) für die Funktionen,
+    /// die es schon gibt; Klammern zählen nicht.
+    fn anonymous_function(&self, node: NodeId) -> Option<(NodeId, FunctionId)> {
+        let inner = self.without_parens(node);
+        match *self.ast.node(inner) {
+            Node::Function(id)
+                if self
+                    .ast
+                    .function(id)
+                    .is_some_and(|function| function.name.is_none()) =>
+            {
+                Some((inner, id))
+            }
+            _ => None,
+        }
+    }
+
+    /// NamedEvaluation (Abschnitt 8.4.5): Eine anonyme Funktion, auch in
+    /// Klammern, bekommt den Namen `name`; alles andere wird gewöhnlich
+    /// ausgewertet.
+    fn named_expression(&mut self, node: NodeId, name: &[u16]) -> Result<()> {
+        match self.anonymous_function(node) {
+            Some((function, id)) => self.closure(function, id, ClosureName::Static(name)),
+            None => self.expression(node),
+        }
+    }
+
+    /// Dasselbe mit dem Schlüssel im Register als Namen.
+    fn keyed_expression(&mut self, node: NodeId, key: u32) -> Result<()> {
+        match self.anonymous_function(node) {
+            Some((function, id)) => self.closure(function, id, ClosureName::Keyed(key)),
+            None => self.expression(node),
+        }
+    }
+
+    /// Ein neues Funktionsobjekt im Akkumulator, für einen
+    /// Funktionsausdruck (InstantiateOrdinaryFunctionExpression, Abschnitt
+    /// 15.2.5) oder eine Methode (DefineMethod, Abschnitt 15.4.2). Ein
+    /// benannter Funktionsausdruck heißt wie die Funktion und bindet den
+    /// Namen in seinem Rumpf, sonst gilt `name`.
+    fn closure(&mut self, node: NodeId, id: FunctionId, name: ClosureName<'_>) -> Result<()> {
+        let own = self
+            .ast
+            .function(id)
+            .filter(|function| function.kind == FunctionKind::Normal)
+            .and_then(|function| function.name);
+        self.create_closure(node, id, own.is_some(), own, name)
+    }
+
+    /// InstantiateOrdinaryFunctionObject (Abschnitt 15.2.4) für eine
+    /// Funktionsdeklaration: Sie heißt wie die Funktion, gebunden wird der
+    /// Name im umgebenden Code.
+    fn function_declaration(&mut self, node: NodeId, id: FunctionId) -> Result<()> {
+        let own = self.ast.function(id).and_then(|function| function.name);
+        self.create_closure(node, id, false, own, ClosureName::Static(&[]))
+    }
+
+    fn create_closure(
+        &mut self,
+        node: NodeId,
+        id: FunctionId,
+        binds_name: bool,
+        own: Option<Atom>,
+        name: ClosureName<'_>,
+    ) -> Result<()> {
+        let Some(function) = self.ast.function(id) else {
+            return Err(self.unsupported(node));
+        };
+        let supported = matches!(
+            function.kind,
+            FunctionKind::Normal
+                | FunctionKind::Method
+                | FunctionKind::Getter
+                | FunctionKind::Setter
+        ) && !function.generator
+            && !function.is_async;
+        if !supported {
+            return Err(self.unsupported(node));
+        }
+        let template = FunctionTemplate {
+            function: id,
+            binds_name,
+            outer: self.visible_names(),
+        };
+        let template = self.constant(Constant::Function(template))?;
+        self.position(node)?;
+        match (own, name) {
+            (Some(atom), _) => {
+                let name = self.name(atom)?;
+                self.emit(Op::CreateClosure, &[template, name])
+            }
+            (None, ClosureName::Static(units)) => {
+                let name = self.constant(Constant::Name(units.to_vec()))?;
+                self.emit(Op::CreateClosure, &[template, name])
+            }
+            (None, ClosureName::Keyed(register)) => {
+                self.emit(Op::CreateClosureKeyed, &[template, i64::from(register)])
+            }
         }
     }
 
@@ -880,8 +1290,7 @@ impl Compiler<'_> {
         node
     }
 
-    /// Objektliterale (Abschnitte 13.2.5.5 und 13.2.5.6). Methoden und
-    /// Accessoren brauchen Funktionen.
+    /// Objektliterale (Abschnitte 13.2.5.5 und 13.2.5.6).
     fn object_literal(&mut self, list: List) -> Result<()> {
         self.emit(Op::CreateObject, &[])?;
         let object = self.allocate()?;
@@ -901,6 +1310,11 @@ impl Compiler<'_> {
                     key,
                     value,
                 } => self.property_definition(register, kind, key, value)?,
+                Node::Property {
+                    kind: kind @ (PropertyKind::Method | PropertyKind::Get | PropertyKind::Set),
+                    key,
+                    value,
+                } => self.method_definition(register, kind, key, value)?,
                 _ => return Err(self.unsupported(property)),
             }
         }
@@ -909,7 +1323,24 @@ impl Compiler<'_> {
         Ok(())
     }
 
-    /// Eine Eigenschaft mit Wert im Objekt im Register `object`.
+    /// Der Name einer Eigenschaft im Literal: ein fester als Codeeinheiten,
+    /// ein berechneter nach ToPropertyKey im Akkumulator (dann `None`).
+    fn property_key(&mut self, key: NodeId) -> Result<Option<Vec<u16>>> {
+        match *self.ast.node(key) {
+            Node::PropertyName(atom) | Node::String(atom) => Ok(Some(self.ast.atom(atom).to_vec())),
+            Node::Number(number) => Ok(Some(number::to_string(number).encode_utf16().collect())),
+            Node::ComputedKey(expression) => {
+                self.expression(expression)?;
+                self.position(key)?;
+                self.emit(Op::ToPropertyKey, &[])?;
+                Ok(None)
+            }
+            _ => Err(self.unsupported(key)),
+        }
+    }
+
+    /// Eine Eigenschaft mit Wert im Objekt im Register `object`. Eine
+    /// anonyme Funktion als Wert heißt wie die Eigenschaft.
     fn property_definition(
         &mut self,
         object: i64,
@@ -917,35 +1348,76 @@ impl Compiler<'_> {
         key: NodeId,
         value: NodeId,
     ) -> Result<()> {
-        let units: Vec<u16> = match *self.ast.node(key) {
-            Node::PropertyName(atom) | Node::String(atom) => self.ast.atom(atom).to_vec(),
-            Node::Number(number) => number::to_string(number).encode_utf16().collect(),
-            Node::ComputedKey(expression) => {
-                // Der berechnete Name kommt mit ToPropertyKey vor dem Wert.
-                self.expression(expression)?;
+        let Some(units) = self.property_key(key)? else {
+            // Der berechnete Name kommt mit ToPropertyKey vor dem Wert.
+            let name = self.allocate()?;
+            self.emit(Op::Star, &[i64::from(name)])?;
+            self.keyed_expression(value, name)?;
+            self.position(key)?;
+            self.emit(Op::DefineKeyed, &[object, i64::from(name)])?;
+            self.release(name);
+            return Ok(());
+        };
+        // `__proto__: value` ohne berechneten Namen setzt den Prototyp
+        // (PropertyDefinitionEvaluation, Schritte 5 und 6), die Kurzform
+        // `{__proto__}` nicht. Eine Funktion bekommt dort keinen Namen.
+        let proto: Vec<u16> = "__proto__".encode_utf16().collect();
+        if kind == PropertyKind::Init && units == proto {
+            self.expression(value)?;
+            self.position(key)?;
+            return self.emit(Op::SetPrototypeLiteral, &[object]);
+        }
+        self.named_expression(value, &units)?;
+        self.position(key)?;
+        let name = self.constant(Constant::Name(units))?;
+        self.emit(Op::DefineNamed, &[object, name])
+    }
+
+    /// Methoden, Getter und Setter im Objekt im Register `object`
+    /// (MethodDefinitionEvaluation, Abschnitt 15.4.4): erst der Name, dann
+    /// das Funktionsobjekt, dann die Eigenschaft, aufzählbar und
+    /// konfigurierbar.
+    fn method_definition(
+        &mut self,
+        object: i64,
+        kind: PropertyKind,
+        key: NodeId,
+        value: NodeId,
+    ) -> Result<()> {
+        let Node::Function(id) = *self.ast.node(value) else {
+            return Err(self.unsupported(value));
+        };
+        let name = self.allocate()?;
+        let register = i64::from(name);
+        match self.property_key(key)? {
+            Some(units) if kind == PropertyKind::Method => {
+                self.closure(value, id, ClosureName::Static(&units))?;
                 self.position(key)?;
-                self.emit(Op::ToPropertyKey, &[])?;
-                let name = self.allocate()?;
-                self.emit(Op::Star, &[i64::from(name)])?;
-                self.expression(value)?;
-                self.position(key)?;
-                self.emit(Op::DefineKeyed, &[object, i64::from(name)])?;
+                let constant = self.constant(Constant::Name(units))?;
+                self.emit(Op::DefineNamed, &[object, constant])?;
                 self.release(name);
                 return Ok(());
             }
-            _ => return Err(self.unsupported(key)),
-        };
-        self.expression(value)?;
-        self.position(key)?;
-        // `__proto__: value` ohne berechneten Namen setzt den Prototyp
-        // (PropertyDefinitionEvaluation, Schritte 5 und 6), die Kurzform
-        // `{__proto__}` nicht.
-        let proto: Vec<u16> = "__proto__".encode_utf16().collect();
-        if kind == PropertyKind::Init && units == proto {
-            return self.emit(Op::SetPrototypeLiteral, &[object]);
+            Some(units) => {
+                let constant = self.constant(Constant::Name(units.clone()))?;
+                self.emit(Op::LdaConstant, &[constant])?;
+                self.emit(Op::Star, &[register])?;
+                self.closure(value, id, ClosureName::Static(&units))?;
+            }
+            None => {
+                self.emit(Op::Star, &[register])?;
+                self.closure(value, id, ClosureName::Keyed(name))?;
+            }
         }
-        let name = self.constant(Constant::Name(units))?;
-        self.emit(Op::DefineNamed, &[object, name])
+        self.position(key)?;
+        let op = match kind {
+            PropertyKind::Get => Op::DefineGetter,
+            PropertyKind::Set => Op::DefineSetter,
+            _ => Op::DefineKeyed,
+        };
+        self.emit(op, &[object, register])?;
+        self.release(name);
+        Ok(())
     }
 
     /// Array-Literale (Abschnitte 13.2.4.1 und 13.2.4.2). Die Ausbreitung
@@ -975,26 +1447,158 @@ impl Compiler<'_> {
         Ok(())
     }
 
-    /// Der Kopf einer Kette von Zugriffen und ihre Glieder von innen nach
-    /// außen, ohne Rekursion entlang der Kette.
-    fn member_links(&self, node: NodeId) -> (NodeId, Vec<NodeId>) {
+    /// Der Kopf einer Kette aus Zugriffen und Aufrufen und ihre Glieder von
+    /// innen nach außen, ohne Rekursion entlang der Kette.
+    fn chain_links(&self, node: NodeId) -> (NodeId, Vec<NodeId>) {
         let mut links = Vec::new();
         let mut head = node;
-        while let Node::Member { object, .. } | Node::ComputedMember { object, .. } =
-            *self.ast.node(head)
-        {
-            links.push(head);
-            head = object;
+        loop {
+            match *self.ast.node(head) {
+                Node::Member { object, .. } | Node::ComputedMember { object, .. } => {
+                    links.push(head);
+                    head = object;
+                }
+                Node::Call { callee, .. } => {
+                    links.push(head);
+                    head = callee;
+                }
+                _ => break,
+            }
         }
         links.reverse();
         (head, links)
     }
 
+    fn is_call(&self, node: NodeId) -> bool {
+        matches!(self.ast.node(node), Node::Call { .. })
+    }
+
+    /// Eine Kette aus Zugriffen und Aufrufen: GetValue für Zugriffe
+    /// (Abschnitte 13.3.2 und 13.3.3), EvaluateCall für Aufrufe (Abschnitt
+    /// 13.3.6) und mit `delete` das Löschen am letzten Glied. Springt ein
+    /// Glied nach `?.` heraus, ergibt die ganze Kette *undefined*, mit
+    /// `delete` *true*. Gibt zurück, ob am Ende eine Basis als `this` im
+    /// Register aus `end` liegt.
+    fn chain(&mut self, node: NodeId, end: ChainEnd) -> Result<bool> {
+        let (head, links) = self.chain_links(node);
+        let mark = self.next_register;
+        // Funktion und `this` für die Aufrufe, dahinter ihre Argumente.
+        let callee = if links.iter().any(|&link| self.is_call(link)) {
+            let callee = self.allocate()?;
+            self.allocate()?;
+            Some(callee)
+        } else {
+            None
+        };
+        let this_register = callee.and_then(|callee| callee.checked_add(1));
+        let mut nullish = Vec::new();
+        let mut has_this = match (this_register, links.first()) {
+            (Some(this), Some(&first)) if self.is_call(first) => self.callee_head(head, this)?,
+            _ => {
+                self.expression(head)?;
+                false
+            }
+        };
+        for (index, &link) in links.iter().enumerate() {
+            let next = links.get(index + 1).copied();
+            if let Node::Call {
+                arguments,
+                optional,
+                ..
+            } = *self.ast.node(link)
+            {
+                let Some(callee) = callee else {
+                    return Err(self.unsupported(link));
+                };
+                self.position(link)?;
+                if optional {
+                    nullish.push(self.jump(Op::JumpIfNullish)?);
+                }
+                self.call(link, callee, has_this, arguments)?;
+                has_this = false;
+                continue;
+            }
+            let this = match (next, end) {
+                (Some(next), _) if self.is_call(next) => this_register,
+                (None, ChainEnd::Callee(register)) => Some(register),
+                _ => None,
+            };
+            let delete = next.is_none() && end == ChainEnd::Delete;
+            self.member_link(link, &mut nullish, delete, this)?;
+            has_this = this.is_some();
+        }
+        self.release(mark);
+        let result = if end == ChainEnd::Delete {
+            Op::LdaTrue
+        } else {
+            Op::LdaUndefined
+        };
+        self.short_circuit(nullish, result)?;
+        Ok(has_this)
+    }
+
+    /// Der Kopf einer Kette, dessen Wert aufgerufen wird. Der
+    /// Gruppierungsoperator gibt eine Referenz weiter (Abschnitt 13.2.9.1),
+    /// auch die aus einer optionalen Kette: Ein Zugriff in Klammern legt
+    /// seine Basis als `this` ab.
+    fn callee_head(&mut self, head: NodeId, this: u32) -> Result<bool> {
+        let inner = self.without_parens(head);
+        match *self.ast.node(inner) {
+            Node::Member { .. } | Node::ComputedMember { .. } => {
+                self.chain(inner, ChainEnd::Callee(this))
+            }
+            Node::Chain(chain) => self.chain(chain, ChainEnd::Callee(this)),
+            _ => {
+                self.expression(head)?;
+                Ok(false)
+            }
+        }
+    }
+
+    /// Ein Aufruf der Funktion im Akkumulator (EvaluateCall, Abschnitt
+    /// 13.3.6.2): Funktion, `this` und Argumente in den Registern ab
+    /// `callee`. Ohne Basis ist `this` *undefined*.
+    fn call(&mut self, node: NodeId, callee: u32, has_this: bool, arguments: List) -> Result<()> {
+        let register = i64::from(callee);
+        self.emit(Op::Star, &[register])?;
+        if !has_this {
+            self.emit(Op::LdaUndefined, &[])?;
+            self.emit(Op::Star, &[register + 1])?;
+        }
+        // Die Argumente folgen auf `this`; Zwischenwerte davor sind schon
+        // zurückgegeben.
+        let first = self.next_register;
+        if callee.checked_add(2) != Some(first) {
+            return Err(self.unsupported(node));
+        }
+        let ast = self.ast;
+        let arguments = ast.list(arguments);
+        for &argument in arguments {
+            if let Node::Spread(_) = *self.ast.node(argument) {
+                return Err(self.unsupported(argument));
+            }
+            let slot = self.allocate()?;
+            self.expression(argument)?;
+            self.emit(Op::Star, &[i64::from(slot)])?;
+        }
+        self.position(node)?;
+        let count = i64::try_from(arguments.len()).map_err(|_| CompileError::TooLarge)?;
+        self.emit(Op::Call, &[register, count])?;
+        self.release(first);
+        Ok(())
+    }
+
     /// Ein Glied einer Kette mit der Basis im Akkumulator: GetValue auf den
-    /// Zugriff (Abschnitte 13.3.2 und 13.3.3) oder mit `delete` das
-    /// Löschen. Nach `?.` springt es bei *undefined* und *null* nach
-    /// `nullish` (Abschnitt 13.3.9.1).
-    fn member_link(&mut self, link: NodeId, nullish: &mut Vec<Label>, delete: bool) -> Result<()> {
+    /// Zugriff oder mit `delete` das Löschen. Nach `?.` springt es bei
+    /// *undefined* und *null* nach `nullish` (Abschnitt 13.3.9.1). Mit
+    /// `this` bleibt die Basis für einen Aufruf in diesem Register.
+    fn member_link(
+        &mut self,
+        link: NodeId,
+        nullish: &mut Vec<Label>,
+        delete: bool,
+        this: Option<u32>,
+    ) -> Result<()> {
         self.position(link)?;
         let (access, optional) = match *self.ast.node(link) {
             Node::Member {
@@ -1010,6 +1614,9 @@ impl Compiler<'_> {
         }
         match access {
             Access::Named(atom) => {
+                if let Some(this) = this {
+                    self.emit(Op::Star, &[i64::from(this)])?;
+                }
                 let name = self.name(atom)?;
                 let op = if delete {
                     Op::DeleteNamed
@@ -1019,7 +1626,10 @@ impl Compiler<'_> {
                 self.emit(op, &[name])
             }
             Access::Keyed(expression) => {
-                let base = self.allocate()?;
+                let base = match this {
+                    Some(this) => this,
+                    None => self.allocate()?,
+                };
                 self.emit(Op::Star, &[i64::from(base)])?;
                 self.expression(expression)?;
                 self.position(link)?;
@@ -1029,22 +1639,12 @@ impl Compiler<'_> {
                     Op::LdaKeyed
                 };
                 self.emit(op, &[i64::from(base)])?;
-                self.release(base);
+                if this.is_none() {
+                    self.release(base);
+                }
                 Ok(())
             }
         }
-    }
-
-    /// Ein Zugriff oder eine optionale Kette als Ausdruck. Springt ein
-    /// Glied nach `?.` heraus, ergibt die ganze Kette *undefined*.
-    fn member_expression(&mut self, node: NodeId) -> Result<()> {
-        let (head, links) = self.member_links(node);
-        let mut nullish = Vec::new();
-        self.expression(head)?;
-        for link in links {
-            self.member_link(link, &mut nullish, false)?;
-        }
-        self.short_circuit(nullish, Op::LdaUndefined)
     }
 
     /// Bindet die Sprünge aus einer optionalen Kette an einen Befehl, der
@@ -1085,10 +1685,18 @@ impl Compiler<'_> {
     /// 9.1.1.1.5): erst die TDZ, dann die Konstante.
     fn store_local(&mut self, binding: LocalBinding, atom: Atom, position: usize) -> Result<()> {
         let register = i64::from(binding.register);
-        if Self::needs_hole_check(binding, position) || binding.constant {
+        if binding.kind == BindingKind::FunctionName {
+            if self.strict {
+                let name = self.name(atom)?;
+                return self.emit(Op::ThrowConstAssignment, &[name]);
+            }
+            return Ok(());
+        }
+        let constant = binding.kind == BindingKind::Const;
+        if Self::needs_hole_check(binding, position) || constant {
             let name = self.name(atom)?;
             self.emit(Op::CheckHole, &[register, name])?;
-            if binding.constant {
+            if constant {
                 return self.emit(Op::ThrowConstAssignment, &[name]);
             }
         }
@@ -1097,7 +1705,7 @@ impl Compiler<'_> {
 
     /// Ein Bezeichner als Ausdruck: ResolveBinding und GetValue.
     fn load_identifier(&mut self, node: NodeId, atom: Atom) -> Result<()> {
-        match self.lookup(atom) {
+        match self.resolve(atom, node)? {
             Some(binding) => self.load_local(binding, atom, self.ast.range(node).start),
             None => {
                 let name = self.name(atom)?;
@@ -1110,7 +1718,7 @@ impl Compiler<'_> {
     fn reference(&mut self, target: NodeId) -> Result<Reference> {
         match *self.ast.node(self.without_parens(target)) {
             Node::Identifier(atom) => {
-                if let Some(binding) = self.lookup(atom) {
+                if let Some(binding) = self.resolve(atom, target)? {
                     return Ok(Reference::Local(binding, atom));
                 }
                 let name = self.name(atom)?;
@@ -1194,6 +1802,13 @@ impl Compiler<'_> {
     ) -> Result<()> {
         let position = self.ast.range(node).start;
         let reference = self.reference(target)?;
+        // NamedEvaluation nur, wenn das Ziel ein Bezeichner ohne Klammern
+        // ist (IsIdentifierRef).
+        let ast = self.ast;
+        let name = match *ast.node(target) {
+            Node::Identifier(atom) => Some(ast.atom(atom)),
+            _ => None,
+        };
         let binary = match operator {
             AssignOperator::Assign => None,
             AssignOperator::LogicalAnd | AssignOperator::LogicalOr | AssignOperator::Coalesce => {
@@ -1203,7 +1818,10 @@ impl Compiler<'_> {
                     AssignOperator::LogicalOr => Op::JumpIfTrue,
                     _ => Op::JumpIfNotNullish,
                 })?;
-                self.expression(value)?;
+                match name {
+                    Some(name) => self.named_expression(value, name)?,
+                    None => self.expression(value)?,
+                }
                 self.position(node)?;
                 self.put_value(reference, position)?;
                 self.bind(skip)?;
@@ -1225,7 +1843,10 @@ impl Compiler<'_> {
         };
         match binary {
             None => {
-                self.expression(value)?;
+                match name {
+                    Some(name) => self.named_expression(value, name)?,
+                    None => self.expression(value)?,
+                }
                 self.position(node)?;
             }
             Some(op) => {
@@ -1286,7 +1907,7 @@ impl Compiler<'_> {
                 if let Some(atom) = self.identifier_reference(argument) {
                     // Ein unbekannter Name ergibt "undefined" statt eines
                     // ReferenceError, die TDZ gilt aber.
-                    match self.lookup(atom) {
+                    match self.resolve(atom, argument)? {
                         Some(binding) => {
                             self.load_local(binding, atom, self.ast.range(argument).start)?;
                         }
@@ -1330,7 +1951,7 @@ impl Compiler<'_> {
     /// nur ausgewertet.
     fn delete(&mut self, argument: NodeId) -> Result<()> {
         if let Some(atom) = self.identifier_reference(argument) {
-            if self.lookup(atom).is_some() {
+            if self.resolve(atom, argument)?.is_some() {
                 return self.emit(Op::LdaFalse, &[]);
             }
             let name = self.name(atom)?;
@@ -1342,7 +1963,12 @@ impl Compiler<'_> {
             _ => inner,
         };
         match self.ast.node(target) {
-            Node::Member { .. } | Node::ComputedMember { .. } => return self.delete_member(target),
+            // Das letzte Glied löscht. Springt vorher ein Glied nach `?.`
+            // heraus, ergibt die Kette keine Referenz, und das Ergebnis ist
+            // *true*.
+            Node::Member { .. } | Node::ComputedMember { .. } => {
+                return self.chain(target, ChainEnd::Delete).map(|_| ());
+            }
             Node::PrivateMember { .. } | Node::SuperMember(_) | Node::SuperComputedMember(_) => {
                 return Err(self.unsupported(inner));
             }
@@ -1350,23 +1976,6 @@ impl Compiler<'_> {
         }
         self.expression(argument)?;
         self.emit(Op::LdaTrue, &[])
-    }
-
-    /// `delete` auf einen Zugriff: Das letzte Glied löscht. Springt vorher
-    /// ein Glied nach `?.` heraus, ergibt die Kette keine Referenz, und das
-    /// Ergebnis ist *true*.
-    fn delete_member(&mut self, node: NodeId) -> Result<()> {
-        let (head, mut links) = self.member_links(node);
-        let Some(last) = links.pop() else {
-            return Err(self.unsupported(node));
-        };
-        let mut nullish = Vec::new();
-        self.expression(head)?;
-        for link in links {
-            self.member_link(link, &mut nullish, false)?;
-        }
-        self.member_link(last, &mut nullish, true)?;
-        self.short_circuit(nullish, Op::LdaTrue)
     }
 
     /// Templates ohne Tag (Abschnitt 13.2.8.6): die Teile und die Werte der

@@ -3,10 +3,15 @@
 
 #![forbid(unsafe_code)]
 
+use std::rc::Rc;
+
 use crate::agent::{Abrupt, Agent, Completion, ErrorKind};
+use crate::ast::Ast;
+use crate::bytecode::FunctionTemplate;
 use crate::compiler::{CompileError, Script, compile_script};
+use crate::function::instantiate_function;
 use crate::heap::{Local, Scope};
-use crate::interpreter::execute;
+use crate::interpreter::execute_script;
 use crate::parser::{SyntaxError, parse_script};
 use crate::realm::RealmId;
 
@@ -16,7 +21,9 @@ pub enum ScriptError {
     /// Ein früher Fehler: Das Script lief nicht.
     Syntax(SyntaxError),
     /// Etwas, das der Übersetzer noch nicht kann, an dieser Lage im
-    /// Quelltext. Das Script lief nicht.
+    /// Quelltext. Steht es im Script selbst, lief es nicht; steht es in
+    /// einer Funktion, endete es beim ersten Aufruf der Funktion, denn
+    /// Funktionen werden erst dann übersetzt.
     Unsupported(usize),
     /// Das Script endete abrupt. Eine Ausnahme hält der Agent, siehe
     /// [`Agent::take_exception`].
@@ -33,7 +40,7 @@ impl Agent {
         realm: RealmId,
         source: &[u16],
     ) -> Result<Local<'s>, ScriptError> {
-        let ast = parse_script(source).map_err(ScriptError::Syntax)?;
+        let ast = Rc::new(parse_script(source).map_err(ScriptError::Syntax)?);
         let script = match compile_script(&ast) {
             Ok(script) => script,
             Err(CompileError::Unsupported(position)) => {
@@ -43,8 +50,11 @@ impl Agent {
                 return Err(ScriptError::Abrupt(self.throw_error(ErrorKind::RangeError)));
             }
         };
-        self.script_evaluation(scope, realm, &script)
-            .map_err(ScriptError::Abrupt)
+        self.script_evaluation(scope, realm, &ast, &script)
+            .map_err(|abrupt| match abrupt {
+                Abrupt::Unsupported(position) => ScriptError::Unsupported(position),
+                abrupt => ScriptError::Abrupt(abrupt),
+            })
     }
 
     /// ScriptEvaluation (Abschnitt 16.1.6). Der Ausführungskontext besteht
@@ -55,20 +65,25 @@ impl Agent {
         &mut self,
         scope: &'s Scope,
         realm: RealmId,
+        unit: &Rc<Ast>,
         script: &Script,
     ) -> Completion<Local<'s>> {
-        self.scope(|agent, inner| global_declaration_instantiation(agent, inner, realm, script))?;
+        self.scope(|agent, inner| {
+            global_declaration_instantiation(agent, inner, realm, unit, script)
+        })?;
         let this = self.global_object(scope, realm);
-        execute(self, scope, realm, &script.code, this)
+        execute_script(self, scope, realm, &script.code, unit, this)
     }
 }
 
-/// GlobalDeclarationInstantiation (Abschnitt 16.1.7) ohne Funktionen, die
-/// der Übersetzer noch ablehnt.
+/// GlobalDeclarationInstantiation (Abschnitt 16.1.7). Die Funktionen auf
+/// oberster Ebene sehen außer ihren eigenen Bindungen nur die globale
+/// Umgebung.
 fn global_declaration_instantiation(
     agent: &mut Agent,
     scope: &Scope,
     realm: RealmId,
+    unit: &Rc<Ast>,
     script: &Script,
 ) -> Completion<()> {
     for (name, _) in &script.lexical_names {
@@ -80,9 +95,17 @@ fn global_declaration_instantiation(
             return Err(agent.throw_error(ErrorKind::SyntaxError));
         }
     }
-    for name in &script.var_names {
+    let function_names = script.functions.iter().map(|(name, _)| name);
+    for name in function_names.chain(&script.var_names) {
         if agent.has_lexical_declaration(realm, name) {
             return Err(agent.throw_error(ErrorKind::SyntaxError));
+        }
+    }
+    // Schritt 10 geht die Funktionen von hinten durch.
+    for (name, _) in script.functions.iter().rev() {
+        let key = agent.key_from_units(scope, name)?;
+        if !agent.can_declare_global_function(scope, realm, key)? {
+            return Err(agent.throw_error(ErrorKind::TypeError));
         }
     }
     for name in &script.var_names {
@@ -93,6 +116,19 @@ fn global_declaration_instantiation(
     }
     for (name, constant) in &script.lexical_names {
         agent.create_lexical_binding(scope, realm, name, !constant)?;
+    }
+    for &(ref name, function) in &script.functions {
+        agent.scope(|agent, inner| -> Completion<()> {
+            let template = FunctionTemplate {
+                function,
+                binds_name: false,
+                outer: Rc::default(),
+            };
+            let shared = agent.add_shared_function(Rc::clone(unit), template)?;
+            let key = agent.key_from_units(inner, name)?;
+            let object = instantiate_function(agent, inner, realm, shared, key)?;
+            agent.create_global_function_binding(inner, realm, key, object, false)
+        })?;
     }
     for name in &script.var_names {
         let key = agent.key_from_units(scope, name)?;

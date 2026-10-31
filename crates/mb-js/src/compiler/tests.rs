@@ -394,18 +394,18 @@ fn instructions_know_their_place_in_the_source() {
 #[test]
 fn unsupported_constructs_name_their_place() {
     let cases = [
-        ("function f() {}", 0),
+        ("function* f() {}", 0),
         ("class A {}", 0),
-        ("x = {a() {}};", 5),
-        ("x = {get a() {}};", 5),
+        ("x = {*a() {}};", 5),
+        ("x = {async a() {}};", 5),
         ("x = {1n: 1};", 5),
         ("x = [...a];", 5),
-        ("a.b();", 0),
-        ("a?.b();", 0),
+        ("new a();", 0),
+        ("a?.b(...c);", 5),
         ("try {} catch {}", 0),
         ("for (var k in o);", 0),
         ("for (let k of o);", 0),
-        ("f();", 0),
+        ("f`x`;", 0),
         ("[a] = b;", 0),
         ("let {a} = b;", 4),
         ("1n;", 0),
@@ -494,4 +494,160 @@ fn deep_nesting_needs_no_deep_stack() {
         })
         .expect("Faden");
     assert!(thread.join().is_ok());
+}
+
+#[test]
+fn calls_put_callee_this_and_arguments_in_a_row() {
+    assert_eq!(
+        listing("f(1, 2);"),
+        [
+            "LdaGlobal f",
+            "Star r2",
+            "LdaUndefined",
+            "Star r3",
+            "LdaSmi 1",
+            "Star r4",
+            "LdaSmi 2",
+            "Star r5",
+            "Call r2 2",
+            "Star r1",
+            "Ldar r1",
+            "Return"
+        ]
+    );
+    // Die Basis eines Zugriffs ist `this`, auch in Klammern.
+    let member = [
+        "LdaGlobal a",
+        "Star r3",
+        "LdaNamed b",
+        "Star r2",
+        "Call r2 0",
+        "Star r1",
+        "Ldar r1",
+        "Return",
+    ];
+    assert_eq!(listing("a.b();"), member);
+    assert_eq!(listing("(a.b)();"), member);
+    assert_eq!(
+        listing("a[k]();"),
+        [
+            "LdaGlobal a",
+            "Star r3",
+            "LdaGlobal k",
+            "LdaKeyed r3",
+            "Star r2",
+            "Call r2 0",
+            "Star r1",
+            "Ldar r1",
+            "Return"
+        ]
+    );
+    assert_eq!(
+        listing("a.b?.();"),
+        [
+            "LdaGlobal a",
+            "Star r3",
+            "LdaNamed b",
+            "JumpIfNullish @23",
+            "Star r2",
+            "Call r2 0",
+            "Jump @24",
+            "LdaUndefined",
+            "Star r1",
+            "Ldar r1",
+            "Return"
+        ]
+    );
+}
+
+#[test]
+fn functions_are_created_with_their_names() {
+    assert_eq!(
+        listing("x = function () {};"),
+        [
+            "ResolveGlobal x r2",
+            "CreateClosure fn0 x",
+            "StaGlobal x r2",
+            "Star r1",
+            "Ldar r1",
+            "Return"
+        ]
+    );
+    assert_eq!(
+        listing("x = {m() {}, get g() {}, [k]: function () {}};"),
+        [
+            "ResolveGlobal x r2",
+            "CreateObject",
+            "Star r3",
+            "CreateClosure fn0 m",
+            "DefineNamed r3 m",
+            "LdaConstant g",
+            "Star r4",
+            "CreateClosure fn1 g",
+            "DefineGetter r3 r4",
+            "LdaGlobal k",
+            "ToPropertyKey",
+            "Star r4",
+            "CreateClosureKeyed fn2 r4",
+            "DefineKeyed r3 r4",
+            "Ldar r3",
+            "StaGlobal x r2",
+            "Star r1",
+            "Ldar r1",
+            "Return"
+        ]
+    );
+}
+
+#[test]
+fn function_declarations_are_left_to_global_declaration_instantiation() {
+    let script = compile("var a; function f() {} var f; function g() {} function f() {}")
+        .expect("übersetzbar");
+    assert_eq!(names(&script.var_names), ["a"]);
+    let functions: Vec<Vec<u16>> = script
+        .functions
+        .iter()
+        .map(|(name, _)| name.clone())
+        .collect();
+    assert_eq!(names(&functions), ["g", "f"]);
+    // Von zwei Deklarationen mit demselben Namen gilt die letzte.
+    let ids: Vec<usize> = script.functions.iter().map(|(_, id)| id.index()).collect();
+    assert_eq!(ids, [1, 2]);
+    assert_eq!(listing("function f() {}"), ["Ldar r1", "Return"]);
+}
+
+#[test]
+fn functions_keep_parameters_and_variables_in_registers() {
+    let ast = parse_script(&units("function f(a) { var b = a; return b; }")).expect("gültig");
+    let Some(&Node::FunctionDeclaration(id)) = ast.body().first().map(|&item| ast.node(item))
+    else {
+        panic!("keine Funktion");
+    };
+    let template = FunctionTemplate {
+        function: id,
+        binds_name: false,
+        outer: Rc::default(),
+    };
+    let code = compile_function(&ast, &template).expect("übersetzbar");
+    let lines: Vec<String> = code
+        .to_string()
+        .lines()
+        .map(|line| {
+            line.split_once(": ")
+                .map_or(line, |(_, rest)| rest)
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(
+        lines,
+        [
+            "Ldar r2",
+            "Star r3",
+            "Ldar r3",
+            "Return",
+            "LdaUndefined",
+            "Return"
+        ]
+    );
+    assert_eq!((code.register_count(), code.parameter_count()), (4, 1));
 }

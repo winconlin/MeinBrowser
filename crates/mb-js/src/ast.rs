@@ -57,6 +57,14 @@ impl Atom {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FunctionId(u32);
 
+impl FunctionId {
+    /// Die Nummer der Funktion im Baum, in der Reihenfolge, in der der
+    /// Parser sie abschließt.
+    pub fn index(self) -> usize {
+        to_usize(self.0)
+    }
+}
+
 /// Eine Klasse in [`Ast`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ClassId(u32);

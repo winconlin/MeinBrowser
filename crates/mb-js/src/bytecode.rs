@@ -10,19 +10,25 @@
 //! Bytes, damit der Übersetzer sie nachtragen kann; nur [`Op::JumpLoop`]
 //! springt zurück.
 //!
-//! Register sind Plätze im Rahmen: erst `this`, bei Scripts dann der
-//! Abschlusswert, dann Bindungen und Zwischenwerte. Der Akkumulator ist
+//! Register sind Plätze im Rahmen: erst `this`, dann bei Scripts der
+//! Abschlusswert und bei Funktionen das Funktionsobjekt selbst und die
+//! Parameter, dann Bindungen und Zwischenwerte. Der Akkumulator ist
 //! implizit. Ein zweistelliger Befehl wie [`Op::Add`] rechnet mit dem
 //! Register als linkem und dem Akkumulator als rechtem Operanden und legt
 //! das Ergebnis in den Akkumulator.
 //!
-//! Im Bytecode steht keine Adresse im Heap. Zahlen und Zeichenketten liegen
-//! als [`Constant`] bei der Funktion; der Interpreter legt sie zu Beginn
-//! jedes Laufs im Heap an.
+//! Im Bytecode steht keine Adresse im Heap. Zahlen, Zeichenketten und die
+//! Funktionen, die der Code anlegt, liegen als [`Constant`] bei ihm; der
+//! Interpreter legt sie im Heap an, für ein Script zu Beginn des Laufs, für
+//! eine Funktion einmal bei ihrem ersten Aufruf.
 
 #![forbid(unsafe_code)]
 
+use std::collections::BTreeSet;
 use std::fmt;
+use std::rc::Rc;
+
+use crate::ast::{Atom, FunctionId};
 
 /// Die Art eines Operanden.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -116,6 +122,11 @@ ops! {
     SetPrototypeLiteral [Register],
     /// `...Wert` in einem Objektliteral (CopyDataProperties).
     CopyDataProperties [Register],
+    /// Ein Getter im Objekt im ersten Register für den Schlüssel im
+    /// zweiten, die Funktion im Akkumulator.
+    DefineGetter [Register, Register],
+    /// Dasselbe für einen Setter.
+    DefineSetter [Register, Register],
     /// Ein Element eines Array-Literals: der Akkumulator an der Stelle der
     /// Länge.
     ArrayPush [Register],
@@ -202,6 +213,18 @@ ops! {
     /// Springt zurück an den Anfang einer Schleife.
     JumpLoop [Jump],
 
+    /// Ein neues Funktionsobjekt für die Funktion in der ersten Konstante,
+    /// mit dem Namen aus der zweiten (SetFunctionName).
+    CreateClosure [Constant, Constant],
+    /// Dasselbe mit dem Schlüssel im Register als Namen.
+    CreateClosureKeyed [Constant, Register],
+    /// Ruft die Funktion im Register auf (Call, Abschnitt 7.3.13): `this`
+    /// steht im Register danach, dann folgen so viele Argumente, wie die
+    /// Zahl sagt. Das Ergebnis kommt in den Akkumulator. Ist der Wert nicht
+    /// aufrufbar, wirft das einen TypeError, erst nach den Argumenten
+    /// (EvaluateCall, Abschnitt 13.3.6.2).
+    Call [Register, Immediate],
+
     /// Wirft den Akkumulator.
     Throw [],
     /// Beendet den Rahmen mit dem Akkumulator.
@@ -236,6 +259,23 @@ pub enum Constant {
     String(Vec<u16>),
     /// Ein Name: ein Bezeichner oder Eigenschaftsname. Er wird zum Atom.
     Name(Vec<u16>),
+    /// Eine Funktion aus dem Quelltext, aus der [`Op::CreateClosure`]
+    /// Funktionsobjekte macht.
+    Function(FunctionTemplate),
+}
+
+/// Eine Stelle im Quelltext, an der Funktionsobjekte entstehen. Übersetzt
+/// wird die Funktion erst bei ihrem ersten Aufruf, mit dem Syntaxbaum, aus
+/// dem der Code stammt.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FunctionTemplate {
+    pub function: FunctionId,
+    /// Ob der Rumpf den eigenen Namen bindet, wie ein benannter
+    /// Funktionsausdruck (Abschnitt 15.2.5).
+    pub binds_name: bool,
+    /// Die Namen, die der umgebende Code in Registern hält. Ein Zugriff des
+    /// Rumpfs darauf bräuchte eine Closure.
+    pub outer: Rc<BTreeSet<Atom>>,
 }
 
 /// Ein gelesener Befehl.
@@ -268,6 +308,9 @@ pub struct Code {
     pub(crate) bytes: Vec<u8>,
     pub(crate) constants: Vec<Constant>,
     pub(crate) registers: u32,
+    /// Die Zahl der Parameter einer Funktion. Ihre Register folgen auf
+    /// `this` und das Funktionsobjekt.
+    pub(crate) parameters: u32,
     pub(crate) strict: bool,
     /// Lagen im Quelltext ab einem Befehl: Paare aus Abstand im Bytecode
     /// und Abstand im Quelltext, nach dem ersten aufsteigend.
@@ -290,6 +333,11 @@ impl Code {
     /// Die Zahl der Register eines Rahmens.
     pub fn register_count(&self) -> usize {
         usize::try_from(self.registers).unwrap_or(usize::MAX)
+    }
+
+    /// Die Zahl der Parameter, 0 bei einem Script.
+    pub fn parameter_count(&self) -> usize {
+        usize::try_from(self.parameters).unwrap_or(usize::MAX)
     }
 
     pub fn is_strict(&self) -> bool {
@@ -468,6 +516,7 @@ impl Emitter {
             bytes: self.bytes,
             constants,
             registers,
+            parameters: 0,
             strict,
             positions: self.positions,
         }
@@ -544,6 +593,9 @@ impl fmt::Display for Code {
                         Some(Constant::Name(units)) => {
                             formatter.write_str(" ")?;
                             display_units(formatter, units)?;
+                        }
+                        Some(Constant::Function(template)) => {
+                            write!(formatter, " fn{}", template.function.index())?;
                         }
                         None => write!(formatter, " c{value}?")?,
                     },

@@ -359,7 +359,7 @@ fn throw_and_early_errors() {
     assert!(syntax.starts_with("Syntax("), "{syntax}");
     let redeclared = eval("let a; var a;");
     assert!(redeclared.starts_with("Syntax("), "{redeclared}");
-    assert_eq!(eval("function f() {}"), "Unsupported(0)");
+    assert_eq!(eval("class A {}"), "Unsupported(0)");
 }
 
 #[test]
@@ -618,4 +618,398 @@ fn long_chains_run_on_a_small_stack() {
         })
         .expect("Faden");
     assert!(thread.join().is_ok());
+}
+
+#[test]
+fn functions_are_called_with_their_arguments() {
+    check(&[
+        ("function f(a, b) { return a + b; } f(1, 2)", "3"),
+        ("function f(a, b) { return b; } f(1)", "undefined"),
+        ("function f(a) { return a; } f(1, 2, 3)", "1"),
+        ("function f(a, a) { return a; } f(1, 2)", "2"),
+        ("function f() {} f()", "undefined"),
+        ("function f() { 1; } f()", "undefined"),
+        ("function f() { return; } f()", "undefined"),
+        ("function f(x) { x = 2; return x; } f(1)", "2"),
+        (
+            "function f() { var x = 1; { let y = 2; x += y; } return x; } f()",
+            "3",
+        ),
+        ("function f() { return x; var x = 1; } f()", "undefined"),
+        (
+            "function f(n) { return n === 0 ? 0 : n + f(n - 1); } f(10)",
+            "55",
+        ),
+        ("var f = function (x) { return x * 2; }; f(21)", "42"),
+        ("(function (x) { return x; })(5)", "5"),
+        ("var o = {m(x) { return x + 1; }}; o.m(1)", "2"),
+        ("var o = {m(x) { return x + 1; }}; o['m'](1)", "2"),
+        (
+            "function f() { return function () { return 4; }; } f()()",
+            "4",
+        ),
+        ("1()", "TypeError"),
+        ("var o = {}; o.m()", "TypeError"),
+        ("var u; u()", "TypeError"),
+        ("({})()", "TypeError"),
+        ("nirgends()", "ReferenceError"),
+        // Die Argumente kommen von links nach rechts, erst danach IsCallable.
+        (
+            "var log = ''; function f() { return log; } f(log += 'a', log += 'b')",
+            "\"ab\"",
+        ),
+        ("var n = 0; var o = {}; o.m(n = 1)", "TypeError"),
+    ]);
+    let (mut agent, realm) = checked();
+    assert_eq!(run(&mut agent, realm, "var n = 0; n(n = 1)"), "TypeError");
+    assert_eq!(run(&mut agent, realm, "n"), "1");
+}
+
+#[test]
+fn functions_see_their_own_bindings_and_the_global_ones() {
+    check(&[
+        (
+            "var x = 1; function f() { var x = 2; return x; } f() + x",
+            "3",
+        ),
+        ("function f() { return x; } var x = 5; f()", "5"),
+        (
+            "function f() { return g(); } function g() { return 7; } f()",
+            "7",
+        ),
+        ("function f() { y = 3; } f(); y", "3"),
+        (
+            "function f() { 'use strict'; y = 3; } f()",
+            "ReferenceError",
+        ),
+        (
+            "'use strict'; function f() { y = 3; } f()",
+            "ReferenceError",
+        ),
+        ("function f() { return h; } f()", "ReferenceError"),
+        ("function f() { let a = a; } f()", "ReferenceError"),
+        ("function f() { const c = 1; c = 2; } f()", "TypeError"),
+        (
+            "function f() { return typeof nirgends; } f()",
+            "\"undefined\"",
+        ),
+        ("function f(a) { return delete a; } f(1)", "false"),
+        ("var o = {}; function f() { o.x = 1; } f(); o.x", "1"),
+        // Funktionen stehen schon vor dem ersten Befehl.
+        ("f(); function f() { return 1; }", "1"),
+        (
+            "function f() { return g(); function g() { return 2; } } f()",
+            "2",
+        ),
+        (
+            "function f() { return 1; } function f() { return 2; } f()",
+            "2",
+        ),
+        ("typeof f; function f() {}", "\"function\""),
+        ("var f = 1; function f() {} typeof f", "\"number\""),
+        ("var f; function f() {} typeof f", "\"function\""),
+        (
+            "function f() { var g = 1; function g() {} return g; } f()",
+            "1",
+        ),
+        ("1; function f() {}", "1"),
+        ("function f() {} delete f", "false"),
+        ("function NaN() {}", "TypeError"),
+    ]);
+    let (mut agent, realm) = checked();
+    assert_eq!(run(&mut agent, realm, "let h = 1;"), "undefined");
+    assert_eq!(run(&mut agent, realm, "function h() {}"), "SyntaxError");
+    assert_eq!(
+        run(&mut agent, realm, "function k() { return 1; }"),
+        "undefined"
+    );
+    assert_eq!(
+        run(&mut agent, realm, "function k() { return 2; } k()"),
+        "2"
+    );
+}
+
+#[test]
+fn this_comes_from_the_reference() {
+    check(&[
+        ("var o = {m() { return this; }}; o.m() === o", "true"),
+        ("var o = {m() { return this; }}; o['m']() === o", "true"),
+        ("var o = {m() { return this; }}; (o.m)() === o", "true"),
+        (
+            "var o = {a: {m() { return this; }}}; o.a.m() === o.a",
+            "true",
+        ),
+        (
+            "var o = {m() { return this; }}; (0, o.m)() === this",
+            "true",
+        ),
+        (
+            "var o = {m() { return this; }}; var m = o.m; m() === this",
+            "true",
+        ),
+        (
+            "var o = {m() { 'use strict'; return this; }}; var m = o.m; m()",
+            "undefined",
+        ),
+        ("function f() { return this; } f() === this", "true"),
+        (
+            "'use strict'; function f() { return this; } f()",
+            "undefined",
+        ),
+        (
+            "var o = {f: function () { return this; }}; o.f() === o",
+            "true",
+        ),
+        ("var o = {get g() { return this; }}; o.g === o", "true"),
+        ("var o = {m() { return this.v; }, v: 3}; o.m()", "3"),
+        ("var o = {m() { return this; }}; o?.m() === o", "true"),
+        ("var o = {m() { return this; }}; (o?.m)() === o", "true"),
+        ("var o = {m() { return this; }}; o.m?.() === o", "true"),
+        ("var o = {m() { return this; }}; o?.['m']() === o", "true"),
+    ]);
+}
+
+#[test]
+fn optional_calls_stop_at_undefined_and_null() {
+    check(&[
+        ("var o = {}; o.m?.()", "undefined"),
+        ("var u; u?.m()", "undefined"),
+        ("var u = null; u?.m().x.y", "undefined"),
+        ("var f; f?.()", "undefined"),
+        ("var n = 0; var f; f?.(n++); n", "0"),
+        ("var o = {}; (o?.m)()", "TypeError"),
+        ("var o = {m() { return null; }}; o.m()?.x", "undefined"),
+        ("var o = {m() { return o; }, v: 1}; o.m().m()?.m().v", "1"),
+    ]);
+}
+
+#[test]
+fn accessors_and_methods_run_from_the_engine() {
+    check(&[
+        ("var o = {get a() { return 1; }}; o.a", "1"),
+        ("var o = {set a(v) { this.b = v * 2; }}; o.a = 2; o.b", "4"),
+        ("var o = {set a(v) {}}; o.a = 2", "2"),
+        (
+            "var o = {get a() { return 1; }, set a(v) {}}; o.a = 5; o.a",
+            "1",
+        ),
+        ("var o = {get a() { return 1; }}; o.a = 5; o.a", "1"),
+        (
+            "'use strict'; var o = {get a() { return 1; }}; o.a = 5",
+            "TypeError",
+        ),
+        ("var o = {get a() { return 1; }, a: 2}; o.a", "2"),
+        ("var o = {a: 2, get a() { return 1; }}; o.a", "1"),
+        ("var k = 'x'; var o = {get [k]() { return 3; }}; o.x", "3"),
+        ("var o = {get 1() { return 'eins'; }}; o[1]", "\"eins\""),
+        (
+            "var p = {get a() { return this.b; }}; var o = {__proto__: p, b: 5}; o.a",
+            "5",
+        ),
+        (
+            "var o = {get a() { throw 'innen'; }}; o.a",
+            "throw \"innen\"",
+        ),
+        ("var o = {valueOf() { return 4; }}; o + 1", "5"),
+        ("var o = {toString() { return 'ich'; }}; '' + o", "\"ich\""),
+        ("var o = {toString() { return {}; }}; '' + o", "TypeError"),
+        ("var o = {valueOf() { return 2; }}; o * o", "4"),
+        (
+            "var o = {toString() { return 'k'; }}; var p = {k: 1}; p[o]",
+            "1",
+        ),
+        ("'x' in {get x() {}}", "true"),
+    ]);
+}
+
+#[test]
+fn functions_are_objects_with_a_prototype() {
+    check(&[
+        ("function f() {} typeof f", "\"function\""),
+        ("typeof function () {}", "\"function\""),
+        ("var o = {m() {}}; typeof o.m", "\"function\""),
+        ("var o = {m() {}}; typeof o.m.prototype", "\"undefined\""),
+        ("function f(a, b) {} f.length", "2"),
+        ("function f() {} typeof f.prototype", "\"object\""),
+        ("function C() {} C.prototype.constructor === C", "true"),
+        ("function C() {} ({}) instanceof C", "false"),
+        (
+            "function C() {} var o = {__proto__: C.prototype}; o instanceof C",
+            "true",
+        ),
+        (
+            "function C() {} C.prototype = 1; ({}) instanceof C",
+            "TypeError",
+        ),
+        ("function f() {} f.x = 1; f.x", "1"),
+        ("function f() {} f.length = 5; f.length", "0"),
+        // Danach erbt sie die Länge von %Function.prototype%.
+        ("function f() {} delete f.length; f.length", "0"),
+        ("function f() {} f === f", "true"),
+        (
+            "function f() { return function () {}; } f() === f()",
+            "false",
+        ),
+    ]);
+}
+
+#[test]
+fn anonymous_functions_get_the_name_of_their_place() {
+    check(&[
+        ("function f() {} f.name", "\"f\""),
+        ("var f = function () {}; f.name", "\"f\""),
+        ("var f = (function () {}); f.name", "\"f\""),
+        ("let f = function () {}; f.name", "\"f\""),
+        ("const f = function () {}; f.name", "\"f\""),
+        ("var g; g = function () {}; g.name", "\"g\""),
+        ("var g; (g) = function () {}; g.name", "\"\""),
+        ("var g; g ||= function () {}; g.name", "\"g\""),
+        ("var g; g ??= function () {}; g.name", "\"g\""),
+        ("var g = 1; g &&= function () {}; g.name", "\"g\""),
+        ("var o = {}; o.p = function () {}; o.p.name", "\"\""),
+        ("var o = {p: function () {}}; o.p.name", "\"p\""),
+        ("var o = {1: function () {}}; o[1].name", "\"1\""),
+        (
+            "var k = 'q'; var o = {[k]: function () {}}; o.q.name",
+            "\"q\"",
+        ),
+        ("var o = {m() {}}; o.m.name", "\"m\""),
+        ("var o = {__proto__: function () {}}; o.name", "\"\""),
+        ("var f = function g() {}; f.name", "\"g\""),
+        ("(function () {}).name", "\"\""),
+        (
+            "function f() { var h = function () {}; return h.name; } f()",
+            "\"h\"",
+        ),
+    ]);
+}
+
+#[test]
+fn named_function_expressions_bind_their_name() {
+    check(&[
+        (
+            "var g = function f(n) { return n ? f(n - 1) + 1 : 0; }; g(3)",
+            "3",
+        ),
+        (
+            "var f = function g() { return typeof g; }; f()",
+            "\"function\"",
+        ),
+        (
+            "var f = function g() { g = 1; return g; }; f() === f",
+            "true",
+        ),
+        (
+            "var f = function g() { 'use strict'; g = 1; }; f()",
+            "TypeError",
+        ),
+        ("var f = function g(g) { return g; }; f(1)", "1"),
+        ("var f = function g() { var g = 2; return g; }; f()", "2"),
+        ("var g = 1; var f = function g() {}; g", "1"),
+        ("var f = function g() {}; typeof g", "\"undefined\""),
+    ]);
+}
+
+#[test]
+fn closures_and_arguments_are_not_yet_supported() {
+    // Funktionen werden erst beim ersten Aufruf übersetzt.
+    check(&[
+        (
+            "function f(x) { return function () { return x; }; } f(1)",
+            "Objekt",
+        ),
+        (
+            "function f(x) { return function () { return x; }; } f(1)()",
+            "Unsupported(44)",
+        ),
+        ("function f() { return arguments; } f", "Objekt"),
+        ("function f() { return arguments; } f()", "Unsupported(22)"),
+        ("function f() { var arguments; } f()", "Unsupported(0)"),
+        ("function f(arguments) { return arguments; } f(3)", "3"),
+        // `arguments` verdeckt den Namen eines Funktionsausdrucks.
+        (
+            "var f = function arguments() { return arguments === f; }; f()",
+            "Unsupported(38)",
+        ),
+        (
+            "var f = function arguments(arguments) { return arguments; }; f(4)",
+            "4",
+        ),
+        (
+            "var f = function arguments() { let arguments = 5; return arguments; }; f()",
+            "5",
+        ),
+        ("function f(a = 1) {} f()", "Unsupported(0)"),
+        ("function f() { return () => 1; } f()", "Unsupported(22)"),
+        (
+            "function f() { { function g() {} } } f()",
+            "Unsupported(17)",
+        ),
+        (
+            "var o = {get a() { return x => x; }}; o.a",
+            "Unsupported(26)",
+        ),
+    ]);
+}
+
+/// Aufrufe aus JavaScript brauchen keinen Stapel der Maschine, Aufrufe aus
+/// der Engine wie Getter höchstens [`crate::agent::STACK_BUDGET`]; beides
+/// endet bei zu tiefer Rekursion mit einem RangeError (RS-8).
+#[test]
+fn calls_run_on_a_small_stack() {
+    let thread = std::thread::Builder::new()
+        .stack_size(1 << 20)
+        .spawn(|| {
+            let (mut agent, realm) = checked();
+            let deep = "function f(n) { return n === 0 ? 0 : f(n - 1) + 1; } f(100000)";
+            assert_eq!(run(&mut agent, realm, deep), "100000");
+            assert_eq!(run(&mut agent, realm, "function g() { return g(); } g()"), "RangeError");
+            for source in [
+                "var o = {get a() { return this.a; }}; o.a",
+                "var p = {valueOf() { return +p; }}; +p",
+                "var q = {set a(v) { this.a = v; }}; q.a = 1",
+                "var r = {toString() { return 'x' + r; }}; '' + r",
+            ] {
+                assert_eq!(run(&mut agent, realm, source), "RangeError", "{source}");
+            }
+            // Übersetzt wird erst beim ersten Aufruf, auch in der tiefsten
+            // Verschachtelung, die das Budget erlaubt.
+            let counting = "var n = 0, limit = Infinity, deep; function a(x) { return x; } \
+                            var o = {get a() { n++; if (n < limit) return this.a; return deep(); }}; \
+                            o.a";
+            assert_eq!(run(&mut agent, realm, counting), "RangeError");
+            let levels = run(&mut agent, realm, "n");
+            for (open, middle, close) in [
+                ("(", "1", ")"),
+                ("[{a: ", "1", "}]"),
+                ("{ let a = 1; ", "a;", " }"),
+                ("if (1) ", "1;", ""),
+                ("1 ? ", "1", " : 1"),
+                ("a(", "1", ")"),
+            ] {
+                let body = deepest_body(open, middle, close);
+                let source = format!(
+                    "n = 0; limit = {levels} - 1; deep = function () {{ {body} }}; \
+                     typeof o.a"
+                );
+                let result = run(&mut agent, realm, &source);
+                assert!(result.starts_with('"'), "{open}…{close}: {result}");
+            }
+        })
+        .expect("Faden");
+    assert!(thread.join().is_ok());
+}
+
+/// Ein Rumpf aus `open`, `middle` und `close`, so tief verschachtelt, wie
+/// der Parser es in einer Funktion annimmt.
+fn deepest_body(open: &str, middle: &str, close: &str) -> String {
+    let mut depth = 300;
+    loop {
+        let body = format!("{}{middle}{};", open.repeat(depth), close.repeat(depth));
+        let source = format!("deep = function () {{ {body} }};");
+        if crate::parser::parse_script(&units(&source)).is_ok() || depth == 0 {
+            return body;
+        }
+        depth -= 1;
+    }
 }
