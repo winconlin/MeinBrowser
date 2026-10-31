@@ -6,13 +6,20 @@
 //! Tabelle OS/2, ohne sie aus `hhea`, wie CSS Inline 3 es empfiehlt; der
 //! Zeilenabstand der Schrift (*line gap metric*) aus derselben Quelle, nie
 //! unter null.
+//!
+//! Der Cache für diese Maße ist auf 256 Einträge und 256 KiB gezählte
+//! Schlüssel-/Wertdaten begrenzt. Selten benutzte Einträge werden bei Bedarf
+//! verdrängt; nicht gespeicherte Maße bleiben jederzeit neu berechenbar.
 
-use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use mb_style::properties::{FontFamily, FontStyle, GenericFamily, ScriptGenericFamily};
 use mb_style::{Advance, Font, FontMetrics, FontMetricsSource};
 use mb_text::{Face, FaceId, Family, FontLibrary, FontQuery, Glyph, Slope};
+
+mod cache;
+
+use cache::MetricsCache;
 
 /// Die Maße der ersten verfügbaren Schrift in `px`.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -66,8 +73,10 @@ enum FamilyKey {
 /// Die Schriftbibliothek mit Zwischenspeichern für Stil und Layout.
 pub struct Fonts<'a> {
     library: &'a FontLibrary,
-    /// Je Anfrage die Maße der ersten verfügbaren Schrift bei 1 px.
-    metrics: Mutex<BTreeMap<QueryKey, Option<Metrics>>>,
+    /// Je Anfrage die Maße der ersten verfügbaren Schrift bei 1 px. Der
+    /// LRU-Cache behält höchstens 256 Einträge und 256 KiB gezählte
+    /// Schlüssel-/Wertdaten. Überzählige Anfragen bleiben berechenbar.
+    metrics: Mutex<MetricsCache>,
 }
 
 impl std::fmt::Debug for Fonts<'_> {
@@ -199,7 +208,7 @@ impl<'a> Fonts<'a> {
     pub fn new(library: &'a FontLibrary) -> Fonts<'a> {
         Fonts {
             library,
-            metrics: Mutex::new(BTreeMap::new()),
+            metrics: Mutex::new(MetricsCache::new()),
         }
     }
 
@@ -227,7 +236,7 @@ impl<'a> Fonts<'a> {
         let unit = {
             let mut cache = self.metrics.lock().unwrap_or_else(PoisonError::into_inner);
             match cache.get(&key) {
-                Some(found) => *found,
+                Some(found) => found,
                 None => {
                     let found = self.first_available(query).map(|face| unit_metrics(&face));
                     cache.insert(key, found);
@@ -325,3 +334,6 @@ impl FontMetricsSource for Fonts<'_> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
