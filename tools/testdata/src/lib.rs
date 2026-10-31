@@ -21,7 +21,7 @@ pub struct Source {
 
 /// Alle Testsammlungen. Für einen neuen Stand den Commit ändern und
 /// `cargo run -p testdata` ausführen.
-pub const SOURCES: [Source; 8] = [
+pub const SOURCES: [Source; 9] = [
     Source {
         name: "wpt",
         repository: "https://github.com/web-platform-tests/wpt",
@@ -127,6 +127,14 @@ pub const SOURCES: [Source; 8] = [
             "/tests/results.txt",
             "/tests/results_identity.txt",
         ],
+    },
+    Source {
+        name: "test262",
+        repository: "https://github.com/tc39/test262",
+        commit: "91c70759363c46557b694792bf34a2551a7af5ba",
+        // Die Syntaxtests für den Parser, siehe
+        // `crates/mb-js/src/parser/test262.rs`.
+        paths: &["/test/language/", "/test/annexB/language/", "/features.txt"],
     },
 ];
 

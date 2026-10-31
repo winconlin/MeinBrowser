@@ -2,4 +2,6 @@
 //!
 //! Siehe `docs/architektur.md`, Abschnitt 4.9.
 
+pub mod ast;
 pub mod lexer;
+pub mod parser;
