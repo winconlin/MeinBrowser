@@ -5,7 +5,14 @@
 //! Seite, unten 18 Bit für die Lage der Zelle in Bytes. Weil Verweise keine
 //! Zeiger sind, kommt der Heap ohne `unsafe` aus, gelesen wird mit `get()`
 //! (RS-7). Jede Zelle beginnt mit einem Kopfwort: Art in den Bits 0 bis 7,
-//! Länge in den Bits 32 bis 63.
+//! Kennzeichen in den Bits 8 bis 31, Länge in den Bits 32 bis 63.
+//!
+//! Die meisten Zellen bestehen nach dem Kopfwort aus Werten: Felder,
+//! Symbole, Gestalten, schwache Felder und dünn besetzte Elemente. Objekte
+//! beginnen mit zwei Wörtern, die je zwei 32-Bit-Verweise packen (Gestalt
+//! und Prototyp, Elemente und Zusatzfeld), dann folgen ihre Werte. Die
+//! Felder schwacher Zellen halten ihr Ziel nicht am Leben; nach dem Sammeln
+//! zeigen sie auf den neuen Ort oder sind *undefined*.
 //!
 //! Gesammelt wird in der ersten Ausbaustufe präzise und kopierend nach
 //! Cheney. Alle Seiten werden zum alten Raum, die erreichbaren Zellen wandern
@@ -92,6 +99,21 @@ const KIND_FORWARD: u64 = 1;
 const KIND_LATIN1: u64 = 2;
 const KIND_UTF16: u64 = 3;
 const KIND_SLOTS: u64 = 4;
+const KIND_SYMBOL: u64 = 5;
+const KIND_SHAPE: u64 = 6;
+const KIND_WEAK: u64 = 7;
+const KIND_SPARSE: u64 = 8;
+const KIND_OBJECT: u64 = 9;
+
+/// Die Kennzeichen stehen in den Bits 8 bis 31 des Kopfworts.
+const FLAG_SHIFT: u32 = 8;
+const FLAG_MASK: u64 = 0xFF_FFFF;
+
+/// Wörter mit gepackten Verweisen am Anfang eines Objekts.
+const OBJECT_REFS: usize = 2;
+/// Ein gepackter Verweis auf nichts. Kein Abstand hat diesen Wert, denn
+/// Zellen beginnen an Wortgrenzen.
+const NONE: u32 = u32::MAX;
 
 fn header(kind: u64, length: u32) -> u64 {
     kind | (u64::from(length) << 32)
@@ -99,6 +121,42 @@ fn header(kind: u64, length: u32) -> u64 {
 
 fn header_kind(header: u64) -> u64 {
     header & 0xFF
+}
+
+fn header_flags(header: u64) -> u32 {
+    // Die Maske lässt 24 Bit übrig.
+    u32::try_from((header >> FLAG_SHIFT) & FLAG_MASK).unwrap_or(0)
+}
+
+fn with_flags(header: u64, flags: u32) -> u64 {
+    (header & !(FLAG_MASK << FLAG_SHIFT)) | ((u64::from(flags) & FLAG_MASK) << FLAG_SHIFT)
+}
+
+/// Zellen, die nach dem Kopfwort nur aus Werten bestehen.
+fn is_value_cell(kind: u64) -> bool {
+    matches!(
+        kind,
+        KIND_SLOTS | KIND_SYMBOL | KIND_SHAPE | KIND_WEAK | KIND_SPARSE
+    )
+}
+
+/// Die Arten der Objektzellen.
+const OBJECT_KINDS: [u64; 1] = [KIND_OBJECT];
+
+fn is_object(kind: u64) -> bool {
+    OBJECT_KINDS.contains(&kind)
+}
+
+fn packed(low: u32, high: u32) -> u64 {
+    u64::from(low) | (u64::from(high) << 32)
+}
+
+fn packed_low(word: u64) -> u32 {
+    u32::try_from(word & 0xFFFF_FFFF).unwrap_or(NONE)
+}
+
+fn packed_high(word: u64) -> u32 {
+    u32::try_from(word >> 32).unwrap_or(NONE)
 }
 
 fn header_length(header: u64) -> u32 {
@@ -112,7 +170,8 @@ fn cell_words(header: u64) -> Option<usize> {
     let body = match header_kind(header) {
         KIND_LATIN1 => length.div_ceil(8),
         KIND_UTF16 => length.div_ceil(4),
-        KIND_SLOTS => length,
+        kind if is_value_cell(kind) => length,
+        kind if is_object(kind) => length.checked_add(OBJECT_REFS)?,
         _ => return None,
     };
     body.checked_add(1)
@@ -221,6 +280,8 @@ pub struct Heap {
     trigger: usize,
     options: Options,
     collections: u64,
+    /// Während einer Sammlung die schon kopierten schwachen Zellen.
+    weak: Vec<u32>,
 }
 
 impl Default for Heap {
@@ -252,6 +313,7 @@ impl Heap {
             trigger: MIN_TRIGGER.min(options.limit),
             options,
             collections: 0,
+            weak: Vec::new(),
         }
     }
 
@@ -272,17 +334,28 @@ impl Heap {
     /// entkommen. Bereiche lassen sich schachteln, und in einem inneren
     /// Bereich lassen sich Handles für einen äußeren anlegen.
     pub fn scope<R, F: FnOnce(&mut Heap, &Scope) -> R>(&mut self, f: F) -> R {
+        let scope = self.enter_scope();
+        let result = f(self, &scope);
+        self.leave_scope(&scope);
+        result
+    }
+
+    /// Öffnet einen Bereich. Wer das aufruft, schließt ihn mit
+    /// [`Heap::leave_scope`] und gibt ihn nur als Referenz weiter, so wie
+    /// [`Heap::scope`].
+    pub(crate) fn enter_scope(&mut self) -> Scope {
         let roots = self.roots.get_mut();
         let depth = roots.len();
         roots.push(Vec::new());
-        let scope = Scope {
+        Scope {
             heap: self.id,
             depth,
-        };
-        let result = f(self, &scope);
+        }
+    }
+
+    pub(crate) fn leave_scope(&mut self, scope: &Scope) {
         // Alle inneren Bereiche sind schon beendet.
-        self.roots.get_mut().truncate(depth);
-        result
+        self.roots.get_mut().truncate(scope.depth);
     }
 
     /// Hält `value` in einem Handle des Bereichs `scope`.
@@ -461,15 +534,31 @@ impl Heap {
         scope: &'s Scope,
         len: usize,
     ) -> Result<Local<'s>, OutOfMemory> {
+        self.alloc_values(scope, KIND_SLOTS, len)
+    }
+
+    /// Legt eine Zelle der Art `kind` aus `len` Werten an, alle
+    /// *undefined*. Der Verweis hat die Art Symbol oder Internal.
+    fn alloc_values<'s>(
+        &mut self,
+        scope: &'s Scope,
+        kind: u64,
+        len: usize,
+    ) -> Result<Local<'s>, OutOfMemory> {
         let length = u32::try_from(len).map_err(|_| OutOfMemory)?;
-        let head = header(KIND_SLOTS, length);
+        let head = header(kind, length);
         let words = cell_words(head).ok_or(OutOfMemory)?;
         let offset = self.allocate(words)?;
         self.init(offset, 0, head);
         for index in 1..words {
             self.init(offset, index, Value::UNDEFINED.bits());
         }
-        Ok(self.local(scope, Value::reference(RefKind::Internal, offset)))
+        let reference = if kind == KIND_SYMBOL {
+            RefKind::Symbol
+        } else {
+            RefKind::Internal
+        };
+        Ok(self.local(scope, Value::reference(reference, offset)))
     }
 
     /// Die Zahl der Felder, 0 für einen Verweis auf etwas anderes.
@@ -631,6 +720,7 @@ impl Heap {
         self.persistent = persistent;
 
         self.scan();
+        self.clear_weak();
 
         for index in old_small.into_iter().chain(old_large) {
             if let Some(slot) = self.pages.get_mut(index) {
@@ -693,15 +783,76 @@ impl Heap {
         let offset = make_offset(index, word)?;
         let head = self.word(offset, 0)?;
         let words = cell_words(head)?;
-        if header_kind(head) == KIND_SLOTS {
-            for slot in 1..words {
-                if let Some(bits) = self.word(offset, slot) {
-                    let moved = self.evacuate(bits);
-                    self.write(offset, slot, moved);
-                }
+        match header_kind(head) {
+            KIND_WEAK => self.weak.push(offset),
+            kind if is_value_cell(kind) => self.trace_values(offset, 1, words),
+            kind if is_object(kind) => {
+                self.trace_packed(offset, 1, RefKind::Internal, RefKind::Object);
+                self.trace_packed(offset, 2, RefKind::Internal, RefKind::Internal);
+                self.trace_values(offset, 1 + OBJECT_REFS, words);
             }
+            _ => {}
         }
         Some(words)
+    }
+
+    /// Führt die Werte in den Wörtern `from..to` der Zelle nach.
+    fn trace_values(&mut self, offset: u32, from: usize, to: usize) {
+        for slot in from..to {
+            if let Some(bits) = self.word(offset, slot) {
+                let moved = self.evacuate(bits);
+                self.write(offset, slot, moved);
+            }
+        }
+    }
+
+    /// Führt die beiden gepackten Verweise im Wort `index` nach.
+    fn trace_packed(&mut self, offset: u32, index: usize, low: RefKind, high: RefKind) {
+        let Some(word) = self.word(offset, index) else {
+            return;
+        };
+        let low = self.evacuate_packed(low, packed_low(word));
+        let high = self.evacuate_packed(high, packed_high(word));
+        self.write(offset, index, packed(low, high));
+    }
+
+    fn evacuate_packed(&mut self, kind: RefKind, offset: u32) -> u32 {
+        if offset == NONE {
+            return NONE;
+        }
+        let moved = self.evacuate(Value::reference(kind, offset).bits());
+        Value::from_bits(moved)
+            .reference_parts()
+            .map_or(offset, |(_, moved)| moved)
+    }
+
+    /// Führt nach dem Lesezeiger die Felder der schwachen Zellen nach: Ein
+    /// Ziel, das verschoben wurde, bekommt seinen neuen Ort, eines im alten
+    /// Raum wird *undefined*.
+    fn clear_weak(&mut self) {
+        for offset in std::mem::take(&mut self.weak) {
+            let count = self
+                .word(offset, 0)
+                .map_or(0, |head| to_usize(header_length(head)));
+            for slot in 1..=count {
+                let Some(bits) = self.word(offset, slot) else {
+                    continue;
+                };
+                let Some((kind, target)) = Value::from_bits(bits).reference_parts() else {
+                    continue;
+                };
+                if !self.page(target).is_some_and(|page| page.old) {
+                    continue;
+                }
+                let moved = match self.word(target, 0) {
+                    Some(head) if header_kind(head) == KIND_FORWARD => {
+                        Value::reference(kind, header_length(head)).bits()
+                    }
+                    _ => Value::UNDEFINED.bits(),
+                };
+                self.write(offset, slot, moved);
+            }
+        }
     }
 
     /// Kopiert die Zelle, auf die `bits` zeigt, in den neuen Raum, wenn das
@@ -738,8 +889,8 @@ impl Heap {
     }
 
     /// Prüft den Heap: Jede Seite besteht lückenlos aus gültigen Zellen, und
-    /// jeder Verweis in Handles und Feldern zeigt auf den Anfang einer
-    /// passenden Zelle.
+    /// jeder Verweis in Handles, Feldern und Objekten zeigt auf den Anfang
+    /// einer passenden Zelle.
     pub fn verify(&self) -> Result<(), String> {
         let mut starts = BTreeMap::new();
         for (index, page) in self.pages.iter().enumerate() {
@@ -763,17 +914,37 @@ impl Heap {
                 return Err(format!("Seite {index}: Zellen überschreiten die Belegung"));
             }
         }
+        let fits = |kind: RefKind, cell: u64| match kind {
+            RefKind::String => matches!(cell, KIND_LATIN1 | KIND_UTF16),
+            RefKind::Symbol => cell == KIND_SYMBOL,
+            RefKind::Object => is_object(cell),
+            RefKind::Internal => {
+                matches!(cell, KIND_SLOTS | KIND_SHAPE | KIND_WEAK | KIND_SPARSE)
+            }
+            RefKind::BigInt => false,
+        };
         let check = |bits: u64, place: &str| -> Result<(), String> {
             let Some((kind, offset)) = Value::from_bits(bits).reference_parts() else {
                 return Ok(());
             };
-            match (kind, starts.get(&offset)) {
-                (RefKind::String, Some(&(KIND_LATIN1 | KIND_UTF16)))
-                | (RefKind::Internal, Some(&KIND_SLOTS)) => Ok(()),
-                _ => Err(format!(
-                    "{place}: Verweis {offset:#x} ({kind:?}) zeigt auf keine passende Zelle"
-                )),
+            if starts.get(&offset).is_some_and(|&cell| fits(kind, cell)) {
+                return Ok(());
             }
+            Err(format!(
+                "{place}: Verweis {offset:#x} ({kind:?}) zeigt auf keine passende Zelle"
+            ))
+        };
+        let check_packed = |offset: u32, allowed: &[u64], place: &str| -> Result<(), String> {
+            if offset == NONE
+                || starts
+                    .get(&offset)
+                    .is_some_and(|cell| allowed.contains(cell))
+            {
+                return Ok(());
+            }
+            Err(format!(
+                "{place}: Verweis {offset:#x} zeigt auf keine passende Zelle"
+            ))
         };
         for &bits in self.roots.borrow().iter().flatten() {
             check(bits, "Handle")?;
@@ -782,19 +953,36 @@ impl Heap {
             check(bits, "dauerhaftes Handle")?;
         }
         for (&offset, &kind) in &starts {
-            if kind != KIND_SLOTS {
-                continue;
-            }
             let count = self
                 .word(offset, 0)
                 .map_or(0, |head| to_usize(header_length(head)));
-            for slot in 1..=count {
-                check(self.word(offset, slot).unwrap_or(0), "Feld")?;
+            if is_value_cell(kind) {
+                for slot in 1..=count {
+                    check(self.word(offset, slot).unwrap_or(0), "Feld")?;
+                }
+            } else if is_object(kind) {
+                let refs = self.word(offset, 1).unwrap_or(0);
+                if packed_low(refs) == NONE {
+                    return Err(format!("Objekt {offset:#x} ohne Gestalt"));
+                }
+                check_packed(packed_low(refs), &[KIND_SHAPE], "Gestalt")?;
+                check_packed(packed_high(refs), &OBJECT_KINDS, "Prototyp")?;
+                let more = self.word(offset, 2).unwrap_or(0);
+                check_packed(packed_low(more), &[KIND_SLOTS, KIND_SPARSE], "Elemente")?;
+                check_packed(packed_high(more), &[KIND_SLOTS], "Zusatzfeld")?;
+                for slot in 0..count {
+                    let bits = self.word(offset, 1 + OBJECT_REFS + slot).unwrap_or(0);
+                    check(bits, "Eigenschaft")?;
+                }
             }
         }
         Ok(())
     }
 }
+
+mod cells;
+
+pub(crate) use cells::{CellKind, ObjectClass};
 
 #[cfg(test)]
 mod tests;
