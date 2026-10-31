@@ -283,3 +283,184 @@ fn well_known_symbols_are_shared_and_described() {
         assert_eq!(WellKnownSymbol::Iterator.description(), "Symbol.iterator");
     });
 }
+
+fn string_units_of(agent: &Agent, string: Local<'_>) -> Option<Vec<u16>> {
+    match agent.heap().get(string).kind() {
+        Kind::String(string) => Some(agent.heap().string_units(string)),
+        _ => None,
+    }
+}
+
+#[test]
+fn values_become_strings() {
+    let mut agent = checked();
+    agent.scope(|agent, scope| {
+        for (value, expected) in [
+            (Value::UNDEFINED, "undefined"),
+            (Value::NULL, "null"),
+            (Value::TRUE, "true"),
+            (Value::FALSE, "false"),
+            (Value::number(-0.0), "0"),
+            (Value::int32(-42), "-42"),
+            (Value::number(1.5e-7), "1.5e-7"),
+            (Value::number(f64::NAN), "NaN"),
+        ] {
+            let value = agent.heap().local(scope, value);
+            let string = to_string(agent, scope, value).expect("kein Fehler");
+            assert_eq!(
+                string_units_of(agent, string),
+                Some(units(expected)),
+                "{expected}"
+            );
+        }
+        // Eine Zeichenkette bleibt dieselbe, auch mit einzelnem Surrogat.
+        let text = agent
+            .heap_mut()
+            .alloc_string(scope, &[0x61, 0xD800])
+            .expect("Speicher");
+        let same_text = to_string(agent, scope, text).expect("kein Fehler");
+        assert_eq!(
+            agent.heap().get(same_text).bits(),
+            agent.heap().get(text).bits()
+        );
+
+        let symbol = agent.new_symbol(scope, None).expect("Speicher");
+        assert_eq!(to_string(agent, scope, symbol).err(), Some(Abrupt::Throw));
+        assert_eq!(thrown(agent, scope), Some(ErrorKind::TypeError));
+        let object = ordinary_object_create(agent, scope, None).expect("Speicher");
+        assert_eq!(to_string(agent, scope, object).err(), Some(Abrupt::Throw));
+        assert_eq!(thrown(agent, scope), Some(ErrorKind::TypeError));
+    });
+}
+
+#[test]
+fn values_become_booleans() {
+    let mut agent = checked();
+    agent.scope(|agent, scope| {
+        let string = |agent: &mut Agent, text: &str| {
+            agent
+                .heap_mut()
+                .alloc_string(scope, &units(text))
+                .expect("Speicher")
+        };
+        let empty = string(agent, "");
+        let zero = string(agent, "0");
+        let space = string(agent, " ");
+        let symbol = agent.new_symbol(scope, None).expect("Speicher");
+        let object = ordinary_object_create(agent, scope, None).expect("Speicher");
+        let heap = agent.heap();
+        let cases = [
+            (Value::UNDEFINED, false),
+            (Value::NULL, false),
+            (Value::FALSE, false),
+            (Value::TRUE, true),
+            (Value::number(0.0), false),
+            (Value::number(-0.0), false),
+            (Value::number(f64::NAN), false),
+            (Value::int32(1), true),
+            (Value::number(f64::NEG_INFINITY), true),
+            (Value::number(5e-324), true),
+            (heap.get(empty), false),
+            (heap.get(zero), true),
+            (heap.get(space), true),
+            (heap.get(symbol), true),
+            (heap.get(object), true),
+        ];
+        for (position, (value, expected)) in cases.into_iter().enumerate() {
+            assert_eq!(to_boolean(heap, value), expected, "Fall {position}");
+        }
+    });
+}
+
+fn key_of<'s>(agent: &mut Agent, scope: &'s Scope, value: Value<'static>) -> PropertyKey<'s> {
+    let value = agent.heap().local(scope, value);
+    to_property_key(agent, scope, value).expect("kein Fehler")
+}
+
+#[test]
+fn values_become_property_keys() {
+    let mut agent = checked();
+    agent.scope(|agent, scope| {
+        for (number, expected) in [
+            (0.0, 0),
+            (-0.0, 0),
+            (7.0, 7),
+            (4_294_967_294.0, MAX_ARRAY_INDEX),
+        ] {
+            let key = key_of(agent, scope, Value::number(number));
+            assert!(
+                matches!(key, PropertyKey::Index(index) if index == expected),
+                "{number}"
+            );
+        }
+        // Keine Indizes: 2³² − 1, Brüche, negative Zahlen, NaN und alles,
+        // was keine Zahl ist.
+        for (value, text) in [
+            (Value::number(4_294_967_295.0), "4294967295"),
+            (Value::number(1.5), "1.5"),
+            (Value::int32(-1), "-1"),
+            (Value::number(f64::NAN), "NaN"),
+            (Value::number(1e21), "1e+21"),
+            (Value::TRUE, "true"),
+            (Value::UNDEFINED, "undefined"),
+        ] {
+            let PropertyKey::String(atom) = key_of(agent, scope, value) else {
+                panic!("kein Atom: {text}");
+            };
+            let expected = agent.atom(scope, &units(text)).expect("Speicher");
+            assert_eq!(
+                agent.heap().get(atom).bits(),
+                agent.heap().get(expected).bits(),
+                "{text}"
+            );
+        }
+        let seven = agent
+            .heap_mut()
+            .alloc_string(scope, &units("7"))
+            .expect("Speicher");
+        let key = to_property_key(agent, scope, seven).expect("kein Fehler");
+        assert!(matches!(key, PropertyKey::Index(7)));
+
+        let symbol = agent.new_symbol(scope, None).expect("Speicher");
+        let PropertyKey::Symbol(key) = to_property_key(agent, scope, symbol).expect("kein Fehler")
+        else {
+            panic!("kein Symbol");
+        };
+        assert_eq!(
+            agent.heap().get(key).bits(),
+            agent.heap().get(symbol).bits()
+        );
+
+        let object = ordinary_object_create(agent, scope, None).expect("Speicher");
+        assert_eq!(
+            to_property_key(agent, scope, object).err(),
+            Some(Abrupt::Throw)
+        );
+        assert_eq!(thrown(agent, scope), Some(ErrorKind::TypeError));
+    });
+}
+
+#[test]
+fn int32_and_numeric_go_through_to_number() {
+    let mut agent = checked();
+    agent.scope(|agent, scope| {
+        let text = agent
+            .heap_mut()
+            .alloc_string(scope, &units(" 4294967295 "))
+            .expect("Speicher");
+        assert_eq!(to_int32(agent, scope, text), Ok(-1));
+        assert_eq!(to_numeric(agent, scope, text), Ok(4_294_967_295.0));
+        let yes = agent.heap().local(scope, Value::TRUE);
+        assert_eq!(to_int32(agent, scope, yes), Ok(1));
+        assert_eq!(to_numeric(agent, scope, yes), Ok(1.0));
+
+        let symbol = agent.new_symbol(scope, None).expect("Speicher");
+        assert_eq!(to_int32(agent, scope, symbol), Err(Abrupt::Throw));
+        assert_eq!(thrown(agent, scope), Some(ErrorKind::TypeError));
+        assert_eq!(to_numeric(agent, scope, symbol), Err(Abrupt::Throw));
+        assert_eq!(thrown(agent, scope), Some(ErrorKind::TypeError));
+        let object = ordinary_object_create(agent, scope, None).expect("Speicher");
+        assert_eq!(to_numeric(agent, scope, object), Err(Abrupt::Throw));
+        assert_eq!(thrown(agent, scope), Some(ErrorKind::TypeError));
+    });
+}

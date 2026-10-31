@@ -1,6 +1,8 @@
-//! Typumwandlungen (Abschnitt 7.1): ToPrimitive, ToNumber mit
-//! StringToNumber, ToIntegerOrInfinity und ToUint32. Die übrigen kommen mit
-//! den Schritten, die sie brauchen.
+//! Typumwandlungen (Abschnitt 7.1): ToPrimitive, ToBoolean, ToNumeric,
+//! ToNumber mit StringToNumber, ToIntegerOrInfinity, ToInt32, ToUint32,
+//! ToString und ToPropertyKey. Die übrigen kommen mit den Schritten, die sie
+//! brauchen. BigInt-Werte gibt es noch nicht; bis sie kommen, ergibt
+//! ToNumeric immer eine Zahl.
 //!
 //! Solange es keine Funktionsobjekte gibt, ist keine Methode aufrufbar.
 //! ToPrimitive wirft für Objekte darum vorerst immer einen TypeError.
@@ -8,10 +10,11 @@
 #![forbid(unsafe_code)]
 
 use crate::agent::{Agent, Completion, ErrorKind};
-use crate::heap::{Local, Scope};
-use crate::key::{PropertyKey, WellKnownSymbol};
+use crate::heap::{Heap, Local, Scope};
+use crate::key::{MAX_ARRAY_INDEX, PropertyKey, WellKnownSymbol};
 use crate::lexer::number::from_power_of_two_radix;
 use crate::lexer::{is_line_terminator, is_white_space};
+use crate::number::{self, integer_or_infinity};
 use crate::operations::{call, get, get_method, is_callable};
 use crate::value::{Kind, Value};
 
@@ -86,6 +89,29 @@ pub fn ordinary_to_primitive<'s>(
         }
     }
     Err(agent.throw_error(ErrorKind::TypeError))
+}
+
+/// ToBoolean (Abschnitt 7.1.2). Objekte mit [[IsHTMLDDA]] (Anhang B.3.6)
+/// kommen mit dem Host, bis dahin ist jedes Objekt *true*.
+pub fn to_boolean(heap: &Heap, value: Value<'_>) -> bool {
+    match value.kind() {
+        Kind::Boolean(boolean) => boolean,
+        Kind::Undefined | Kind::Null => false,
+        Kind::Number(number) => number != 0.0 && !number.is_nan(),
+        Kind::String(string) => heap.string_len(string) != 0,
+        // 0n wäre *false*, aber BigInt-Werte gibt es noch nicht. Lücken und
+        // interne Zellen sind keine Werte der Sprache.
+        Kind::Symbol(_) | Kind::BigInt(_) | Kind::Object(_) | Kind::Hole | Kind::Internal(_) => {
+            true
+        }
+    }
+}
+
+/// ToNumeric (Abschnitt 7.1.3). Ein BigInt käme unverändert zurück; bis es
+/// BigInt-Werte gibt, ist das Ergebnis immer eine Zahl.
+pub fn to_numeric(agent: &mut Agent, scope: &Scope, value: Local<'_>) -> Completion<f64> {
+    let primitive = to_primitive(agent, scope, value, Some(PreferredType::Number))?;
+    to_number(agent, scope, primitive)
 }
 
 /// ToNumber (Abschnitt 7.1.4).
@@ -211,35 +237,80 @@ pub fn to_integer_or_infinity(
     Ok(integer_or_infinity(number))
 }
 
-fn integer_or_infinity(number: f64) -> f64 {
-    let truncated = number.trunc();
-    if truncated.is_nan() || truncated == 0.0 {
-        0.0
-    } else {
-        truncated
-    }
+/// ToInt32 (Abschnitt 7.1.8).
+pub fn to_int32(agent: &mut Agent, scope: &Scope, value: Local<'_>) -> Completion<i32> {
+    let integer = to_integer_or_infinity(agent, scope, value)?;
+    Ok(number::to_int32(integer))
 }
 
 /// ToUint32 (Abschnitt 7.1.9).
 pub fn to_uint32(agent: &mut Agent, scope: &Scope, value: Local<'_>) -> Completion<u32> {
     let integer = to_integer_or_infinity(agent, scope, value)?;
-    Ok(unsigned_32(integer))
+    Ok(number::to_uint32(integer))
 }
 
-/// ToFixedSizeInteger (Abschnitt 7.1.7) mit ~unsigned~ und 32 Bit für eine
-/// ganze Zahl oder ±∞.
-fn unsigned_32(integer: f64) -> u32 {
-    const MODULUS: f64 = 4_294_967_296.0;
-    if !integer.is_finite() {
-        return 0;
-    }
-    // Der Rest ganzer Zahlen ist exakt und liegt in [0, 2³²).
-    let fixed = integer.rem_euclid(MODULUS);
-    if fixed.fract() == 0.0 && (0.0..MODULUS).contains(&fixed) {
-        // Schneidet nicht ab: Bereich und Ganzzahligkeit sind geprüft.
-        fixed as u32
+/// ToString (Abschnitt 7.1.19). Das Ergebnis ist immer eine Zeichenkette.
+pub fn to_string<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    value: Local<'_>,
+) -> Completion<Local<'s>> {
+    let primitive = if is_object(agent.heap().get(value)) {
+        to_primitive(agent, scope, value, Some(PreferredType::String))?
     } else {
-        0
+        agent.heap().local(scope, agent.heap().get(value))
+    };
+    let text = match agent.heap().get(primitive).kind() {
+        Kind::String(_) => return Ok(primitive),
+        Kind::Undefined => Some("undefined".to_owned()),
+        Kind::Null => Some("null".to_owned()),
+        Kind::Boolean(true) => Some("true".to_owned()),
+        Kind::Boolean(false) => Some("false".to_owned()),
+        Kind::Number(number) => Some(number::to_string(number)),
+        // Symbole werfen, BigInt::toString kommt mit den BigInt-Werten.
+        // ToPrimitive gibt kein Objekt zurück, Lücken und interne Zellen
+        // sind keine Werte der Sprache.
+        Kind::Symbol(_) | Kind::BigInt(_) | Kind::Object(_) | Kind::Hole | Kind::Internal(_) => {
+            None
+        }
+    };
+    let Some(text) = text else {
+        return Err(agent.throw_error(ErrorKind::TypeError));
+    };
+    Ok(agent.heap_mut().alloc_string(scope, &units(&text))?)
+}
+
+/// ToPropertyKey (Abschnitt 7.1.21). Eine Zahl, deren Zeichenkette ein
+/// Array-Index ist, wird ohne die Zeichenkette zum Index.
+pub fn to_property_key<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    value: Local<'_>,
+) -> Completion<PropertyKey<'s>> {
+    if let Some(index) = agent.heap().get(value).as_number().and_then(number_index) {
+        return Ok(PropertyKey::Index(index));
+    }
+    let key = to_primitive(agent, scope, value, Some(PreferredType::String))?;
+    if matches!(agent.heap().get(key).kind(), Kind::Symbol(_)) {
+        return Ok(PropertyKey::Symbol(key));
+    }
+    let string = to_string(agent, scope, key)?;
+    match agent.key_from_value(scope, string) {
+        Some(key) => Ok(key),
+        // ToString liefert immer eine Zeichenkette.
+        None => Err(agent.throw_error(ErrorKind::TypeError)),
+    }
+}
+
+/// Der Array-Index, den ToString aus der Zahl machen würde. Ganze Zahlen
+/// unter 10²¹ schreibt Number::toString als Dezimalziffern ohne führende
+/// Null, -0 als "0".
+fn number_index(number: f64) -> Option<u32> {
+    if number.fract() == 0.0 && (0.0..=f64::from(MAX_ARRAY_INDEX)).contains(&number) {
+        // Schneidet nicht ab: Bereich und Ganzzahligkeit sind geprüft.
+        Some(number as u32)
+    } else {
+        None
     }
 }
 
