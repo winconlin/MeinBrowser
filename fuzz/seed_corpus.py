@@ -80,6 +80,32 @@ def main():
         write("encoding", f"encoding-{selector:02}", bytes([selector]) + b"a\xe2\x82\xac\xff\0\x1b$B")
     write("unicode", "combining", "e\u0301 A\u030a\r\n\U0001f600")
     write("unicode", "idna", "xn--bcher-kva.example")
+    write("js", "script", '"use strict";\n'
+          "class A extends Object { #x = 1; static #y; static { this.z = 2; } get x() { return this.#x; }"
+          " set x(v) { this.#x = v; } static m() { return #y in A; } }\n"
+          "async function* g(a, [b, c] = [], {d, ...e} = {}) { for await (const x of a) yield* x;"
+          " await using r = null; }\n"
+          "label: for (let i = 0, j; i < 10; i++) { if (i % 2) continue label; else break label; }\n"
+          "const f = async (x = 1, ...y) => ({ x, y, [`k${x}`]: /a[b-c]+/giu.test?.(`t${y}`) ?? 0n, n: 0x1_0 + .5e-3 });\n"
+          'try { throw new Error("x"); } catch ({ message }) {} finally { switch (f) { case 1: default: } }\n')
+    write("js", "module", 'import def, * as ns from "./a.js" with { type: "json" };\n'
+          'import { a as b, "c d" as e } from "./b.js";\n'
+          'export { b as other, e as "f g" };\n'
+          'export * as all from "./c.js";\n'
+          "export default class { static async *[Symbol.iterator]() {} }\n"
+          'export const h = await import("./d.js", { with: { type: "json" } });\n'
+          "using u = null;\n"
+          "await using v = null;\n"
+          "export let i = import.meta.url;\n")
+    write("js", "annex-b", "<!-- comment\n"
+          "var x = 010 + 08; with (Math) { if (x) function f() {} else ; }\n"
+          "l: function g() {}\n"
+          "--> comment\n"
+          "a = { __proto__: null, __proto__() {} };\n"
+          "for (var k = 0 in {}) ;\n")
+    write("js", "early-error", '"use strict"; function f(a, a) {}')
+    write("js", "deep", "(" * 300 + "a" + ")" * 300)
+    write("js", "utf16le-surrogate", struct.pack("<8H", *b"x = '", 0xD800, *b"';"))
     part = b"\x1f\x1f"  # PART_SEPARATOR in src/lib.rs
     write("page", "document", "<!doctype html><style>@media (max-width: 400px) { p { margin: 0 } }"
           " p { border: 2px dashed red; padding: 4px; font-style: italic }"

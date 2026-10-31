@@ -112,6 +112,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "mb-js"
+version = "0.0.0"
+dependencies = [
+ "mb-unicode",
+]
+
+[[package]]
 name = "mb-json"
 version = "0.0.0"
 
@@ -209,6 +216,7 @@ dependencies = [
  "mb-encoding",
  "mb-html",
  "mb-image",
+ "mb-js",
  "mb-json",
  "mb-layout",
  "mb-scene",
