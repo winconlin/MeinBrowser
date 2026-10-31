@@ -42,6 +42,7 @@ Das Fuzzing-Lockfile legt die vollständigen Entwicklungsabhängigkeiten fest, d
 | `encoding` | Zeichenkodierungen und Streaming-Dekodierung |
 | `unicode` | Normalisierung und weitere vorhandene Unicode-Algorithmen |
 | `page` | Eine Seite mit Stylesheets und Bildern laden, Kaskade, Layout und Zeichnen in zwei Viewports |
+| `js` | JavaScript-Lexer und -Parser für Scripts und Module, mit der Eingabe als UTF-8 und als UTF-16LE |
 
 Die eingecheckten Startkorpora liegen unter `fuzz/seeds/ZIEL/`. Der Läufer kopiert sie in das veränderliche, ignorierte Arbeitskorpus `fuzz/corpus/ZIEL/`. Nach dem Einrichten der Werkzeuge und Abhängigkeiten brauchen die Testläufe keine externen Testsammlungen oder Netzverbindungen. Generierte Korpora, Rohprotokolle, Buildausgaben und Fehlerdateien bleiben in ignorierten lokalen Verzeichnissen.
 
@@ -49,7 +50,9 @@ Der Läufer begrenzt die Eingaben auf 4 KiB, beim Schriftziel auf 64 KiB. Deflat
 
 Beim Ziel `page` ist die Eingabe eine kleine Website. Je zwei Bytes 0x1F trennen ihre Teile: Teil 0 ist das Dokument, und jede URL unter `https://example.test/`, deren Pfad mit einer Zahl N beginnt, liefert Teil N, etwa `1.css` oder `2.png`. Beginnt das Dokument mit `<?xml`, wird es als XHTML gelesen, sonst als HTML. Die Seite darf zusammen 1 MiB laden und dekodieren. Stil und Layout dürfen je Viewport eine Million Arbeitsschritte kosten; die Viewports sind 800 × 600 CSS-Pixel und 320 × 480 mit zwei Gerätepixeln je CSS-Pixel, gezeichnet wird beim zweiten am Ende des Scrollbereichs. Die einzige Schrift ist die synthetische aus dem Startkorpus von `font`. Mit AddressSanitizer brauchte die langsamste von mehreren gemessenen 4-KiB-Eingaben (eine Tabelle mit 400 Zeilen) zwei Sekunden.
 
-Die Grenzen halten kurze Prüfläufe praktikabel. Sie decken keine beliebig großen Dokumente oder alle möglichen Ressourcenangriffe ab. Die Ziele laden keine Ressourcen aus Dateien oder dem Netz; `page` holt Stylesheets und Bilder aus seiner Eingabe. JavaScript, TLS und IPC erhalten Fuzzing-Ziele, sobald ihre Implementierungen vorhanden sind. Konformitätstests und Regressionstests bleiben zusätzlich erforderlich. Die eigenen Startkorpora lassen sich mit `python3 fuzz/seed_corpus.py` neu erzeugen; sie enthalten keine fremden Schriften.
+Beim Ziel `js` wird die Eingabe zweimal gelesen: als UTF-8-Text und als Folge von UTF-16-Codeeinheiten in Little Endian, damit auch einzelne Surrogate den Lexer erreichen. Jede Fassung durchläuft den Lexer mit vier festen Zielen, als Script und als Modul, und den Parser als Script und als Modul. Geprüft wird, dass Tokens und Anweisungen in der Reihenfolge des Quelltexts und innerhalb seiner Grenzen liegen und dass jedes Token außer dem Ende Eingabe verbraucht. Läuft der Stapel bei tiefer Verschachtelung über, schlägt der Lauf fehl; der Parser muss dann `TooDeep` melden.
+
+Die Grenzen halten kurze Prüfläufe praktikabel. Sie decken keine beliebig großen Dokumente oder alle möglichen Ressourcenangriffe ab. Die Ziele laden keine Ressourcen aus Dateien oder dem Netz; `page` holt Stylesheets und Bilder aus seiner Eingabe. TLS und IPC erhalten Fuzzing-Ziele, sobald ihre Implementierungen vorhanden sind; von der JavaScript-Engine prüft `js` bisher nur Lexer und Parser. Konformitätstests und Regressionstests bleiben zusätzlich erforderlich. Die eigenen Startkorpora lassen sich mit `python3 fuzz/seed_corpus.py` neu erzeugen; sie enthalten keine fremden Schriften.
 
 ## Automatisierte Läufe
 

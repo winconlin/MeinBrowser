@@ -1,0 +1,6 @@
+"use strict";
+class A extends Object { #x = 1; static #y; static { this.z = 2; } get x() { return this.#x; } set x(v) { this.#x = v; } static m() { return #y in A; } }
+async function* g(a, [b, c] = [], {d, ...e} = {}) { for await (const x of a) yield* x; await using r = null; }
+label: for (let i = 0, j; i < 10; i++) { if (i % 2) continue label; else break label; }
+const f = async (x = 1, ...y) => ({ x, y, [`k${x}`]: /a[b-c]+/giu.test?.(`t${y}`) ?? 0n, n: 0x1_0 + .5e-3 });
+try { throw new Error("x"); } catch ({ message }) {} finally { switch (f) { case 1: default: } }

@@ -217,6 +217,79 @@ pub fn unicode(data: &[u8]) {
     black_box(mb_unicode::idna::to_unicode(&text, options));
 }
 
+/// The input as UTF-16LE code units; a trailing odd byte is dropped.
+fn utf16le(data: &[u8]) -> Vec<u16> {
+    data.chunks_exact(2)
+        .map(|pair| u16::from_le_bytes(<[u8; 2]>::try_from(pair).unwrap_or_default()))
+        .collect()
+}
+
+/// The JavaScript lexer and parser, with the input once as UTF-8 text and once
+/// as UTF-16LE code units, so that lone surrogates reach them too.
+pub fn js(data: &[u8]) {
+    if data.len() > MAX_INPUT {
+        return;
+    }
+    let text: Vec<u16> = String::from_utf8_lossy(data).encode_utf16().collect();
+    for source in [text, utf16le(data)] {
+        for module in [false, true] {
+            js_tokens(&source, module);
+        }
+        js_tree(&source, mb_js::parser::parse_script(&source));
+        js_tree(&source, mb_js::parser::parse_module(&source));
+    }
+}
+
+/// With a fixed goal, each token starts after the previous one, ends inside
+/// the source and consumes input; the end token lies at the end.
+fn js_tokens(source: &[u16], module: bool) {
+    use mb_js::lexer::{Goal, Lexer, TokenKind};
+    for goal in [
+        Goal::Div,
+        Goal::RegExp,
+        Goal::RegExpOrTemplateTail,
+        Goal::TemplateTail,
+    ] {
+        let mut lexer = Lexer::new(source, module);
+        let mut previous = 0;
+        loop {
+            match lexer.next_token(goal) {
+                Ok(token) if token.kind == TokenKind::End => {
+                    assert_eq!(token.range, source.len()..source.len());
+                    break;
+                }
+                Ok(token) => {
+                    assert!(previous <= token.range.start);
+                    assert!(token.range.start < token.range.end);
+                    assert!(token.range.end <= source.len());
+                    previous = token.range.end;
+                }
+                Err(error) => {
+                    assert!(error.position <= source.len());
+                    break;
+                }
+            }
+        }
+    }
+}
+
+/// An error lies inside the source; the statements of a tree follow each other
+/// inside the source.
+fn js_tree(source: &[u16], result: Result<mb_js::ast::Ast, mb_js::parser::SyntaxError>) {
+    match result {
+        Ok(ast) => {
+            let mut previous = 0;
+            for &statement in ast.body() {
+                let range = ast.range(statement);
+                assert!(previous <= range.start && range.start <= range.end);
+                assert!(range.end <= source.len());
+                previous = range.end;
+            }
+        }
+        Err(error) => assert!(error.position <= source.len()),
+    }
+}
+
 /// Splits a `page` input at each [`PART_SEPARATOR`].
 fn parts(data: &[u8]) -> Vec<Vec<u8>> {
     let mut parts = Vec::new();
@@ -364,9 +437,34 @@ mod tests {
     }
 
     #[test]
+    fn javascript_seeds_reach_the_parser() {
+        use mb_js::parser::{ErrorKind, parse_module, parse_script};
+        let text =
+            |data: &[u8]| -> Vec<u16> { String::from_utf8_lossy(data).encode_utf16().collect() };
+        let script = text(include_bytes!("../seeds/js/script"));
+        assert!(parse_script(&script).is_ok_and(|ast| ast.body().len() == 6));
+        let module = text(include_bytes!("../seeds/js/module"));
+        assert!(parse_module(&module).is_ok_and(|ast| ast.body().len() == 9));
+        // HTML-like comments, `with` and functions in `if` only in scripts.
+        let annex_b = text(include_bytes!("../seeds/js/annex-b"));
+        assert!(parse_script(&annex_b).is_ok());
+        assert!(parse_module(&annex_b).is_err());
+        let early_error = text(include_bytes!("../seeds/js/early-error"));
+        let error = parse_script(&early_error).map(|_| ()).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::DuplicateParameter);
+        let deep = text(include_bytes!("../seeds/js/deep"));
+        let error = parse_script(&deep).map(|_| ()).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::TooDeep);
+        // A lone surrogate in a string literal.
+        let units = utf16le(include_bytes!("../seeds/js/utf16le-surrogate"));
+        assert!(units.contains(&0xD800));
+        assert!(parse_script(&units).is_ok());
+    }
+
+    #[test]
     fn start_corpora_and_empty_inputs_exercise_all_harnesses() {
         type Harness = fn(&[u8]);
-        let targets: [(&str, Harness); 12] = [
+        let targets: [(&str, Harness); 13] = [
             ("html", html),
             ("css", css),
             ("url", url),
@@ -379,6 +477,7 @@ mod tests {
             ("encoding", encoding),
             ("unicode", unicode),
             ("page", page),
+            ("js", js),
         ];
         for (name, check) in targets {
             check(&[]);

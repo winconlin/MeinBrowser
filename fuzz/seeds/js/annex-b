@@ -1,0 +1,6 @@
+<!-- comment
+var x = 010 + 08; with (Math) { if (x) function f() {} else ; }
+l: function g() {}
+--> comment
+a = { __proto__: null, __proto__() {} };
+for (var k = 0 in {}) ;

@@ -1,0 +1,9 @@
+import def, * as ns from "./a.js" with { type: "json" };
+import { a as b, "c d" as e } from "./b.js";
+export { b as other, e as "f g" };
+export * as all from "./c.js";
+export default class { static async *[Symbol.iterator]() {} }
+export const h = await import("./d.js", { with: { type: "json" } });
+using u = null;
+await using v = null;
+export let i = import.meta.url;
