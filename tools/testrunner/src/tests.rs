@@ -3,6 +3,54 @@
 use crate::{ListError, M1_REFTESTS, RefTest, Relation, parse_list};
 
 #[test]
+fn layout_fonts_survive_trimming_until_the_fragment_tree_is_dropped() {
+    let mut library =
+        mb_text::FontLibrary::with_cache_budget(Box::new(mb_platform::fonts::read_font), 0);
+    let font = testdata::root().join("wpt").join("fonts").join("Ahem.ttf");
+    assert_eq!(library.add_file(font), 1, "Ahem fehlt");
+    let fonts = mb_layout::Fonts::new(&library);
+    let path = std::env::temp_dir().join("mb-font-cache-layout.html");
+    let url = mb_web::file_url(&path).expect("URL");
+    let html =
+        b"<!DOCTYPE html><style>body { margin: 0; font: 16px Ahem; color: green }</style>AAA";
+    let page = mb_web::Page::load(
+        url,
+        Box::new(move |_, limit| (html.len() as u64 <= limit).then(|| html.to_vec())),
+    )
+    .expect("Seite");
+    let viewport = mb_web::Viewport {
+        width: 100.0,
+        height: 40.0,
+        device_pixel_ratio: 1.0,
+    };
+    let tree = page
+        .layout_within(
+            &fonts,
+            viewport,
+            &mb_base::Budget::new(mb_web::RENDER_STEPS),
+        )
+        .expect("Layout");
+    let before = mb_raster::render(&page.paint(&tree, (0.0, 0.0))).expect("Bild");
+    assert!(before.pixels().windows(2).any(|pair| pair[0] != pair[1]));
+    let held = library.trim_cache();
+    assert!(
+        held.active_bytes > 0,
+        "der Fragmentbaum hält die Schrift fest"
+    );
+    assert_eq!(held.unused_bytes, 0);
+    let after = mb_raster::render(&page.paint(&tree, (0.0, 0.0))).expect("erneutes Bild");
+    assert_eq!(before.pixels(), after.pixels());
+    assert_eq!(library.cache_stats().loads, held.loads, "kein Nachladen");
+    drop(tree);
+    let released = library.trim_cache();
+    assert_eq!(
+        released.resident_bytes, 0,
+        "kein unbemerkter Schriftverweis"
+    );
+    assert_eq!(released.active_bytes, 0);
+}
+
+#[test]
 fn list_format() {
     let list = "# Kommentar\n\n== a/test.html a/ref.html\n  != b.xht   c.xht  \n";
     assert_eq!(

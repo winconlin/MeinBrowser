@@ -19,7 +19,10 @@ mod opentype;
 mod outline;
 mod shaping;
 
-pub use library::{FaceId, Family, FontLibrary, FontQuery, GenericFamily, Loader};
+pub use library::{
+    DEFAULT_FONT_CACHE_BYTES, FaceId, Family, FontCacheStats, FontLibrary, FontQuery,
+    GenericFamily, Loader,
+};
 pub use matching::Slope;
 pub use opentype::{
     Face, FaceMetrics, FaceStyle, FontData, FontError, GlyphId, NameRecord, Tag, face_count,

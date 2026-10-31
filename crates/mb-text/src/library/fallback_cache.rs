@@ -115,4 +115,15 @@ impl FallbackCache {
         self.entries.clear();
         self.order.clear();
     }
+
+    pub(super) fn remove(&mut self, key: &FallbackKey) {
+        if let Some((stored, _)) = self.entries.remove_entry(key) {
+            let position = self
+                .order
+                .iter()
+                .position(|item| Arc::ptr_eq(item, &stored))
+                .expect("Suchcache-Eintrag im LRU");
+            self.order.remove(position);
+        }
+    }
 }

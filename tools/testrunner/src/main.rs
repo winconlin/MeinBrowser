@@ -88,6 +88,9 @@ fn main() -> ExitCode {
             }
         }
     });
+    // Alle Arbeitsfäden sind fertig. Während ihrer Textformung bestehen
+    // zeitweise nur FaceIds; darum nicht zwischen parallelen Tests trimmen.
+    library.trim_cache();
     let mut results = results
         .into_inner()
         .unwrap_or_else(std::sync::PoisonError::into_inner);

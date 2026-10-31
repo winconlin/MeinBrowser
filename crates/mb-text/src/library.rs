@@ -3,7 +3,8 @@
 //!
 //! Die Bibliothek merkt sich von jedem Schnitt nur Datei, Nummer, Familien
 //! und Einordnung; die Daten lädt sie erst, wenn ein Schnitt gebraucht wird,
-//! und behält sie dann. Familien sind alle Namen mit der Nummer 16
+//! und hält aktive Daten fest. Ungenutzte Dateipuffer lassen sich nach einem
+//! Darstellungsauftrag bis zum Cachebudget bereinigen. Familien sind alle Namen mit der Nummer 16
 //! (typografische Familie) und 1 (Familie) in jeder Sprache, verglichen nach
 //! Default Caseless Matching (Abschnitt „Localized name matching“). So
 //! findet `Lato` alle Schnitte der Familie und `Lato Medium` den einen, der
@@ -12,8 +13,10 @@
 //! Die Ersatzschriftsuche merkt sich bis zu 256 Ergebnisse, auch fehlende
 //! Ersatzschriften, für Folgen von höchstens 64 Codepunkten. Größere Folgen
 //! werden weiterhin gesucht. Neue Schnitte leeren diesen Ergebnis-Cache.
-//! Die erste Suche kann weiterhin viele Schriftdateien laden; der Cache
-//! ihrer Daten wird dadurch nicht begrenzt.
+//! Die erste Suche kann weiterhin viele Schriftdateien laden. Das Budget
+//! gilt bei der expliziten Bereinigung für ungenutzte Dateipuffer, nicht für
+//! den Spitzenverbrauch während der Suche. Der Index ist ein Bestandssnapshot:
+//! Geänderte Quelldateien erfordern eine neue Bibliothek/einen neuen Index.
 //!
 //! Noch nicht: Schriftaliase wie bei fontconfig (`Arial` für `Liberation
 //! Sans`), künstlicher Fettdruck, eine Übersicht der Zeichen jedes Schnitts
@@ -29,11 +32,16 @@ use mb_unicode::case_folding;
 use crate::matching::{self, Candidate, DEFAULT_OBLIQUE, FaceSlope, Slope};
 use crate::opentype::{Face, FontData, face_count};
 
+mod data_cache;
 mod fallback_cache;
 
+use data_cache::Cache;
+pub use data_cache::{DEFAULT_FONT_CACHE_BYTES, FontCacheStats};
 use fallback_cache::{FallbackCache, FallbackKey};
 
 /// Liest den Inhalt einer Schriftdatei; `None`, wenn das nicht geht.
+/// Beim Nachladen läuft der Lader unter dem Cache-Mutex und darf dabei
+/// nicht in dieselbe Bibliothek zurückrufen.
 pub type Loader = Box<dyn Fn(&Path) -> Option<Vec<u8>> + Send + Sync>;
 
 /// Ein Schnitt in der Bibliothek.
@@ -156,15 +164,6 @@ struct FaceEntry {
     candidate: Candidate,
 }
 
-/// Was schon geladen ist: Dateien und Schnitte, `None`, wo das Laden
-/// scheiterte.
-#[derive(Default)]
-struct Cache {
-    files: BTreeMap<usize, Option<FontData>>,
-    faces: BTreeMap<FaceId, Option<Arc<Face>>>,
-    fallback: FallbackCache,
-}
-
 /// Die installierten Schriften.
 pub struct FontLibrary {
     loader: Loader,
@@ -187,15 +186,47 @@ impl fmt::Debug for FontLibrary {
 }
 
 impl FontLibrary {
-    /// Eine leere Bibliothek, die Dateien mit `loader` liest.
+    /// Eine leere Bibliothek, die Dateien mit `loader` liest. Ungenutzte
+    /// Dateipuffer haben bei [`Self::trim_cache`] das Standardbudget
+    /// [`DEFAULT_FONT_CACHE_BYTES`]; es wird nicht während der Textformung
+    /// oder automatisch beim Fallenlassen externer Referenzen angewendet.
     pub fn new(loader: Loader) -> Self {
+        Self::with_cache_budget(loader, DEFAULT_FONT_CACHE_BYTES)
+    }
+
+    /// Wie [`Self::new`], mit `unused_bytes` als Budget für ungenutzte
+    /// Dateipuffer bei [`Self::trim_cache`]. Aktive Daten sind ausgenommen.
+    pub fn with_cache_budget(loader: Loader, unused_bytes: u64) -> Self {
         FontLibrary {
             loader,
             files: Vec::new(),
             faces: Vec::new(),
             families: BTreeMap::new(),
-            cache: Mutex::new(Cache::default()),
+            cache: Mutex::new(Cache::new(unused_bytes)),
         }
+    }
+
+    /// Dateipufferbytes messen, ohne Dateien zu lesen oder zu verdrängen.
+    /// Geteilte Sammlungsdaten zählen einmal; Parserstrukturen und RSS nicht.
+    pub fn cache_stats(&self) -> FontCacheStats {
+        self.cache
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .stats(&self.faces)
+    }
+
+    /// Ungenutzte Dateipuffer nach letzter Nutzung verdrängen, bis ihr
+    /// Budget erreicht ist. Starke/schwache Face-Verweise und Face-Klone
+    /// bleiben erhalten, auch oberhalb des Budgets. Später freigegebene
+    /// Verweise werden erst bei der nächsten Bereinigung berücksichtigt.
+    ///
+    /// Am Ende eines Layout-/Darstellungsauftrags aufrufen: Zwischen
+    /// Textformung und Fragmentaufbau gibt es zeitweise nur FaceIds.
+    pub fn trim_cache(&self) -> FontCacheStats {
+        self.cache
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .trim(&self.faces)
     }
 
     /// Nimmt die Schnitte einer Datei auf und gibt zurück, wie viele es
@@ -327,7 +358,23 @@ impl FontLibrary {
                 cache.fallback.get(key)
             };
             if let Some(found) = cached {
-                return found;
+                if found.is_none_or(|id| {
+                    self.face(id).is_some_and(|face| {
+                        characters
+                            .iter()
+                            .all(|&character| face.glyph_index(character).is_some())
+                    })
+                }) {
+                    return found;
+                }
+                // Der Dateipuffer kann nach einer Verdrängung nicht mehr
+                // lesbar sein. Ein alter positiver Treffer darf dann keine
+                // andere passende Familie verdecken.
+                self.cache
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .fallback
+                    .remove(key);
             }
         }
         let found = self.families.values().find_map(|family| {
@@ -376,20 +423,24 @@ impl FontLibrary {
 
     /// Der Schnitt mit seinen Daten, beim ersten Mal geladen.
     pub fn face(&self, id: FaceId) -> Option<Arc<Face>> {
+        let entry = self.faces.get(id.0)?;
         let mut cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(face) = cache.faces.get(&id) {
-            return face.clone();
+            let face = face.clone();
+            if face.is_some() {
+                cache.touch(entry.file);
+            }
+            return face;
         }
-        let entry = self.faces.get(id.0)?;
         let data = match cache.files.get(&entry.file) {
-            Some(data) => data.clone(),
+            Some(data) => data.as_ref().map(|file| Arc::clone(&file.data)),
             None => {
                 let data = self
                     .files
                     .get(entry.file)
                     .and_then(|path| (self.loader)(path))
                     .map(FontData::from);
-                cache.files.insert(entry.file, data.clone());
+                cache.record_load(entry.file, data.clone());
                 data
             }
         };
@@ -397,6 +448,9 @@ impl FontLibrary {
             .and_then(|data| Face::parse(data, entry.index).ok())
             .map(Arc::new);
         cache.faces.insert(id, face.clone());
+        if face.is_some() {
+            cache.touch(entry.file);
+        }
         face
     }
 }
@@ -406,3 +460,6 @@ mod tests;
 
 #[cfg(test)]
 mod fallback_tests;
+
+#[cfg(test)]
+mod data_cache_tests;

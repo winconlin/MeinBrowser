@@ -338,6 +338,9 @@ fn render_page(
             }
         }
         let frame = draw_page(&page, &fonts, &mut laid_out, &job);
+        // Der Fragmentbaum hält die benötigten Schnitte fest. Erst nach
+        // Textformung und Zeichnen dürfen ungenutzte Dateipuffer wegfallen.
+        library.trim_cache();
         if results.send((job.id, frame)).is_err() {
             return;
         }
