@@ -161,6 +161,43 @@ fn handles_belong_to_the_scope_they_were_made_for() {
 }
 
 #[test]
+#[should_panic(expected = "Bereich eines anderen Heaps")]
+fn scopes_of_another_heap_are_rejected() {
+    let mut source = Heap::new();
+    let destination = Heap::new();
+    source.scope(|_, scope| {
+        destination.local(scope, Value::NULL);
+    });
+}
+
+#[test]
+#[should_panic(expected = "Handle eines anderen Heaps")]
+fn handles_of_another_heap_are_rejected() {
+    let mut source = Heap::new();
+    let destination = Heap::new();
+    source.scope(|source, scope| {
+        let text = source
+            .alloc_string(scope, &units("fremd"))
+            .expect("Speicher");
+        destination.get(text);
+    });
+}
+
+#[test]
+#[should_panic(expected = "dauerhaftes Handle eines anderen Heaps")]
+fn persistent_handles_of_another_heap_are_rejected() {
+    let mut source = Heap::new();
+    let destination = Heap::new();
+    let handle = source.scope(|source, scope| {
+        let text = source
+            .alloc_string(scope, &units("fremd"))
+            .expect("Speicher");
+        source.persist(text)
+    });
+    destination.get_persistent(&handle);
+}
+
+#[test]
 fn persistent_handles_outlive_scopes() {
     let mut heap = checked();
     let handle = heap.scope(|heap, scope| {

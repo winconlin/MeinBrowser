@@ -38,6 +38,11 @@
 //! });
 //! ```
 //!
+//! Bereiche und Handles tragen die Nummer ihres Heaps. Wer sie mit einem
+//! anderen Heap verwendet, löst eine Panic aus. Werte tragen keine Nummer,
+//! dafür ist beim NaN-Boxing kein Platz. Ein Wert gehört dem Heap, aus dem
+//! er gelesen wurde, und nur an ihn darf er zurückgehen.
+//!
 //! Richtig ist, den Wert erst nach der Anforderung aus seinem Handle zu
 //! lesen:
 //!
@@ -61,6 +66,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::marker::PhantomData;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::value::{Ref, RefKind, Value};
 
@@ -78,6 +84,9 @@ const MAX_PAGES: usize = 1 << 14;
 pub const MAX_LIMIT: usize = 1 << 30;
 /// Ab dieser Menge wird frühestens gesammelt.
 const MIN_TRIGGER: usize = 4 << 20;
+
+/// Die Nummer des nächsten Heaps. Mit 64 Bit läuft sie praktisch nie über.
+static NEXT_HEAP: AtomicU64 = AtomicU64::new(0);
 
 const KIND_FORWARD: u64 = 1;
 const KIND_LATIN1: u64 = 2;
@@ -159,6 +168,7 @@ impl std::error::Error for OutOfMemory {}
 
 /// Ein Bereich für Handles, siehe [`Heap::scope`].
 pub struct Scope {
+    heap: u64,
     /// Die Nummer des Bereichs, 0 für den äußersten. Innere Bereiche enden
     /// vor den äußeren, also ist die Nummer eindeutig, solange er offen ist.
     depth: usize,
@@ -168,6 +178,7 @@ pub struct Scope {
 /// Verschieben nach, und es gilt, bis sein Bereich endet.
 #[derive(Clone, Copy, Debug)]
 pub struct Local<'s> {
+    heap: u64,
     depth: usize,
     index: usize,
     scope: PhantomData<&'s Scope>,
@@ -176,6 +187,7 @@ pub struct Local<'s> {
 /// Ein Handle ohne Bereich, bis [`Heap::release`] es freigibt.
 #[derive(Debug)]
 pub struct Persistent {
+    heap: u64,
     index: usize,
 }
 
@@ -189,6 +201,8 @@ struct Page {
 
 /// Der Heap eines Agents.
 pub struct Heap {
+    /// Die Nummer, an der Bereiche und Handles ihren Heap erkennen.
+    id: u64,
     pages: Vec<Option<Page>>,
     free_pages: Vec<usize>,
     /// Seiten zu 256 KiB in der Reihenfolge, in der sie angelegt wurden; in
@@ -226,6 +240,7 @@ impl Heap {
             ..options
         };
         Heap {
+            id: NEXT_HEAP.fetch_add(1, Ordering::Relaxed),
             pages: Vec::new(),
             free_pages: Vec::new(),
             small: Vec::new(),
@@ -260,30 +275,43 @@ impl Heap {
         let roots = self.roots.get_mut();
         let depth = roots.len();
         roots.push(Vec::new());
-        let result = f(self, &Scope { depth });
+        let scope = Scope {
+            heap: self.id,
+            depth,
+        };
+        let result = f(self, &scope);
         // Alle inneren Bereiche sind schon beendet.
         self.roots.get_mut().truncate(depth);
         result
     }
 
     /// Hält `value` in einem Handle des Bereichs `scope`.
+    ///
+    /// # Panics
+    ///
+    /// Wenn `scope` zu einem anderen Heap gehört.
     pub fn local<'s>(&self, scope: &'s Scope, value: Value<'_>) -> Local<'s> {
+        self.check_owner(scope.heap, "Bereich");
         let mut roots = self.roots.borrow_mut();
-        // Ohne Liste stammt `scope` aus einem anderen Heap, das Handle liest
-        // dann *undefined*.
+        // Ein offener Bereich dieses Heaps hat immer eine Liste.
         let index = roots.get_mut(scope.depth).map_or(0, |list| {
             let index = list.len();
             list.push(value.bits());
             index
         });
         Local {
+            heap: self.id,
             depth: scope.depth,
             index,
             scope: PhantomData,
         }
     }
 
+    /// # Panics
+    ///
+    /// Wenn `local` zu einem anderen Heap gehört.
     pub fn get(&self, local: Local<'_>) -> Value<'_> {
+        self.check_owner(local.heap, "Handle");
         let roots = self.roots.borrow();
         let bits = roots
             .get(local.depth)
@@ -292,7 +320,11 @@ impl Heap {
         Value::from_bits(bits.unwrap_or(Value::UNDEFINED.bits()))
     }
 
+    /// # Panics
+    ///
+    /// Wenn `local` zu einem anderen Heap gehört.
     pub fn set(&self, local: Local<'_>, value: Value<'_>) {
+        self.check_owner(local.heap, "Handle");
         let mut roots = self.roots.borrow_mut();
         if let Some(slot) = roots
             .get_mut(local.depth)
@@ -303,30 +335,50 @@ impl Heap {
     }
 
     /// Hält den Wert von `local` über alle Bereiche hinweg.
+    ///
+    /// # Panics
+    ///
+    /// Wenn `local` zu einem anderen Heap gehört.
     pub fn persist(&mut self, local: Local<'_>) -> Persistent {
         let bits = self.get(local).bits();
         if let Some(index) = self.free_persistent.pop()
             && let Some(slot) = self.persistent.get_mut(index)
         {
             *slot = bits;
-            return Persistent { index };
+            return Persistent {
+                heap: self.id,
+                index,
+            };
         }
         self.persistent.push(bits);
         Persistent {
+            heap: self.id,
             index: self.persistent.len() - 1,
         }
     }
 
+    /// # Panics
+    ///
+    /// Wenn `handle` zu einem anderen Heap gehört.
     pub fn get_persistent(&self, handle: &Persistent) -> Value<'_> {
+        self.check_owner(handle.heap, "dauerhaftes Handle");
         let bits = self.persistent.get(handle.index).copied();
         Value::from_bits(bits.unwrap_or(Value::UNDEFINED.bits()))
     }
 
+    /// # Panics
+    ///
+    /// Wenn `handle` zu einem anderen Heap gehört.
     pub fn release(&mut self, handle: Persistent) {
+        self.check_owner(handle.heap, "dauerhaftes Handle");
         if let Some(slot) = self.persistent.get_mut(handle.index) {
             *slot = Value::UNDEFINED.bits();
             self.free_persistent.push(handle.index);
         }
+    }
+
+    fn check_owner(&self, heap: u64, what: &str) {
+        assert!(heap == self.id, "{what} eines anderen Heaps");
     }
 
     // Zeichenketten
