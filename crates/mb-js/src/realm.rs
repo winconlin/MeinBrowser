@@ -1,8 +1,9 @@
 //! Realms (Abschnitt 9.3) und die globale Umgebung (Abschnitt 9.1.1.4).
 //!
-//! Von den Intrinsics gibt es bisher %Object.prototype% und die Prototypen,
-//! die Literale und Zugriffe auf primitive Werte brauchen, noch ohne ihre
-//! Methoden; die übrigen kommen mit den eingebauten Objekten. Das globale
+//! Von den Intrinsics gibt es bisher %Object.prototype%, %Function.prototype%
+//! und die Prototypen, die Literale und Zugriffe auf primitive Werte
+//! brauchen, noch ohne ihre Methoden; die übrigen kommen mit den
+//! eingebauten Objekten. Das globale
 //! Objekt hat die Werteigenschaften aus Abschnitt 19.1, und
 //! [[GlobalThisValue]] ist immer das globale Objekt.
 //!
@@ -27,6 +28,17 @@ use crate::value::Value;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RealmId(usize);
 
+impl RealmId {
+    /// Die Nummer des Realms im Agent, wie sie ein Funktionsobjekt hält.
+    pub(crate) fn index(self) -> usize {
+        self.0
+    }
+
+    pub(crate) fn from_index(index: usize) -> RealmId {
+        RealmId(index)
+    }
+}
+
 /// Eine Bindung des deklarativen Records.
 struct Binding {
     /// Der Wert, die Lücke vor der Initialisierung.
@@ -41,6 +53,10 @@ struct Binding {
 pub enum Intrinsic {
     /// %Object.prototype%
     ObjectPrototype,
+    /// %Function.prototype% (Abschnitt 20.2.3) mit `length` und `name`,
+    /// bis es eingebaute Funktionen gibt ein gewöhnliches Objekt, das sich
+    /// nicht aufrufen lässt.
+    FunctionPrototype,
     /// %Array.prototype% (Abschnitt 23.1.3): ein Array mit der Länge 0.
     ArrayPrototype,
     /// %Boolean.prototype% (Abschnitt 20.3.3), noch ohne [[BooleanData]].
@@ -96,6 +112,10 @@ fn units(text: &str) -> Vec<u16> {
     text.encode_utf16().collect()
 }
 
+fn length_key<'s>(agent: &mut Agent, scope: &'s Scope) -> Completion<PropertyKey<'s>> {
+    Ok(agent.key_from_units(scope, &units("length"))?)
+}
+
 impl Agent {
     /// InitializeHostDefinedRealm (Abschnitt 9.3.1) ohne den
     /// Ausführungskontext: die Intrinsics aus [`Intrinsic`], das globale
@@ -105,12 +125,21 @@ impl Agent {
     pub fn create_realm(&mut self) -> Completion<RealmId> {
         let realm = self.scope(|agent, scope| -> Completion<Realm> {
             let prototype = ordinary_object_create(agent, scope, None)?;
+            let function = ordinary_object_create(agent, scope, Some(prototype))?;
+            let zero = agent.heap().local(scope, Value::int32(0));
+            let empty = agent.heap_mut().alloc_string(scope, &[])?;
+            let length = length_key(agent, scope)?;
+            let name = agent.key_from_units(scope, &units("name"))?;
+            for (key, value) in [(length, zero), (name, empty)] {
+                // Wie bei eingebauten Funktionen (Abschnitte 10.2.8 und
+                // 10.2.9) weder beschreibbar noch aufzählbar.
+                let descriptor = PropertyDescriptor::data(value, false, false, true);
+                define_property_or_throw(agent, scope, function, key, &descriptor)?;
+            }
             let array = array_create(agent, scope, 0, Some(prototype))?;
             let boolean = ordinary_object_create(agent, scope, Some(prototype))?;
             let number = ordinary_object_create(agent, scope, Some(prototype))?;
             let string = ordinary_object_create(agent, scope, Some(prototype))?;
-            let zero = agent.heap().local(scope, Value::int32(0));
-            let length = agent.key_from_units(scope, &units("length"))?;
             let descriptor = PropertyDescriptor::data(zero, false, false, false);
             define_property_or_throw(agent, scope, string, length, &descriptor)?;
             let symbol = ordinary_object_create(agent, scope, Some(prototype))?;
@@ -119,6 +148,7 @@ impl Agent {
             let heap = agent.heap_mut();
             let intrinsics = [
                 (Intrinsic::ObjectPrototype, prototype),
+                (Intrinsic::FunctionPrototype, function),
                 (Intrinsic::ArrayPrototype, array),
                 (Intrinsic::BooleanPrototype, boolean),
                 (Intrinsic::NumberPrototype, number),
@@ -211,6 +241,48 @@ impl Agent {
             return Ok(true);
         }
         object::is_extensible(self, global)
+    }
+
+    /// CanDeclareGlobalFunction (Abschnitt 9.1.1.4.15).
+    pub(crate) fn can_declare_global_function(
+        &mut self,
+        scope: &Scope,
+        realm: RealmId,
+        key: PropertyKey<'_>,
+    ) -> Completion<bool> {
+        let global = self.global_object(scope, realm);
+        let Some(existing) = object::get_own_property(self, scope, global, key)? else {
+            return object::is_extensible(self, global);
+        };
+        if existing.configurable == Some(true) {
+            return Ok(true);
+        }
+        Ok(existing.is_data()
+            && existing.writable == Some(true)
+            && existing.enumerable == Some(true))
+    }
+
+    /// CreateGlobalFunctionBinding (Abschnitt 9.1.1.4.17).
+    pub(crate) fn create_global_function_binding(
+        &mut self,
+        scope: &Scope,
+        realm: RealmId,
+        key: PropertyKey<'_>,
+        function: Local<'_>,
+        deletable: bool,
+    ) -> Completion<()> {
+        let global = self.global_object(scope, realm);
+        let existing = object::get_own_property(self, scope, global, key)?;
+        let descriptor = if existing.is_none_or(|property| property.configurable == Some(true)) {
+            PropertyDescriptor::data(function, true, true, deletable)
+        } else {
+            PropertyDescriptor {
+                value: Some(function),
+                ..PropertyDescriptor::default()
+            }
+        };
+        define_property_or_throw(self, scope, global, key, &descriptor)?;
+        set(self, scope, global, key, function, false)
     }
 
     /// CreateGlobalVarBinding (Abschnitt 9.1.1.4.16).

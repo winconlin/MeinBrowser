@@ -3,9 +3,10 @@
 //! zusammen; hier steht nur, wie die Zellen im Heap liegen.
 
 use super::{
-    Heap, KIND_ARRAY, KIND_OBJECT, KIND_SHAPE, KIND_SLOTS, KIND_SPARSE, KIND_SYMBOL, KIND_WEAK,
-    Local, NONE, OBJECT_REFS, OutOfMemory, Scope, cell_words, header, header_flags, header_kind,
-    header_length, is_object, is_value_cell, packed, packed_high, packed_low, to_usize, with_flags,
+    FUNCTION_FIELDS, Heap, KIND_ARRAY, KIND_FUNCTION, KIND_OBJECT, KIND_SHAPE, KIND_SLOTS,
+    KIND_SPARSE, KIND_SYMBOL, KIND_WEAK, Local, NONE, OBJECT_REFS, OutOfMemory, Scope, cell_words,
+    header, header_flags, header_kind, header_length, is_object, is_value_cell, object_fields,
+    packed, packed_high, packed_low, to_usize, with_flags,
 };
 use crate::value::{Ref, RefKind, Value};
 
@@ -58,6 +59,9 @@ pub(crate) enum ObjectClass {
     Ordinary,
     /// Ein Array (Abschnitt 10.4.2).
     Array,
+    /// Ein ECMAScript-Funktionsobjekt (Abschnitt 10.2) mit
+    /// [`FUNCTION_FIELDS`] internen Feldern.
+    Function,
 }
 
 impl ObjectClass {
@@ -65,6 +69,7 @@ impl ObjectClass {
         match self {
             ObjectClass::Ordinary => KIND_OBJECT,
             ObjectClass::Array => KIND_ARRAY,
+            ObjectClass::Function => KIND_FUNCTION,
         }
     }
 
@@ -72,6 +77,7 @@ impl ObjectClass {
         match code {
             KIND_OBJECT => Some(ObjectClass::Ordinary),
             KIND_ARRAY => Some(ObjectClass::Array),
+            KIND_FUNCTION => Some(ObjectClass::Function),
             _ => None,
         }
     }
@@ -163,7 +169,8 @@ impl Heap {
     // Objekte
 
     /// Legt ein erweiterbares Objekt ohne Elemente an, mit `inline`
-    /// eingebetteten Plätzen für Eigenschaften, alle *undefined*.
+    /// eingebetteten Plätzen für Eigenschaften, alle *undefined*, und bei
+    /// Funktionsobjekten ihren internen Feldern, ebenfalls *undefined*.
     pub(crate) fn alloc_object<'s>(
         &mut self,
         scope: &'s Scope,
@@ -289,20 +296,49 @@ impl Heap {
             .map_or(0, |head| to_usize(header_length(head)))
     }
 
-    pub(crate) fn inline_slot(&self, object: Ref<'_>, index: usize) -> Option<Value<'_>> {
-        if index >= self.inline_count(object) {
+    /// Das Wort, in dem der eingebettete Platz `index` liegt.
+    fn inline_word(&self, object: Ref<'_>, index: usize) -> Option<usize> {
+        let head = self.object_header(object)?;
+        if index >= to_usize(header_length(head)) {
             return None;
         }
-        self.word(object.offset(), index.checked_add(1 + OBJECT_REFS)?)
-            .map(Value::from_bits)
+        index
+            .checked_add(1 + OBJECT_REFS)?
+            .checked_add(object_fields(header_kind(head)))
+    }
+
+    pub(crate) fn inline_slot(&self, object: Ref<'_>, index: usize) -> Option<Value<'_>> {
+        let word = self.inline_word(object, index)?;
+        self.word(object.offset(), word).map(Value::from_bits)
     }
 
     pub(crate) fn set_inline_slot(&self, object: Ref<'_>, index: usize, value: Value<'_>) -> bool {
-        if index >= self.inline_count(object) {
-            return false;
-        }
-        index
-            .checked_add(1 + OBJECT_REFS)
+        self.inline_word(object, index)
+            .is_some_and(|word| self.store(object.offset(), word, value.bits()))
+    }
+
+    /// Das Wort, in dem das interne Feld `index` eines Funktionsobjekts
+    /// liegt.
+    fn function_word(&self, object: Ref<'_>, index: usize) -> Option<usize> {
+        let head = self.object_header(object)?;
+        (header_kind(head) == KIND_FUNCTION && index < FUNCTION_FIELDS)
+            .then_some(1 + OBJECT_REFS + index)
+    }
+
+    /// Ein internes Feld eines Funktionsobjekts, `None` für andere Zellen.
+    pub(crate) fn function_field(&self, object: Ref<'_>, index: usize) -> Option<Value<'_>> {
+        let word = self.function_word(object, index)?;
+        self.word(object.offset(), word).map(Value::from_bits)
+    }
+
+    /// Schreibt ein internes Feld. `false`, wenn es das Feld nicht gibt.
+    pub(crate) fn set_function_field(
+        &self,
+        object: Ref<'_>,
+        index: usize,
+        value: Value<'_>,
+    ) -> bool {
+        self.function_word(object, index)
             .is_some_and(|word| self.store(object.offset(), word, value.bits()))
     }
 }

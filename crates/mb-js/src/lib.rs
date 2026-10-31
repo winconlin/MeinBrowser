@@ -9,6 +9,7 @@ pub mod compare;
 pub mod compiler;
 pub mod conversion;
 pub mod descriptor;
+pub mod function;
 pub mod heap;
 pub mod interpreter;
 pub mod key;

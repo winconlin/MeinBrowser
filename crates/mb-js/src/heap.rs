@@ -10,7 +10,9 @@
 //! Die meisten Zellen bestehen nach dem Kopfwort aus Werten: Felder,
 //! Symbole, Gestalten, schwache Felder und dünn besetzte Elemente. Objekte
 //! beginnen mit zwei Wörtern, die je zwei 32-Bit-Verweise packen (Gestalt
-//! und Prototyp, Elemente und Zusatzfeld), dann folgen ihre Werte. Die
+//! und Prototyp, Elemente und Zusatzfeld), dann folgen ihre Werte:
+//! Funktionsobjekte haben zuerst zwei interne Felder, danach
+//! kommen bei allen Objekten die eingebetteten Plätze. Die
 //! Felder schwacher Zellen halten ihr Ziel nicht am Leben; nach dem Sammeln
 //! zeigen sie auf den neuen Ort oder sind *undefined*.
 //!
@@ -108,6 +110,7 @@ const KIND_WEAK: u64 = 7;
 const KIND_SPARSE: u64 = 8;
 const KIND_OBJECT: u64 = 9;
 const KIND_ARRAY: u64 = 10;
+const KIND_FUNCTION: u64 = 11;
 
 /// Die Kennzeichen stehen in den Bits 8 bis 31 des Kopfworts.
 const FLAG_SHIFT: u32 = 8;
@@ -145,10 +148,24 @@ fn is_value_cell(kind: u64) -> bool {
 }
 
 /// Die Arten der Objektzellen.
-const OBJECT_KINDS: [u64; 2] = [KIND_OBJECT, KIND_ARRAY];
+const OBJECT_KINDS: [u64; 3] = [KIND_OBJECT, KIND_ARRAY, KIND_FUNCTION];
+
+/// Die internen Felder eines Funktionsobjekts, Werte vor den eingebetteten
+/// Plätzen.
+pub(crate) const FUNCTION_FIELDS: usize = 2;
 
 fn is_object(kind: u64) -> bool {
     OBJECT_KINDS.contains(&kind)
+}
+
+/// Wie viele interne Felder ein Objekt dieser Art vor seinen eingebetteten
+/// Plätzen hat.
+fn object_fields(kind: u64) -> usize {
+    if kind == KIND_FUNCTION {
+        FUNCTION_FIELDS
+    } else {
+        0
+    }
 }
 
 fn packed(low: u32, high: u32) -> u64 {
@@ -175,7 +192,9 @@ fn cell_words(header: u64) -> Option<usize> {
         KIND_LATIN1 => length.div_ceil(8),
         KIND_UTF16 => length.div_ceil(4),
         kind if is_value_cell(kind) => length,
-        kind if is_object(kind) => length.checked_add(OBJECT_REFS)?,
+        kind if is_object(kind) => length
+            .checked_add(OBJECT_REFS)?
+            .checked_add(object_fields(kind))?,
         _ => return None,
     };
     body.checked_add(1)
@@ -1031,7 +1050,8 @@ impl Heap {
                 let more = self.word(offset, 2).unwrap_or(0);
                 check_packed(packed_low(more), &[KIND_SLOTS, KIND_SPARSE], "Elemente")?;
                 check_packed(packed_high(more), &[KIND_SLOTS], "Zusatzfeld")?;
-                for slot in 0..count {
+                // Interne Felder und eingebettete Plätze sind Werte.
+                for slot in 0..count.saturating_add(object_fields(kind)) {
                     let bits = self.word(offset, 1 + OBJECT_REFS + slot).unwrap_or(0);
                     check(bits, "Eigenschaft")?;
                 }

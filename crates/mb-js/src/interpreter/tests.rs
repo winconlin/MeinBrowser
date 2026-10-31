@@ -33,7 +33,7 @@ fn run(code: &Code) -> std::result::Result<Option<f64>, Option<ErrorKind>> {
                 Some(Exception::Error(kind)) => Some(kind),
                 _ => None,
             }),
-            Err(Abrupt::OutOfMemory) => Err(None),
+            Err(Abrupt::OutOfMemory | Abrupt::Unsupported(_)) => Err(None),
         }
     });
     assert_eq!(agent.heap_mut().push_registers(0), Some(0));

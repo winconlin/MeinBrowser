@@ -272,9 +272,8 @@ pub(crate) fn instanceof_operator(
     ordinary_has_instance(agent, scope, target, value)
 }
 
-/// OrdinaryHasInstance (Abschnitt 7.3.21). Gebundene Funktionen kommen mit
-/// den Funktionsobjekten; bis dahin ist nichts aufrufbar, und dieser Weg
-/// wird noch nicht erreicht.
+/// OrdinaryHasInstance (Abschnitt 7.3.21). Gebundene Funktionen gibt es
+/// noch nicht.
 fn ordinary_has_instance(
     agent: &mut Agent,
     scope: &Scope,

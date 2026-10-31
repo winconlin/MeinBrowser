@@ -1,22 +1,39 @@
-//! Der Interpreter: eine Schleife, die die Befehle eines Rahmens liest und
-//! mit `match` verzweigt. Bisher gibt es nur den Rahmen eines Scripts.
+//! Der Interpreter: eine Schleife, die die Befehle des obersten Rahmens
+//! liest und mit `match` verzweigt.
 //!
-//! Die Register des Rahmens liegen im Registerstapel des Heaps, der
-//! Akkumulator in einem Handle des Laufs, die Konstanten in einem internen
-//! Feld. Jeder Befehl läuft in einem eigenen Bereich für Handles, damit
-//! Zwischenwerte nicht über die ganze Ausführung anwachsen.
+//! Die Register eines Rahmens liegen im Registerstapel des Heaps, davor ein
+//! Kopfregister mit den Konstanten als Werten in einem internen Feld. Der
+//! Akkumulator ist ein Handle des Laufs, das sich alle seine Rahmen teilen;
+//! darin kommt auch der Rückgabewert eines Aufrufs an. Jeder Befehl läuft
+//! in einem eigenen Bereich für Handles, damit Zwischenwerte nicht über die
+//! ganze Ausführung anwachsen.
+//!
+//! Ruft JavaScript eine Funktion auf, legt der Lauf einen Rahmen auf seinen
+//! eigenen Stapel, ohne Rekursion in Rust. Ruft die Engine eine Funktion
+//! auf, etwa einen Getter, beginnt ein neuer Lauf ([`call_function`]). Wie
+//! viel vom Stapel der Maschine solche verschachtelten Läufe brauchen
+//! dürfen, begrenzt [`crate::agent::STACK_BUDGET`] (RS-8); wie viele Rahmen
+//! es gibt, begrenzt der Registerstapel.
 
 #![forbid(unsafe_code)]
 
-use crate::agent::{Agent, Completion, ErrorKind};
+use std::rc::Rc;
+
+use crate::agent::{Abrupt, Agent, Completion, ErrorKind};
+use crate::ast::Ast;
 use crate::bytecode::{Code, Constant, Instruction, Op};
 use crate::compare::{is_less_than, is_loosely_equal, is_strictly_equal};
+use crate::compiler::{CompileError, compile_function};
 use crate::conversion::{to_boolean, to_number, to_numeric, to_property_key, to_string};
+use crate::descriptor::PropertyDescriptor;
+use crate::function::{Compiled, function_parts, instantiate_function};
 use crate::heap::{Local, Scope};
 use crate::key::{PropertyKey, array_index};
 use crate::number;
 use crate::object::{array_create, ordinary_object_create, set_prototype_of};
-use crate::operations::{create_data_property_or_throw, get, has_property, set};
+use crate::operations::{
+    create_data_property_or_throw, define_property_or_throw, get, has_property, is_callable, set,
+};
 use crate::operators::{BinaryOp, apply_string_or_numeric_binary_operator, type_of};
 use crate::realm::{GlobalReference, Intrinsic, RealmId};
 use crate::reference::{
@@ -25,26 +42,78 @@ use crate::reference::{
 };
 use crate::value::{Kind, Value};
 
+/// Die Register vor dem ersten eines Rahmens: eines mit den Konstanten.
+const HEADER: usize = 1;
+
 /// Was nach einem Befehl geschieht.
 enum Flow {
     Next,
     Jump(usize),
     Return,
+    /// Ruft die Funktion im Platz `callee` des Registerstapels auf, `this`
+    /// liegt dahinter und dann `count` Argumente.
+    Call {
+        callee: usize,
+        count: usize,
+    },
 }
 
+/// Der Bytecode eines Rahmens: geliehen für ein Script, geteilt für
+/// Funktionen.
+enum Source<'c> {
+    Borrowed(&'c Code),
+    Shared(Rc<Code>),
+}
+
+impl Source<'_> {
+    fn code(&self) -> &Code {
+        match self {
+            Source::Borrowed(code) => code,
+            Source::Shared(code) => code,
+        }
+    }
+}
+
+/// Ein Rahmen auf dem Stapel eines Laufs.
+struct Activation<'c> {
+    source: Source<'c>,
+    realm: RealmId,
+    /// Das erste Register des Rahmens im Registerstapel, hinter dem Kopf.
+    base: usize,
+    /// Der nächste Befehl.
+    offset: usize,
+}
+
+/// Wo die Argumente eines Aufrufs liegen.
+enum Arguments<'a, 'l> {
+    /// In Plätzen des Registerstapels.
+    Registers {
+        first: usize,
+        count: usize,
+    },
+    Locals(&'a [Local<'l>]),
+}
+
+/// Der oberste Rahmen, während er einen Befehl ausführt.
 struct Frame<'c, 's> {
     code: &'c Code,
     realm: RealmId,
     /// Das erste Register des Rahmens im Registerstapel.
     base: usize,
-    /// Die Konstanten als Werte.
-    pool: Local<'s>,
     accumulator: Local<'s>,
+}
+
+/// Der Platz `offset` hinter `base` im Registerstapel; einer, den es nicht
+/// gibt, liest *undefined* und schreibt nichts.
+fn place(base: usize, offset: usize) -> usize {
+    base.saturating_add(offset)
 }
 
 /// Führt `code` als Rahmen mit `this` aus und gibt den Akkumulator bei
 /// [`Op::Return`] zurück. Reicht der Registerstapel nicht, wirft das einen
-/// RangeError.
+/// RangeError. Funktionen in den Konstanten braucht [`execute_script`];
+/// ohne sie führen die Tests von Hand gebauten Code aus.
+#[cfg(test)]
 pub(crate) fn execute<'s>(
     agent: &mut Agent,
     scope: &'s Scope,
@@ -52,52 +121,242 @@ pub(crate) fn execute<'s>(
     code: &Code,
     this: Local<'_>,
 ) -> Completion<Local<'s>> {
-    let Some(base) = agent.heap_mut().push_registers(code.register_count()) else {
-        return Err(agent.throw_error(ErrorKind::RangeError));
-    };
-    let result = run(agent, scope, realm, code, base, this);
-    agent.heap_mut().truncate_registers(base);
-    result
+    start(agent, scope, realm, code, None, this)
 }
 
-fn run<'s>(
+/// Dasselbe für den Code eines Scripts aus dem Syntaxbaum `unit`.
+pub(crate) fn execute_script<'s>(
     agent: &mut Agent,
     scope: &'s Scope,
     realm: RealmId,
     code: &Code,
-    base: usize,
+    unit: &Rc<Ast>,
     this: Local<'_>,
 ) -> Completion<Local<'s>> {
-    let pool = constant_pool(agent, scope, code)?;
-    let accumulator = agent.heap().local(scope, Value::UNDEFINED);
+    start(agent, scope, realm, code, Some(unit), this)
+}
+
+fn start<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    realm: RealmId,
+    code: &Code,
+    unit: Option<&Rc<Ast>>,
+    this: Local<'_>,
+) -> Completion<Local<'s>> {
+    agent.enter_interpreter()?;
+    let result = start_frame(agent, scope, realm, code, unit, this);
+    agent.leave_interpreter();
+    result
+}
+
+fn start_frame<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    realm: RealmId,
+    code: &Code,
+    unit: Option<&Rc<Ast>>,
+    this: Local<'_>,
+) -> Completion<Local<'s>> {
+    let pool = constant_pool(agent, scope, code, unit)?;
+    let count = HEADER.checked_add(code.register_count());
+    let Some(header) = count.and_then(|count| agent.heap_mut().push_registers(count)) else {
+        return Err(agent.throw_error(ErrorKind::RangeError));
+    };
+    let base = place(header, HEADER);
     let heap = agent.heap();
+    heap.set_register(header, heap.get(pool));
     heap.set_register(base, heap.get(this));
-    let frame = Frame {
-        code,
+    let accumulator = heap.local(scope, Value::UNDEFINED);
+    let activation = Activation {
+        source: Source::Borrowed(code),
         realm,
         base,
-        pool,
-        accumulator,
+        offset: 0,
     };
-    let mut offset = 0;
+    let result = run(agent, activation, accumulator);
+    agent.heap_mut().truncate_registers(header);
+    result.map(|()| accumulator)
+}
+
+/// [[Call]] eines Funktionsobjekts (Abschnitt 10.2.1), wenn die Engine es
+/// aufruft: ein neuer Lauf, der mit der Rückkehr der Funktion endet.
+pub(crate) fn call_function<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    function: Local<'_>,
+    this: Local<'_>,
+    arguments: &[Local<'_>],
+) -> Completion<Local<'s>> {
+    agent.enter_interpreter()?;
+    let result = call_frame(agent, scope, function, this, arguments);
+    agent.leave_interpreter();
+    result
+}
+
+fn call_frame<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    function: Local<'_>,
+    this: Local<'_>,
+    arguments: &[Local<'_>],
+) -> Completion<Local<'s>> {
+    let activation = enter_function(agent, scope, function, this, Arguments::Locals(arguments))?;
+    let header = activation.base.saturating_sub(HEADER);
+    let accumulator = agent.heap().local(scope, Value::UNDEFINED);
+    let result = run(agent, activation, accumulator);
+    agent.heap_mut().truncate_registers(header);
+    result.map(|()| accumulator)
+}
+
+/// Führt Befehle aus, bis `activation` zurückkehrt. Der Rückgabewert steht
+/// dann im Akkumulator. Die Register der Rahmen räumt bei einer abrupten
+/// Rückkehr der Aufrufer ab.
+fn run(agent: &mut Agent, activation: Activation<'_>, accumulator: Local<'_>) -> Completion<()> {
+    let mut stack = vec![activation];
     loop {
-        let Some(instruction) = code.decode(offset) else {
+        let Some(top) = stack.last_mut() else {
+            return Ok(());
+        };
+        let code = top.source.code();
+        let Some(instruction) = code.decode(top.offset) else {
             // Kann nicht vorkommen: Der Übersetzer schreibt nur gültige
             // Befehle und endet mit Return.
             return Err(agent.throw_error(ErrorKind::RangeError));
         };
-        let flow = agent.scope(|agent, inner| frame.step(agent, inner, &instruction))?;
-        offset = match flow {
-            Flow::Next => instruction.end,
-            Flow::Jump(target) => target,
-            Flow::Return => return Ok(accumulator),
+        let frame = Frame {
+            code,
+            realm: top.realm,
+            base: top.base,
+            accumulator,
         };
+        let flow = agent.scope(|agent, inner| frame.step(agent, inner, &instruction))?;
+        match flow {
+            Flow::Next => top.offset = instruction.end,
+            Flow::Jump(target) => top.offset = target,
+            Flow::Return => {
+                let header = top.base.saturating_sub(HEADER);
+                stack.pop();
+                if stack.is_empty() {
+                    return Ok(());
+                }
+                agent.heap_mut().truncate_registers(header);
+            }
+            Flow::Call { callee, count } => {
+                top.offset = instruction.end;
+                let next = agent.scope(|agent, inner| {
+                    let heap = agent.heap();
+                    let function = heap.local(inner, heap.register(callee));
+                    let this = heap.local(inner, heap.register(place(callee, 1)));
+                    let first = place(callee, 2);
+                    let arguments = Arguments::Registers { first, count };
+                    enter_function(agent, inner, function, this, arguments)
+                })?;
+                stack.push(next);
+            }
+        }
     }
 }
 
+/// PrepareForOrdinaryCall, OrdinaryCallBindThis und die Parameter aus
+/// FunctionDeclarationInstantiation (Abschnitte 10.2.1.1, 10.2.1.2 und
+/// 10.2.11): ein neuer Rahmen für das Funktionsobjekt `function`. Fehlende
+/// Argumente bleiben *undefined*, überzählige fallen weg.
+///
+/// Abweichung: Im nicht strikten Modus bleibt ein primitiver Wert als
+/// `this` primitiv, denn Wrapper-Objekte gibt es noch nicht.
+fn enter_function(
+    agent: &mut Agent,
+    scope: &Scope,
+    function: Local<'_>,
+    this: Local<'_>,
+    arguments: Arguments<'_, '_>,
+) -> Completion<Activation<'static>> {
+    let Some((shared, realm)) = function_parts(agent.heap(), agent.heap().get(function)) else {
+        return Err(agent.throw_error(ErrorKind::TypeError));
+    };
+    let (code, pool) = compiled(agent, scope, shared)?;
+    let count = HEADER.checked_add(code.register_count());
+    let Some(header) = count.and_then(|count| agent.heap_mut().push_registers(count)) else {
+        return Err(agent.throw_error(ErrorKind::RangeError));
+    };
+    let value = agent.heap().get(this);
+    let this = if !code.is_strict() && (value.is_undefined() || value.is_null()) {
+        agent.global_object(scope, realm)
+    } else {
+        this
+    };
+    let base = place(header, HEADER);
+    let heap = agent.heap();
+    heap.set_register(header, heap.get(pool));
+    heap.set_register(base, heap.get(this));
+    heap.set_register(place(base, 1), heap.get(function));
+    let parameters = code.parameter_count();
+    let first_parameter = place(base, 2);
+    match arguments {
+        Arguments::Registers { first, count } => {
+            for index in 0..count.min(parameters) {
+                let value = heap.register(place(first, index));
+                heap.set_register(place(first_parameter, index), value);
+            }
+        }
+        Arguments::Locals(locals) => {
+            for (index, &local) in locals.iter().take(parameters).enumerate() {
+                heap.set_register(place(first_parameter, index), heap.get(local));
+            }
+        }
+    }
+    Ok(Activation {
+        source: Source::Shared(code),
+        realm,
+        base,
+        offset: 0,
+    })
+}
+
+/// Bytecode und Konstanten der gemeinsamen Daten `shared`, beim ersten
+/// Aufruf übersetzt. Was der Übersetzer nicht kann, endet mit
+/// [`Abrupt::Unsupported`].
+fn compiled<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    shared: usize,
+) -> Completion<(Rc<Code>, Local<'s>)> {
+    let Some(entry) = agent.functions.get(shared) else {
+        return Err(agent.throw_error(ErrorKind::TypeError));
+    };
+    if let Some(compiled) = &entry.compiled {
+        let heap = agent.heap();
+        let pool = heap.local(scope, heap.get_persistent(&compiled.pool));
+        return Ok((Rc::clone(&compiled.code), pool));
+    }
+    let unit = Rc::clone(&entry.unit);
+    let code = match compile_function(&unit, &entry.template) {
+        Ok(code) => Rc::new(code),
+        Err(CompileError::Unsupported(position)) => return Err(Abrupt::Unsupported(position)),
+        Err(CompileError::TooLarge) => return Err(agent.throw_error(ErrorKind::RangeError)),
+    };
+    let pool = constant_pool(agent, scope, &code, Some(&unit))?;
+    let handle = agent.heap_mut().persist(pool);
+    if let Some(entry) = agent.functions.get_mut(shared) {
+        entry.compiled = Some(Compiled {
+            code: Rc::clone(&code),
+            pool: handle,
+        });
+    }
+    Ok((code, pool))
+}
+
 /// Legt die Konstanten im Heap an: Zahlen als Werte, Zeichenketten als
-/// neue Zeichenketten, Namen als Atome.
-fn constant_pool<'s>(agent: &mut Agent, scope: &'s Scope, code: &Code) -> Completion<Local<'s>> {
+/// neue Zeichenketten, Namen als Atome und Funktionen als neue gemeinsame
+/// Daten mit ihrer Nummer als Wert. Funktionen braucht es den Syntaxbaum
+/// `unit`, aus dem der Code stammt.
+fn constant_pool<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    code: &Code,
+    unit: Option<&Rc<Ast>>,
+) -> Completion<Local<'s>> {
     let pool = agent
         .heap_mut()
         .alloc_slots(scope, code.constants().len())?;
@@ -107,6 +366,13 @@ fn constant_pool<'s>(agent: &mut Agent, scope: &'s Scope, code: &Code) -> Comple
                 Constant::Number(number) => agent.heap().local(inner, Value::number(*number)),
                 Constant::String(units) => agent.heap_mut().alloc_string(inner, units)?,
                 Constant::Name(units) => agent.atom(inner, units)?,
+                Constant::Function(template) => {
+                    let Some(unit) = unit else {
+                        return Err(agent.throw_error(ErrorKind::TypeError));
+                    };
+                    let shared = agent.add_shared_function(Rc::clone(unit), template.clone())?;
+                    agent.heap().local(inner, Value::int32(shared))
+                }
             };
             let heap = agent.heap();
             if let Kind::Internal(cell) = heap.get(pool).kind() {
@@ -188,10 +454,11 @@ impl<'c> Frame<'c, '_> {
         agent.heap().set(self.accumulator, value);
     }
 
-    /// Die Konstante als Wert.
+    /// Die Konstante als Wert, aus dem Kopf des Rahmens.
     fn constant<'s>(&self, agent: &Agent, scope: &'s Scope, operand: i64) -> Local<'s> {
         let heap = agent.heap();
-        let value = match (heap.get(self.pool).kind(), usize::try_from(operand)) {
+        let pool = heap.register(self.base.checked_sub(HEADER).unwrap_or(usize::MAX));
+        let value = match (pool.kind(), usize::try_from(operand)) {
             (Kind::Internal(cell), Ok(index)) => heap.slot(cell, index),
             _ => None,
         };
@@ -270,6 +537,25 @@ impl<'c> Frame<'c, '_> {
             Op::CopyDataProperties => {
                 let object = self.register(agent, scope, first);
                 copy_data_properties(agent, scope, object, self.accumulator)?;
+            }
+            Op::DefineGetter | Op::DefineSetter => {
+                // MethodDefinitionEvaluation (Abschnitt 15.4.4): Die
+                // Beschreibung hat nur [[Get]] oder [[Set]], ein vorhandener
+                // Accessor behält das andere.
+                let object = self.register(agent, scope, first);
+                let key = self.register(agent, scope, second);
+                let key = to_property_key(agent, scope, key)?;
+                let mut descriptor = PropertyDescriptor {
+                    enumerable: Some(true),
+                    configurable: Some(true),
+                    ..PropertyDescriptor::default()
+                };
+                if instruction.op == Op::DefineGetter {
+                    descriptor.get = Some(self.accumulator);
+                } else {
+                    descriptor.set = Some(self.accumulator);
+                }
+                define_property_or_throw(agent, scope, object, key, &descriptor)?;
             }
             Op::ArrayPush | Op::ArrayHole => {
                 // Im Literal ist die Länge stets der nächste Index
@@ -571,6 +857,8 @@ impl<'c> Frame<'c, '_> {
             | Op::DefineKeyed
             | Op::SetPrototypeLiteral
             | Op::CopyDataProperties
+            | Op::DefineGetter
+            | Op::DefineSetter
             | Op::ArrayPush
             | Op::ArrayHole
             | Op::ToPropertyKey
@@ -583,6 +871,32 @@ impl<'c> Frame<'c, '_> {
             | Op::DeleteKeyed
             | Op::TestIn
             | Op::TestInstanceOf => self.property(agent, scope, instruction)?,
+            Op::CreateClosure | Op::CreateClosureKeyed => {
+                let shared = self.constant(agent, scope, first);
+                // Die Konstante ist die Nummer der gemeinsamen Daten.
+                let shared = agent.heap().get(shared).as_int32().unwrap_or(-1);
+                let name = if instruction.op == Op::CreateClosure {
+                    self.name(agent, scope, second).1
+                } else {
+                    let key = self.register(agent, scope, second);
+                    to_property_key(agent, scope, key)?
+                };
+                let function = instantiate_function(agent, scope, self.realm, shared, name)?;
+                self.set_accumulator(agent, function);
+            }
+            Op::Call => {
+                // EvaluateCall (Abschnitt 13.3.6.2): IsCallable erst nach
+                // den Argumenten.
+                let callee = self.register(agent, scope, first);
+                if !is_callable(agent.heap(), agent.heap().get(callee)) {
+                    return Err(agent.throw_error(ErrorKind::TypeError));
+                }
+                let count = usize::try_from(second).unwrap_or(0);
+                return Ok(Flow::Call {
+                    callee: self.slot(first),
+                    count,
+                });
+            }
             Op::Throw => return Err(agent.throw_value(self.accumulator)),
             Op::Return => return Ok(Flow::Return),
             // Präfixe liest `Code::decode` mit dem Befehl danach.

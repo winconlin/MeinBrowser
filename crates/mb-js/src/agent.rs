@@ -1,21 +1,38 @@
 //! Der Agent (Abschnitt 9.6): Heap mit dem Registerstapel, Atome, die
-//! Wurzel aller Gestalten, die bekannten Symbole, die Realms und die
-//! Ausnahme, die gerade geworfen wird. Warteschlange der Jobs und
-//! Symbolregister kommen mit den Schritten, die sie brauchen.
+//! Wurzel aller Gestalten, die bekannten Symbole, die Realms, die
+//! gemeinsamen Daten der Funktionen und die Ausnahme, die gerade geworfen
+//! wird. Warteschlange der Jobs und Symbolregister kommen mit den
+//! Schritten, die sie brauchen.
 //!
 //! Atome sind die Zeichenketten, die als Eigenschaftsschlüssel dienen. Zu
 //! jedem Inhalt gibt es höchstens eines, also vergleicht man Schlüssel über
 //! ihren Abstand. Atome bleiben vorerst, solange der Agent lebt.
+//!
+//! Aufrufe zwischen JavaScript-Funktionen brauchen keinen Rust-Stapel. Ruft
+//! aber Rust-Code eine Funktion auf, etwa einen Getter, beginnt ein neuer
+//! Lauf des Interpreters, und solche Läufe schachteln sich auf dem
+//! Rust-Stapel. Der Agent merkt sich, wo der Stapel beim äußersten Lauf
+//! stand, und lässt verschachtelte Läufe nur [`STACK_BUDGET`] Bytes tiefer
+//! beginnen; danach wirft ein weiterer einen RangeError (RS-8).
 
 #![forbid(unsafe_code)]
 
 use std::collections::BTreeMap;
 
+use crate::function::SharedFunction;
 use crate::heap::{Heap, Local, Options, OutOfMemory, Persistent, Scope};
 use crate::key::WellKnownSymbol;
 use crate::object::shape;
 use crate::realm::Realm;
 use crate::value::{Kind, Value};
+
+/// So viele Bytes Rust-Stapel dürfen verschachtelte Läufe des Interpreters
+/// unter dem äußersten belegen. Ein Faden mit 1 MiB Stapel behält dahinter
+/// Platz für den letzten Lauf und das Übersetzen einer Funktion bei ihrem
+/// ersten Aufruf; das prüfen die Tests im Debug-Build. Gemessen reichte der
+/// Platz dort bis zu einem Budget von 640 KiB, ein Lauf braucht etwa
+/// 13 KiB. Der Rest bleibt für den Code, der das Script startet.
+pub const STACK_BUDGET: usize = 384 * 1024;
 
 /// Eine abrupte Beendigung, die Rust-Code mit `?` nach oben reicht.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -25,6 +42,12 @@ pub enum Abrupt {
     Throw,
     /// Das Speicherbudget ist verbraucht. Kein Skript kann das abfangen.
     OutOfMemory,
+    /// Der Übersetzer kann eine Funktion noch nicht übersetzen, die eben
+    /// das erste Mal aufgerufen wird; die Zahl ist die Lage in ihrem
+    /// Quelltext (in Codeeinheiten). Funktionen werden erst bei ihrem
+    /// ersten Aufruf übersetzt, darum zeigt sich das zur Laufzeit. Kein
+    /// Skript kann das abfangen.
+    Unsupported(usize),
 }
 
 impl From<OutOfMemory> for Abrupt {
@@ -68,7 +91,13 @@ pub struct Agent {
     /// Die bekannten Symbole, die alle Realms teilen.
     symbols: BTreeMap<WellKnownSymbol, Persistent>,
     pub(crate) realms: Vec<Realm>,
+    /// Die gemeinsamen Daten der Funktionen, nach ihrer Nummer.
+    pub(crate) functions: Vec<SharedFunction>,
     exception: Option<Pending>,
+    /// Wie viele Läufe des Interpreters gerade ineinander laufen.
+    runs: usize,
+    /// Die Lage des Rust-Stapels beim äußersten Lauf.
+    stack_start: usize,
 }
 
 impl Agent {
@@ -87,7 +116,10 @@ impl Agent {
             empty_shape,
             symbols: BTreeMap::new(),
             realms: Vec::new(),
+            functions: Vec::new(),
             exception: None,
+            runs: 0,
+            stack_start: 0,
         };
         agent.scope(|agent, scope| -> Result<(), OutOfMemory> {
             for symbol in WellKnownSymbol::ALL {
@@ -176,6 +208,28 @@ impl Agent {
         let handle = self.heap.persist(string);
         self.atoms.insert(units, handle);
         string
+    }
+
+    // Läufe des Interpreters
+
+    /// Beginnt einen Lauf des Interpreters. Liegt er mehr als
+    /// [`STACK_BUDGET`] Bytes unter dem äußersten, wirft das einen
+    /// RangeError. Jeder Lauf, der beginnt, endet mit
+    /// [`Agent::leave_interpreter`], auch abrupt.
+    pub(crate) fn enter_interpreter(&mut self) -> Completion<()> {
+        let marker = 0u8;
+        let here = std::hint::black_box(std::ptr::from_ref(&marker)).addr();
+        if self.runs == 0 {
+            self.stack_start = here;
+        } else if here.abs_diff(self.stack_start) > STACK_BUDGET {
+            return Err(self.throw_error(ErrorKind::RangeError));
+        }
+        self.runs = self.runs.saturating_add(1);
+        Ok(())
+    }
+
+    pub(crate) fn leave_interpreter(&mut self) {
+        self.runs = self.runs.saturating_sub(1);
     }
 
     // Ausnahmen

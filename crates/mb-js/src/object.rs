@@ -5,8 +5,10 @@
 //! benannten Eigenschaften, Array-Indizes liegen als Elemente daneben.
 //!
 //! Jede interne Methode ist eine Funktion, die nach der Art des Objekts
-//! verzweigt. Bisher gibt es gewöhnliche Objekte und Arrays, die nur
-//! [[DefineOwnProperty]] anders umsetzen (`array`). Alle Arten, die
+//! verzweigt. Bisher gibt es gewöhnliche Objekte, Funktionsobjekte, die
+//! dieselben internen Methoden haben und dazu [[Call]] (`function`), und
+//! Arrays, die nur [[DefineOwnProperty]] anders umsetzen (`array`). Alle
+//! Arten, die
 //! [[GetOwnProperty]], [[GetPrototypeOf]], [[Get]], [[Set]] und
 //! [[HasProperty]] gewöhnlich umsetzen, durchlaufen die Prototypkette in
 //! einer Schleife statt rekursiv (RS-8). Kommt eine Art mit eigenen
@@ -29,8 +31,9 @@ use storage::{ACCESSOR, CONFIGURABLE, ENUMERABLE, WRITABLE, object_of};
 
 pub use array::array_create;
 
-/// Eingebettete Plätze eines gewöhnlichen Objekts.
-const INLINE: usize = 4;
+/// Eingebettete Plätze eines gewöhnlichen Objekts und eines
+/// Funktionsobjekts.
+pub(crate) const INLINE: usize = 4;
 
 /// Ein Schlüssel, wie er im Heap steht: Index oder Atom beziehungsweise
 /// Symbol.
@@ -115,7 +118,7 @@ pub fn get_prototype_of<'s>(
     object: Local<'_>,
 ) -> Completion<Option<Local<'s>>> {
     match class(agent, object)? {
-        ObjectClass::Ordinary | ObjectClass::Array => {
+        ObjectClass::Ordinary | ObjectClass::Array | ObjectClass::Function => {
             let heap = agent.heap();
             let prototype =
                 object_of(heap, object).and_then(|object| heap.object_prototype(object));
@@ -131,7 +134,7 @@ pub fn set_prototype_of(
     prototype: Option<Local<'_>>,
 ) -> Completion<bool> {
     match class(agent, object)? {
-        ObjectClass::Ordinary | ObjectClass::Array => {}
+        ObjectClass::Ordinary | ObjectClass::Array | ObjectClass::Function => {}
     }
     if let Some(prototype) = prototype {
         // Der Prototyp muss ein Objekt sein.
@@ -165,7 +168,7 @@ pub fn set_prototype_of(
 /// [[IsExtensible]] (Abschnitt 10.1.3).
 pub fn is_extensible(agent: &mut Agent, object: Local<'_>) -> Completion<bool> {
     match class(agent, object)? {
-        ObjectClass::Ordinary | ObjectClass::Array => {
+        ObjectClass::Ordinary | ObjectClass::Array | ObjectClass::Function => {
             let heap = agent.heap();
             Ok(object_of(heap, object).is_some_and(|object| heap.object_extensible(object)))
         }
@@ -175,7 +178,7 @@ pub fn is_extensible(agent: &mut Agent, object: Local<'_>) -> Completion<bool> {
 /// [[PreventExtensions]] (Abschnitt 10.1.4).
 pub fn prevent_extensions(agent: &mut Agent, object: Local<'_>) -> Completion<bool> {
     match class(agent, object)? {
-        ObjectClass::Ordinary | ObjectClass::Array => {
+        ObjectClass::Ordinary | ObjectClass::Array | ObjectClass::Function => {
             let heap = agent.heap();
             if let Some(object) = object_of(heap, object) {
                 heap.prevent_object_extensions(object);
@@ -193,7 +196,7 @@ pub fn get_own_property<'s>(
     key: PropertyKey<'_>,
 ) -> Completion<Option<PropertyDescriptor<'s>>> {
     match class(agent, object)? {
-        ObjectClass::Ordinary | ObjectClass::Array => {
+        ObjectClass::Ordinary | ObjectClass::Array | ObjectClass::Function => {
             Ok(ordinary_get_own_property(agent.heap(), scope, object, key))
         }
     }
@@ -238,7 +241,7 @@ pub fn define_own_property(
     descriptor: &PropertyDescriptor<'_>,
 ) -> Completion<bool> {
     match class(agent, object)? {
-        ObjectClass::Ordinary => {
+        ObjectClass::Ordinary | ObjectClass::Function => {
             ordinary_define_own_property(agent, scope, object, key, descriptor)
         }
         ObjectClass::Array => array::define_own_property(agent, scope, object, key, descriptor),
@@ -695,7 +698,7 @@ pub fn own_property_keys<'s>(
     object: Local<'_>,
 ) -> Completion<Vec<PropertyKey<'s>>> {
     match class(agent, object)? {
-        ObjectClass::Ordinary | ObjectClass::Array => {}
+        ObjectClass::Ordinary | ObjectClass::Array | ObjectClass::Function => {}
     }
     let heap = agent.heap();
     let Some(object) = object_of(heap, object) else {
