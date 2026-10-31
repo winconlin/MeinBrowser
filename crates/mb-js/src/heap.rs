@@ -23,7 +23,8 @@
 //! Schreibbarriere ansetzt.
 //!
 //! Wurzeln sind die Handles: [`Local`] in einem Bereich ([`Heap::scope`]) und
-//! [`Persistent`] für langlebige Verweise. Jeder offene Bereich hat eine
+//! [`Persistent`] für langlebige Verweise, dazu der Registerstapel des
+//! Interpreters. Jeder offene Bereich hat eine
 //! eigene Liste von Handles. Ein Handle gehört dem Bereich, für den es
 //! angelegt wurde, auch wenn das in einem inneren Bereich geschieht, und
 //! endet erst mit ihm. Gelesene Werte ([`Value`]) leihen
@@ -91,6 +92,8 @@ const MAX_PAGES: usize = 1 << 14;
 pub const MAX_LIMIT: usize = 1 << 30;
 /// Ab dieser Menge wird frühestens gesammelt.
 const MIN_TRIGGER: usize = 4 << 20;
+/// Höchstens so viele Register hat der Registerstapel, zusammen 8 MiB.
+pub const MAX_REGISTERS: usize = 1 << 20;
 
 /// Die Nummer des nächsten Heaps. Mit 64 Bit läuft sie praktisch nie über.
 static NEXT_HEAP: AtomicU64 = AtomicU64::new(0);
@@ -275,6 +278,9 @@ pub struct Heap {
     roots: RefCell<Vec<Vec<u64>>>,
     persistent: Vec<u64>,
     free_persistent: Vec<usize>,
+    /// Der Registerstapel des Interpreters: die Register aller Rahmen
+    /// hintereinander, der jüngste Rahmen zuletzt.
+    registers: RefCell<Vec<u64>>,
     /// Bytes in Zellen.
     used: usize,
     /// Ab hier wird vor der nächsten Anforderung gesammelt.
@@ -310,6 +316,7 @@ impl Heap {
             roots: RefCell::new(Vec::new()),
             persistent: Vec::new(),
             free_persistent: Vec::new(),
+            registers: RefCell::new(Vec::new()),
             used: 0,
             trigger: MIN_TRIGGER.min(options.limit),
             options,
@@ -448,6 +455,51 @@ impl Heap {
         if let Some(slot) = self.persistent.get_mut(handle.index) {
             *slot = Value::UNDEFINED.bits();
             self.free_persistent.push(handle.index);
+        }
+    }
+
+    /// Ersetzt den Wert von `handle` durch den von `local`.
+    ///
+    /// # Panics
+    ///
+    /// Wenn eines der Handles zu einem anderen Heap gehört.
+    pub fn set_persistent(&mut self, handle: &Persistent, local: Local<'_>) {
+        self.check_owner(handle.heap, "dauerhaftes Handle");
+        let bits = self.get(local).bits();
+        if let Some(slot) = self.persistent.get_mut(handle.index) {
+            *slot = bits;
+        }
+    }
+
+    // Register
+
+    /// Legt `count` Register mit *undefined* oben auf den Stapel und gibt
+    /// die Nummer des ersten zurück; `None`, wenn der Stapel dann mehr als
+    /// [`MAX_REGISTERS`] hätte.
+    pub(crate) fn push_registers(&mut self, count: usize) -> Option<usize> {
+        let registers = self.registers.get_mut();
+        let base = registers.len();
+        let end = base
+            .checked_add(count)
+            .filter(|&end| end <= MAX_REGISTERS)?;
+        registers.resize(end, Value::UNDEFINED.bits());
+        Some(base)
+    }
+
+    /// Nimmt alle Register ab `base` vom Stapel.
+    pub(crate) fn truncate_registers(&mut self, base: usize) {
+        self.registers.get_mut().truncate(base);
+    }
+
+    /// Der Wert im Register `index`, *undefined* hinter dem Stapel.
+    pub(crate) fn register(&self, index: usize) -> Value<'_> {
+        let bits = self.registers.borrow().get(index).copied();
+        Value::from_bits(bits.unwrap_or(Value::UNDEFINED.bits()))
+    }
+
+    pub(crate) fn set_register(&self, index: usize, value: Value<'_>) {
+        if let Some(slot) = self.registers.borrow_mut().get_mut(index) {
+            *slot = value.bits();
         }
     }
 
@@ -719,6 +771,11 @@ impl Heap {
             *slot = self.evacuate(*slot);
         }
         self.persistent = persistent;
+        let mut registers = std::mem::take(self.registers.get_mut());
+        for slot in &mut registers {
+            *slot = self.evacuate(*slot);
+        }
+        *self.registers.get_mut() = registers;
 
         self.scan();
         self.clear_weak();
@@ -952,6 +1009,9 @@ impl Heap {
         }
         for &bits in &self.persistent {
             check(bits, "dauerhaftes Handle")?;
+        }
+        for &bits in self.registers.borrow().iter() {
+            check(bits, "Register")?;
         }
         for (&offset, &kind) in &starts {
             let count = self

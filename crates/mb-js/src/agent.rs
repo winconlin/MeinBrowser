@@ -1,7 +1,7 @@
-//! Der Agent (Abschnitt 9.6): Heap, Atome, die Wurzel aller Gestalten, die
-//! bekannten Symbole und die Ausnahme, die gerade geworfen wird.
-//! Registerstapel, Warteschlange der Jobs und Symbolregister kommen mit den
-//! Schritten, die sie brauchen.
+//! Der Agent (Abschnitt 9.6): Heap mit dem Registerstapel, Atome, die
+//! Wurzel aller Gestalten, die bekannten Symbole, die Realms und die
+//! Ausnahme, die gerade geworfen wird. Warteschlange der Jobs und
+//! Symbolregister kommen mit den Schritten, die sie brauchen.
 //!
 //! Atome sind die Zeichenketten, die als Eigenschaftsschlüssel dienen. Zu
 //! jedem Inhalt gibt es höchstens eines, also vergleicht man Schlüssel über
@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 use crate::heap::{Heap, Local, Options, OutOfMemory, Persistent, Scope};
 use crate::key::WellKnownSymbol;
 use crate::object::shape;
+use crate::realm::Realm;
 use crate::value::{Kind, Value};
 
 /// Eine abrupte Beendigung, die Rust-Code mit `?` nach oben reicht.
@@ -39,6 +40,8 @@ pub type Completion<T> = Result<T, Abrupt>;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ErrorKind {
     RangeError,
+    ReferenceError,
+    SyntaxError,
     TypeError,
 }
 
@@ -64,6 +67,7 @@ pub struct Agent {
     empty_shape: Persistent,
     /// Die bekannten Symbole, die alle Realms teilen.
     symbols: BTreeMap<WellKnownSymbol, Persistent>,
+    pub(crate) realms: Vec<Realm>,
     exception: Option<Pending>,
 }
 
@@ -82,6 +86,7 @@ impl Agent {
             atoms: BTreeMap::new(),
             empty_shape,
             symbols: BTreeMap::new(),
+            realms: Vec::new(),
             exception: None,
         };
         agent.scope(|agent, scope| -> Result<(), OutOfMemory> {
@@ -103,6 +108,12 @@ impl Agent {
 
     pub fn heap_mut(&mut self) -> &mut Heap {
         &mut self.heap
+    }
+
+    /// Die Realms und zugleich der Heap, in dem die Werte ihrer Bindungen
+    /// liegen.
+    pub(crate) fn realms_and_heap(&mut self) -> (&[Realm], &mut Heap) {
+        (&self.realms, &mut self.heap)
     }
 
     /// Führt `f` in einem neuen Bereich für Handles aus, wie
