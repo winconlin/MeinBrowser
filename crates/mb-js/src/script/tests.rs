@@ -926,6 +926,19 @@ fn closures_and_arguments_are_not_yet_supported() {
         ("function f() { return arguments; } f()", "Unsupported(22)"),
         ("function f() { var arguments; } f()", "Unsupported(0)"),
         ("function f(arguments) { return arguments; } f(3)", "3"),
+        // `arguments` verdeckt den Namen eines Funktionsausdrucks.
+        (
+            "var f = function arguments() { return arguments === f; }; f()",
+            "Unsupported(38)",
+        ),
+        (
+            "var f = function arguments(arguments) { return arguments; }; f(4)",
+            "4",
+        ),
+        (
+            "var f = function arguments() { let arguments = 5; return arguments; }; f()",
+            "5",
+        ),
         ("function f(a = 1) {} f()", "Unsupported(0)"),
         ("function f() { return () => 1; } f()", "Unsupported(22)"),
         (

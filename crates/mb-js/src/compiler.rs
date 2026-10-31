@@ -314,14 +314,6 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
     let mut compiler = Compiler::new(ast, function.strict, Rc::clone(&template.outer));
     compiler.allocate()?;
     let callee = compiler.allocate()?;
-    if template.binds_name
-        && let Some(name) = function.name
-    {
-        let mut scope = BlockScope::default();
-        let binding = LocalBinding::initialized(callee, BindingKind::FunctionName);
-        scope.bindings.insert(name, binding);
-        compiler.scopes.push(scope);
-    }
     let mut scope = BlockScope::default();
     let parameters = ast.list(function.parameters);
     for &parameter in parameters {
@@ -371,6 +363,17 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
             let register = compiler.allocate()?;
             entry.insert(LocalBinding::initialized(register, BindingKind::Mutable));
         }
+    }
+    // Der Name eines Funktionsausdrucks liegt außen (funcEnv, Abschnitt
+    // 15.2.5); das Objekt `arguments` verdeckt ihn.
+    if template.binds_name
+        && let Some(name) = function.name
+        && !(compiler.arguments && compiler.is_arguments(name))
+    {
+        let mut outer = BlockScope::default();
+        let binding = LocalBinding::initialized(callee, BindingKind::FunctionName);
+        outer.bindings.insert(name, binding);
+        compiler.scopes.push(outer);
     }
     compiler.scopes.push(scope);
     compiler.enter_block(&items, false)?;
