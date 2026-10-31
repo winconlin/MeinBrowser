@@ -57,6 +57,12 @@ def runtime_seeds():
     def objects(name, commands):
         write("js-runtime", name, bytes([1]) + bytes(value for command in commands for value in command))
 
+    def arrays(name, commands):
+        write("js-runtime", name, bytes([2]) + bytes(value for command in commands for value in command))
+
+    def conversions(name, commands):
+        write("js-runtime", name, bytes([3]) + bytes(value for command in commands for value in command))
+
     heap("heap-cycle", [
         (1, 0, 2, 0), (1, 1, 1, 0), (2, 0, 0, 1), (2, 1, 0, 0),
         (4, 2, 0, 0), (5, 0, 0, 0), (5, 1, 0, 0), (6, 0, 0, 0),
@@ -104,6 +110,48 @@ def runtime_seeds():
         (62, 0, 13, 2), (62, 0, 14, 3), (62, 0, 15, 1),
         (3, 3, 0, 0), (5, 0, 0, 0), (1, 3, 14, 255),
         (2, 0, 15, 0), (62, 0, 15, 255), (5, 0, 0, 0),
+    ])
+    arrays("array-sparse-keys", [
+        (56, 0, 6, 12), (56, 0, 7, 13), (56, 0, 8, 14),
+        (56, 0, 9, 15), (2, 0, 6, 0), (6, 0, 0, 0),
+        (8, 1, 10, 9), (56, 1, 6, 42), (3, 1, 0, 8),
+        (1, 1, 7, 43), (6, 0, 0, 0),
+    ])
+    arrays("array-partial-shrink", [
+        (56, 0, 0, 1), (24, 0, 2, 2), (56, 0, 3, 3),
+        (56, 0, 4, 4), (19, 0, 0, 1), (1, 0, 1, 5),
+        (1, 0, 3, 6), (2, 0, 2, 0), (6, 0, 0, 0),
+    ])
+    arrays("array-error-priority", [(3, 0, 0, 2), (4, 0, 0, 0)] + [
+        command for payload in [11, 12, 13, 14, 15, 20, 21, 22, 23, 25, 28]
+        for command in [(56, 0, 10, payload), (1, 0, 10, payload)]
+    ] + [(11, 0, 0, 2), (2, 0, 10, 0), (6, 0, 0, 0)])
+    arrays("array-length-inputs", [(3, 0, 0, payload) for payload in range(29)])
+    arrays("array-nonextensible", [
+        (56, 0, 0, 1), (5, 0, 0, 0), (3, 0, 0, 7),
+        (1, 0, 0, 2), (1, 0, 1, 3), (1, 0, 9, 4),
+        (4, 0, 0, 0), (3, 0, 0, 7), (6, 0, 0, 0),
+    ])
+    conversions("conversion-numbers", [(1, index, 0, 0) for index in range(25)] + [
+        (kind, 255, 0, 255) for kind in range(7)
+    ])
+    conversions("conversion-exact-strings", [
+        command for style in range(6)
+        for command in [(7, 1, 128, style), (7, 0, 0, style)]
+    ] + [(8, 255, 255, radix) for radix in range(3)] + [
+        command for exponent in range(7)
+        for command in [(11, 255, 127, exponent), (11, 1, 128, exponent)]
+    ])
+    conversions("conversion-errors", [(9, 0, index, 0) for index in range(18)] + [
+        (9, 1, 0, 0), (9, 2, 0, 0), (6, 0, 0, 0), (6, 255, 255, 255),
+    ])
+    conversions("conversion-whitespace", [(10, index, 0, 0) for index in range(10)] + [
+        (199, 0, 0, 2), (200, 255, 255, 2), (201, 1, 255, 255),
+        (202, 3, 0, 0), (203, 1, 128, 6),
+    ])
+    conversions("conversion-ieee", [
+        (0, index * 37 % 256, index * 131 % 256, 255 - index)
+        for index in range(64)
     ])
 
 
