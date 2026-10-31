@@ -656,7 +656,12 @@ impl Compiler<'_> {
                 self.statement(init)?;
                 Some(mark)
             }
+            // Der Parser legt einen Ausdruck im Kopf in `Node::Expression`.
             Some(init) => {
+                let init = match self.ast.node(init) {
+                    Node::Expression(expression) => *expression,
+                    _ => init,
+                };
                 self.expression(init)?;
                 None
             }

@@ -88,6 +88,8 @@ fn the_completion_value_is_the_last_value() {
         ("var i = 0; while (i < 3) { i++; }", "2"),
         ("var i = 0; do { i += 2; } while (i < 5)", "6"),
         ("for (var i = 0; i < 3; i++) i * 10;", "20"),
+        ("var i; for (i = 0; i < 3; i++) {} i", "3"),
+        ("1; for (2; false;);", "undefined"),
         (
             "for (let i = 0; i < 3; i++) { if (i == 1) break; i; }",
             "undefined",
