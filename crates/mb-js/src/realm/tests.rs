@@ -32,7 +32,7 @@ fn the_global_object_has_the_value_properties() {
     let realm = agent.create_realm().expect("Speicher");
     agent.scope(|agent, scope| {
         let global = agent.global_object(scope, realm);
-        let prototype = agent.object_prototype(scope, realm);
+        let prototype = agent.intrinsic(scope, realm, Intrinsic::ObjectPrototype);
         let actual = get_prototype_of(agent, scope, global)
             .expect("kein Fehler")
             .expect("Prototyp");

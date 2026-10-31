@@ -103,6 +103,48 @@ ops! {
     /// `delete` für einen Namen der globalen Umgebung.
     DeleteGlobal [Constant],
 
+    /// Ein neues gewöhnliches Objekt mit %Object.prototype%.
+    CreateObject [],
+    /// Ein neues Array mit der Länge 0 und %Array.prototype%.
+    CreateArray [],
+    /// CreateDataPropertyOrThrow für das Objekt im Register mit dem Namen
+    /// und dem Akkumulator als Wert.
+    DefineNamed [Register, Constant],
+    /// Dasselbe mit dem Schlüssel aus dem zweiten Register.
+    DefineKeyed [Register, Register],
+    /// `__proto__: Wert` in einem Objektliteral, der Wert im Akkumulator.
+    SetPrototypeLiteral [Register],
+    /// `...Wert` in einem Objektliteral (CopyDataProperties).
+    CopyDataProperties [Register],
+    /// Ein Element eines Array-Literals: der Akkumulator an der Stelle der
+    /// Länge.
+    ArrayPush [Register],
+    /// Eine Lücke in einem Array-Literal: die Länge um eins größer.
+    ArrayHole [Register],
+    /// Akkumulator := ToPropertyKey(Akkumulator).
+    ToPropertyKey [],
+
+    /// GetValue für die Eigenschaft mit dem Namen auf dem Akkumulator.
+    LdaNamed [Constant],
+    /// GetValue für die Eigenschaft mit dem Schlüssel im Akkumulator auf dem
+    /// Register.
+    LdaKeyed [Register],
+    /// GetValue für die Eigenschaft mit dem Schlüssel im zweiten Register auf
+    /// dem ersten. Danach hält das zweite den Schlüssel nach ToPropertyKey,
+    /// wie die Referenz in GetValue.
+    LdaKeyedRef [Register, Register],
+    /// PutValue mit dem Akkumulator für die Eigenschaft mit dem Namen auf dem
+    /// Register.
+    StaNamed [Register, Constant],
+    /// PutValue mit dem Akkumulator für die Eigenschaft mit dem Schlüssel im
+    /// zweiten Register auf dem ersten.
+    StaKeyed [Register, Register],
+    /// `delete` für die Eigenschaft mit dem Namen auf dem Akkumulator.
+    DeleteNamed [Constant],
+    /// `delete` für die Eigenschaft mit dem Schlüssel im Akkumulator auf dem
+    /// Register.
+    DeleteKeyed [Register],
+
     Add [Register],
     Sub [Register],
     Mul [Register],
@@ -128,6 +170,10 @@ ops! {
     TestLessThanOrEqual [Register],
     /// `>=`
     TestGreaterThanOrEqual [Register],
+    /// `in`: der Schlüssel im Register, das Objekt im Akkumulator.
+    TestIn [Register],
+    /// `instanceof`: der Wert im Register, das Ziel im Akkumulator.
+    TestInstanceOf [Register],
 
     /// `!`
     LogicalNot [],

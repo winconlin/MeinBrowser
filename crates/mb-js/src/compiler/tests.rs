@@ -206,6 +206,182 @@ fn loops_reset_the_completion_value() {
 }
 
 #[test]
+fn property_references_keep_base_and_key_in_registers() {
+    assert_eq!(
+        listing("a.b = c;"),
+        [
+            "LdaGlobal a",
+            "Star r2",
+            "LdaGlobal c",
+            "StaNamed r2 b",
+            "Star r1",
+            "Ldar r1",
+            "Return"
+        ]
+    );
+    // ToPropertyKey kommt erst beim Lesen, und das Lesen merkt sich den
+    // Schlüssel für das Schreiben.
+    assert_eq!(
+        listing("a[k] += 1;"),
+        [
+            "LdaGlobal a",
+            "Star r2",
+            "LdaGlobal k",
+            "Star r3",
+            "LdaKeyedRef r2 r3",
+            "Star r4",
+            "LdaSmi 1",
+            "Add r4",
+            "StaKeyed r2 r3",
+            "Star r1",
+            "Ldar r1",
+            "Return"
+        ]
+    );
+    assert_eq!(
+        listing("(a.b)++;"),
+        [
+            "LdaGlobal a",
+            "Star r2",
+            "Ldar r2",
+            "LdaNamed b",
+            "ToNumeric",
+            "Star r3",
+            "Inc",
+            "StaNamed r2 b",
+            "Ldar r3",
+            "Star r1",
+            "Ldar r1",
+            "Return"
+        ]
+    );
+    assert_eq!(
+        listing("a.b[0]; a in b; a instanceof b;"),
+        [
+            "LdaGlobal a",
+            "LdaNamed b",
+            "Star r2",
+            "LdaSmi 0",
+            "LdaKeyed r2",
+            "Star r1",
+            "LdaGlobal a",
+            "Star r2",
+            "LdaGlobal b",
+            "TestIn r2",
+            "Star r1",
+            "LdaGlobal a",
+            "Star r2",
+            "LdaGlobal b",
+            "TestInstanceOf r2",
+            "Star r1",
+            "Ldar r1",
+            "Return"
+        ]
+    );
+}
+
+#[test]
+fn literals_define_their_properties_in_order() {
+    assert_eq!(
+        listing("({a: 1, [k]: 2, ...s, __proto__: null, b, 1.5: 3});"),
+        [
+            "CreateObject",
+            "Star r2",
+            "LdaSmi 1",
+            "DefineNamed r2 a",
+            "LdaGlobal k",
+            "ToPropertyKey",
+            "Star r3",
+            "LdaSmi 2",
+            "DefineKeyed r2 r3",
+            "LdaGlobal s",
+            "CopyDataProperties r2",
+            "LdaNull",
+            "SetPrototypeLiteral r2",
+            "LdaGlobal b",
+            "DefineNamed r2 b",
+            "LdaSmi 3",
+            "DefineNamed r2 1.5",
+            "Ldar r2",
+            "Star r1",
+            "Ldar r1",
+            "Return"
+        ]
+    );
+    // Nur `__proto__: value` setzt den Prototyp, auch als Zeichenkette.
+    let proto = listing("({'__proto__': a, __proto__, ['__proto__']: b});");
+    assert_eq!(
+        proto
+            .iter()
+            .filter(|line| line.starts_with("SetPrototypeLiteral"))
+            .count(),
+        1
+    );
+    assert!(proto.contains(&"DefineNamed r2 __proto__".to_owned()));
+    assert!(proto.contains(&"DefineKeyed r2 r3".to_owned()));
+    assert_eq!(
+        listing("[1, , a];"),
+        [
+            "CreateArray",
+            "Star r2",
+            "LdaSmi 1",
+            "ArrayPush r2",
+            "ArrayHole r2",
+            "LdaGlobal a",
+            "ArrayPush r2",
+            "Ldar r2",
+            "Star r1",
+            "Ldar r1",
+            "Return"
+        ]
+    );
+}
+
+#[test]
+fn optional_chains_jump_to_one_end() {
+    assert_eq!(
+        listing("a?.b.c;"),
+        [
+            "LdaGlobal a",
+            "JumpIfNullish @18",
+            "LdaNamed b",
+            "LdaNamed c",
+            "Jump @19",
+            "LdaUndefined",
+            "Star r1",
+            "Ldar r1",
+            "Return"
+        ]
+    );
+    assert_eq!(
+        listing("delete a?.[b];"),
+        [
+            "LdaGlobal a",
+            "JumpIfNullish @20",
+            "Star r2",
+            "LdaGlobal b",
+            "DeleteKeyed r2",
+            "Jump @21",
+            "LdaTrue",
+            "Star r1",
+            "Ldar r1",
+            "Return"
+        ]
+    );
+    // Ohne `?.` braucht `delete` keinen Sprung.
+    assert_eq!(
+        listing("delete (a.b);"),
+        [
+            "LdaGlobal a",
+            "DeleteNamed b",
+            "Star r1",
+            "Ldar r1",
+            "Return"
+        ]
+    );
+}
+
+#[test]
 fn instructions_know_their_place_in_the_source() {
     let script = compile("x;\nthrow 1;").expect("übersetzbar");
     let code = &script.code;
@@ -220,13 +396,12 @@ fn unsupported_constructs_name_their_place() {
     let cases = [
         ("function f() {}", 0),
         ("class A {}", 0),
-        ("a.b;", 0),
-        ("x = {};", 4),
-        ("x = [];", 4),
-        ("a in b;", 0),
-        ("a instanceof b;", 0),
-        ("delete a.b;", 7),
-        ("delete (a[0]);", 8),
+        ("x = {a() {}};", 5),
+        ("x = {get a() {}};", 5),
+        ("x = {1n: 1};", 5),
+        ("x = [...a];", 5),
+        ("a.b();", 0),
+        ("a?.b();", 0),
         ("try {} catch {}", 0),
         ("for (var k in o);", 0),
         ("for (let k of o);", 0),
@@ -274,6 +449,10 @@ fn deep_nesting_needs_no_deep_stack() {
         ("(1, ", "1", ")"),
         ("1 + (", "1", ")"),
         ("typeof (", "a", ")"),
+        ("[", "1", "]"),
+        ("[{a: ", "1", "}]"),
+        ("a[", "0", "]"),
+        ("a?.[", "0", "]"),
     ];
     let thread = std::thread::Builder::new()
         .stack_size(1 << 20)
@@ -301,6 +480,16 @@ fn deep_nesting_needs_no_deep_stack() {
                 let script = compile_script(&ast).expect("übersetzbar");
                 // Links geklammert braucht die Kette nur ein Register mehr.
                 assert!(script.code.register_count() <= 3, "{operator}");
+            }
+
+            // Ketten von Zugriffen baut der Parser in einer Schleife.
+            for link in [".b", "?.b", "[0]", "?.[0]"] {
+                for prefix in ["", "delete "] {
+                    let text = format!("{prefix}a{};", link.repeat(100_000));
+                    let ast = parse_script(&units(&text)).expect("gültiges Script");
+                    let script = compile_script(&ast).expect("übersetzbar");
+                    assert!(script.code.register_count() <= 3, "{prefix}{link}");
+                }
             }
         })
         .expect("Faden");

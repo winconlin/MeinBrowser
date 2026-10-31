@@ -1,6 +1,6 @@
 //! Der Übersetzer vom Syntaxbaum zum Bytecode, bisher für Scripts ohne
-//! Funktionen, Objekte und Eigenschaftszugriffe. Was er noch nicht kann,
-//! meldet er als [`CompileError::Unsupported`] mit der Lage im Quelltext.
+//! Funktionen. Was er noch nicht kann, meldet er als
+//! [`CompileError::Unsupported`] mit der Lage im Quelltext.
 //!
 //! Bereichsanalyse: Ein Script bindet `var` im globalen Objekt und `let`
 //! und `const` auf oberster Ebene im deklarativen Record der globalen
@@ -19,20 +19,28 @@
 //! Schleifen und `switch` liefern nie ~empty~, sondern ohne eigenen Wert
 //! *undefined*; sie setzen das Register darum zu Beginn auf *undefined*.
 //!
-//! Tiefe: Ketten zweistelliger Operatoren baut der Parser in Schleifen,
-//! sie werden beliebig tief. Der Übersetzer liest sie mit einem eigenen
-//! Stapel. Alles andere begrenzt der Parser mit `MAX_DEPTH`, das übersetzt
-//! er rekursiv (RS-8).
+//! Eigenschaften: Eine Referenz auf eine Eigenschaft hält ihre Basis und
+//! bei berechneten Namen den Namen in Registern. ToObject und
+//! ToPropertyKey kommen erst beim Lesen, Schreiben oder Löschen
+//! (Abschnitte 6.2.5.5 und 6.2.5.6), also nach der rechten Seite einer
+//! Zuweisung.
+//!
+//! Tiefe: Ketten zweistelliger Operatoren und Ketten von Zugriffen wie
+//! `a.b[c]?.d` baut der Parser in Schleifen, sie werden beliebig tief. Der
+//! Übersetzer liest sie mit einem eigenen Stapel oder entlang der Kette.
+//! Alles andere begrenzt der Parser mit `MAX_DEPTH`, das übersetzt er
+//! rekursiv (RS-8).
 
 #![forbid(unsafe_code)]
 
 use std::collections::BTreeMap;
 
 use crate::ast::{
-    AssignOperator, Ast, Atom, BinaryOperator, DeclarationKind, List, Node, NodeId, UnaryOperator,
-    UpdateOperator,
+    AssignOperator, Ast, Atom, BinaryOperator, DeclarationKind, List, Node, NodeId, PropertyKind,
+    UnaryOperator, UpdateOperator,
 };
 use crate::bytecode::{Code, Constant, Emitter, Label, Op, TooLarge};
+use crate::number;
 use crate::value::Value;
 
 /// Warum ein Script nicht übersetzt wurde.
@@ -110,8 +118,7 @@ enum ConstantKey {
     Name(Vec<u16>),
 }
 
-/// Eine Referenz (Abschnitt 6.2.5) auf einen Bezeichner, zwischen
-/// Auflösen und Schreiben.
+/// Eine Referenz (Abschnitt 6.2.5) zwischen Auswerten und Schreiben.
 #[derive(Clone, Copy, Debug)]
 enum Reference {
     Local(LocalBinding, Atom),
@@ -120,6 +127,27 @@ enum Reference {
         name: i64,
         register: u32,
     },
+    /// Eine Eigenschaft mit festem Namen, die Basis im Register.
+    Named {
+        base: u32,
+        name: i64,
+    },
+    /// Eine Eigenschaft mit berechnetem Namen. Basis und Name liegen in
+    /// zwei Registern hintereinander; das erste Lesen ersetzt den Namen
+    /// durch den Schlüssel aus ToPropertyKey.
+    Keyed {
+        base: u32,
+        key: u32,
+    },
+}
+
+/// Was ein Glied einer Kette von Zugriffen liest.
+#[derive(Clone, Copy)]
+enum Access {
+    /// `.name`
+    Named(Atom),
+    /// `[expression]`
+    Keyed(NodeId),
 }
 
 /// Ein Schritt beim Übersetzen einer Kette zweistelliger Operatoren.
@@ -836,8 +864,199 @@ impl Compiler<'_> {
                 }
                 Ok(())
             }
+            Node::Object(list) => self.object_literal(list),
+            Node::Array(list) => self.array_literal(list),
+            Node::Member { .. } | Node::ComputedMember { .. } => self.member_expression(node),
+            Node::Chain(chain) => self.member_expression(chain),
             _ => Err(self.unsupported(node)),
         }
+    }
+
+    fn without_parens(&self, node: NodeId) -> NodeId {
+        let mut node = node;
+        while let Node::Paren(inner) = *self.ast.node(node) {
+            node = inner;
+        }
+        node
+    }
+
+    /// Objektliterale (Abschnitte 13.2.5.5 und 13.2.5.6). Methoden und
+    /// Accessoren brauchen Funktionen.
+    fn object_literal(&mut self, list: List) -> Result<()> {
+        self.emit(Op::CreateObject, &[])?;
+        let object = self.allocate()?;
+        let register = i64::from(object);
+        self.emit(Op::Star, &[register])?;
+        let ast = self.ast;
+        for &property in ast.list(list) {
+            self.position(property)?;
+            match *self.ast.node(property) {
+                Node::Spread(argument) => {
+                    self.expression(argument)?;
+                    self.position(property)?;
+                    self.emit(Op::CopyDataProperties, &[register])?;
+                }
+                Node::Property {
+                    kind: kind @ (PropertyKind::Init | PropertyKind::Shorthand),
+                    key,
+                    value,
+                } => self.property_definition(register, kind, key, value)?,
+                _ => return Err(self.unsupported(property)),
+            }
+        }
+        self.emit(Op::Ldar, &[register])?;
+        self.release(object);
+        Ok(())
+    }
+
+    /// Eine Eigenschaft mit Wert im Objekt im Register `object`.
+    fn property_definition(
+        &mut self,
+        object: i64,
+        kind: PropertyKind,
+        key: NodeId,
+        value: NodeId,
+    ) -> Result<()> {
+        let units: Vec<u16> = match *self.ast.node(key) {
+            Node::PropertyName(atom) | Node::String(atom) => self.ast.atom(atom).to_vec(),
+            Node::Number(number) => number::to_string(number).encode_utf16().collect(),
+            Node::ComputedKey(expression) => {
+                // Der berechnete Name kommt mit ToPropertyKey vor dem Wert.
+                self.expression(expression)?;
+                self.position(key)?;
+                self.emit(Op::ToPropertyKey, &[])?;
+                let name = self.allocate()?;
+                self.emit(Op::Star, &[i64::from(name)])?;
+                self.expression(value)?;
+                self.position(key)?;
+                self.emit(Op::DefineKeyed, &[object, i64::from(name)])?;
+                self.release(name);
+                return Ok(());
+            }
+            _ => return Err(self.unsupported(key)),
+        };
+        self.expression(value)?;
+        self.position(key)?;
+        // `__proto__: value` ohne berechneten Namen setzt den Prototyp
+        // (PropertyDefinitionEvaluation, Schritte 5 und 6), die Kurzform
+        // `{__proto__}` nicht.
+        let proto: Vec<u16> = "__proto__".encode_utf16().collect();
+        if kind == PropertyKind::Init && units == proto {
+            return self.emit(Op::SetPrototypeLiteral, &[object]);
+        }
+        let name = self.constant(Constant::Name(units))?;
+        self.emit(Op::DefineNamed, &[object, name])
+    }
+
+    /// Array-Literale (Abschnitte 13.2.4.1 und 13.2.4.2). Die Ausbreitung
+    /// braucht Iteratoren.
+    fn array_literal(&mut self, list: List) -> Result<()> {
+        self.emit(Op::CreateArray, &[])?;
+        let array = self.allocate()?;
+        let register = i64::from(array);
+        self.emit(Op::Star, &[register])?;
+        let ast = self.ast;
+        for &element in ast.list(list) {
+            match *self.ast.node(element) {
+                Node::Elision => {
+                    self.position(element)?;
+                    self.emit(Op::ArrayHole, &[register])?;
+                }
+                Node::Spread(_) => return Err(self.unsupported(element)),
+                _ => {
+                    self.expression(element)?;
+                    self.position(element)?;
+                    self.emit(Op::ArrayPush, &[register])?;
+                }
+            }
+        }
+        self.emit(Op::Ldar, &[register])?;
+        self.release(array);
+        Ok(())
+    }
+
+    /// Der Kopf einer Kette von Zugriffen und ihre Glieder von innen nach
+    /// außen, ohne Rekursion entlang der Kette.
+    fn member_links(&self, node: NodeId) -> (NodeId, Vec<NodeId>) {
+        let mut links = Vec::new();
+        let mut head = node;
+        while let Node::Member { object, .. } | Node::ComputedMember { object, .. } =
+            *self.ast.node(head)
+        {
+            links.push(head);
+            head = object;
+        }
+        links.reverse();
+        (head, links)
+    }
+
+    /// Ein Glied einer Kette mit der Basis im Akkumulator: GetValue auf den
+    /// Zugriff (Abschnitte 13.3.2 und 13.3.3) oder mit `delete` das
+    /// Löschen. Nach `?.` springt es bei *undefined* und *null* nach
+    /// `nullish` (Abschnitt 13.3.9.1).
+    fn member_link(&mut self, link: NodeId, nullish: &mut Vec<Label>, delete: bool) -> Result<()> {
+        self.position(link)?;
+        let (access, optional) = match *self.ast.node(link) {
+            Node::Member {
+                property, optional, ..
+            } => (Access::Named(property), optional),
+            Node::ComputedMember {
+                property, optional, ..
+            } => (Access::Keyed(property), optional),
+            _ => return Err(self.unsupported(link)),
+        };
+        if optional {
+            nullish.push(self.jump(Op::JumpIfNullish)?);
+        }
+        match access {
+            Access::Named(atom) => {
+                let name = self.name(atom)?;
+                let op = if delete {
+                    Op::DeleteNamed
+                } else {
+                    Op::LdaNamed
+                };
+                self.emit(op, &[name])
+            }
+            Access::Keyed(expression) => {
+                let base = self.allocate()?;
+                self.emit(Op::Star, &[i64::from(base)])?;
+                self.expression(expression)?;
+                self.position(link)?;
+                let op = if delete {
+                    Op::DeleteKeyed
+                } else {
+                    Op::LdaKeyed
+                };
+                self.emit(op, &[i64::from(base)])?;
+                self.release(base);
+                Ok(())
+            }
+        }
+    }
+
+    /// Ein Zugriff oder eine optionale Kette als Ausdruck. Springt ein
+    /// Glied nach `?.` heraus, ergibt die ganze Kette *undefined*.
+    fn member_expression(&mut self, node: NodeId) -> Result<()> {
+        let (head, links) = self.member_links(node);
+        let mut nullish = Vec::new();
+        self.expression(head)?;
+        for link in links {
+            self.member_link(link, &mut nullish, false)?;
+        }
+        self.short_circuit(nullish, Op::LdaUndefined)
+    }
+
+    /// Bindet die Sprünge aus einer optionalen Kette an einen Befehl, der
+    /// das Ergebnis dafür lädt.
+    fn short_circuit(&mut self, labels: Vec<Label>, result: Op) -> Result<()> {
+        if labels.is_empty() {
+            return Ok(());
+        }
+        let end = self.jump(Op::Jump)?;
+        self.bind_all(labels)?;
+        self.emit(result, &[])?;
+        self.bind(end)
     }
 
     /// Der Bezeichner hinter Klammern, denn auch geklammert bleibt er eine
@@ -889,16 +1108,42 @@ impl Compiler<'_> {
 
     /// Wertet das Ziel einer Zuweisung zur Referenz aus.
     fn reference(&mut self, target: NodeId) -> Result<Reference> {
-        let Some(atom) = self.identifier_reference(target) else {
-            return Err(self.unsupported(target));
-        };
-        if let Some(binding) = self.lookup(atom) {
-            return Ok(Reference::Local(binding, atom));
+        match *self.ast.node(self.without_parens(target)) {
+            Node::Identifier(atom) => {
+                if let Some(binding) = self.lookup(atom) {
+                    return Ok(Reference::Local(binding, atom));
+                }
+                let name = self.name(atom)?;
+                let register = self.allocate()?;
+                self.emit(Op::ResolveGlobal, &[name, i64::from(register)])?;
+                Ok(Reference::Global { name, register })
+            }
+            Node::Member {
+                object,
+                property,
+                optional: false,
+            } => {
+                self.expression(object)?;
+                let base = self.allocate()?;
+                self.emit(Op::Star, &[i64::from(base)])?;
+                let name = self.name(property)?;
+                Ok(Reference::Named { base, name })
+            }
+            Node::ComputedMember {
+                object,
+                property,
+                optional: false,
+            } => {
+                self.expression(object)?;
+                let base = self.allocate()?;
+                self.emit(Op::Star, &[i64::from(base)])?;
+                self.expression(property)?;
+                let key = self.allocate()?;
+                self.emit(Op::Star, &[i64::from(key)])?;
+                Ok(Reference::Keyed { base, key })
+            }
+            _ => Err(self.unsupported(target)),
         }
-        let name = self.name(atom)?;
-        let register = self.allocate()?;
-        self.emit(Op::ResolveGlobal, &[name, i64::from(register)])?;
-        Ok(Reference::Global { name, register })
     }
 
     fn get_value(&mut self, reference: Reference, position: usize) -> Result<()> {
@@ -906,6 +1151,13 @@ impl Compiler<'_> {
             Reference::Local(binding, atom) => self.load_local(binding, atom, position),
             Reference::Global { name, register } => {
                 self.emit(Op::LdaGlobalRef, &[name, i64::from(register)])
+            }
+            Reference::Named { base, name } => {
+                self.emit(Op::Ldar, &[i64::from(base)])?;
+                self.emit(Op::LdaNamed, &[name])
+            }
+            Reference::Keyed { base, key } => {
+                self.emit(Op::LdaKeyedRef, &[i64::from(base), i64::from(key)])
             }
         }
     }
@@ -916,12 +1168,19 @@ impl Compiler<'_> {
             Reference::Global { name, register } => {
                 self.emit(Op::StaGlobal, &[name, i64::from(register)])
             }
+            Reference::Named { base, name } => self.emit(Op::StaNamed, &[i64::from(base), name]),
+            Reference::Keyed { base, key } => {
+                self.emit(Op::StaKeyed, &[i64::from(base), i64::from(key)])
+            }
         }
     }
 
     fn release_reference(&mut self, reference: Reference) {
-        if let Reference::Global { register, .. } = reference {
-            self.release(register);
+        match reference {
+            Reference::Local(..) => {}
+            Reference::Global { register, .. }
+            | Reference::Named { base: register, .. }
+            | Reference::Keyed { base: register, .. } => self.release(register),
         }
     }
 
@@ -1077,22 +1336,37 @@ impl Compiler<'_> {
             let name = self.name(atom)?;
             return self.emit(Op::DeleteGlobal, &[name]);
         }
-        let mut inner = argument;
-        while let Node::Paren(next) = *self.ast.node(inner) {
-            inner = next;
-        }
-        if matches!(
-            self.ast.node(inner),
-            Node::Member { .. }
-                | Node::ComputedMember { .. }
-                | Node::PrivateMember { .. }
-                | Node::SuperMember(_)
-                | Node::SuperComputedMember(_)
-        ) {
-            return Err(self.unsupported(inner));
+        let inner = self.without_parens(argument);
+        let target = match *self.ast.node(inner) {
+            Node::Chain(chain) => chain,
+            _ => inner,
+        };
+        match self.ast.node(target) {
+            Node::Member { .. } | Node::ComputedMember { .. } => return self.delete_member(target),
+            Node::PrivateMember { .. } | Node::SuperMember(_) | Node::SuperComputedMember(_) => {
+                return Err(self.unsupported(inner));
+            }
+            _ => {}
         }
         self.expression(argument)?;
         self.emit(Op::LdaTrue, &[])
+    }
+
+    /// `delete` auf einen Zugriff: Das letzte Glied löscht. Springt vorher
+    /// ein Glied nach `?.` heraus, ergibt die Kette keine Referenz, und das
+    /// Ergebnis ist *true*.
+    fn delete_member(&mut self, node: NodeId) -> Result<()> {
+        let (head, mut links) = self.member_links(node);
+        let Some(last) = links.pop() else {
+            return Err(self.unsupported(node));
+        };
+        let mut nullish = Vec::new();
+        self.expression(head)?;
+        for link in links {
+            self.member_link(link, &mut nullish, false)?;
+        }
+        self.member_link(last, &mut nullish, true)?;
+        self.short_circuit(nullish, Op::LdaTrue)
     }
 
     /// Templates ohne Tag (Abschnitt 13.2.8.6): die Teile und die Werte der
@@ -1167,9 +1441,6 @@ impl Compiler<'_> {
                             tasks.push(Task::Visit(right));
                             tasks.push(Task::ShortCircuit(operator));
                         }
-                        BinaryOperator::In | BinaryOperator::Instanceof => {
-                            return Err(self.unsupported(node));
-                        }
                         _ => {
                             tasks.push(Task::Apply(operator, node));
                             tasks.push(Task::Visit(right));
@@ -1237,11 +1508,11 @@ impl Compiler<'_> {
             BinaryOperator::BitwiseOr => (Op::BitwiseOr, false),
             BinaryOperator::BitwiseXor => (Op::BitwiseXor, false),
             BinaryOperator::BitwiseAnd => (Op::BitwiseAnd, false),
-            BinaryOperator::In
-            | BinaryOperator::Instanceof
-            | BinaryOperator::LogicalAnd
-            | BinaryOperator::LogicalOr
-            | BinaryOperator::Coalesce => return Err(self.unsupported(node)),
+            BinaryOperator::In => (Op::TestIn, false),
+            BinaryOperator::Instanceof => (Op::TestInstanceOf, false),
+            BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr | BinaryOperator::Coalesce => {
+                return Err(self.unsupported(node));
+            }
         };
         self.emit(op, &[register])?;
         if negate {
