@@ -193,7 +193,12 @@ mod tests {
 
     #[test]
     fn syntax_and_unsupported_paths_preserve_positions() {
-        for source in ["function f(){}", "class A{}", "try{}catch(e){}", "f();"] {
+        for source in [
+            "function* f(){}",
+            "class A{}",
+            "try{}catch(e){}",
+            "new f();",
+        ] {
             let source: Vec<u16> = source.encode_utf16().collect();
             assert_eq!(check_source(&source), Outcome::Unsupported);
         }
