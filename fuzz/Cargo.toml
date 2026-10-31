@@ -126,3 +126,10 @@ path = "fuzz_targets/js.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "js-runtime"
+path = "fuzz_targets/js_runtime.rs"
+test = false
+doc = false
+bench = false
