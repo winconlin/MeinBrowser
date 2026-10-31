@@ -9,6 +9,12 @@
 //! findet `Lato` alle Schnitte der Familie und `Lato Medium` den einen, der
 //! diesen Namen für alte Programme trägt.
 //!
+//! Die Ersatzschriftsuche merkt sich bis zu 256 Ergebnisse, auch fehlende
+//! Ersatzschriften, für Folgen von höchstens 64 Codepunkten. Größere Folgen
+//! werden weiterhin gesucht. Neue Schnitte leeren diesen Ergebnis-Cache.
+//! Die erste Suche kann weiterhin viele Schriftdateien laden; der Cache
+//! ihrer Daten wird dadurch nicht begrenzt.
+//!
 //! Noch nicht: Schriftaliase wie bei fontconfig (`Arial` für `Liberation
 //! Sans`), künstlicher Fettdruck, eine Übersicht der Zeichen jedes Schnitts
 //! im Index (die Ersatzschriftsuche lädt dafür Schnitte).
@@ -22,6 +28,10 @@ use mb_unicode::case_folding;
 
 use crate::matching::{self, Candidate, DEFAULT_OBLIQUE, FaceSlope, Slope};
 use crate::opentype::{Face, FontData, face_count};
+
+mod fallback_cache;
+
+use fallback_cache::{FallbackCache, FallbackKey};
 
 /// Liest den Inhalt einer Schriftdatei; `None`, wenn das nicht geht.
 pub type Loader = Box<dyn Fn(&Path) -> Option<Vec<u8>> + Send + Sync>;
@@ -152,6 +162,7 @@ struct FaceEntry {
 struct Cache {
     files: BTreeMap<usize, Option<FontData>>,
     faces: BTreeMap<FaceId, Option<Arc<Face>>>,
+    fallback: FallbackCache,
 }
 
 /// Die installierten Schriften.
@@ -225,6 +236,11 @@ impl FontLibrary {
         }
         if added > 0 {
             self.files.push(path);
+            self.cache
+                .get_mut()
+                .unwrap_or_else(PoisonError::into_inner)
+                .fallback
+                .clear();
         }
         added
     }
@@ -303,14 +319,33 @@ impl FontLibrary {
         if characters.is_empty() {
             return None;
         }
-        self.families.values().find_map(|family| {
+        let key = FallbackKey::new(query, characters);
+        if let Some(key) = &key {
+            // Der Lock endet vor der Suche: face() braucht denselben Mutex.
+            let cached = {
+                let mut cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
+                cache.fallback.get(key)
+            };
+            if let Some(found) = cached {
+                return found;
+            }
+        }
+        let found = self.families.values().find_map(|family| {
             let id = self.best_in(family, query)?;
             let face = self.face(id)?;
             characters
                 .iter()
                 .all(|&character| face.glyph_index(character).is_some())
                 .then_some(id)
-        })
+        });
+        if let Some(key) = key {
+            self.cache
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .fallback
+                .insert(key, found);
+        }
+        found
     }
 
     /// Um wie viel Grad die Glyphen von `id` geschert werden, wenn die
@@ -368,3 +403,6 @@ impl FontLibrary {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod fallback_tests;
