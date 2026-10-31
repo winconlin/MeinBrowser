@@ -365,3 +365,48 @@ fn the_limit_is_capped() {
     });
     assert_eq!(heap.options.limit, MAX_LIMIT);
 }
+
+#[test]
+fn registers_are_roots() {
+    let mut heap = checked();
+    let base = heap.push_registers(3).expect("Platz");
+    assert_eq!(base, 0);
+    heap.scope(|heap, scope| {
+        let text = heap
+            .alloc_string(scope, &units("im Register"))
+            .expect("Speicher");
+        heap.set_register(1, heap.get(text));
+    });
+    heap.collect();
+    let text = string(heap.register(1));
+    assert_eq!(heap.string_units(text), units("im Register"));
+    assert!(heap.register(0).is_undefined());
+    // Hinter dem Stapel liest man *undefined*, und Schreiben wirkt nicht.
+    heap.set_register(3, Value::TRUE);
+    assert!(heap.register(3).is_undefined());
+
+    assert_eq!(heap.push_registers(2), Some(3));
+    heap.truncate_registers(base);
+    assert_eq!(heap.push_registers(0), Some(0));
+    assert_eq!(heap.push_registers(MAX_REGISTERS + 1), None);
+    assert_eq!(heap.push_registers(MAX_REGISTERS), Some(0));
+    assert_eq!(heap.push_registers(1), None);
+    heap.truncate_registers(0);
+}
+
+#[test]
+fn persistent_handles_can_be_replaced() {
+    let mut heap = checked();
+    let handle = heap.scope(|heap, scope| {
+        let first = heap.alloc_string(scope, &units("eins")).expect("Speicher");
+        heap.persist(first)
+    });
+    heap.scope(|heap, scope| {
+        let second = heap.alloc_string(scope, &units("zwei")).expect("Speicher");
+        heap.set_persistent(&handle, second);
+    });
+    heap.collect();
+    let text = string(heap.get_persistent(&handle));
+    assert_eq!(heap.string_units(text), units("zwei"));
+    heap.release(handle);
+}
