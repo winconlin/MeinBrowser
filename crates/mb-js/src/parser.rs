@@ -20,8 +20,8 @@
 //!   wird beim Lesen der Direktive nachgeprüft.
 //! - Die Verschachtelung ist begrenzt (RS-8, [`MAX_DEPTH`]); tiefer
 //!   verschachtelter Quelltext ergibt [`ErrorKind::TooDeep`].
-//! - Was noch fehlt: das Prüfen der Muster regulärer Ausdrücke (die Flags
-//!   werden geprüft), Quelltext für `eval` und den Konstruktor `Function`
+//! - Die Muster regulärer Ausdrücke prüft [`crate::regexp`].
+//! - Was noch fehlt: Quelltext für `eval` und den Konstruktor `Function`
 //!   und das bloße Vorprüfen von Funktionsrümpfen ohne Baum.
 
 #![forbid(unsafe_code)]
@@ -30,6 +30,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ast::{Ast, Atom, List, Node, NodeId};
 use crate::lexer::{self, Goal, Lexer, Name, Punctuator, Token, TokenKind};
+use crate::regexp;
 
 mod class;
 mod expression;
@@ -66,6 +67,8 @@ pub struct SyntaxError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ErrorKind {
     Lexer(lexer::ErrorKind),
+    /// Ein Fehler im Muster eines regulären Ausdrucks.
+    RegExp(regexp::ErrorKind),
     /// Ein Token, das die Grammatik an dieser Stelle nicht erlaubt.
     UnexpectedToken,
     /// Mehr als `u32::MAX` Codeeinheiten oder Einträge im Baum.

@@ -80,6 +80,27 @@ pub fn is_id_continue(code_point: u32) -> bool {
     lookup(&tables::ID_CONTINUE, code_point).unwrap_or(false)
 }
 
+/// Der Kurzname des Werts von General_Category zu einem seiner Namen aus
+/// `PropertyValueAliases.txt`, auch für die Gruppen: `Lu` für
+/// `Uppercase_Letter`, `L` für `Letter`, `Cc` für `cntrl`. Verglichen wird
+/// genau, ohne die losen Regeln aus UAX #44, so wie JavaScript es für
+/// `\p{…}` verlangt.
+pub fn general_category_value(name: &str) -> Option<&'static str> {
+    value(&tables::GENERAL_CATEGORY_NAMES, name)
+}
+
+/// Der Kurzname des Werts von Script zu einem seiner Namen, verglichen wie
+/// bei [`general_category_value`]: `Latn` für `Latin`, `Zinh` für `Qaai`.
+pub fn script_value(name: &str) -> Option<&'static str> {
+    value(&tables::SCRIPT_NAMES, name)
+}
+
+/// Sucht einen Namen in einer nach Namen sortierten Tabelle.
+fn value(table: &[(&str, &'static str)], name: &str) -> Option<&'static str> {
+    let index = table.binary_search_by(|&(entry, _)| entry.cmp(name)).ok()?;
+    table.get(index).map(|&(_, short)| short)
+}
+
 /// Sucht den Abschnitt, in dem der Codepunkt liegt. Die Tabellen beginnen
 /// bei 0 und sind nach Anfang sortiert.
 fn lookup<T: Copy>(table: &[(u32, T)], code_point: u32) -> Option<T> {
@@ -138,6 +159,50 @@ mod tests {
         assert!(mn.is_mark() && !mn.is_letter());
         assert!(general_category(0x378).is_other());
         assert!(general_category(0x2028).is_separator());
+    }
+
+    #[test]
+    fn value_names() {
+        let cases = [
+            ("Lu", Some("Lu")),
+            ("Uppercase_Letter", Some("Lu")),
+            ("L", Some("L")),
+            ("Letter", Some("L")),
+            ("LC", Some("LC")),
+            ("Cased_Letter", Some("LC")),
+            ("cntrl", Some("Cc")),
+            ("digit", Some("Nd")),
+            ("punct", Some("P")),
+            ("Combining_Mark", Some("M")),
+            ("uppercase_letter", None),
+            ("Uppercase Letter", None),
+            ("L&", None),
+            ("", None),
+        ];
+        for (name, short) in cases {
+            assert_eq!(general_category_value(name), short, "{name}");
+        }
+        let cases = [
+            ("Latin", Some("Latn")),
+            ("Latn", Some("Latn")),
+            ("Zinh", Some("Zinh")),
+            ("Inherited", Some("Zinh")),
+            ("Qaai", Some("Zinh")),
+            ("Qaac", Some("Copt")),
+            ("Zzzz", Some("Zzzz")),
+            ("Unknown", Some("Zzzz")),
+            ("latin", None),
+            ("Lu", None),
+        ];
+        for (name, short) in cases {
+            assert_eq!(script_value(name), short, "{name}");
+        }
+        for table in [
+            &tables::GENERAL_CATEGORY_NAMES[..],
+            &tables::SCRIPT_NAMES[..],
+        ] {
+            assert!(table.windows(2).all(|pair| pair[0].0 < pair[1].0));
+        }
     }
 
     #[test]

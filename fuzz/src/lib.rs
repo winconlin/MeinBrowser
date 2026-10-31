@@ -224,8 +224,9 @@ fn utf16le(data: &[u8]) -> Vec<u16> {
         .collect()
 }
 
-/// The JavaScript lexer and parser, with the input once as UTF-8 text and once
-/// as UTF-16LE code units, so that lone surrogates reach them too.
+/// The JavaScript lexer and parser and the parser for regular expression
+/// patterns, with the input once as UTF-8 text and once as UTF-16LE code
+/// units, so that lone surrogates reach them too.
 pub fn js(data: &[u8]) {
     if data.len() > MAX_INPUT {
         return;
@@ -237,6 +238,27 @@ pub fn js(data: &[u8]) {
         }
         js_tree(&source, mb_js::parser::parse_script(&source));
         js_tree(&source, mb_js::parser::parse_module(&source));
+        js_pattern(&source);
+    }
+}
+
+/// The whole input as a pattern without flags, with `u` and with `v`: a
+/// pattern is a disjunction, an error lies inside the input.
+fn js_pattern(source: &[u16]) {
+    use mb_js::regexp::{Flags, Node, parse};
+    let unicode = Flags {
+        unicode: true,
+        ..Flags::default()
+    };
+    let sets = Flags {
+        unicode_sets: true,
+        ..Flags::default()
+    };
+    for flags in [Flags::default(), unicode, sets] {
+        match parse(source, flags) {
+            Ok(pattern) => assert!(matches!(pattern.node(pattern.root()), Node::Disjunction(_))),
+            Err(error) => assert!(error.position <= source.len()),
+        }
     }
 }
 
@@ -459,6 +481,14 @@ mod tests {
         let units = utf16le(include_bytes!("../seeds/js/utf16le-surrogate"));
         assert!(units.contains(&0xD800));
         assert!(parse_script(&units).is_ok());
+        // A pattern for regular expressions, valid with `v`.
+        let pattern = text(include_bytes!("../seeds/js/regexp"));
+        let sets = mb_js::regexp::Flags {
+            unicode_sets: true,
+            ..mb_js::regexp::Flags::default()
+        };
+        let parsed = mb_js::regexp::parse(&pattern, sets);
+        assert!(parsed.is_ok_and(|pattern| pattern.capture_count() == 2));
     }
 
     #[test]

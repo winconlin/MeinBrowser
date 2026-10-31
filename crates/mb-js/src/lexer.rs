@@ -1034,12 +1034,12 @@ fn is_line_terminator(c: u32) -> bool {
 }
 
 /// *IdentifierStartChar*
-fn is_identifier_start(c: u32) -> bool {
+pub(crate) fn is_identifier_start(c: u32) -> bool {
     c == u32::from(b'$') || c == u32::from(b'_') || mb_unicode::is_id_start(c)
 }
 
 /// *IdentifierPartChar*
-fn is_identifier_part(c: u32) -> bool {
+pub(crate) fn is_identifier_part(c: u32) -> bool {
     c == u32::from(b'$') || mb_unicode::is_id_continue(c)
 }
 
