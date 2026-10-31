@@ -1,6 +1,7 @@
-//! Der Agent (Abschnitt 9.6): Heap, Atome, die Wurzel aller Gestalten und
-//! die Ausnahme, die gerade geworfen wird. Registerstapel, Warteschlange
-//! der Jobs und Symbolregister kommen mit den Schritten, die sie brauchen.
+//! Der Agent (Abschnitt 9.6): Heap, Atome, die Wurzel aller Gestalten, die
+//! bekannten Symbole und die Ausnahme, die gerade geworfen wird.
+//! Registerstapel, Warteschlange der Jobs und Symbolregister kommen mit den
+//! Schritten, die sie brauchen.
 //!
 //! Atome sind die Zeichenketten, die als Eigenschaftsschlüssel dienen. Zu
 //! jedem Inhalt gibt es höchstens eines, also vergleicht man Schlüssel über
@@ -11,8 +12,9 @@
 use std::collections::BTreeMap;
 
 use crate::heap::{Heap, Local, Options, OutOfMemory, Persistent, Scope};
+use crate::key::WellKnownSymbol;
 use crate::object::shape;
-use crate::value::Kind;
+use crate::value::{Kind, Value};
 
 /// Eine abrupte Beendigung, die Rust-Code mit `?` nach oben reicht.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -36,6 +38,7 @@ pub type Completion<T> = Result<T, Abrupt>;
 /// Die Fehlerarten aus Abschnitt 20.5.5, die die Engine selbst wirft.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ErrorKind {
+    RangeError,
     TypeError,
 }
 
@@ -59,6 +62,8 @@ pub struct Agent {
     atoms: BTreeMap<Vec<u16>, Persistent>,
     /// Die Gestalt ohne Eigenschaften, Wurzel aller Gestalten.
     empty_shape: Persistent,
+    /// Die bekannten Symbole, die alle Realms teilen.
+    symbols: BTreeMap<WellKnownSymbol, Persistent>,
     exception: Option<Pending>,
 }
 
@@ -72,12 +77,24 @@ impl Agent {
         let empty_shape = heap.scope(|heap, scope| {
             shape::alloc_empty(heap, scope).map(|shape| heap.persist(shape))
         })?;
-        Ok(Agent {
+        let mut agent = Agent {
             heap,
             atoms: BTreeMap::new(),
             empty_shape,
+            symbols: BTreeMap::new(),
             exception: None,
-        })
+        };
+        agent.scope(|agent, scope| -> Result<(), OutOfMemory> {
+            for symbol in WellKnownSymbol::ALL {
+                let units: Vec<u16> = symbol.description().encode_utf16().collect();
+                let description = agent.heap.alloc_string(scope, &units)?;
+                let value = agent.new_symbol(scope, Some(description))?;
+                let handle = agent.heap.persist(value);
+                agent.symbols.insert(symbol, handle);
+            }
+            Ok(())
+        })?;
+        Ok(agent)
     }
 
     pub fn heap(&self) -> &Heap {
@@ -100,6 +117,16 @@ impl Agent {
     pub(crate) fn empty_shape<'s>(&self, scope: &'s Scope) -> Local<'s> {
         let shape = self.heap.get_persistent(&self.empty_shape);
         self.heap.local(scope, shape)
+    }
+
+    /// Das bekannte Symbol `symbol` (Abschnitt 6.1.5.1).
+    pub fn well_known_symbol<'s>(&self, scope: &'s Scope, symbol: WellKnownSymbol) -> Local<'s> {
+        // Der Agent legt alle beim Start an.
+        let value = self
+            .symbols
+            .get(&symbol)
+            .map_or(Value::UNDEFINED, |handle| self.heap.get_persistent(handle));
+        self.heap.local(scope, value)
     }
 
     // Atome

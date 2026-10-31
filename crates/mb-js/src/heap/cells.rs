@@ -3,9 +3,9 @@
 //! zusammen; hier steht nur, wie die Zellen im Heap liegen.
 
 use super::{
-    Heap, KIND_OBJECT, KIND_SHAPE, KIND_SLOTS, KIND_SPARSE, KIND_SYMBOL, KIND_WEAK, Local, NONE,
-    OBJECT_REFS, OutOfMemory, Scope, cell_words, header, header_flags, header_kind, header_length,
-    is_object, is_value_cell, packed, packed_high, packed_low, to_usize, with_flags,
+    Heap, KIND_ARRAY, KIND_OBJECT, KIND_SHAPE, KIND_SLOTS, KIND_SPARSE, KIND_SYMBOL, KIND_WEAK,
+    Local, NONE, OBJECT_REFS, OutOfMemory, Scope, cell_words, header, header_flags, header_kind,
+    header_length, is_object, is_value_cell, packed, packed_high, packed_low, to_usize, with_flags,
 };
 use crate::value::{Ref, RefKind, Value};
 
@@ -56,18 +56,22 @@ impl CellKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ObjectClass {
     Ordinary,
+    /// Ein Array (Abschnitt 10.4.2).
+    Array,
 }
 
 impl ObjectClass {
     fn code(self) -> u64 {
         match self {
             ObjectClass::Ordinary => KIND_OBJECT,
+            ObjectClass::Array => KIND_ARRAY,
         }
     }
 
     fn from_code(code: u64) -> Option<ObjectClass> {
         match code {
             KIND_OBJECT => Some(ObjectClass::Ordinary),
+            KIND_ARRAY => Some(ObjectClass::Array),
             _ => None,
         }
     }

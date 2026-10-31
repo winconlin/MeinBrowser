@@ -15,6 +15,68 @@ use crate::value::{Kind, Ref, Value};
 /// Der größte Array-Index, 2³² − 2.
 pub const MAX_ARRAY_INDEX: u32 = u32::MAX - 1;
 
+/// Die bekannten Symbole (Abschnitt 6.1.5.1). Alle Realms eines Agents
+/// teilen sie.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum WellKnownSymbol {
+    AsyncDispose,
+    AsyncIterator,
+    Dispose,
+    HasInstance,
+    IsConcatSpreadable,
+    Iterator,
+    Match,
+    MatchAll,
+    Replace,
+    Search,
+    Species,
+    Split,
+    ToPrimitive,
+    ToStringTag,
+    Unscopables,
+}
+
+impl WellKnownSymbol {
+    pub const ALL: [WellKnownSymbol; 15] = [
+        WellKnownSymbol::AsyncDispose,
+        WellKnownSymbol::AsyncIterator,
+        WellKnownSymbol::Dispose,
+        WellKnownSymbol::HasInstance,
+        WellKnownSymbol::IsConcatSpreadable,
+        WellKnownSymbol::Iterator,
+        WellKnownSymbol::Match,
+        WellKnownSymbol::MatchAll,
+        WellKnownSymbol::Replace,
+        WellKnownSymbol::Search,
+        WellKnownSymbol::Species,
+        WellKnownSymbol::Split,
+        WellKnownSymbol::ToPrimitive,
+        WellKnownSymbol::ToStringTag,
+        WellKnownSymbol::Unscopables,
+    ];
+
+    /// [[Description]] des Symbols.
+    pub fn description(self) -> &'static str {
+        match self {
+            WellKnownSymbol::AsyncDispose => "Symbol.asyncDispose",
+            WellKnownSymbol::AsyncIterator => "Symbol.asyncIterator",
+            WellKnownSymbol::Dispose => "Symbol.dispose",
+            WellKnownSymbol::HasInstance => "Symbol.hasInstance",
+            WellKnownSymbol::IsConcatSpreadable => "Symbol.isConcatSpreadable",
+            WellKnownSymbol::Iterator => "Symbol.iterator",
+            WellKnownSymbol::Match => "Symbol.match",
+            WellKnownSymbol::MatchAll => "Symbol.matchAll",
+            WellKnownSymbol::Replace => "Symbol.replace",
+            WellKnownSymbol::Search => "Symbol.search",
+            WellKnownSymbol::Species => "Symbol.species",
+            WellKnownSymbol::Split => "Symbol.split",
+            WellKnownSymbol::ToPrimitive => "Symbol.toPrimitive",
+            WellKnownSymbol::ToStringTag => "Symbol.toStringTag",
+            WellKnownSymbol::Unscopables => "Symbol.unscopables",
+        }
+    }
+}
+
 /// Ein Eigenschaftsschlüssel.
 #[derive(Clone, Copy, Debug)]
 pub enum PropertyKey<'s> {

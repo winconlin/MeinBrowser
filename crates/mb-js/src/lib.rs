@@ -5,6 +5,7 @@
 pub mod agent;
 pub mod ast;
 pub mod compare;
+pub mod conversion;
 pub mod descriptor;
 pub mod heap;
 pub mod key;
