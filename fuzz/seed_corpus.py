@@ -155,7 +155,29 @@ def runtime_seeds():
     ])
 
 
+def execution_seeds():
+    # Raw source reaches the compiler only; all execution uses templates.
+    write("js-execute", "source-loops", "for(;;); while(true){} do {} while(true);")
+    write("js-execute", "source-properties", "var a=[1,,3]; let o={a:1,['b']:2};"
+          "o.c=a[2]; delete o.a; 'b' in o; 0 instanceof o;")
+    write("js-execute", "source-optional", "var o=null; o?.a?.[0] ?? 42;")
+    write("js-execute", "source-unsupported", "function f(){} class A{} try { f(); } catch(e) {}")
+    write("js-execute", "source-syntax-error", "let = ;")
+    write("js-execute", "source-widths", "127;128;32768;70000;")
+    write("js-execute", "source-constants", "".join(f"{value}.25;" for value in range(300)))
+    write("js-execute", "source-utf16le-surrogate", struct.pack("<4H", 0x27, 0xD800, 0x27, 0x3B))
+    for family in range(16):
+        write("js-execute", f"template-{family:02}", bytes([family, 127, 128, 8]))
+    write("js-execute", "loop-zero", bytes([1, 250, 3, 0]))
+    write("js-execute", "loop-break", bytes([2, 8, 3, 8]))
+    write("js-execute", "loop-continue", bytes([2, 1, 8, 8]))
+    write("js-execute", "unicode-pair", bytes([10, 0xD8, 0, 1]))
+    write("js-execute", "unicode-low", bytes([12, 0xDC, 0, 0]))
+    write("js-execute", "unicode-high", bytes([12, 0xD8, 0, 0]))
+
+
 def main():
+    execution_seeds()
     runtime_seeds()
     write("html", "document", "<!doctype html><table><tr><td>x</table><template><p>y</template>")
     write("html", "text-modes", "<textarea>&amp;</textarea><script>'<&'</script><svg><title>x</title></svg>")

@@ -21,7 +21,7 @@ Die Modellfälle sind so klein, dass Speicherfehler unerwartet sind und den Lauf
 
 Das Graphmodell setzt das aktuelle Zellformat und getrennte Zellen für getrennte Zeichenkettenallokationen voraus. Ändern sich das Zellformat oder das Interning in `Heap::alloc_string`, muss diese Annahme zusammen mit der Byteberechnung geprüft werden. Das Objektmodell vergleicht Zeichenketten nach ihrem Inhalt.
 
-Zugriffseigenschaften, Funktionsaufrufe, `ToPrimitive` für Objekte, weitere Umwandlungen wie `ToString` und `ToPropertyKey`, Array-Prototypmethoden, Realms, Bytecode und Interpreter gehören noch nicht zum Modell. Der Vergleich verschiedener GC-Zeitpunkte derselben Engine ist keine zweite ECMAScript-Implementierung und kein vollständiger Konformitätsnachweis. Test262 und die gezielten Engine-Regressionstests bleiben erforderlich.
+Zugriffseigenschaften, Funktionsaufrufe, `ToPrimitive` für Objekte, weitere Umwandlungen wie `ToString` und `ToPropertyKey`, Array-Prototypmethoden, Realms, Bytecode und Interpreter gehören nicht zu diesen Laufzeitmodellen. Das separate Ziel `js-execute` prüft Compiler und begrenzte Vorlagenprogramme; Umfang und Prüfpunkte stehen in der [Übergabe zur Script-Prüfung](m2-script-fuzzing.md). Der Vergleich verschiedener GC-Zeitpunkte derselben Engine ist keine zweite ECMAScript-Implementierung und kein vollständiger Konformitätsnachweis. Test262 und die gezielten Engine-Regressionstests bleiben erforderlich.
 
 ## Lokal prüfen
 

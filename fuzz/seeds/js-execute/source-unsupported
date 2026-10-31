@@ -1,0 +1,1 @@
+function f(){} class A{} try { f(); } catch(e) {}
