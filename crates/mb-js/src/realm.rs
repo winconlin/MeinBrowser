@@ -1,9 +1,10 @@
 //! Realms (Abschnitt 9.3) und die globale Umgebung (Abschnitt 9.1.1.4).
 //!
-//! Von den Intrinsics gibt es bisher nur %Object.prototype%, die übrigen
-//! kommen mit den eingebauten Objekten. Das globale Objekt hat die
-//! Werteigenschaften aus Abschnitt 19.1, und [[GlobalThisValue]] ist immer
-//! das globale Objekt.
+//! Von den Intrinsics gibt es bisher %Object.prototype% und die Prototypen,
+//! die Literale und Zugriffe auf primitive Werte brauchen, noch ohne ihre
+//! Methoden; die übrigen kommen mit den eingebauten Objekten. Das globale
+//! Objekt hat die Werteigenschaften aus Abschnitt 19.1, und
+//! [[GlobalThisValue]] ist immer das globale Objekt.
 //!
 //! Die globale Umgebung besteht wie in der Spezifikation aus einem
 //! Objekt-Record über dem globalen Objekt und einem deklarativen Record für
@@ -18,7 +19,7 @@ use crate::agent::{Agent, Completion, ErrorKind};
 use crate::descriptor::PropertyDescriptor;
 use crate::heap::{Local, Persistent, Scope};
 use crate::key::PropertyKey;
-use crate::object::{self, ordinary_object_create};
+use crate::object::{self, array_create, ordinary_object_create};
 use crate::operations::{define_property_or_throw, get, has_own_property, has_property, set};
 use crate::value::Value;
 
@@ -35,9 +36,27 @@ struct Binding {
     mutable: bool,
 }
 
-pub(crate) struct Realm {
+/// Die Intrinsics (Abschnitt 6.1.7.4), die es schon gibt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Intrinsic {
     /// %Object.prototype%
-    object_prototype: Persistent,
+    ObjectPrototype,
+    /// %Array.prototype% (Abschnitt 23.1.3): ein Array mit der Länge 0.
+    ArrayPrototype,
+    /// %Boolean.prototype% (Abschnitt 20.3.3), noch ohne [[BooleanData]].
+    BooleanPrototype,
+    /// %Number.prototype% (Abschnitt 21.1.3), noch ohne [[NumberData]].
+    NumberPrototype,
+    /// %String.prototype% (Abschnitt 22.1.3), bis es String-Objekte gibt
+    /// ein gewöhnliches Objekt mit `length` 0. Für die leere Zeichenkette
+    /// verhält es sich wie ein String-Objekt, nur [[StringData]] fehlt.
+    StringPrototype,
+    /// %Symbol.prototype% (Abschnitt 20.4.3).
+    SymbolPrototype,
+}
+
+pub(crate) struct Realm {
+    intrinsics: BTreeMap<Intrinsic, Persistent>,
     /// [[GlobalObject]], zugleich [[GlobalThisValue]].
     global_object: Persistent,
     /// [[DeclarativeRecord]] der globalen Umgebung.
@@ -79,17 +98,38 @@ fn units(text: &str) -> Vec<u16> {
 
 impl Agent {
     /// InitializeHostDefinedRealm (Abschnitt 9.3.1) ohne den
-    /// Ausführungskontext: %Object.prototype%, das globale Objekt als
-    /// gewöhnliches Objekt mit diesem Prototyp und SetDefaultGlobalBindings
-    /// (Abschnitt 9.3.3) für die Eigenschaften, die es schon gibt.
+    /// Ausführungskontext: die Intrinsics aus [`Intrinsic`], das globale
+    /// Objekt als gewöhnliches Objekt mit %Object.prototype% als Prototyp und
+    /// SetDefaultGlobalBindings (Abschnitt 9.3.3) für die Eigenschaften, die
+    /// es schon gibt.
     pub fn create_realm(&mut self) -> Completion<RealmId> {
         let realm = self.scope(|agent, scope| -> Completion<Realm> {
             let prototype = ordinary_object_create(agent, scope, None)?;
+            let array = array_create(agent, scope, 0, Some(prototype))?;
+            let boolean = ordinary_object_create(agent, scope, Some(prototype))?;
+            let number = ordinary_object_create(agent, scope, Some(prototype))?;
+            let string = ordinary_object_create(agent, scope, Some(prototype))?;
+            let zero = agent.heap().local(scope, Value::int32(0));
+            let length = agent.key_from_units(scope, &units("length"))?;
+            let descriptor = PropertyDescriptor::data(zero, false, false, false);
+            define_property_or_throw(agent, scope, string, length, &descriptor)?;
+            let symbol = ordinary_object_create(agent, scope, Some(prototype))?;
             let global = ordinary_object_create(agent, scope, Some(prototype))?;
             set_default_global_bindings(agent, scope, global)?;
             let heap = agent.heap_mut();
+            let intrinsics = [
+                (Intrinsic::ObjectPrototype, prototype),
+                (Intrinsic::ArrayPrototype, array),
+                (Intrinsic::BooleanPrototype, boolean),
+                (Intrinsic::NumberPrototype, number),
+                (Intrinsic::StringPrototype, string),
+                (Intrinsic::SymbolPrototype, symbol),
+            ]
+            .into_iter()
+            .map(|(intrinsic, object)| (intrinsic, heap.persist(object)))
+            .collect();
             Ok(Realm {
-                object_prototype: heap.persist(prototype),
+                intrinsics,
                 global_object: heap.persist(global),
                 declarative: BTreeMap::new(),
             })
@@ -102,11 +142,19 @@ impl Agent {
         self.realms.get(realm.0)
     }
 
-    /// %Object.prototype% des Realms.
-    pub fn object_prototype<'s>(&self, scope: &'s Scope, realm: RealmId) -> Local<'s> {
-        let value = self.realm(realm).map_or(Value::UNDEFINED, |realm| {
-            self.heap().get_persistent(&realm.object_prototype)
-        });
+    /// Ein Intrinsic des Realms.
+    pub fn intrinsic<'s>(
+        &self,
+        scope: &'s Scope,
+        realm: RealmId,
+        intrinsic: Intrinsic,
+    ) -> Local<'s> {
+        let value = self
+            .realm(realm)
+            .and_then(|realm| realm.intrinsics.get(&intrinsic))
+            .map_or(Value::UNDEFINED, |handle| {
+                self.heap().get_persistent(handle)
+            });
         self.heap().local(scope, value)
     }
 

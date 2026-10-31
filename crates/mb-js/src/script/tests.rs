@@ -267,7 +267,15 @@ fn global_bindings() {
     check(&[
         ("this === globalThis", "true"),
         ("'use strict'; this === globalThis", "true"),
-        ("globalThis.x", "Unsupported(0)"),
+        ("globalThis.x", "undefined"),
+        ("var g = 1; globalThis.g", "1"),
+        ("globalThis.h = 2; h", "2"),
+        ("this.t = 3; t", "3"),
+        ("let l = 1; globalThis.l", "undefined"),
+        ("delete globalThis.NaN", "false"),
+        ("'use strict'; delete globalThis.NaN", "TypeError"),
+        ("globalThis.NaN = 1", "1"),
+        ("'use strict'; globalThis.NaN = 1", "TypeError"),
         ("NaN", "NaN"),
         ("Infinity", "Infinity"),
         ("undefined = 1; undefined", "undefined"),
@@ -439,8 +447,155 @@ fn strings_survive_collection_before_every_allocation() {
         ),
         format!("{expected:?}")
     );
-    assert_eq!(run(&mut agent, realm, "s.length"), "Unsupported(0)");
+    assert_eq!(run(&mut agent, realm, "s.length"), "70");
     assert_eq!(run(&mut agent, realm, "typeof s + 1"), "\"string1\"");
+    assert_eq!(
+        run(
+            &mut agent,
+            realm,
+            "var o = {s, t: [s, s[69], {...'ab'}]}; o.t[0] === o.s && o.t[1] + o.t[2][1]"
+        ),
+        "\"9b\""
+    );
+}
+
+#[test]
+fn objects_and_arrays_from_literals() {
+    check(&[
+        ("var o = {a: 1, b: 2}; o.a + o.b", "3"),
+        ("({a: 1}).a", "1"),
+        ("var o = {a: 1, a: 2}; o.a", "2"),
+        ("var b = 3; var o = {b}; o.b", "3"),
+        (
+            "var o = {1.5: 'x', 0: 'y', 1e21: 'z'}; o['1.5'] + o[0] + o['1e+21']",
+            "\"xyz\"",
+        ),
+        (
+            "var k = 'a'; var o = {[k]: 1, [k + 'b']: 2}; o.a + o.ab",
+            "3",
+        ),
+        ("var o = {a: {b: {c: 'tief'}}}; o.a.b.c", "\"tief\""),
+        ("var p = {}; var o = {__proto__: p}; p.y = 2; o.y", "2"),
+        ("var o = {'__proto__': {y: 1}}; o.y", "1"),
+        ("var o = {__proto__: 5}; o.y", "undefined"),
+        ("var o = {__proto__: null}; 'y' in o", "false"),
+        ("var o = {['__proto__']: {y: 1}}; o.y", "undefined"),
+        ("var o = {['__proto__']: {y: 1}}; o.__proto__.y", "1"),
+        (
+            "var __proto__ = {y: 1}; var o = {__proto__}; o.y",
+            "undefined",
+        ),
+        ("var s = {a: 1, b: 2}; var o = {...s, b: 3}; o.a + o.b", "4"),
+        ("var o = {...'ab'}; o[0] + o[1]", "\"ab\""),
+        ("var o = {...'ab'}; o.length", "undefined"),
+        (
+            "var o = {...null, ...undefined, ...1, ...true}; o",
+            "Objekt",
+        ),
+        ("var o = {...{__proto__: {y: 1}}}; o.y", "undefined"),
+        ("[1, 2, 3].length", "3"),
+        ("[].length", "0"),
+        ("[,].length", "1"),
+        ("[1, , ].length", "2"),
+        ("[1, , 3].length", "3"),
+        ("1 in [1, , 3]", "false"),
+        ("2 in [1, , 3]", "true"),
+        ("var a = [10, 20]; a[1] + a['0']", "30"),
+        ("var a = []; a[3] = 1; a.length", "4"),
+        ("var a = [1, 2, 3]; a.length = 1; a[1]", "undefined"),
+        ("var a = [1]; a[0] += 1; a[0]", "2"),
+        ("var a = [[1, [2]]]; a[0][1][0]", "2"),
+    ]);
+}
+
+#[test]
+fn properties_of_primitives() {
+    check(&[
+        ("'abc'.length", "3"),
+        ("''.length", "0"),
+        ("'abc'[1]", "\"b\""),
+        ("'abc'[3]", "undefined"),
+        ("'abc'[1.5]", "undefined"),
+        ("'abc'[-0]", "\"a\""),
+        ("'abc'['length']", "3"),
+        ("(1).x", "undefined"),
+        ("true.x", "undefined"),
+        ("var s = 'abc'; s.x = 1; s.x", "undefined"),
+        ("'abc'.length = 1", "1"),
+        ("'use strict'; var s = 'abc'; s.x = 1", "TypeError"),
+        ("'use strict'; 'abc'.length = 1", "TypeError"),
+        ("'use strict'; 'abc'[0] = 'x'", "TypeError"),
+        ("delete 'abc'.length", "false"),
+        ("delete 'abc'[0]", "false"),
+        ("delete 'abc'[5]", "true"),
+        ("delete 'abc'.x", "true"),
+        ("'use strict'; delete 'abc'.length", "TypeError"),
+        ("'use strict'; delete 'abc'.x", "true"),
+        ("undefined.x", "TypeError"),
+        ("null[0]", "TypeError"),
+        ("var u; u.x = 1", "TypeError"),
+        ("var u; u.x += 1", "TypeError"),
+        ("var u; delete u.x", "TypeError"),
+        ("var o = {}; o[-0] = 1; o['0']", "1"),
+    ]);
+}
+
+#[test]
+fn assignment_to_a_property_converts_the_base_last() {
+    let (mut agent, realm) = checked();
+    assert_eq!(
+        run(&mut agent, realm, "var n = 0; var u; u[n++] = n++;"),
+        "TypeError"
+    );
+    assert_eq!(run(&mut agent, realm, "n"), "2");
+    assert_eq!(run(&mut agent, realm, "null.x = (n = 5);"), "TypeError");
+    assert_eq!(run(&mut agent, realm, "n"), "5");
+    // Beim Lesen dagegen vor dem nächsten Glied.
+    assert_eq!(run(&mut agent, realm, "null[n = 6];"), "TypeError");
+    assert_eq!(run(&mut agent, realm, "n"), "6");
+}
+
+#[test]
+fn delete_in_and_instanceof() {
+    check(&[
+        ("var o = {a: 1}; delete o.a", "true"),
+        ("var o = {a: 1}; delete o.a; o.a", "undefined"),
+        ("var o = {a: 1}; delete o['a']; 'a' in o", "false"),
+        ("var o = {}; delete (o.a)", "true"),
+        ("delete [1].length", "false"),
+        ("'use strict'; delete [1].length", "TypeError"),
+        ("var a = [1, 2]; delete a[1]; a.length", "2"),
+        ("'a' in {a: 1}", "true"),
+        ("'b' in {a: 1}", "false"),
+        ("'x' in {__proto__: {x: 1}}", "true"),
+        ("0 in [5]", "true"),
+        ("'length' in []", "true"),
+        ("'a' in 'abc'", "TypeError"),
+        ("1 in null", "TypeError"),
+        ("1 instanceof 1", "TypeError"),
+        ("var o = {}; o instanceof o", "TypeError"),
+    ]);
+}
+
+#[test]
+fn optional_chains_stop_at_undefined_and_null() {
+    check(&[
+        ("var u; u?.x", "undefined"),
+        ("var u = null; u?.x.y.z", "undefined"),
+        ("var u; u?.[nothing]", "undefined"),
+        ("var o = {a: null}; o.a?.b", "undefined"),
+        ("var o = {a: {b: 1}}; o?.a?.b", "1"),
+        ("var o = {a: {}}; o.a.b?.c", "undefined"),
+        ("var o = {}; o.a.b?.c", "TypeError"),
+        ("var u; (u?.a).b", "TypeError"),
+        ("'abc'?.length", "3"),
+        ("var o = {a: 1}; delete o?.a", "true"),
+        ("var o = {a: 1}; delete o?.a; 'a' in o", "false"),
+        ("var u; delete u?.a", "true"),
+        ("var u; delete u?.a.b", "true"),
+        ("var u; delete u?.[nothing]", "true"),
+        ("'use strict'; delete 'abc'?.length", "TypeError"),
+    ]);
 }
 
 #[test]
@@ -453,6 +608,13 @@ fn long_chains_run_on_a_small_stack() {
             assert_eq!(run(&mut agent, realm, &sum), "100001");
             let and = format!("{}'ende'", "true && ".repeat(100_000));
             assert_eq!(run(&mut agent, realm, &and), "\"ende\"");
+            assert_eq!(run(&mut agent, realm, "var o = {}; o.o = o;"), "Objekt");
+            for link in [".o", "?.o", "['o']"] {
+                let chain = format!("o{} === o", link.repeat(100_000));
+                assert_eq!(run(&mut agent, realm, &chain), "true", "{link}");
+            }
+            let delete = format!("delete o{}.x", "?.o".repeat(100_000));
+            assert_eq!(run(&mut agent, realm, &delete), "true");
         })
         .expect("Faden");
     assert!(thread.join().is_ok());

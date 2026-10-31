@@ -19,6 +19,7 @@ pub mod operations;
 pub mod operators;
 pub mod parser;
 pub mod realm;
+pub mod reference;
 pub mod regexp;
 pub mod script;
 pub mod value;

@@ -11,12 +11,18 @@
 use crate::agent::{Agent, Completion, ErrorKind};
 use crate::bytecode::{Code, Constant, Instruction, Op};
 use crate::compare::{is_less_than, is_loosely_equal, is_strictly_equal};
-use crate::conversion::{to_boolean, to_number, to_numeric, to_string};
+use crate::conversion::{to_boolean, to_number, to_numeric, to_property_key, to_string};
 use crate::heap::{Local, Scope};
-use crate::key::PropertyKey;
+use crate::key::{PropertyKey, array_index};
 use crate::number;
+use crate::object::{array_create, ordinary_object_create, set_prototype_of};
+use crate::operations::{create_data_property_or_throw, get, has_property, set};
 use crate::operators::{BinaryOp, apply_string_or_numeric_binary_operator, type_of};
-use crate::realm::{GlobalReference, RealmId};
+use crate::realm::{GlobalReference, Intrinsic, RealmId};
+use crate::reference::{
+    copy_data_properties, delete_property, get_value, instanceof_operator, put_value,
+    to_object_base,
+};
 use crate::value::{Kind, Value};
 
 /// Was nach einem Befehl geschieht.
@@ -136,6 +142,23 @@ fn string<'s>(agent: &mut Agent, scope: &'s Scope, text: &str) -> Completion<Loc
     Ok(agent.atom(scope, &units)?)
 }
 
+/// Ein Schlüssel als Wert, wie ihn ToPropertyKey liefert. Array-Indizes
+/// bleiben Zahlen; ToPropertyKey macht daraus wieder denselben Index.
+fn key_value<'s>(agent: &Agent, scope: &'s Scope, key: PropertyKey<'_>) -> Local<'s> {
+    let heap = agent.heap();
+    match key {
+        PropertyKey::Index(index) => heap.local(scope, Value::number(f64::from(index))),
+        PropertyKey::String(local) | PropertyKey::Symbol(local) => {
+            heap.local(scope, heap.get(local))
+        }
+    }
+}
+
+fn length_key<'s>(agent: &mut Agent, scope: &'s Scope) -> Completion<PropertyKey<'s>> {
+    let units: Vec<u16> = "length".encode_utf16().collect();
+    Ok(agent.key_from_units(scope, &units)?)
+}
+
 impl<'c> Frame<'c, '_> {
     /// Der Platz eines Registers im Registerstapel. Register stammen vom
     /// Übersetzer und liegen im Rahmen; ein ungültiges liest *undefined*.
@@ -175,9 +198,9 @@ impl<'c> Frame<'c, '_> {
         heap.local(scope, value.unwrap_or(Value::UNDEFINED))
     }
 
-    /// Der Bezeichner in der Konstante `operand` und der Schlüssel dazu.
-    /// Bezeichner beginnen nie mit einer Ziffer, sind also nie ein
-    /// Array-Index, und ihre Konstante ist schon ein Atom.
+    /// Der Name in der Konstante `operand` und der Schlüssel dazu. Die
+    /// Konstante ist schon ein Atom; nur Namen aus Literalen wie `{0: x}`
+    /// können ein Array-Index sein.
     fn name<'t>(
         &self,
         agent: &Agent,
@@ -188,10 +211,158 @@ impl<'c> Frame<'c, '_> {
             Some(Constant::Name(units)) => units.as_slice(),
             _ => &[],
         };
-        (
-            units,
-            PropertyKey::String(self.constant(agent, scope, operand)),
-        )
+        let key = match array_index(units) {
+            Some(index) => PropertyKey::Index(index),
+            None => PropertyKey::String(self.constant(agent, scope, operand)),
+        };
+        (units, key)
+    }
+
+    /// Eine Kopie des Akkumulators, die ihn überdauert, wenn ein Befehl ihn
+    /// überschreibt.
+    fn accumulator_copy<'t>(&self, agent: &Agent, scope: &'t Scope) -> Local<'t> {
+        let heap = agent.heap();
+        heap.local(scope, heap.get(self.accumulator))
+    }
+
+    /// Die Befehle für Objekte und Eigenschaften.
+    fn property(
+        &self,
+        agent: &mut Agent,
+        scope: &Scope,
+        instruction: &Instruction,
+    ) -> Completion<()> {
+        let first = instruction.operand(0);
+        let second = instruction.operand(1);
+        let strict = self.code.is_strict();
+        match instruction.op {
+            Op::CreateObject | Op::CreateArray => {
+                let object = if instruction.op == Op::CreateObject {
+                    let prototype = agent.intrinsic(scope, self.realm, Intrinsic::ObjectPrototype);
+                    ordinary_object_create(agent, scope, Some(prototype))?
+                } else {
+                    let prototype = agent.intrinsic(scope, self.realm, Intrinsic::ArrayPrototype);
+                    array_create(agent, scope, 0, Some(prototype))?
+                };
+                self.set_accumulator(agent, object);
+            }
+            Op::DefineNamed | Op::DefineKeyed => {
+                let object = self.register(agent, scope, first);
+                let key = if instruction.op == Op::DefineNamed {
+                    self.name(agent, scope, second).1
+                } else {
+                    let key = self.register(agent, scope, second);
+                    to_property_key(agent, scope, key)?
+                };
+                create_data_property_or_throw(agent, scope, object, key, self.accumulator)?;
+            }
+            Op::SetPrototypeLiteral => {
+                let object = self.register(agent, scope, first);
+                let prototype = match agent.heap().get(self.accumulator).kind() {
+                    Kind::Object(_) => Some(self.accumulator),
+                    Kind::Null => None,
+                    _ => return Ok(()),
+                };
+                // Das Objekt ist neu, gewöhnlich und erweiterbar; das gelingt
+                // immer.
+                set_prototype_of(agent, object, prototype)?;
+            }
+            Op::CopyDataProperties => {
+                let object = self.register(agent, scope, first);
+                copy_data_properties(agent, scope, object, self.accumulator)?;
+            }
+            Op::ArrayPush | Op::ArrayHole => {
+                // Im Literal ist die Länge stets der nächste Index
+                // (ArrayAccumulation, Abschnitt 13.2.4.1): Elemente
+                // verlängern das Array, Lücken setzen die Länge. Eine Folge
+                // von Lücken setzt sie hier einmal je Lücke statt einmal am
+                // Ende; bei einem neuen Array ist das nicht zu unterscheiden.
+                let array = self.register(agent, scope, first);
+                let length = length_key(agent, scope)?;
+                let current = get(agent, scope, array, length)?;
+                if instruction.op == Op::ArrayPush {
+                    let key = to_property_key(agent, scope, current)?;
+                    create_data_property_or_throw(agent, scope, array, key, self.accumulator)?;
+                } else {
+                    let next = agent.heap().get(current).as_number().unwrap_or(0.0) + 1.0;
+                    let next = agent.heap().local(scope, Value::number(next));
+                    set(agent, scope, array, length, next, true)?;
+                }
+            }
+            Op::ToPropertyKey => {
+                let key = to_property_key(agent, scope, self.accumulator)?;
+                let value = key_value(agent, scope, key);
+                self.set_accumulator(agent, value);
+            }
+            Op::LdaNamed | Op::LdaKeyed | Op::LdaKeyedRef => {
+                let this = if instruction.op == Op::LdaNamed {
+                    self.accumulator_copy(agent, scope)
+                } else {
+                    self.register(agent, scope, first)
+                };
+                let base = to_object_base(agent, scope, self.realm, this)?;
+                let key = match instruction.op {
+                    Op::LdaNamed => self.name(agent, scope, first).1,
+                    Op::LdaKeyed => to_property_key(agent, scope, self.accumulator)?,
+                    _ => {
+                        let key = self.register(agent, scope, second);
+                        let key = to_property_key(agent, scope, key)?;
+                        let stored = key_value(agent, scope, key);
+                        self.set_register(agent, second, stored);
+                        key
+                    }
+                };
+                let value = get_value(agent, scope, base, this, key)?;
+                self.set_accumulator(agent, value);
+            }
+            Op::StaNamed | Op::StaKeyed => {
+                let this = self.register(agent, scope, first);
+                let base = to_object_base(agent, scope, self.realm, this)?;
+                let key = if instruction.op == Op::StaNamed {
+                    self.name(agent, scope, second).1
+                } else {
+                    let key = self.register(agent, scope, second);
+                    to_property_key(agent, scope, key)?
+                };
+                put_value(agent, scope, base, this, key, self.accumulator, strict)?;
+            }
+            Op::DeleteNamed | Op::DeleteKeyed => {
+                let this = if instruction.op == Op::DeleteNamed {
+                    self.accumulator_copy(agent, scope)
+                } else {
+                    self.register(agent, scope, first)
+                };
+                let base = to_object_base(agent, scope, self.realm, this)?;
+                let key = if instruction.op == Op::DeleteNamed {
+                    self.name(agent, scope, first).1
+                } else {
+                    to_property_key(agent, scope, self.accumulator)?
+                };
+                let deleted = delete_property(agent, scope, base, this, key, strict)?;
+                self.set_accumulator_value(agent, Value::boolean(deleted));
+            }
+            Op::TestIn => {
+                // Abschnitt 13.10.1: erst die Art des Objekts, dann
+                // ToPropertyKey.
+                let left = self.register(agent, scope, first);
+                let right = self.accumulator_copy(agent, scope);
+                if !matches!(agent.heap().get(right).kind(), Kind::Object(_)) {
+                    return Err(agent.throw_error(ErrorKind::TypeError));
+                }
+                let key = to_property_key(agent, scope, left)?;
+                let found = has_property(agent, right, key)?;
+                self.set_accumulator_value(agent, Value::boolean(found));
+            }
+            Op::TestInstanceOf => {
+                let left = self.register(agent, scope, first);
+                let right = self.accumulator_copy(agent, scope);
+                let found = instanceof_operator(agent, scope, left, right)?;
+                self.set_accumulator_value(agent, Value::boolean(found));
+            }
+            // Die übrigen Befehle führt `step` aus.
+            _ => return Err(agent.throw_error(ErrorKind::RangeError)),
+        }
+        Ok(())
     }
 
     fn global_reference(&self, agent: &Agent, operand: i64) -> GlobalReference {
@@ -394,6 +565,24 @@ impl<'c> Frame<'c, '_> {
                     return Ok(jump(instruction));
                 }
             }
+            Op::CreateObject
+            | Op::CreateArray
+            | Op::DefineNamed
+            | Op::DefineKeyed
+            | Op::SetPrototypeLiteral
+            | Op::CopyDataProperties
+            | Op::ArrayPush
+            | Op::ArrayHole
+            | Op::ToPropertyKey
+            | Op::LdaNamed
+            | Op::LdaKeyed
+            | Op::LdaKeyedRef
+            | Op::StaNamed
+            | Op::StaKeyed
+            | Op::DeleteNamed
+            | Op::DeleteKeyed
+            | Op::TestIn
+            | Op::TestInstanceOf => self.property(agent, scope, instruction)?,
             Op::Throw => return Err(agent.throw_value(self.accumulator)),
             Op::Return => return Ok(Flow::Return),
             // Präfixe liest `Code::decode` mit dem Befehl danach.
