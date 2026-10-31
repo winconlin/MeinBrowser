@@ -1,6 +1,7 @@
 //! Die Syntaxtests aus Test262 (`tools/testdata`): alle Tests unter
-//! `test/language/` und `test/annexB/language/`, nur gelesen, nicht
-//! ausgeführt.
+//! `test/language/` und `test/annexB/language/` und für die Muster
+//! regulärer Ausdrücke die unter `test/built-ins/RegExp/` und
+//! `test/annexB/built-ins/RegExp/`, nur gelesen, nicht ausgeführt.
 //!
 //! Jeder Test wird so gelesen, wie `INTERPRETING.md` es verlangt: mit
 //! `module` als Modul, mit `raw` unverändert, sonst als Script außerhalb des
@@ -17,7 +18,12 @@ use std::path::{Path, PathBuf};
 use super::{parse_module, parse_script};
 
 const SOURCE: &str = "test262";
-const DIRECTORIES: [&str; 2] = ["test/language", "test/annexB/language"];
+const DIRECTORIES: [&str; 4] = [
+    "test/language",
+    "test/annexB/language",
+    "test/built-ins/RegExp",
+    "test/annexB/built-ins/RegExp",
+];
 
 /// Was ein Test über sich sagt.
 #[derive(Debug, Default)]
@@ -146,10 +152,7 @@ fn test_files(root: &Path, directory: &str) -> Vec<PathBuf> {
 
 /// Ordner, in denen Tests mit `negative` noch keinen Fehler ergeben, mit
 /// Grund. Andere Fehlschläge zählen auch hier.
-const MISSING_ERRORS: [(&str, &str); 1] = [(
-    "language/literals/regexp/",
-    "Die Muster regulärer Ausdrücke prüft der Parser noch nicht, nur die Flags.",
-)];
+const MISSING_ERRORS: [(&str, &str); 0] = [];
 
 /// Was vor einen Test im strikten Modus kommt.
 const USE_STRICT: &str = "\"use strict\";\n";
@@ -310,7 +313,7 @@ fn test262_syntax() {
             tally.runs,
             tally.missing
         ),
-        (24673, 532, 4236, 44689, [334]),
+        (26614, 558, 4428, 48517, []),
         "Zahl der Fälle"
     );
 }

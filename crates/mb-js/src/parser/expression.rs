@@ -1,11 +1,12 @@
 //! Ausdrücke (Abschnitt 13).
 
-use super::{Cover, ErrorKind, Parser, Result};
+use super::{Cover, ErrorKind, Parser, Result, SyntaxError};
 use crate::ast::{
     AssignOperator, Atom, BinaryOperator, List, Node, NodeId, PropertyKind, UnaryOperator,
     UpdateOperator,
 };
 use crate::lexer::{Goal, Name, Punctuator, TemplatePart, TokenKind};
+use crate::regexp;
 
 /// Der Kopf einer Pfeilfunktion, erkannt an `=>` hinter einem Bezeichner,
 /// einer Klammer oder einem Aufruf von `async`.
@@ -1025,13 +1026,21 @@ impl Parser<'_> {
     }
 
     fn regexp_literal(&mut self, start: usize) -> Result<NodeId> {
-        let TokenKind::RegExp(regexp) = &self.token(Goal::RegExp)?.kind else {
+        let token = self.token(Goal::RegExp)?;
+        let TokenKind::RegExp(literal) = &token.kind else {
             return Err(self.unexpected(Goal::RegExp));
         };
-        let body = regexp.body.clone();
-        let flags = regexp.flags.clone();
-        if !valid_flags(&flags) {
+        let body_start = token.range.start.saturating_add(1);
+        let body = literal.body.clone();
+        let flags = literal.flags.clone();
+        let Some(parsed_flags) = regexp::Flags::parse(&flags) else {
             return Err(self.error(ErrorKind::InvalidRegExpFlags));
+        };
+        if let Err(error) = regexp::parse(&body, parsed_flags) {
+            return Err(SyntaxError {
+                kind: ErrorKind::RegExp(error.kind),
+                position: body_start.saturating_add(error.position),
+            });
         }
         self.advance();
         let body = self.intern(&body);
@@ -1623,31 +1632,6 @@ enum Literal {
     Number(f64),
     BigInt(u8, Vec<u16>),
     String(Vec<u16>),
-}
-
-/// Die Flags eines regulären Ausdrucks (Abschnitt 22.2.3.1): nur `d`, `g`,
-/// `i`, `m`, `s`, `u`, `v` und `y`, jedes höchstens einmal, nicht `u` und
-/// `v` zusammen.
-fn valid_flags(flags: &[u16]) -> bool {
-    let mut seen = 0u8;
-    for unit in flags {
-        let bit = match unit {
-            0x64 => 1,
-            0x67 => 2,
-            0x69 => 4,
-            0x6D => 8,
-            0x73 => 16,
-            0x75 => 32,
-            0x76 => 64,
-            0x79 => 128,
-            _ => return false,
-        };
-        if seen & bit != 0 {
-            return false;
-        }
-        seen |= bit;
-    }
-    seen & 96 != 96
 }
 
 /// Die Vorsätze einer Methode: `get`, `set`, `async` und `*`.

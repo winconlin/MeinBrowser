@@ -106,6 +106,7 @@ def main():
     write("js", "early-error", '"use strict"; function f(a, a) {}')
     write("js", "deep", "(" * 300 + "a" + ")" * 300)
     write("js", "utf16le-surrogate", struct.pack("<8H", *b"x = '", 0xD800, *b"';"))
+    write("js", "regexp", r"(?<a>x)|(?<a>[\p{L}--\q{ab|c}])\k<a>{2,3}?(?i-m:\u{1F600}.)(?<=\b[^\d])\1")
     part = b"\x1f\x1f"  # PART_SEPARATOR in src/lib.rs
     write("page", "document", "<!doctype html><style>@media (max-width: 400px) { p { margin: 0 } }"
           " p { border: 2px dashed red; padding: 4px; font-style: italic }"

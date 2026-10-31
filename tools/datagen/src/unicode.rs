@@ -5,7 +5,8 @@
 //! `LineBreak.txt`, East_Asian_Width aus `EastAsianWidth.txt`,
 //! Extended_Pictographic aus `emoji-data.txt`, ID_Start und ID_Continue aus
 //! `DerivedCoreProperties.txt`, die Faltung der Groß- und Kleinschreibung
-//! aus `CaseFolding.txt`, Namen der Werte aus `PropertyValueAliases.txt`.
+//! aus `CaseFolding.txt`, Namen der Werte aus `PropertyValueAliases.txt`,
+//! dort auch alle Namen der Werte von General_Category und Script.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
@@ -83,6 +84,8 @@ pub fn generate(sources: &Sources<'_>) -> Result<String, String> {
     let joining_values = property_values(&aliases, "jt")?;
     let line_break_values = property_values(&aliases, "lb")?;
     let east_asian_values = property_values(&aliases, "ea")?;
+    let category_names = value_names(&aliases, "gc")?;
+    let script_names = value_names(&aliases, "sc")?;
     let unassigned = find(&categories, "Cn")?;
     let count = index(MAX_CODE_POINT)? + 1;
     let mut category_of = vec![unassigned; count];
@@ -162,6 +165,8 @@ pub fn generate(sources: &Sources<'_>) -> Result<String, String> {
         decompositions,
         compositions,
         case_folding: case_folding(sources.case_folding)?,
+        category_names,
+        script_names,
     };
     emit(
         version,
@@ -229,6 +234,32 @@ fn property_values(aliases: &[ValueAlias], property: &str) -> Result<Vec<Propert
         ));
     }
     Ok(values)
+}
+
+/// Alle Namen der Werte einer Eigenschaft (Kurzname, Langname und weitere
+/// Aliasse), nach Namen sortiert, mit dem Kurznamen ihres Werts.
+fn value_names(aliases: &[ValueAlias], property: &str) -> Result<BTreeMap<String, String>, String> {
+    let mut names = BTreeMap::new();
+    for alias in aliases.iter().filter(|alias| alias.property == property) {
+        let Some(short) = alias.fields.first() else {
+            continue;
+        };
+        for name in &alias.fields {
+            if let Some(other) = names.insert(name.clone(), short.clone())
+                && other != *short
+            {
+                return Err(format!(
+                    "{property}: der Name {name:?} gehört zu {other} und zu {short}"
+                ));
+            }
+        }
+    }
+    if names.is_empty() {
+        return Err(format!(
+            "PropertyValueAliases.txt enthält keine Werte für {property}"
+        ));
+    }
+    Ok(names)
 }
 
 /// Die Kategorien und Gruppen in der Reihenfolge der Datei. Gruppen erkennt
@@ -487,6 +518,8 @@ struct Tables {
     decompositions: BTreeMap<u32, Vec<u32>>,
     compositions: Vec<(u32, u32, u32)>,
     case_folding: BTreeMap<u32, Vec<u32>>,
+    category_names: BTreeMap<String, String>,
+    script_names: BTreeMap<String, String>,
 }
 
 fn emit(
@@ -605,6 +638,23 @@ fn emit(
     writeln!(out)?;
     writeln!(
         out,
+        "/// Alle Namen der Werte von General_Category aus `PropertyValueAliases.txt`,"
+    )?;
+    writeln!(
+        out,
+        "/// auch der Gruppen und der weiteren Aliasse, nach Namen sortiert, mit dem"
+    )?;
+    writeln!(out, "/// Kurznamen ihres Werts.")?;
+    emit_names(&mut out, "GENERAL_CATEGORY_NAMES", &tables.category_names)?;
+    writeln!(out)?;
+    writeln!(
+        out,
+        "/// Alle Namen der Werte von Script, aufgebaut wie oben."
+    )?;
+    emit_names(&mut out, "SCRIPT_NAMES", &tables.script_names)?;
+    writeln!(out)?;
+    writeln!(
+        out,
         "/// Extended_Pictographic (UTS #51): Anfang jedes Abschnitts und ob seine"
     )?;
     writeln!(out, "/// Codepunkte die Eigenschaft haben.")?;
@@ -670,6 +720,19 @@ fn emit(
     writeln!(out, "/// bleiben, wie sie sind.")?;
     emit_sequences(&mut out, "CASE_FOLDING", &tables.case_folding)?;
     Ok(out)
+}
+
+/// Schreibt eine Tabelle von Namen mit den Kurznamen ihrer Werte.
+fn emit_names(out: &mut String, table: &str, names: &BTreeMap<String, String>) -> std::fmt::Result {
+    writeln!(
+        out,
+        "pub static {table}: [(&str, &str); {}] = [",
+        names.len()
+    )?;
+    for (name, short) in names {
+        writeln!(out, "    ({name:?}, {short:?}),")?;
+    }
+    writeln!(out, "];")
 }
 
 /// Schreibt eine binäre Eigenschaft als Abschnitte.
@@ -798,7 +861,9 @@ mod tests {
                                  jt ; U ; Non_Joining\n\
                                  lb ; AL ; Alphabetic\n\
                                  lb ; CM ; Combining_Mark\n\
-                                 lb ; XX ; Unknown\n";
+                                 lb ; XX ; Unknown\n\
+                                 sc ; Latn ; Latin\n\
+                                 sc ; Zinh ; Inherited ; Qaai\n";
 
     const EXCLUSIONS: &str = "0958    #  DEVANAGARI LETTER QA\n";
 
@@ -945,6 +1010,20 @@ mod tests {
              (0x0041, true),\n    (0x0043, false),\n    (0x0300, true),\n    \
              (0x0301, false),\n];\n"
         ));
+        // Alle Namen samt Gruppen und weiteren Aliassen, nach Namen sortiert.
+        assert!(source.contains(
+            "pub static GENERAL_CATEGORY_NAMES: [(&str, &str); 10] = [\n    \
+             (\"Cn\", \"Cn\"),\n    (\"L\", \"L\"),\n    (\"Letter\", \"L\"),\n    \
+             (\"Lo\", \"Lo\"),\n    (\"Lu\", \"Lu\"),\n    (\"Mn\", \"Mn\"),\n    \
+             (\"Nonspacing_Mark\", \"Mn\"),\n    (\"Other_Letter\", \"Lo\"),\n    \
+             (\"Unassigned\", \"Cn\"),\n    (\"Uppercase_Letter\", \"Lu\"),\n];\n"
+        ));
+        assert!(source.contains(
+            "pub static SCRIPT_NAMES: [(&str, &str); 5] = [\n    \
+             (\"Inherited\", \"Zinh\"),\n    (\"Latin\", \"Latn\"),\n    \
+             (\"Latn\", \"Latn\"),\n    (\"Qaai\", \"Zinh\"),\n    \
+             (\"Zinh\", \"Zinh\"),\n];\n"
+        ));
         // Ohne die einfache und die türkische Faltung.
         assert!(source.contains(
             "pub static CASE_FOLDING: [(u32, &[u32]); 3] = [\n    \
@@ -963,6 +1042,17 @@ mod tests {
         assert!(generate(&sources(UNICODE_DATA, &aliases)).is_err());
         let aliases = VALUE_ALIASES.replace("bc ; R  ; Right_To_Left\n", "");
         assert!(generate(&sources(UNICODE_DATA, &aliases)).is_err());
+        let aliases = VALUE_ALIASES.replace("sc ; Latn ; Latin\n", "");
+        let aliases = aliases.replace("sc ; Zinh ; Inherited ; Qaai\n", "");
+        assert!(
+            generate(&sources(UNICODE_DATA, &aliases)).is_err(),
+            "ohne Script"
+        );
+        let aliases = VALUE_ALIASES.replace("; Qaai", "; Latin");
+        assert!(
+            generate(&sources(UNICODE_DATA, &aliases)).is_err(),
+            "Name für zwei Werte"
+        );
         let mut broken = sources(UNICODE_DATA, VALUE_ALIASES);
         broken.joining_types = "0300 ; T\n";
         assert!(generate(&broken).is_err(), "Codepunkte ohne Wert");

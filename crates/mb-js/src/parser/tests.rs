@@ -168,6 +168,29 @@ fn slash_is_division_or_regular_expression_by_position() {
 }
 
 #[test]
+fn regular_expression_patterns_are_checked() {
+    use crate::regexp::ErrorKind as RegExpError;
+    let error = script_error("x = /a(b/");
+    assert_eq!(
+        error.kind,
+        ErrorKind::RegExp(RegExpError::UnterminatedGroup)
+    );
+    assert_eq!(error.position, 6);
+    assert_eq!(
+        script_error("/{1}/").kind,
+        ErrorKind::RegExp(RegExpError::NothingToRepeat)
+    );
+    assert_eq!(
+        script_error("/]/; /]/u").kind,
+        ErrorKind::RegExp(RegExpError::UnexpectedCharacter)
+    );
+    assert_eq!(
+        show_expression("/(?<a>.)\\k<a>[\\q{bc}]/v"),
+        "/(?<a>.)\\k<a>[\\q{bc}]/v"
+    );
+}
+
+#[test]
 fn automatic_semicolon_insertion() {
     assert_eq!(script("a\nb").body().len(), 2);
     assert_eq!(script("a\n++b").body().len(), 2);
