@@ -12,7 +12,9 @@
 //! Zu welcher Funktion ein Bezeichner gehört, folgt aus den Lagen im
 //! Quelltext: Die Funktionen liegen ineinander oder nebeneinander, und ein
 //! Durchlauf in der Reihenfolge des Quelltexts hält die Kette der
-//! Funktionen um die aktuelle Stelle auf einem Stapel.
+//! Funktionen um die aktuelle Stelle auf einem Stapel. Eine Methode beginnt
+//! dabei erst hinter ihrem Namen: Ihr Quelltext enthält ihn, ein
+//! berechneter Name läuft aber im umgebenden Code.
 
 use std::cmp::Reverse;
 use std::collections::BTreeSet;
@@ -75,12 +77,29 @@ impl Ast {
             }
         }
         uses.sort_by_key(|&(position, _)| position);
+        let mut starts: Vec<usize> = self.functions.iter().map(|f| f.range.start).collect();
+        for node in &self.nodes {
+            let (key, function) = match *node {
+                Node::Property { key, value, .. } => match self.nodes.get(value.index()) {
+                    Some(&Node::Function(function)) => (key, function),
+                    _ => continue,
+                },
+                Node::ClassMethod { key, function, .. } => (key, function),
+                _ => continue,
+            };
+            if let Some(start) = starts.get_mut(function.index())
+                && let Some(&(_, end)) = self.ranges.get(key.index())
+            {
+                *start = (*start).max(to_usize(end));
+            }
+        }
         // Äußere Funktionen vor den inneren, die an derselben Stelle beginnen.
         let mut order: Vec<(usize, Reverse<usize>, usize)> = self
             .functions
             .iter()
+            .zip(&starts)
             .enumerate()
-            .map(|(index, function)| (function.range.start, Reverse(function.range.end), index))
+            .map(|(index, (function, &start))| (start, Reverse(function.range.end), index))
             .collect();
         order.sort_unstable();
         let mut next = order.into_iter().peekable();

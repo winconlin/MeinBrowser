@@ -1131,6 +1131,25 @@ fn arrow_functions_take_this_from_their_surroundings() {
 }
 
 #[test]
+fn computed_method_names_see_the_surrounding_this() {
+    // Der berechnete Name läuft im umgebenden Code, nicht in der Methode.
+    check(&[
+        (
+            "var o = {x: 'key', f() { return {[(() => this.x)()]() { return 7; }}; }}; o.f().key()",
+            "7",
+        ),
+        (
+            "var o = {x: 'g', f() { return {get [(() => this.x)()]() { return 8; }}; }}; o.f().g",
+            "8",
+        ),
+        (
+            "var x = 'k'; var o = {[(() => this.x)()]() { return 9; }}; o.k()",
+            "9",
+        ),
+    ]);
+}
+
+#[test]
 fn let_in_for_binds_each_iteration() {
     check(&[
         (
