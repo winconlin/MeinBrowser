@@ -10,10 +10,15 @@
 //! Der Baum hält fest, was der Quelltext sagt, auch Klammern
 //! ([`Node::Paren`]), denn manche Regeln der Spezifikation hängen daran.
 
+use std::cell::OnceCell;
 use std::collections::BTreeMap;
 use std::num::NonZeroU32;
 use std::ops::Range;
 use std::rc::Rc;
+
+pub(crate) use captures::{Captures, FunctionCaptures};
+
+mod captures;
 
 /// Ein Knoten in [`Ast`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -530,6 +535,8 @@ pub struct Ast {
     module: bool,
     strict: bool,
     overflow: bool,
+    /// Für den Übersetzer, beim ersten Gebrauch berechnet.
+    captures: OnceCell<Captures>,
 }
 
 impl Ast {
@@ -581,6 +588,16 @@ impl Ast {
 
     pub fn node_count(&self) -> usize {
         self.nodes.len()
+    }
+
+    /// Welche Namen innere Funktionen sehen, für den Übersetzer.
+    pub(crate) fn captures(&self) -> &Captures {
+        self.captures.get_or_init(|| self.compute_captures())
+    }
+
+    /// Das Atom für `units`, wenn der Baum den Namen enthält.
+    pub(crate) fn find_atom(&self, units: &[u16]) -> Option<Atom> {
+        self.atom_index.get(units).copied()
     }
 
     // Aufbau, nur für den Parser

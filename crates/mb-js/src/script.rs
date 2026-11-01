@@ -68,24 +68,25 @@ impl Agent {
         unit: &Rc<Ast>,
         script: &Script,
     ) -> Completion<Local<'s>> {
-        self.scope(|agent, inner| {
+        let flags = self.scope(|agent, inner| {
             global_declaration_instantiation(agent, inner, realm, unit, script)
         })?;
         let this = self.global_object(scope, realm);
-        execute_script(self, scope, realm, &script.code, unit, this)
+        execute_script(self, scope, realm, &script.code, unit, this, &flags)
     }
 }
 
-/// GlobalDeclarationInstantiation (Abschnitt 16.1.7). Die Funktionen auf
-/// oberster Ebene sehen außer ihren eigenen Bindungen nur die globale
-/// Umgebung.
+/// GlobalDeclarationInstantiation (Abschnitt 16.1.7) mit den Schritten aus
+/// Anhang B.3.2.2. Die Funktionen auf oberster Ebene sehen außer ihren
+/// eigenen Bindungen nur die globale Umgebung. Gibt die Register der
+/// Funktionen in Blöcken zurück, die die globale Bindung setzen.
 fn global_declaration_instantiation(
     agent: &mut Agent,
     scope: &Scope,
     realm: RealmId,
     unit: &Rc<Ast>,
     script: &Script,
-) -> Completion<()> {
+) -> Completion<Vec<u32>> {
     for (name, _) in &script.lexical_names {
         if agent.has_lexical_declaration(realm, name) {
             return Err(agent.throw_error(ErrorKind::SyntaxError));
@@ -114,6 +115,31 @@ fn global_declaration_instantiation(
             return Err(agent.throw_error(ErrorKind::TypeError));
         }
     }
+    // Anhang B.3.2.2: Eine Funktion in einem Block setzt auch die globale
+    // Bindung, wenn es keine lexikalische gibt und eine aus `var` entstehen
+    // darf. Neu angelegt wird sie nur, wenn der Name nicht schon aus einer
+    // Funktion oder `var` stammt (declaredFunctionOrVarNames).
+    let mut declared: Vec<&[u16]> = script
+        .functions
+        .iter()
+        .map(|(name, _)| name.as_slice())
+        .chain(script.var_names.iter().map(Vec::as_slice))
+        .collect();
+    let mut flags = Vec::new();
+    for (name, flag) in &script.hoisted_functions {
+        if agent.has_lexical_declaration(realm, name) {
+            continue;
+        }
+        let key = agent.key_from_units(scope, name)?;
+        if !agent.can_declare_global_var(scope, realm, key)? {
+            continue;
+        }
+        if !declared.contains(&name.as_slice()) {
+            agent.create_global_var_binding(scope, realm, key, false)?;
+            declared.push(name);
+        }
+        flags.push(*flag);
+    }
     for (name, constant) in &script.lexical_names {
         agent.create_lexical_binding(scope, realm, name, !constant)?;
     }
@@ -134,7 +160,7 @@ fn global_declaration_instantiation(
         let key = agent.key_from_units(scope, name)?;
         agent.create_global_var_binding(scope, realm, key, false)?;
     }
-    Ok(())
+    Ok(flags)
 }
 
 #[cfg(test)]

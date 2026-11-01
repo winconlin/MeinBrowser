@@ -911,17 +911,9 @@ fn named_function_expressions_bind_their_name() {
 }
 
 #[test]
-fn closures_and_arguments_are_not_yet_supported() {
+fn arguments_and_defaults_are_not_yet_supported() {
     // Funktionen werden erst beim ersten Aufruf übersetzt.
     check(&[
-        (
-            "function f(x) { return function () { return x; }; } f(1)",
-            "Objekt",
-        ),
-        (
-            "function f(x) { return function () { return x; }; } f(1)()",
-            "Unsupported(44)",
-        ),
         ("function f() { return arguments; } f", "Objekt"),
         ("function f() { return arguments; } f()", "Unsupported(22)"),
         ("function f() { var arguments; } f()", "Unsupported(0)"),
@@ -940,16 +932,480 @@ fn closures_and_arguments_are_not_yet_supported() {
             "5",
         ),
         ("function f(a = 1) {} f()", "Unsupported(0)"),
-        ("function f() { return () => 1; } f()", "Unsupported(22)"),
+        // Eine Pfeilfunktion meint das Objekt der Funktion um sie herum.
         (
-            "function f() { { function g() {} } } f()",
-            "Unsupported(17)",
+            "function f() { return () => arguments; } f()()",
+            "Unsupported(28)",
         ),
         (
-            "var o = {get a() { return x => x; }}; o.a",
-            "Unsupported(26)",
+            "function f() { let arguments = 6; return () => arguments; } f()()",
+            "6",
+        ),
+        ("var f = () => arguments; f()", "ReferenceError"),
+        ("var f = (a = 1) => a; f()", "Unsupported(8)"),
+        ("var f = async () => 1; f", "Unsupported(8)"),
+    ]);
+}
+
+#[test]
+fn closures_see_the_bindings_around_them() {
+    check(&[
+        (
+            "function f(x) { return function () { return x; }; } f(1)()",
+            "1",
+        ),
+        (
+            "function f(x) { x = 5; return function () { return x; }; } f(1)()",
+            "5",
+        ),
+        (
+            "function f(x) { var g = function () { x = 7; }; g(); return x; } f(1)",
+            "7",
+        ),
+        (
+            "function counter() { var n = 0; return function () { return ++n; }; } \
+             var c = counter(); c(); c(); c()",
+            "3",
+        ),
+        // Jeder Aufruf hat seinen eigenen Kontext, Closures desselben Aufrufs
+        // teilen ihn.
+        (
+            "function counter() { var n = 0; return function () { return ++n; }; } \
+             var a = counter(), b = counter(); a(); a(); b()",
+            "1",
+        ),
+        (
+            "function f() { var n = 0; return {inc() { n++; }, get v() { return n; }}; } \
+             var o = f(); o.inc(); o.inc(); o.v",
+            "2",
+        ),
+        (
+            "function f(a) { return function (b) { return function (c) { return a + b + c; }; }; } \
+             f(1)(2)(3)",
+            "6",
+        ),
+        (
+            "function f() { let x = 1; { let y = 2; return function () { return x * 10 + y; }; } } f()()",
+            "12",
+        ),
+        // Alle Bindungen mit dem Namen liegen in Kontexten, gemeint ist die
+        // nächste.
+        (
+            "function f() { var x = 1; { let x = 2; } return function () { return x; }; } f()()",
+            "1",
+        ),
+        (
+            "function f() { let x = 1, g; { let x = 2; g = function () { return x; }; } return g() * 10 + x; } f()",
+            "21",
+        ),
+        (
+            "function f() { var g = function () { var x = 3; return x; }; var x = 4; return g() + x; } f()",
+            "7",
+        ),
+        (
+            "var f = function g(n) { return function () { return n ? g(n - 1)() + 1 : 0; }; }; f(3)()",
+            "3",
+        ),
+        (
+            "var f = function g() { return function () { g = 1; return typeof g; }; }; f()()",
+            "\"function\"",
+        ),
+        (
+            "var g; { let x = 3; g = function () { return x; }; } g()",
+            "3",
+        ),
+        (
+            "var g; { let x = 3; g = function () { return ++x; }; } g(); g()",
+            "5",
+        ),
+        (
+            "var o = {m(a) { return {get b() { return a; }}; }}; o.m(8).b",
+            "8",
         ),
     ]);
+}
+
+#[test]
+fn closures_check_the_temporal_dead_zone() {
+    check(&[
+        (
+            "function f() { function g() { return x; } let x = 1; return g(); } f()",
+            "1",
+        ),
+        (
+            "function f() { function g() { return x; } g(); let x = 1; } f()",
+            "ReferenceError",
+        ),
+        (
+            "function f() { function g() { x = 2; } g(); let x = 1; } f()",
+            "ReferenceError",
+        ),
+        (
+            "function f() { function g() { return typeof x; } g(); let x; } f()",
+            "ReferenceError",
+        ),
+        (
+            "function f() { const c = 1; function g() { c = 2; } g(); } f()",
+            "TypeError",
+        ),
+        (
+            "function f() { function g() { c = 2; } g(); const c = 1; } f()",
+            "ReferenceError",
+        ),
+        (
+            "function f() { var g = function () { return x; }; x; let x = 1; } f()",
+            "ReferenceError",
+        ),
+        (
+            "function f() { var g = function () { return x; }; x = 1; let x; } f()",
+            "ReferenceError",
+        ),
+        (
+            "function f() { var g = function () { return x; }; let x = 1; x = 2; return g(); } f()",
+            "2",
+        ),
+        (
+            "var g; { g = function () { return y; }; let y = 1; } g()",
+            "1",
+        ),
+        (
+            "var g; switch (1) { case 0: let y = 1; case 1: g = function () { return y; }; } g()",
+            "ReferenceError",
+        ),
+        // `var` und Parameter haben keine TDZ.
+        (
+            "function f() { function g() { return v; } var r = g(); var v = 1; return r; } f()",
+            "undefined",
+        ),
+    ]);
+}
+
+#[test]
+fn arrow_functions_take_this_from_their_surroundings() {
+    check(&[
+        ("var f = (a, b) => a + b; f(1, 2)", "3"),
+        ("var f = x => x * 2; f(4)", "8"),
+        ("var f = () => { return 5; }; f()", "5"),
+        ("var f = () => {}; f()", "undefined"),
+        ("var f = x => y => x - y; f(5)(3)", "2"),
+        ("var f = () => 1; f.name", "\"f\""),
+        ("var f = (a, b) => 1; f.length", "2"),
+        ("var f = () => 1; typeof f.prototype", "\"undefined\""),
+        ("var o = {f: () => 1}; o.f.name", "\"f\""),
+        ("var o = {v: 1, m() { return () => this.v; }}; o.m()()", "1"),
+        (
+            "var o = {v: 2, m() { return () => () => this.v; }}; o.m()()()",
+            "2",
+        ),
+        (
+            "var o = {v: 3, get g() { return (() => this.v)(); }}; o.g",
+            "3",
+        ),
+        // Das `this` des Aufrufs zählt nicht.
+        (
+            "function F() { return () => this; } var o = {F: F}; var a = o.F(); var p = {a: a}; p.a() === o",
+            "true",
+        ),
+        (
+            "'use strict'; function f() { return () => this; } f()()",
+            "undefined",
+        ),
+        ("function f() { return () => this; } f()() === this", "true"),
+        // Im Script ist `this` das globale Objekt.
+        ("var v = 4; var f = () => this.v; f()", "4"),
+        ("(() => this)() === this", "true"),
+        ("var o = {f: () => this}; o.f() === this", "true"),
+        (
+            "var f = () => { 'use strict'; return this; }; f() === this",
+            "true",
+        ),
+        (
+            "var f = function () { return (() => typeof this)(); }; f()",
+            "\"object\"",
+        ),
+        (
+            "var f = function () { 'use strict'; return (() => typeof this)(); }; f()",
+            "\"undefined\"",
+        ),
+    ]);
+}
+
+#[test]
+fn computed_method_names_see_the_surrounding_this() {
+    // Der berechnete Name läuft im umgebenden Code, nicht in der Methode.
+    check(&[
+        (
+            "var o = {x: 'key', f() { return {[(() => this.x)()]() { return 7; }}; }}; o.f().key()",
+            "7",
+        ),
+        (
+            "var o = {x: 'g', f() { return {get [(() => this.x)()]() { return 8; }}; }}; o.f().g",
+            "8",
+        ),
+        (
+            "var x = 'k'; var o = {[(() => this.x)()]() { return 9; }}; o.k()",
+            "9",
+        ),
+    ]);
+}
+
+#[test]
+fn let_in_for_binds_each_iteration() {
+    check(&[
+        (
+            "var a = {}; for (let i = 0; i < 3; i++) { a[i] = function () { return i; }; } \
+             a[0]() + a[1]() * 10 + a[2]() * 100",
+            "210",
+        ),
+        (
+            "var a = {}; for (var i = 0; i < 3; i++) { a[i] = function () { return i; }; } \
+             a[0]() + a[1]() * 10 + a[2]() * 100",
+            "333",
+        ),
+        (
+            "var a = {}; for (let i = 0; i < 3; i++) { let j = i * 2; a[i] = () => j; } \
+             a[0]() + a[1]() + a[2]()",
+            "6",
+        ),
+        // Die Kopie entsteht vor dem ersten Test und vor jedem Schritt; was
+        // der Rumpf ändert, nimmt sie mit.
+        (
+            "var g; for (let i = 0; g = g || (() => i), i < 3; i++) {} g()",
+            "0",
+        ),
+        (
+            "var a = {}, n = 0; for (let i = 0; i < 6; i++) { a[n++] = () => i; i++; } \
+             a[0]() * 100 + a[1]() * 10 + a[2]()",
+            "135",
+        ),
+        (
+            "var a = {}; for (let i = 0; i < 3; i++) { let j = i + 1; a[i] = () => i * j; if (i) continue; } \
+             a[0]() + a[1]() + a[2]()",
+            "8",
+        ),
+        (
+            "var g; for (let i = 0; ; i++) { let j = i; g = () => i + j; if (i === 2) break; } g()",
+            "4",
+        ),
+        (
+            "var g; outer: for (let i = 0; i < 3; i++) { for (let j = 0; j < 3; j++) { \
+             let k = i * 10 + j; g = () => k; if (j === 1) continue outer; if (i === 2) break outer; } } g()",
+            "20",
+        ),
+        (
+            "var a = {}; for (const i = 0; ; ) { a.f = () => i; break; } a.f()",
+            "0",
+        ),
+    ]);
+}
+
+/// `break` und `continue` geben die Kontexte ab, die sie verlassen: Eine
+/// Pfeilfunktion danach findet `this` des Scripts an der richtigen Stelle.
+#[test]
+fn jumps_leave_their_contexts() {
+    check(&[
+        (
+            "var g; for (let i = 0; i < 3; i++) { let j = i; g = () => j; if (i === 1) break; } \
+             var f = () => this; f() === this && g()",
+            "1",
+        ),
+        (
+            "var g; switch (1) { case 1: { let x = 5; g = () => x; break; } } \
+             var f = () => this; f() === this && g()",
+            "5",
+        ),
+        (
+            "var g; l: { let x = 6; g = () => x; break l; } var f = () => this; f() === this && g()",
+            "6",
+        ),
+        (
+            "var g, n = 0; while (n < 2) { let x = n++; g = () => x; { let y = x; g = () => y; continue; } } \
+             var f = () => this; f() === this && g()",
+            "1",
+        ),
+    ]);
+}
+
+#[test]
+fn functions_in_blocks_are_lexical() {
+    check(&[
+        (
+            "'use strict'; { function f() { return 1; } } typeof f",
+            "\"undefined\"",
+        ),
+        (
+            "'use strict'; var r; { r = f(); function f() { return 2; } } r",
+            "2",
+        ),
+        (
+            "function g() { 'use strict'; { function f() {} } return typeof f; } g()",
+            "\"undefined\"",
+        ),
+        // Funktionen in Blöcken sehen den Block.
+        (
+            "function g() { { let x = 3; function f() { return x; } return f; } } g()()",
+            "3",
+        ),
+        (
+            "var h; { let x = 4; function f() { return x; } h = f; } h()",
+            "4",
+        ),
+        (
+            "var r; { function f() { return 1; } function f() { return 2; } r = f(); } r",
+            "2",
+        ),
+        (
+            "var r; switch (1) { case 0: function f() { return 3; } case 1: r = f(); } r",
+            "3",
+        ),
+    ]);
+}
+
+/// Anhang B.3.2 und B.3.3: Außerhalb des strikten Modus setzt eine Funktion
+/// in einem Block auch die gleichnamige var-Bindung, wenn eine
+/// `var`-Deklaration an ihrer Stelle keinen frühen Fehler ergäbe.
+#[test]
+fn functions_in_blocks_also_set_var_bindings() {
+    check(&[
+        ("{ function f() { return 3; } } f()", "3"),
+        ("var t = typeof f; { function f() {} } t", "\"undefined\""),
+        ("var r = f; { function f() {} } r", "undefined"),
+        (
+            "{ function f() { return 1; } } { function f() { return 2; } } f()",
+            "2",
+        ),
+        ("var f = 1; { function f() { return 2; } } f()", "2"),
+        ("let f = 1; { function f() {} } f", "1"),
+        (
+            "{ let f = 1; { function f() {} } } typeof f",
+            "\"undefined\"",
+        ),
+        (
+            "for (let f = 0; f < 1; f++) { function f() {} } typeof f",
+            "\"undefined\"",
+        ),
+        (
+            "switch (1) { default: let f; { function f() {} } } typeof f",
+            "\"undefined\"",
+        ),
+        // Zwei im selben Block: Eine `var`-Deklaration an der Stelle der
+        // einen ergäbe mit der anderen einen frühen Fehler.
+        (
+            "{ function f() { return 1; } function f() { return 2; } } typeof f",
+            "\"undefined\"",
+        ),
+        ("if (true) function f() { return 4; } f()", "4"),
+        ("if (false) function f() {} f", "undefined"),
+        ("if (false) ; else function f() { return 5; } f()", "5"),
+        ("switch (1) { case 1: function f() { return 6; } } f()", "6"),
+        ("l: { function f() { return 7; } } f()", "7"),
+        ("l: function f() {}", "Unsupported(3)"),
+        // In Funktionen.
+        (
+            "function g() { { function f() { return 7; } } return f(); } g()",
+            "7",
+        ),
+        (
+            "function g() { var t = typeof f; { function f() {} } return t; } g()",
+            "\"undefined\"",
+        ),
+        (
+            "function g() { var f = 1; { function f() {} } return typeof f; } g()",
+            "\"function\"",
+        ),
+        ("function g(f) { { function f() {} } return f; } g(8)", "8"),
+        (
+            "function g() { let f = 9; { function f() {} } return f; } g()",
+            "9",
+        ),
+        (
+            "function g() { { function f() { return 1; } { function f() { return 2; } } } return f(); } g()",
+            "1",
+        ),
+        (
+            "function g() { { function f() { return 1; } } return () => f(); } g()()",
+            "1",
+        ),
+        (
+            "var f = function g() { { function g() { return 2; } } return g(); }; f()",
+            "2",
+        ),
+        // Mit dem Objekt `arguments` gehört der Name zu parameterNames.
+        (
+            "function g() { { function arguments() { return 1; } return arguments(); } } g()",
+            "1",
+        ),
+        (
+            "var g = () => { { function arguments() {} } }; g()",
+            "Unsupported(18)",
+        ),
+    ]);
+}
+
+#[test]
+fn functions_in_blocks_set_global_bindings() {
+    let (mut agent, realm) = checked();
+    // Gibt es schon eine lexikalische Bindung, bleibt sie.
+    assert_eq!(run(&mut agent, realm, "let a = 1;"), "undefined");
+    assert_eq!(run(&mut agent, realm, "{ function a() {} } a"), "1");
+    assert_eq!(
+        run(
+            &mut agent,
+            realm,
+            "var b = 2; { function b() { return 3; } } b()"
+        ),
+        "3"
+    );
+    // Die Bindung zählt danach als eine aus `var`.
+    assert_eq!(
+        run(&mut agent, realm, "if (true) { function c() {} }"),
+        "undefined"
+    );
+    assert_eq!(run(&mut agent, realm, "let c;"), "SyntaxError");
+    assert_eq!(run(&mut agent, realm, "typeof c"), "\"function\"");
+}
+
+/// Kontexte und die Funktionen, die sie halten, überstehen jede Sammlung.
+#[test]
+fn contexts_survive_collections() {
+    let (mut agent, realm) = agent_with(Options {
+        stress: true,
+        verify: true,
+        ..Options::default()
+    });
+    let source = "var a = {}; for (let i = 0; i < 4; i++) { let s = 'n' + i; a[i] = () => s + i; } \
+                  function make(x) { return function (y) { return () => x + y; }; } \
+                  a[0]() + a[3]() + make('p')('q')()";
+    assert_eq!(run(&mut agent, realm, source), "\"n00n33pq\"");
+}
+
+/// Verschachtelte Pfeilfunktionen, jede mit einem eigenen Kontext, so tief,
+/// wie der Parser sie annimmt, auf einem Stapel von 1 MiB (RS-8).
+#[test]
+fn deep_closures_need_no_deep_stack() {
+    let thread = std::thread::Builder::new()
+        .stack_size(1 << 20)
+        .spawn(|| {
+            let mut depth = 300;
+            let (source, depth) = loop {
+                let parameters: Vec<String> = (0..depth).map(|index| format!("a{index}")).collect();
+                let source = format!(
+                    "var f = {} => {}; f{}",
+                    parameters.join(" => "),
+                    parameters.join(" + "),
+                    "(1)".repeat(depth)
+                );
+                if crate::parser::parse_script(&units(&source)).is_ok() || depth == 1 {
+                    break (source, depth);
+                }
+                depth -= 1;
+            };
+            assert!(depth > 100, "{depth}");
+            let (mut agent, realm) = checked();
+            assert_eq!(run(&mut agent, realm, &source), depth.to_string());
+        })
+        .expect("Faden");
+    assert!(thread.join().is_ok());
 }
 
 /// Aufrufe aus JavaScript brauchen keinen Stapel der Maschine, Aufrufe aus

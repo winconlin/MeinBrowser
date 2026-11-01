@@ -410,9 +410,9 @@ fn unsupported_constructs_name_their_place() {
         ("let {a} = b;", 4),
         ("1n;", 0),
         ("/a/;", 0),
-        ("x => x;", 0),
+        ("async x => x;", 0),
         ("with (a) {}", 0),
-        ("{ function g() {} }", 2),
+        ("l: function g() {}", 3),
     ];
     for (source, position) in cases {
         assert_eq!(
@@ -650,4 +650,157 @@ fn functions_keep_parameters_and_variables_in_registers() {
         ]
     );
     assert_eq!((code.register_count(), code.parameter_count()), (4, 1));
+}
+
+/// Die Befehle ohne ihren Abstand.
+fn lines(code: &Code) -> Vec<String> {
+    code.to_string()
+        .lines()
+        .map(|line| {
+            line.split_once(": ")
+                .map_or(line, |(_, rest)| rest)
+                .to_owned()
+        })
+        .collect()
+}
+
+/// Die erste Funktion in den Konstanten von `code`.
+fn first_template(code: &Code) -> FunctionTemplate {
+    code.constants()
+        .iter()
+        .find_map(|constant| match constant {
+            Constant::Function(template) => Some(template.clone()),
+            _ => None,
+        })
+        .expect("eine Funktion")
+}
+
+#[test]
+fn closures_read_and_write_contexts() {
+    let source = "var f; { let x = 1; f = function () { x = 2; return x; }; }";
+    let ast = parse_script(&units(source)).expect("gültig");
+    let script = compile_script(&ast).expect("übersetzbar");
+    assert_eq!(
+        lines(&script.code),
+        [
+            "PushContext 1",
+            "LdaHole",
+            "StaContext 0 1",
+            "LdaSmi 1",
+            "StaContext 0 1",
+            "ResolveGlobal f r2",
+            "CreateClosure fn0 f",
+            "StaGlobal f r2",
+            "Star r1",
+            "PopContext",
+            "Ldar r1",
+            "Return"
+        ]
+    );
+    // Die Funktion prüft die TDZ bei jedem Zugriff.
+    let code = compile_function(&ast, &first_template(&script.code)).expect("übersetzbar");
+    assert_eq!(
+        lines(&code),
+        [
+            "LdaSmi 2",
+            "Star r2",
+            "LdaContext 0 1",
+            "ThrowIfHole x",
+            "Ldar r2",
+            "StaContext 0 1",
+            "LdaContext 0 1",
+            "ThrowIfHole x",
+            "Return",
+            "LdaUndefined",
+            "Return"
+        ]
+    );
+}
+
+#[test]
+fn parameters_and_this_are_copied_into_the_context() {
+    let source = "function f(a, b) { return () => a + this.c; }";
+    let ast = parse_script(&units(source)).expect("gültig");
+    let Some(&Node::FunctionDeclaration(id)) = ast.body().first().map(|&item| ast.node(item))
+    else {
+        panic!("keine Funktion");
+    };
+    let template = FunctionTemplate {
+        function: id,
+        binds_name: false,
+        outer: Rc::default(),
+    };
+    let code = compile_function(&ast, &template).expect("übersetzbar");
+    assert_eq!(
+        lines(&code),
+        [
+            "PushContext 2",
+            "Ldar r2",
+            "StaContext 0 1",
+            "Ldar r0",
+            "StaContext 0 2",
+            "CreateClosure fn0 ",
+            "Return",
+            "LdaUndefined",
+            "Return"
+        ]
+    );
+    let arrow = compile_function(&ast, &first_template(&code)).expect("übersetzbar");
+    assert_eq!(
+        lines(&arrow),
+        [
+            "LdaContext 0 1",
+            "Star r2",
+            "LdaContext 0 2",
+            "LdaNamed c",
+            "Add r2",
+            "Return"
+        ]
+    );
+}
+
+#[test]
+fn for_with_let_copies_its_context() {
+    let looped = listing("for (let i = 0; i < 2; i++) f = () => i;");
+    let count = |op: &str| looped.iter().filter(|line| line.as_str() == op).count();
+    assert_eq!(
+        (
+            count("PushContext 1"),
+            count("CloneContext"),
+            count("PopContext")
+        ),
+        (1, 2, 1)
+    );
+    // Ohne Closure bleibt `i` im Register.
+    let plain = listing("for (let i = 0; i < 2; i++) i;");
+    assert!(plain.iter().all(|line| !line.contains("Context")));
+}
+
+#[test]
+fn captures_follow_names_into_inner_functions() {
+    let ast = parse_script(&units(
+        "function f(a, b) { var c; return () => a + this.x; } \
+         function g() { return function () { return () => c + this; }; } d;",
+    ))
+    .expect("gültig");
+    let captures = ast.captures();
+    let name = |text: &str| ast.find_atom(&units(text)).expect("Name");
+    let function = |index: usize| {
+        let Some(&Node::FunctionDeclaration(id)) =
+            ast.body().get(index).map(|&item| ast.node(item))
+        else {
+            panic!("keine Funktion");
+        };
+        captures.function(id).expect("Funktion").clone()
+    };
+    let f = function(0);
+    assert_eq!(f.names, BTreeSet::from([name("a")]));
+    assert!(f.this);
+    // `this` der Pfeilfunktion gehört der Funktion ohne Namen, nicht `g`.
+    let g = function(1);
+    assert_eq!(g.names, BTreeSet::from([name("c")]));
+    assert!(!g.this);
+    let script = captures.script();
+    assert_eq!(script.names, BTreeSet::from([name("a"), name("c")]));
+    assert!(!script.this);
 }
