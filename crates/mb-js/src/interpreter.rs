@@ -31,7 +31,10 @@ use crate::function::{Compiled, function_environment, function_parts, instantiat
 use crate::heap::{Heap, Local, Scope};
 use crate::key::{PropertyKey, array_index};
 use crate::number;
-use crate::object::{array_create, ordinary_object_create, set_prototype_of};
+use crate::object::{
+    array_create, create_mapped_arguments_object, create_unmapped_arguments_object,
+    ordinary_object_create, set_prototype_of,
+};
 use crate::operations::{
     create_data_property_or_throw, define_property_or_throw, get, has_property, is_callable, set,
 };
@@ -274,11 +277,13 @@ fn run(agent: &mut Agent, activation: Activation<'_>, accumulator: Local<'_>) ->
     }
 }
 
-/// PrepareForOrdinaryCall, OrdinaryCallBindThis und die Parameter aus
+/// PrepareForOrdinaryCall, OrdinaryCallBindThis und die Argumente für
 /// FunctionDeclarationInstantiation (Abschnitte 10.2.1.1, 10.2.1.2 und
 /// 10.2.11): ein neuer Rahmen für das Funktionsobjekt `function` mit seinem
-/// [[Environment]] als aktuellem Kontext. Fehlende Argumente bleiben
-/// *undefined*, überzählige fallen weg.
+/// [[Environment]] als aktuellem Kontext. Die Argumente kommen in die
+/// Register der Parameter, fehlende bleiben *undefined*, überzählige fallen
+/// weg. Braucht der Code alle, etwa für `arguments`, bekommt er sie
+/// außerdem als interne Zelle.
 ///
 /// Abweichung: Im nicht strikten Modus bleibt ein primitiver Wert als
 /// `this` primitiv, denn Wrapper-Objekte gibt es noch nicht.
@@ -323,6 +328,28 @@ fn enter_function(
             for (index, &local) in locals.iter().take(parameters).enumerate() {
                 heap.set_register(place(first_parameter, index), heap.get(local));
             }
+        }
+    }
+    if let Some(register) = code.arguments_register() {
+        let count = match arguments {
+            Arguments::Registers { count, .. } => count,
+            Arguments::Locals(locals) => locals.len(),
+        };
+        // Die Argumente liegen in Registern oder Handles und überstehen die
+        // Anforderung.
+        let cell = agent.heap_mut().alloc_slots(scope, count)?;
+        let heap = agent.heap();
+        if let Kind::Internal(cell) = heap.get(cell).kind() {
+            for index in 0..count {
+                let value = match arguments {
+                    Arguments::Registers { first, .. } => heap.register(place(first, index)),
+                    Arguments::Locals(locals) => locals
+                        .get(index)
+                        .map_or(Value::UNDEFINED, |&local| heap.get(local)),
+                };
+                heap.set_slot(cell, index, value);
+            }
+            heap.set_register(place(base, register), Value::internal(cell));
         }
     }
     Ok(Activation {
@@ -760,6 +787,67 @@ impl<'c> Frame<'c, '_> {
         Ok(())
     }
 
+    /// Die Befehle für `arguments` und Rest-Parameter. Das Register hält
+    /// alle Argumente als interne Zelle.
+    fn arguments_operation(
+        &self,
+        agent: &mut Agent,
+        scope: &Scope,
+        instruction: &Instruction,
+    ) -> Completion<()> {
+        let arguments = self.register(agent, scope, instruction.operand(0));
+        let result = match instruction.op {
+            Op::CreateArguments => {
+                let prototype = agent.intrinsic(scope, self.realm, Intrinsic::ObjectPrototype);
+                create_unmapped_arguments_object(agent, scope, prototype, arguments)?
+            }
+            Op::CreateMappedArguments => {
+                let prototype = agent.intrinsic(scope, self.realm, Intrinsic::ObjectPrototype);
+                // Register 1 hält das Funktionsobjekt.
+                let function = self.register(agent, scope, 1);
+                let context = {
+                    let heap = agent.heap();
+                    heap.local(scope, heap.register(self.context_slot()))
+                };
+                let map = self.code.parameter_map();
+                create_mapped_arguments_object(
+                    agent, scope, prototype, function, arguments, context, map,
+                )?
+            }
+            Op::CreateRestParameter => {
+                // CreateArrayFromList (Abschnitt 7.3.17) für die Argumente
+                // ab dem Index.
+                let prototype = agent.intrinsic(scope, self.realm, Intrinsic::ArrayPrototype);
+                let array = array_create(agent, scope, 0, Some(prototype))?;
+                let start = usize::try_from(instruction.operand(1)).unwrap_or(0);
+                let count = match agent.heap().get(arguments).kind() {
+                    Kind::Internal(cell) => agent.heap().slot_count(cell),
+                    _ => 0,
+                };
+                for (position, index) in (start..count).enumerate() {
+                    agent.scope(|agent, inner| -> Completion<()> {
+                        let heap = agent.heap();
+                        let value = match heap.get(arguments).kind() {
+                            Kind::Internal(cell) => heap.slot(cell, index),
+                            _ => None,
+                        };
+                        let value = heap.local(inner, value.unwrap_or(Value::UNDEFINED));
+                        // Höchstens so viele wie Register, ein gültiger Index.
+                        let key = u32::try_from(position)
+                            .map(PropertyKey::Index)
+                            .map_err(|_| agent.throw_error(ErrorKind::RangeError))?;
+                        create_data_property_or_throw(agent, inner, array, key, value)
+                    })?;
+                }
+                array
+            }
+            // Die übrigen Befehle führt `step` aus.
+            _ => return Err(agent.throw_error(ErrorKind::RangeError)),
+        };
+        self.set_accumulator(agent, result);
+        Ok(())
+    }
+
     fn global_reference(&self, agent: &Agent, operand: i64) -> GlobalReference {
         let value = agent.heap().register(self.slot(operand));
         GlobalReference::from_number(value.as_number().unwrap_or(0.0))
@@ -970,6 +1058,11 @@ impl<'c> Frame<'c, '_> {
                     return Ok(jump(instruction));
                 }
             }
+            Op::JumpIfNotUndefined => {
+                if !agent.heap().get(self.accumulator).is_undefined() {
+                    return Ok(jump(instruction));
+                }
+            }
             Op::CreateObject
             | Op::CreateArray
             | Op::DefineNamed
@@ -1020,6 +1113,9 @@ impl<'c> Frame<'c, '_> {
                     callee: self.slot(first),
                     count,
                 });
+            }
+            Op::CreateArguments | Op::CreateMappedArguments | Op::CreateRestParameter => {
+                self.arguments_operation(agent, scope, instruction)?;
             }
             Op::Throw => return Err(agent.throw_value(self.accumulator)),
             Op::Return => return Ok(Flow::Return),

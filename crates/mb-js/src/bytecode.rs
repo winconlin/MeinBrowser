@@ -17,9 +17,9 @@
 //! Registern in Kontexten: internen Zellen im Heap, deren erstes Feld der
 //! äußere Kontext ist und deren übrige Felder die Bindungen halten. Jeder
 //! Rahmen hat einen aktuellen Kontext, und ein Funktionsobjekt merkt sich
-//! den, in dem es entstand ([[Environment]]). Ein zweistelliger Befehl wie [`Op::Add`] rechnet mit dem
-//! Register als linkem und dem Akkumulator als rechtem Operanden und legt
-//! das Ergebnis in den Akkumulator.
+//! den, in dem es entstand ([[Environment]]). Ein zweistelliger Befehl wie
+//! [`Op::Add`] rechnet mit dem Register als linkem und dem Akkumulator als
+//! rechtem Operanden und legt das Ergebnis in den Akkumulator.
 //!
 //! Im Bytecode steht keine Adresse im Heap. Zahlen, Zeichenketten und die
 //! Funktionen, die der Code anlegt, liegen als [`Constant`] bei ihm; der
@@ -232,6 +232,9 @@ ops! {
     /// Springt, wenn der Akkumulator *undefined* oder *null* ist.
     JumpIfNullish [Jump],
     JumpIfNotNullish [Jump],
+    /// Springt, wenn der Akkumulator nicht *undefined* ist, wie an einem
+    /// Parameter mit Vorgabewert.
+    JumpIfNotUndefined [Jump],
     /// Springt zurück an den Anfang einer Schleife.
     JumpLoop [Jump],
 
@@ -247,6 +250,18 @@ ops! {
     /// aufrufbar, wirft das einen TypeError, erst nach den Argumenten
     /// (EvaluateCall, Abschnitt 13.3.6.2).
     Call [Register, Immediate],
+
+    /// Ein neues arguments-Objekt ohne Verknüpfung
+    /// (CreateUnmappedArgumentsObject, Abschnitt 10.4.4.6) aus den
+    /// Argumenten in der internen Zelle im Register.
+    CreateArguments [Register],
+    /// Dasselbe verknüpft mit den Bindungen der Parameter im aktuellen
+    /// Kontext (CreateMappedArgumentsObject, Abschnitt 10.4.4.7); welcher
+    /// Platz zu welchem Parameter gehört, sagt [`Code::parameter_map`].
+    CreateMappedArguments [Register],
+    /// Ein neues Array aus den Argumenten in der internen Zelle im Register
+    /// ab dem Index aus der Zahl, für einen Rest-Parameter.
+    CreateRestParameter [Register, Immediate],
 
     /// Wirft den Akkumulator.
     Throw [],
@@ -309,9 +324,9 @@ pub struct FunctionTemplate {
 pub struct Enclosing {
     pub(crate) contexts: Vec<ContextLayout>,
     /// Die Namen in Registern. Eine innere Funktion nennt sie nie, denn
-    /// was sie nennt, liegt in Kontexten; nur `arguments` steht hier für das
-    /// Objekt, das es noch nicht gibt. Ein Zugriff darauf ist nicht
-    /// unterstützt.
+    /// was sie nennt, liegt in Kontexten. Fände der Übersetzer doch einen
+    /// Zugriff darauf, meldete er ihn als nicht unterstützt, statt eine
+    /// falsche Bindung zu lesen.
     pub(crate) registers: BTreeSet<Atom>,
     pub(crate) parent: Option<Rc<Enclosing>>,
 }
@@ -378,9 +393,18 @@ pub struct Code {
     pub(crate) bytes: Vec<u8>,
     pub(crate) constants: Vec<Constant>,
     pub(crate) registers: u32,
-    /// Die Zahl der Parameter einer Funktion. Ihre Register folgen auf
-    /// `this` und das Funktionsobjekt.
+    /// Die Zahl der Parameter einer Funktion ohne einen Rest-Parameter.
+    /// Ihre Register folgen auf `this` und das Funktionsobjekt, ein Aufruf
+    /// legt die Argumente dort ab.
     pub(crate) parameters: u32,
+    /// Das Register, in das ein Aufruf alle Argumente als interne Zelle
+    /// legt, wenn der Code ein arguments-Objekt oder einen Rest-Parameter
+    /// anlegt.
+    pub(crate) arguments: Option<u32>,
+    /// Für [`Op::CreateMappedArguments`]: zu jedem Parameter der Platz
+    /// seiner Bindung im Kontext, `None` für einen, dessen Name ein
+    /// späterer Parameter wiederholt.
+    pub(crate) parameter_map: Vec<Option<u32>>,
     pub(crate) strict: bool,
     /// Lagen im Quelltext ab einem Befehl: Paare aus Abstand im Bytecode
     /// und Abstand im Quelltext, nach dem ersten aufsteigend.
@@ -408,6 +432,17 @@ impl Code {
     /// Die Zahl der Parameter, 0 bei einem Script.
     pub fn parameter_count(&self) -> usize {
         usize::try_from(self.parameters).unwrap_or(usize::MAX)
+    }
+
+    /// Das Register für alle Argumente, wenn der Code sie braucht.
+    pub fn arguments_register(&self) -> Option<usize> {
+        self.arguments
+            .and_then(|register| usize::try_from(register).ok())
+    }
+
+    /// Die Plätze der Parameter für ein verknüpftes arguments-Objekt.
+    pub fn parameter_map(&self) -> &[Option<u32>] {
+        &self.parameter_map
     }
 
     pub fn is_strict(&self) -> bool {
@@ -587,6 +622,8 @@ impl Emitter {
             constants,
             registers,
             parameters: 0,
+            arguments: None,
+            parameter_map: Vec::new(),
             strict,
             positions: self.positions,
         }

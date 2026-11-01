@@ -3,7 +3,7 @@
 //! zusammen; hier steht nur, wie die Zellen im Heap liegen.
 
 use super::{
-    FUNCTION_FIELDS, Heap, KIND_ARRAY, KIND_FUNCTION, KIND_OBJECT, KIND_SHAPE, KIND_SLOTS,
+    Heap, KIND_ARGUMENTS, KIND_ARRAY, KIND_FUNCTION, KIND_OBJECT, KIND_SHAPE, KIND_SLOTS,
     KIND_SPARSE, KIND_SYMBOL, KIND_WEAK, Local, NONE, OBJECT_REFS, OutOfMemory, Scope, cell_words,
     header, header_flags, header_kind, header_length, is_object, is_value_cell, object_fields,
     packed, packed_high, packed_low, to_usize, with_flags,
@@ -60,8 +60,11 @@ pub(crate) enum ObjectClass {
     /// Ein Array (Abschnitt 10.4.2).
     Array,
     /// Ein ECMAScript-Funktionsobjekt (Abschnitt 10.2) mit
-    /// [`FUNCTION_FIELDS`] internen Feldern.
+    /// [`FUNCTION_FIELDS`](super::FUNCTION_FIELDS) internen Feldern.
     Function,
+    /// Ein arguments-Objekt (Abschnitt 10.4.4) mit dem internen Feld
+    /// [[ParameterMap]].
+    Arguments,
 }
 
 impl ObjectClass {
@@ -70,6 +73,7 @@ impl ObjectClass {
             ObjectClass::Ordinary => KIND_OBJECT,
             ObjectClass::Array => KIND_ARRAY,
             ObjectClass::Function => KIND_FUNCTION,
+            ObjectClass::Arguments => KIND_ARGUMENTS,
         }
     }
 
@@ -78,6 +82,7 @@ impl ObjectClass {
             KIND_OBJECT => Some(ObjectClass::Ordinary),
             KIND_ARRAY => Some(ObjectClass::Array),
             KIND_FUNCTION => Some(ObjectClass::Function),
+            KIND_ARGUMENTS => Some(ObjectClass::Arguments),
             _ => None,
         }
     }
@@ -169,8 +174,8 @@ impl Heap {
     // Objekte
 
     /// Legt ein erweiterbares Objekt ohne Elemente an, mit `inline`
-    /// eingebetteten Plätzen für Eigenschaften, alle *undefined*, und bei
-    /// Funktionsobjekten ihren internen Feldern, ebenfalls *undefined*.
+    /// eingebetteten Plätzen für Eigenschaften, alle *undefined*, und den
+    /// internen Feldern seiner Art, ebenfalls *undefined*.
     pub(crate) fn alloc_object<'s>(
         &mut self,
         scope: &'s Scope,
@@ -317,17 +322,17 @@ impl Heap {
             .is_some_and(|word| self.store(object.offset(), word, value.bits()))
     }
 
-    /// Das Wort, in dem das interne Feld `index` eines Funktionsobjekts
-    /// liegt.
-    fn function_word(&self, object: Ref<'_>, index: usize) -> Option<usize> {
+    /// Das Wort, in dem das interne Feld `index` eines Objekts der Art
+    /// `kind` liegt.
+    fn field_word(&self, object: Ref<'_>, kind: u64, index: usize) -> Option<usize> {
         let head = self.object_header(object)?;
-        (header_kind(head) == KIND_FUNCTION && index < FUNCTION_FIELDS)
+        (header_kind(head) == kind && index < object_fields(kind))
             .then_some(1 + OBJECT_REFS + index)
     }
 
     /// Ein internes Feld eines Funktionsobjekts, `None` für andere Zellen.
     pub(crate) fn function_field(&self, object: Ref<'_>, index: usize) -> Option<Value<'_>> {
-        let word = self.function_word(object, index)?;
+        let word = self.field_word(object, KIND_FUNCTION, index)?;
         self.word(object.offset(), word).map(Value::from_bits)
     }
 
@@ -338,7 +343,19 @@ impl Heap {
         index: usize,
         value: Value<'_>,
     ) -> bool {
-        self.function_word(object, index)
+        self.field_word(object, KIND_FUNCTION, index)
             .is_some_and(|word| self.store(object.offset(), word, value.bits()))
+    }
+
+    /// [[ParameterMap]] eines arguments-Objekts, `None` für andere Zellen.
+    pub(crate) fn arguments_map(&self, object: Ref<'_>) -> Option<Value<'_>> {
+        let word = self.field_word(object, KIND_ARGUMENTS, 0)?;
+        self.word(object.offset(), word).map(Value::from_bits)
+    }
+
+    /// Schreibt [[ParameterMap]]. `false` für andere Zellen.
+    pub(crate) fn set_arguments_map(&self, object: Ref<'_>, map: Value<'_>) -> bool {
+        self.field_word(object, KIND_ARGUMENTS, 0)
+            .is_some_and(|word| self.store(object.offset(), word, map.bits()))
     }
 }

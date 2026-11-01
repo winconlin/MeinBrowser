@@ -12,9 +12,9 @@
 //! GlobalDeclarationInstantiation (Abschnitt 16.1.7) zur Laufzeit an, der
 //! Übersetzer sammelt dafür die Namen. Alle anderen Bindungen liegen in
 //! Registern oder, wenn eine innere Funktion ihren Namen nennt, in
-//! Kontexten: in Funktionen die Parameter, `var`, Funktionsdeklarationen
-//! und `let` und `const` auf oberster Ebene (FunctionDeclarationInstantiation,
-//! Abschnitt 10.2.11), überall die Bindungen in Blöcken, im Kopf von `for`
+//! Kontexten: in Funktionen die Parameter, `arguments`, `var`,
+//! Funktionsdeklarationen und `let` und `const` auf oberster Ebene
+//! (FunctionDeclarationInstantiation, Abschnitt 10.2.11), überall die Bindungen in Blöcken, im Kopf von `for`
 //! und in `switch`. Beim Betreten eines Blocks bekommen sie die Lücke
 //! (BlockDeclarationInstantiation, Abschnitt 14.2.3). Gelesen und
 //! geschrieben wird mit [`Op::CheckHole`] oder [`Op::ThrowIfHole`] davor,
@@ -39,9 +39,8 @@
 //! in Scripts entscheidet GlobalDeclarationInstantiation, ob es die
 //! globale Bindung gibt, und setzt dafür ein Register.
 //!
-//! Noch nicht unterstützt sind `arguments`, Generatoren, `async`, Klassen,
-//! Parameter mit Vorgabewerten, Mustern oder Rest und Funktionsdeklarationen
-//! mit Marke (Anhang B.3.1).
+//! Noch nicht unterstützt sind Generatoren, `async`, Klassen, Muster in
+//! Parametern und Funktionsdeklarationen mit Marke (Anhang B.3.1).
 //!
 //! Abschlusswert: Scripts führen ein Register dafür (UpdateEmpty, Abschnitt
 //! 6.2.4.4). Jede Ausdrucksanweisung schreibt ihren Wert hinein. `if`,
@@ -314,9 +313,6 @@ struct Compiler<'a> {
     strict: bool,
     /// Das Register für den Abschlusswert, nur in Scripts.
     completion: Option<i64>,
-    /// Ob `arguments` ohne eigene Bindung das Objekt der Argumente meint,
-    /// das es noch nicht gibt.
-    arguments: bool,
     /// Was der Code vom umgebenden sieht.
     outer: Rc<Enclosing>,
     /// Was innere Funktionen dieses Codes sehen.
@@ -388,12 +384,34 @@ pub fn compile_script(ast: &Ast) -> Result<Script> {
     })
 }
 
+/// Ein formaler Parameter mit einem Bezeichner.
+struct Formal {
+    atom: Atom,
+    default: Option<NodeId>,
+    rest: bool,
+    /// Das Ende des Parameters im Quelltext.
+    end: usize,
+}
+
 /// Übersetzt eine Funktion für ihren ersten Aufruf, mit
-/// FunctionDeclarationInstantiation (Abschnitt 10.2.11) für einfache
-/// Parameterlisten. Die Register: `this`, das Funktionsobjekt, die
-/// Parameter, dann `var` und die Funktionen des Rumpfs, dann seine
-/// lexikalischen Bindungen. Was innere Funktionen davon sehen, kommt in
-/// einen Kontext, die Parameter mit einer Kopie.
+/// FunctionDeclarationInstantiation (Abschnitt 10.2.11). Die Register:
+/// `this`, das Funktionsobjekt, die Parameter ohne den Rest-Parameter,
+/// dann die Argumente als interne Zelle, wenn das arguments-Objekt oder der
+/// Rest-Parameter sie braucht, dann die übrigen Bindungen. Was innere
+/// Funktionen davon sehen, kommt in einen Kontext, die Parameter mit einer
+/// Kopie.
+///
+/// Ohne Vorgabewerte teilen sich Parameter, `arguments`, `var`, die
+/// Funktionen und die lexikalischen Deklarationen des Rumpfs einen
+/// Bereich. Mit Vorgabewerten haben die Parameter und `arguments` einen
+/// eigenen Bereich außerhalb dessen des Rumpfs; dort hält ein Parameter bis
+/// zu seiner Initialisierung die Lücke, und ein `var` mit seinem Namen
+/// beginnt mit seinem Wert.
+///
+/// Das arguments-Objekt entsteht nur, wenn die Funktion oder eine
+/// Pfeilfunktion darin den Bezeichner `arguments` enthält; sonst sieht es
+/// niemand. Ist es verknüpft, liegen die Parameter im Kontext, denn das
+/// Objekt liest und schreibt ihre Bindungen dort.
 pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> {
     let Some(function) = ast.function(template.function) else {
         return Err(CompileError::Unsupported(0));
@@ -408,8 +426,7 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
             | FunctionKind::Getter
             | FunctionKind::Setter
     ) && !function.generator
-        && !function.is_async
-        && function.simple_parameters;
+        && !function.is_async;
     let captures = ast.captures().function(template.function);
     let (true, Some(captures)) = (supported, captures) else {
         return Err(CompileError::Unsupported(position));
@@ -418,29 +435,20 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
     compiler.lexical_this = arrow;
     compiler.allocate()?;
     let callee = compiler.allocate()?;
-    let mut scope = BlockScope::default();
-    let parameters = ast.list(function.parameters);
-    for &parameter in parameters {
-        let Node::BindingIdentifier(atom) = *ast.node(parameter) else {
-            return Err(compiler.unsupported(parameter));
-        };
-        // Bei doppelten Namen gilt der letzte Parameter.
-        let register = compiler.allocate()?;
-        let binding = LocalBinding::initialized(Location::Register(register), BindingKind::Mutable);
-        scope.bindings.insert(atom, binding);
+    let formals = compiler.formals(function.parameters)?;
+    let rest = formals
+        .iter()
+        .find(|formal| formal.rest)
+        .map(|formal| formal.atom);
+    // Die Register, in die ein Aufruf die Argumente legt.
+    let mut registers = Vec::new();
+    for _ in formals.iter().filter(|formal| !formal.rest) {
+        registers.push(compiler.allocate()?);
     }
-    let parameter_names: BTreeSet<Atom> = scope.bindings.keys().copied().collect();
-    let mut copies = Vec::new();
-    for (atom, binding) in &mut scope.bindings {
-        if let Location::Register(register) = binding.location
-            && captures.names.contains(atom)
-        {
-            let slot = scope.slots.checked_add(1).ok_or(CompileError::TooLarge)?;
-            scope.slots = slot;
-            binding.location = Location::Context { depth: 0, slot };
-            copies.push((register, slot));
-        }
-    }
+    let positional = i64::try_from(registers.len()).map_err(|_| CompileError::TooLarge)?;
+    // ContainsExpression: Ohne Muster haben nur Vorgabewerte Ausdrücke.
+    let has_expressions = formals.iter().any(|formal| formal.default.is_some());
+    let parameter_names: BTreeSet<Atom> = formals.iter().map(|formal| formal.atom).collect();
     // Der Rumpf einer Pfeilfunktion mit `expression_body` ist ein Ausdruck;
     // er deklariert nichts.
     let body = ast.list(function.body);
@@ -459,57 +467,145 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
     for &item in &items {
         lexical_names.extend(compiler.lexical_declarations(item)?);
     }
-    // argumentsObjectNeeded: Ein Parameter, eine Funktion oder eine
-    // lexikalische Deklaration mit dem Namen ersetzt das Objekt, `var` nicht.
-    // Pfeilfunktionen haben keins.
-    compiler.arguments = !arrow
+    // argumentsObjectNeeded: Pfeilfunktionen haben kein Objekt. Ein
+    // Parameter mit dem Namen ersetzt es, ohne Vorgabewerte auch eine
+    // Funktion oder eine lexikalische Deklaration, `var` nie.
+    let needed = !arrow
         && !parameter_names
             .iter()
             .any(|&atom| compiler.is_arguments(atom))
-        && !functions
-            .iter()
-            .any(|&(name, _, _)| compiler.is_arguments(name))
-        && !lexical_names
-            .iter()
-            .any(|&(atom, _, _)| compiler.is_arguments(atom));
-    if compiler.arguments && var_names.iter().any(|&atom| compiler.is_arguments(atom)) {
-        return Err(CompileError::Unsupported(position));
-    }
-    // Anhang B.3.2.1: Zu parameterNames gehört dann auch `arguments`.
+        && (has_expressions
+            || !functions
+                .iter()
+                .any(|&(name, _, _)| compiler.is_arguments(name))
+                && !lexical_names
+                    .iter()
+                    .any(|&(atom, _, _)| compiler.is_arguments(atom)));
+    let arguments_atom = ast.find_atom(&units("arguments"));
+    let created = arguments_atom.filter(|_| needed && captures.arguments);
+    let mapped = created.is_some() && !function.strict && function.simple_parameters;
+    let cell = if created.is_some() || rest.is_some() {
+        Some(i64::from(compiler.allocate()?))
+    } else {
+        None
+    };
+    // Anhang B.3.2.1: Zu parameterNames gehört dann auch `arguments`
+    // (test262 block-decl-func-skip-arguments).
     let mut excluded = parameter_names;
-    if compiler.arguments
-        && let Some(atom) = ast.find_atom(&units("arguments"))
-    {
+    if needed && let Some(atom) = arguments_atom {
         excluded.insert(atom);
     }
     let hoisted = compiler.hoisted_functions(statements, &excluded);
+    let function_names: Vec<Atom> = functions.iter().map(|&(name, _, _)| name).collect();
     for &(name, node) in &hoisted {
-        // Ohne das Objekt entstünde die Bindung erst bei der Auswertung.
-        if compiler.is_arguments(name) {
+        // Ohne Objekt und ohne var-Bindung entstünde die Bindung erst bei
+        // der Auswertung.
+        if compiler.is_arguments(name)
+            && !var_names.contains(&name)
+            && !function_names.contains(&name)
+        {
             return Err(compiler.unsupported(node));
         }
         compiler.hoisted.insert(node, None);
     }
-    let hoisted_names = hoisted.iter().map(|&(name, _)| name);
-    let function_names = functions.iter().map(|&(name, _, _)| name);
-    for atom in var_names
-        .into_iter()
-        .chain(function_names)
-        .chain(hoisted_names)
-    {
-        if !scope.bindings.contains_key(&atom) {
-            let location = compiler.locate(&mut scope, atom)?;
+    // Der Bereich der Parameter, ohne Vorgabewerte auch der des Rumpfs.
+    let mut parameters = BlockScope::default();
+    let mut holes = Vec::new();
+    let mut copies = Vec::new();
+    if has_expressions {
+        for formal in &formals {
+            let location = compiler.locate(&mut parameters, formal.atom)?;
+            holes.push(location);
+            let binding = LocalBinding {
+                location,
+                kind: BindingKind::Mutable,
+                initialized_from: formal.end,
+                in_switch: false,
+            };
+            parameters.bindings.insert(formal.atom, binding);
+        }
+    } else {
+        for (formal, &register) in formals.iter().zip(&registers) {
+            // Bei doppelten Namen gilt der letzte Parameter.
+            let binding =
+                LocalBinding::initialized(Location::Register(register), BindingKind::Mutable);
+            parameters.bindings.insert(formal.atom, binding);
+        }
+        for (atom, binding) in &mut parameters.bindings {
+            if let Location::Register(register) = binding.location
+                && (mapped || captures.names.contains(atom))
+            {
+                let slot = parameters
+                    .slots
+                    .checked_add(1)
+                    .ok_or(CompileError::TooLarge)?;
+                parameters.slots = slot;
+                binding.location = Location::Context { depth: 0, slot };
+                copies.push((register, slot));
+            }
+        }
+        if let Some(atom) = rest {
+            let location = compiler.locate(&mut parameters, atom)?;
             let binding = LocalBinding::initialized(location, BindingKind::Mutable);
-            scope.bindings.insert(atom, binding);
+            parameters.bindings.insert(atom, binding);
+        }
+    }
+    // Ein Parameter, dessen Name später wiederkommt, ist nicht verknüpft.
+    let mut parameter_map = Vec::new();
+    if mapped {
+        let slots: BTreeMap<u32, u32> = copies.iter().copied().collect();
+        parameter_map = registers
+            .iter()
+            .map(|register| slots.get(register).copied())
+            .collect();
+    }
+    if let Some(atom) = created {
+        let location = compiler.locate(&mut parameters, atom)?;
+        let binding = LocalBinding::initialized(location, BindingKind::Mutable);
+        parameters.bindings.insert(atom, binding);
+    }
+    // Die Bindungen des Rumpfs: Mit Vorgabewerten liegen sie in einem
+    // eigenen Bereich, dann beginnt ein `var` mit dem Namen eines Parameters
+    // mit dessen Wert.
+    let mut separate = BlockScope::default();
+    let mut var_copies = Vec::new();
+    let names = var_names
+        .iter()
+        .map(|&atom| (atom, true))
+        .chain(function_names.iter().map(|&atom| (atom, false)))
+        .chain(hoisted.iter().map(|&(atom, _)| (atom, false)));
+    for (atom, var) in names {
+        let copy = has_expressions
+            && var
+            && !function_names.contains(&atom)
+            && parameters.bindings.contains_key(&atom);
+        let scope = if has_expressions {
+            &mut separate
+        } else {
+            &mut parameters
+        };
+        if scope.bindings.contains_key(&atom) {
+            continue;
+        }
+        let location = compiler.locate(scope, atom)?;
+        let binding = LocalBinding::initialized(location, BindingKind::Mutable);
+        scope.bindings.insert(atom, binding);
+        if copy {
+            var_copies.push(atom);
         }
     }
     // Die lexikalischen Deklarationen auf oberster Ebene teilen sich den
     // Bereich, denn keine hat denselben Namen wie ein Parameter, `var` oder
     // eine Funktion.
-    let mut holes = Vec::new();
+    let mut lexical_holes = Vec::new();
     for (atom, constant, end) in lexical_names {
-        let location = compiler.locate(&mut scope, atom)?;
-        holes.push(location);
+        let scope = if has_expressions {
+            &mut separate
+        } else {
+            &mut parameters
+        };
+        let location = compiler.locate(scope, atom)?;
+        lexical_holes.push(location);
         let kind = if constant {
             BindingKind::Const
         } else {
@@ -524,15 +620,15 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
         scope.bindings.insert(atom, binding);
     }
     if captures.this && !arrow {
-        scope.this = Some(scope.add_slot()?);
+        parameters.this = Some(parameters.add_slot()?);
     }
     // Der Name eines Funktionsausdrucks liegt außen (funcEnv, Abschnitt
-    // 15.2.5); das Objekt `arguments` und jede Bindung im Rumpf verdecken
-    // ihn.
+    // 15.2.5); das Objekt `arguments` und jede Bindung im Bereich der
+    // Parameter verdecken ihn.
     if template.binds_name
         && let Some(name) = function.name
-        && !(compiler.arguments && compiler.is_arguments(name))
-        && !scope.bindings.contains_key(&name)
+        && !(needed && compiler.is_arguments(name))
+        && !parameters.bindings.contains_key(&name)
     {
         let mut outer = BlockScope::default();
         let location = if captures.names.contains(&name) {
@@ -548,20 +644,72 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
         outer.bindings.insert(name, binding);
         compiler.scopes.push(outer);
     }
-    if scope.has_context() {
-        compiler.emit(Op::PushContext, &[i64::from(scope.slots)])?;
+    if parameters.has_context() {
+        compiler.emit(Op::PushContext, &[i64::from(parameters.slots)])?;
         for (register, slot) in copies {
             compiler.emit(Op::Ldar, &[i64::from(register)])?;
             compiler.emit(Op::StaContext, &[0, i64::from(slot)])?;
         }
-        if let Some(slot) = scope.this {
+        if let Some(slot) = parameters.this {
             compiler.emit(Op::Ldar, &[THIS])?;
             compiler.emit(Op::StaContext, &[0, i64::from(slot)])?;
         }
     }
     compiler.set_holes(&holes)?;
-    compiler.var_scope = Some(compiler.scopes.len());
-    compiler.scopes.push(scope);
+    let parameter_scope = compiler.scopes.len();
+    compiler.scopes.push(parameters);
+    if let (Some(cell), Some(atom)) = (cell, created) {
+        let op = if mapped {
+            Op::CreateMappedArguments
+        } else {
+            Op::CreateArguments
+        };
+        compiler.emit(op, &[cell])?;
+        compiler.store_binding(parameter_scope, atom)?;
+    }
+    // IteratorBindingInitialization der Parameter (Abschnitt 8.6.3), mit
+    // Vorgabewert für ein fehlendes oder *undefined* übergebenes Argument.
+    for (index, formal) in formals.iter().enumerate() {
+        if formal.rest {
+            if let Some(cell) = cell {
+                compiler.emit(Op::CreateRestParameter, &[cell, positional])?;
+                compiler.store_binding(parameter_scope, formal.atom)?;
+            }
+            continue;
+        }
+        if !has_expressions {
+            continue;
+        }
+        let Some(&register) = registers.get(index) else {
+            return Err(CompileError::Unsupported(position));
+        };
+        compiler.emit(Op::Ldar, &[i64::from(register)])?;
+        if let Some(default) = formal.default {
+            let skip = compiler.jump(Op::JumpIfNotUndefined)?;
+            compiler.named_expression(default, ast.atom(formal.atom))?;
+            compiler.bind(skip)?;
+        }
+        compiler.store_binding(parameter_scope, formal.atom)?;
+    }
+    if has_expressions {
+        if separate.has_context() {
+            compiler.emit(Op::PushContext, &[i64::from(separate.slots)])?;
+        }
+        compiler.scopes.push(separate);
+        let var_scope = compiler.scopes.len().saturating_sub(1);
+        for atom in var_copies {
+            let (Some(from), Some(to)) = (
+                compiler.lookup_in(parameter_scope, atom),
+                compiler.lookup_in(var_scope, atom),
+            ) else {
+                return Err(CompileError::Unsupported(position));
+            };
+            compiler.load_location(from.location)?;
+            compiler.store_location(to.location)?;
+        }
+    }
+    compiler.set_holes(&lexical_holes)?;
+    compiler.var_scope = Some(compiler.scopes.len().saturating_sub(1));
     for &(name, id, node) in &functions {
         compiler.function_declaration(node, id)?;
         if let Some(binding) = compiler.lookup(name) {
@@ -581,7 +729,9 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
         compiler.emit(Op::Return, &[])?;
     }
     let mut code = compiler.finish();
-    code.parameters = u32::try_from(parameters.len()).map_err(|_| CompileError::TooLarge)?;
+    code.parameters = u32::try_from(registers.len()).map_err(|_| CompileError::TooLarge)?;
+    code.arguments = cell.and_then(|cell| u32::try_from(cell).ok());
+    code.parameter_map = parameter_map;
     Ok(code)
 }
 
@@ -607,7 +757,6 @@ impl<'a> Compiler<'a> {
             targets: Vec::new(),
             strict,
             completion: None,
-            arguments: false,
             outer,
             captures,
             lexical_this: false,
@@ -1096,6 +1245,40 @@ impl<'a> Compiler<'a> {
         Some(binding.at_depth(u32::try_from(depth).ok()?))
     }
 
+    /// Initialisiert die Bindung `atom` im Bereich mit der Stelle `index` in
+    /// `scopes` mit dem Akkumulator.
+    fn store_binding(&mut self, index: usize, atom: Atom) -> Result<()> {
+        let Some(binding) = self.lookup_in(index, atom) else {
+            return Err(CompileError::Unsupported(0));
+        };
+        self.store_location(binding.location)
+    }
+
+    /// Die formalen Parameter einer Funktion, jeder ein Bezeichner,
+    /// vielleicht mit Vorgabewert, zuletzt vielleicht der Rest-Parameter.
+    /// Muster kommen mit der Destrukturierung.
+    fn formals(&self, list: List) -> Result<Vec<Formal>> {
+        let mut formals = Vec::new();
+        for &parameter in self.ast.list(list) {
+            let (target, default, rest) = match *self.ast.node(parameter) {
+                Node::WithDefault { target, default } => (target, Some(default), false),
+                Node::Rest(target) => (target, None, true),
+                _ => (parameter, None, false),
+            };
+            let Node::BindingIdentifier(atom) = *self.ast.node(target) else {
+                return Err(self.unsupported(target));
+            };
+            let end = self.ast.range(parameter).end;
+            formals.push(Formal {
+                atom,
+                default,
+                rest,
+                end,
+            });
+        }
+        Ok(formals)
+    }
+
     fn is_arguments(&self, atom: Atom) -> bool {
         self.ast
             .atom(atom)
@@ -1106,13 +1289,9 @@ impl<'a> Compiler<'a> {
 
     /// ResolveBinding (Abschnitt 9.4.2) beim Übersetzen: eine Bindung in
     /// einem Register oder Kontext oder `None` für die globale Umgebung.
-    /// Das Objekt `arguments` fehlt noch, auch in Pfeilfunktionen.
     fn resolve(&self, atom: Atom, node: NodeId) -> Result<Option<LocalBinding>> {
         if let Some(binding) = self.lookup(atom) {
             return Ok(Some(binding));
-        }
-        if self.arguments && self.is_arguments(atom) {
-            return Err(self.unsupported(node));
         }
         let mut depth = self.open_contexts();
         let mut enclosing = Some(&self.outer);
@@ -1168,12 +1347,6 @@ impl<'a> Compiler<'a> {
             if scope.has_context() {
                 contexts.push(layout);
             }
-        }
-        // Das Objekt `arguments` gibt es noch nicht.
-        if self.arguments
-            && let Some(atom) = self.ast.find_atom(&units("arguments"))
-        {
-            registers.insert(atom);
         }
         if contexts.is_empty() && registers.is_empty() {
             return Rc::clone(&self.outer);
