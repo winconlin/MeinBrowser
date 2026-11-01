@@ -132,14 +132,16 @@ pub const SOURCES: [Source; 9] = [
         name: "test262",
         repository: "https://github.com/tc39/test262",
         commit: "91c70759363c46557b694792bf34a2551a7af5ba",
-        // Die Syntaxtests für den Parser und die Muster regulärer
-        // Ausdrücke, siehe `crates/mb-js/src/parser/test262.rs`.
+        // Syntax- und erste Ausführungstests in mb-js. Der Harness bleibt
+        // externe Testdatei und wird nicht mit dem Browser ausgeliefert.
         paths: &[
             "/test/language/",
             "/test/annexB/language/",
             "/test/built-ins/RegExp/",
             "/test/annexB/built-ins/RegExp/",
             "/features.txt",
+            "/harness/",
+            "/INTERPRETING.md",
         ],
     },
 ];

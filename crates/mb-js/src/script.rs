@@ -200,3 +200,6 @@ mod tests;
 
 #[cfg(test)]
 mod budget_tests;
+
+#[cfg(test)]
+mod test262;
