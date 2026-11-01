@@ -1,6 +1,6 @@
-//! Der Übersetzer vom Syntaxbaum zum Bytecode, für Scripts und Funktionen
-//! ohne Closures. Was er noch nicht kann, meldet er als
-//! [`CompileError::Unsupported`] mit der Lage im Quelltext.
+//! Der Übersetzer vom Syntaxbaum zum Bytecode, für Scripts und Funktionen.
+//! Was er noch nicht kann, meldet er als [`CompileError::Unsupported`] mit
+//! der Lage im Quelltext.
 //!
 //! Funktionen übersetzt er einzeln mit [`compile_function`], erst wenn sie
 //! das erste Mal aufgerufen werden. Der Code, der sie anlegt, nennt sie mit
@@ -11,20 +11,37 @@
 //! Record der globalen Umgebung. Beides legt
 //! GlobalDeclarationInstantiation (Abschnitt 16.1.7) zur Laufzeit an, der
 //! Übersetzer sammelt dafür die Namen. Alle anderen Bindungen liegen in
-//! Registern: in Funktionen die Parameter, `var`, Funktionsdeklarationen
+//! Registern oder, wenn eine innere Funktion ihren Namen nennt, in
+//! Kontexten: in Funktionen die Parameter, `var`, Funktionsdeklarationen
 //! und `let` und `const` auf oberster Ebene (FunctionDeclarationInstantiation,
 //! Abschnitt 10.2.11), überall die Bindungen in Blöcken, im Kopf von `for`
 //! und in `switch`. Beim Betreten eines Blocks bekommen sie die Lücke
 //! (BlockDeclarationInstantiation, Abschnitt 14.2.3). Gelesen und
-//! geschrieben wird mit [`Op::CheckHole`] davor, außer wenn die Stelle im
-//! Quelltext hinter der Deklaration liegt und kein `switch` dazwischen
-//! springen kann; dann ist die Bindung sicher initialisiert.
+//! geschrieben wird mit [`Op::CheckHole`] oder [`Op::ThrowIfHole`] davor,
+//! außer wenn die Stelle im Quelltext hinter der Deklaration liegt und kein
+//! `switch` dazwischen springen kann; dann ist die Bindung sicher
+//! initialisiert. Aus einer inneren Funktion prüft jeder Zugriff auf eine
+//! lexikalische Bindung die TDZ.
 //!
-//! Closures gibt es noch nicht: Greift eine Funktion auf eine Bindung zu,
-//! die der umgebende Code in einem Register hält, meldet der Übersetzer
-//! das als nicht unterstützt. Ebenso `arguments`, Pfeilfunktionen,
-//! Generatoren, `async`, Klassen, Parameter mit Vorgabewerten, Mustern oder
-//! Rest und Funktionsdeklarationen in Blöcken (Anhang B.3.2).
+//! Closures: Ein Bereich mit Bindungen in einem Kontext legt ihn beim
+//! Betreten an ([`Op::PushContext`]) und gibt ihn beim Verlassen wieder ab,
+//! auch bei `break` und `continue`. Eine Funktion bekommt den aktuellen
+//! Kontext als [[Environment]] und mit ihrer [`FunctionTemplate`] die
+//! Beschreibung der Kontexte um sie herum ([`Enclosing`]); daraus findet
+//! der Übersetzer ihre Bindungen. Pfeilfunktionen lesen `this` aus einem
+//! Platz im Kontext der Funktion oder des Scripts, in dem sie stehen. Ein
+//! `for` mit `let` kopiert seinen Kontext für jeden Durchlauf.
+//!
+//! Funktionsdeklarationen in Blöcken sind dort lexikalisch und entstehen
+//! beim Betreten. Außerhalb des strikten Modus setzen sie nach Anhang B.3.2
+//! und B.3.3 bei ihrer Auswertung zusätzlich die gleichnamige var-Bindung,
+//! wenn eine `var`-Deklaration an ihrer Stelle keinen frühen Fehler ergäbe;
+//! in Scripts entscheidet GlobalDeclarationInstantiation, ob es die
+//! globale Bindung gibt, und setzt dafür ein Register.
+//!
+//! Noch nicht unterstützt sind `arguments`, Generatoren, `async`, Klassen,
+//! Parameter mit Vorgabewerten, Mustern oder Rest und Funktionsdeklarationen
+//! mit Marke (Anhang B.3.1).
 //!
 //! Abschlusswert: Scripts führen ein Register dafür (UpdateEmpty, Abschnitt
 //! 6.2.4.4). Jede Ausdrucksanweisung schreibt ihren Wert hinein. `if`,
@@ -51,15 +68,17 @@
 
 #![forbid(unsafe_code)]
 
-use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 use crate::ast::{
-    AssignOperator, Ast, Atom, BinaryOperator, DeclarationKind, FunctionId, FunctionKind, List,
-    Node, NodeId, PropertyKind, UnaryOperator, UpdateOperator,
+    AssignOperator, Ast, Atom, BinaryOperator, DeclarationKind, FunctionCaptures, FunctionId,
+    FunctionKind, List, Node, NodeId, PropertyKind, UnaryOperator, UpdateOperator,
 };
-use crate::bytecode::{Code, Constant, Emitter, FunctionTemplate, Label, Op, TooLarge};
+use crate::bytecode::{
+    BindingKind, Code, Constant, ContextBinding, ContextLayout, Emitter, Enclosing,
+    FunctionTemplate, Label, Op, TooLarge,
+};
 use crate::number;
 use crate::value::Value;
 
@@ -95,6 +114,10 @@ pub struct Script {
     /// mehreren mit demselben Namen die letzte, in der Reihenfolge des
     /// Quelltexts (functionsToInitialize).
     pub functions: Vec<(Vec<u16>, FunctionId)>,
+    /// Die Funktionsdeklarationen in Blöcken, die nach Anhang B.3.2.2 auch
+    /// eine globale Bindung setzen, wenn es sie geben darf: ihr Name und das
+    /// Register, das dann zu Beginn *true* hält.
+    pub hoisted_functions: Vec<(Vec<u16>, u32)>,
 }
 
 /// Register für `this`.
@@ -102,22 +125,21 @@ const THIS: i64 = 0;
 /// Register für den Abschlusswert eines Scripts.
 const COMPLETION: i64 = 1;
 
-/// Wie eine Bindung in einem Register auf Zuweisungen reagiert.
+/// Wo eine Bindung liegt.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum BindingKind {
-    Mutable,
-    /// Aus `const`: Zuweisen wirft einen TypeError.
-    Const,
-    /// Der Name eines benannten Funktionsausdrucks in seinem Rumpf
-    /// (Abschnitt 15.2.5): Zuweisen wirft nur im strikten Modus einen
-    /// TypeError, sonst geschieht nichts (SetMutableBinding, Abschnitt
-    /// 9.1.1.1.5).
-    FunctionName,
+enum Location {
+    Register(u32),
+    /// Ein Platz im Kontext so viele Stufen außerhalb des aktuellen, wie
+    /// `depth` sagt. Im Bereich selbst, der den Kontext hat, ist `depth` 0.
+    Context {
+        depth: u32,
+        slot: u32,
+    },
 }
 
 #[derive(Clone, Copy, Debug)]
 struct LocalBinding {
-    register: u32,
+    location: Location,
     kind: BindingKind,
     /// Ab hier im Quelltext ist die Bindung initialisiert, wenn kein
     /// `switch` dorthin springt.
@@ -128,12 +150,27 @@ struct LocalBinding {
 impl LocalBinding {
     /// Eine Bindung, die von Anfang an einen Wert hat: Parameter, `var`,
     /// Funktionen und der Name eines Funktionsausdrucks.
-    fn initialized(register: u32, kind: BindingKind) -> LocalBinding {
+    fn initialized(location: Location, kind: BindingKind) -> LocalBinding {
         LocalBinding {
-            register,
+            location,
             kind,
             initialized_from: 0,
             in_switch: false,
+        }
+    }
+
+    /// Ob die Bindung vor ihrer Initialisierung die Lücke hält.
+    fn is_lexical(self) -> bool {
+        self.in_switch || self.initialized_from > 0
+    }
+
+    fn at_depth(self, depth: u32) -> LocalBinding {
+        match self.location {
+            Location::Register(_) => self,
+            Location::Context { slot, .. } => LocalBinding {
+                location: Location::Context { depth, slot },
+                ..self
+            },
         }
     }
 }
@@ -141,6 +178,23 @@ impl LocalBinding {
 #[derive(Debug, Default)]
 struct BlockScope {
     bindings: BTreeMap<Atom, LocalBinding>,
+    /// Die Plätze im eigenen Kontext, ohne den für den äußeren; ohne
+    /// Plätze hat der Bereich keinen Kontext.
+    slots: u32,
+    /// Der Platz mit `this`.
+    this: Option<u32>,
+}
+
+impl BlockScope {
+    fn has_context(&self) -> bool {
+        self.slots > 0
+    }
+
+    /// Ein neuer Platz im Kontext.
+    fn add_slot(&mut self) -> Result<u32> {
+        self.slots = self.slots.checked_add(1).ok_or(CompileError::TooLarge)?;
+        Ok(self.slots)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -159,6 +213,20 @@ struct Target {
     labels: Vec<Atom>,
     breaks: Vec<Label>,
     continues: Vec<Label>,
+    /// Wie viele Kontexte am Ziel offen sind.
+    contexts: u32,
+}
+
+impl Target {
+    fn new(kind: TargetKind, labels: Vec<Atom>) -> Target {
+        Target {
+            kind,
+            labels,
+            breaks: Vec::new(),
+            continues: Vec::new(),
+            contexts: 0,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -249,8 +317,18 @@ struct Compiler<'a> {
     /// Ob `arguments` ohne eigene Bindung das Objekt der Argumente meint,
     /// das es noch nicht gibt.
     arguments: bool,
-    /// Die Namen, die der umgebende Code in Registern hält.
-    outer: Rc<BTreeSet<Atom>>,
+    /// Was der Code vom umgebenden sieht.
+    outer: Rc<Enclosing>,
+    /// Was innere Funktionen dieses Codes sehen.
+    captures: &'a FunctionCaptures,
+    /// Ob `this` aus dem umgebenden Code kommt, wie in Pfeilfunktionen.
+    lexical_this: bool,
+    /// Wo in `scopes` die Bindungen aus `var` einer Funktion liegen.
+    var_scope: Option<usize>,
+    /// Die Funktionsdeklarationen in Blöcken, die nach Anhang B.3.2 auch die
+    /// var-Bindung setzen, in Scripts mit dem Register, das sagt, ob es die
+    /// globale Bindung gibt.
+    hoisted: BTreeMap<NodeId, Option<u32>>,
 }
 
 /// Übersetzt ein Script (Abschnitt 16.1).
@@ -258,7 +336,8 @@ pub fn compile_script(ast: &Ast) -> Result<Script> {
     if ast.is_module() {
         return Err(CompileError::Unsupported(0));
     }
-    let mut compiler = Compiler::new(ast, ast.is_strict(), Rc::default());
+    let captures = ast.captures().script();
+    let mut compiler = Compiler::new(ast, ast.is_strict(), Rc::default(), captures);
     // `this` und der Abschlusswert.
     compiler.allocate()?;
     compiler.allocate()?;
@@ -275,6 +354,22 @@ pub fn compile_script(ast: &Ast) -> Result<Script> {
         .filter(|&atom| !functions.iter().any(|&(name, _, _)| name == atom))
         .map(|atom| ast.atom(atom).to_vec())
         .collect();
+    let mut hoisted_functions = Vec::new();
+    for (name, node) in compiler.hoisted_functions(body, &BTreeSet::new()) {
+        let flag = compiler.allocate()?;
+        compiler.hoisted.insert(node, Some(flag));
+        hoisted_functions.push((ast.atom(name).to_vec(), flag));
+    }
+    // Pfeilfunktionen lesen `this` aus einem Kontext.
+    if captures.this {
+        let mut scope = BlockScope::default();
+        let slot = scope.add_slot()?;
+        scope.this = Some(slot);
+        compiler.emit(Op::PushContext, &[1])?;
+        compiler.emit(Op::Ldar, &[THIS])?;
+        compiler.emit(Op::StaContext, &[0, i64::from(slot)])?;
+        compiler.scopes.push(scope);
+    }
     for &item in body {
         compiler.top_level_item(item)?;
     }
@@ -289,6 +384,7 @@ pub fn compile_script(ast: &Ast) -> Result<Script> {
         var_names,
         lexical_names,
         functions,
+        hoisted_functions,
     })
 }
 
@@ -296,22 +392,30 @@ pub fn compile_script(ast: &Ast) -> Result<Script> {
 /// FunctionDeclarationInstantiation (Abschnitt 10.2.11) für einfache
 /// Parameterlisten. Die Register: `this`, das Funktionsobjekt, die
 /// Parameter, dann `var` und die Funktionen des Rumpfs, dann seine
-/// lexikalischen Bindungen.
+/// lexikalischen Bindungen. Was innere Funktionen davon sehen, kommt in
+/// einen Kontext, die Parameter mit einer Kopie.
 pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> {
     let Some(function) = ast.function(template.function) else {
         return Err(CompileError::Unsupported(0));
     };
     let position = function.range.start;
+    let arrow = function.kind == FunctionKind::Arrow;
     let supported = matches!(
         function.kind,
-        FunctionKind::Normal | FunctionKind::Method | FunctionKind::Getter | FunctionKind::Setter
+        FunctionKind::Normal
+            | FunctionKind::Arrow
+            | FunctionKind::Method
+            | FunctionKind::Getter
+            | FunctionKind::Setter
     ) && !function.generator
         && !function.is_async
         && function.simple_parameters;
-    if !supported {
+    let captures = ast.captures().function(template.function);
+    let (true, Some(captures)) = (supported, captures) else {
         return Err(CompileError::Unsupported(position));
-    }
-    let mut compiler = Compiler::new(ast, function.strict, Rc::clone(&template.outer));
+    };
+    let mut compiler = Compiler::new(ast, function.strict, Rc::clone(&template.outer), captures);
+    compiler.lexical_this = arrow;
     compiler.allocate()?;
     let callee = compiler.allocate()?;
     let mut scope = BlockScope::default();
@@ -322,16 +426,31 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
         };
         // Bei doppelten Namen gilt der letzte Parameter.
         let register = compiler.allocate()?;
-        let binding = LocalBinding::initialized(register, BindingKind::Mutable);
+        let binding = LocalBinding::initialized(Location::Register(register), BindingKind::Mutable);
         scope.bindings.insert(atom, binding);
     }
+    let parameter_names: BTreeSet<Atom> = scope.bindings.keys().copied().collect();
+    let mut copies = Vec::new();
+    for (atom, binding) in &mut scope.bindings {
+        if let Location::Register(register) = binding.location
+            && captures.names.contains(atom)
+        {
+            let slot = scope.slots.checked_add(1).ok_or(CompileError::TooLarge)?;
+            scope.slots = slot;
+            binding.location = Location::Context { depth: 0, slot };
+            copies.push((register, slot));
+        }
+    }
+    // Der Rumpf einer Pfeilfunktion mit `expression_body` ist ein Ausdruck;
+    // er deklariert nichts.
     let body = ast.list(function.body);
-    let functions = compiler.top_level_functions(body)?;
+    let statements = if function.expression_body { &[] } else { body };
+    let functions = compiler.top_level_functions(statements)?;
     let mut var_names = Vec::new();
-    for &item in body {
+    for &item in statements {
         compiler.var_declared_names(item, &mut var_names)?;
     }
-    let items: Vec<NodeId> = body
+    let items: Vec<NodeId> = statements
         .iter()
         .copied()
         .filter(|&item| !matches!(ast.node(item), Node::FunctionDeclaration(_)))
@@ -342,10 +461,11 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
     }
     // argumentsObjectNeeded: Ein Parameter, eine Funktion oder eine
     // lexikalische Deklaration mit dem Namen ersetzt das Objekt, `var` nicht.
-    compiler.arguments = !scope
-        .bindings
-        .keys()
-        .any(|&atom| compiler.is_arguments(atom))
+    // Pfeilfunktionen haben keins.
+    compiler.arguments = !arrow
+        && !parameter_names
+            .iter()
+            .any(|&atom| compiler.is_arguments(atom))
         && !functions
             .iter()
             .any(|&(name, _, _)| compiler.is_arguments(name))
@@ -355,46 +475,127 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
     if compiler.arguments && var_names.iter().any(|&atom| compiler.is_arguments(atom)) {
         return Err(CompileError::Unsupported(position));
     }
+    // Anhang B.3.2.1: Zu parameterNames gehört dann auch `arguments`.
+    let mut excluded = parameter_names;
+    if compiler.arguments
+        && let Some(atom) = ast.find_atom(&units("arguments"))
+    {
+        excluded.insert(atom);
+    }
+    let hoisted = compiler.hoisted_functions(statements, &excluded);
+    for &(name, node) in &hoisted {
+        // Ohne das Objekt entstünde die Bindung erst bei der Auswertung.
+        if compiler.is_arguments(name) {
+            return Err(compiler.unsupported(node));
+        }
+        compiler.hoisted.insert(node, None);
+    }
+    let hoisted_names = hoisted.iter().map(|&(name, _)| name);
+    let function_names = functions.iter().map(|&(name, _, _)| name);
     for atom in var_names
         .into_iter()
-        .chain(functions.iter().map(|&(name, _, _)| name))
+        .chain(function_names)
+        .chain(hoisted_names)
     {
-        if let Entry::Vacant(entry) = scope.bindings.entry(atom) {
-            let register = compiler.allocate()?;
-            entry.insert(LocalBinding::initialized(register, BindingKind::Mutable));
+        if !scope.bindings.contains_key(&atom) {
+            let location = compiler.locate(&mut scope, atom)?;
+            let binding = LocalBinding::initialized(location, BindingKind::Mutable);
+            scope.bindings.insert(atom, binding);
         }
     }
+    // Die lexikalischen Deklarationen auf oberster Ebene teilen sich den
+    // Bereich, denn keine hat denselben Namen wie ein Parameter, `var` oder
+    // eine Funktion.
+    let mut holes = Vec::new();
+    for (atom, constant, end) in lexical_names {
+        let location = compiler.locate(&mut scope, atom)?;
+        holes.push(location);
+        let kind = if constant {
+            BindingKind::Const
+        } else {
+            BindingKind::Mutable
+        };
+        let binding = LocalBinding {
+            location,
+            kind,
+            initialized_from: end,
+            in_switch: false,
+        };
+        scope.bindings.insert(atom, binding);
+    }
+    if captures.this && !arrow {
+        scope.this = Some(scope.add_slot()?);
+    }
     // Der Name eines Funktionsausdrucks liegt außen (funcEnv, Abschnitt
-    // 15.2.5); das Objekt `arguments` verdeckt ihn.
+    // 15.2.5); das Objekt `arguments` und jede Bindung im Rumpf verdecken
+    // ihn.
     if template.binds_name
         && let Some(name) = function.name
         && !(compiler.arguments && compiler.is_arguments(name))
+        && !scope.bindings.contains_key(&name)
     {
         let mut outer = BlockScope::default();
-        let binding = LocalBinding::initialized(callee, BindingKind::FunctionName);
+        let location = if captures.names.contains(&name) {
+            let slot = outer.add_slot()?;
+            compiler.emit(Op::PushContext, &[1])?;
+            compiler.emit(Op::Ldar, &[i64::from(callee)])?;
+            compiler.emit(Op::StaContext, &[0, i64::from(slot)])?;
+            Location::Context { depth: 0, slot }
+        } else {
+            Location::Register(callee)
+        };
+        let binding = LocalBinding::initialized(location, BindingKind::FunctionName);
         outer.bindings.insert(name, binding);
         compiler.scopes.push(outer);
     }
+    if scope.has_context() {
+        compiler.emit(Op::PushContext, &[i64::from(scope.slots)])?;
+        for (register, slot) in copies {
+            compiler.emit(Op::Ldar, &[i64::from(register)])?;
+            compiler.emit(Op::StaContext, &[0, i64::from(slot)])?;
+        }
+        if let Some(slot) = scope.this {
+            compiler.emit(Op::Ldar, &[THIS])?;
+            compiler.emit(Op::StaContext, &[0, i64::from(slot)])?;
+        }
+    }
+    compiler.set_holes(&holes)?;
+    compiler.var_scope = Some(compiler.scopes.len());
     compiler.scopes.push(scope);
-    compiler.enter_block(&items, false)?;
     for &(name, id, node) in &functions {
         compiler.function_declaration(node, id)?;
         if let Some(binding) = compiler.lookup(name) {
-            compiler.emit(Op::Star, &[i64::from(binding.register)])?;
+            compiler.store_location(binding.location)?;
         }
     }
-    for &item in body {
-        compiler.top_level_item(item)?;
+    if function.expression_body {
+        for &expression in body {
+            compiler.expression(expression)?;
+        }
+        compiler.emit(Op::Return, &[])?;
+    } else {
+        for &item in body {
+            compiler.top_level_item(item)?;
+        }
+        compiler.emit(Op::LdaUndefined, &[])?;
+        compiler.emit(Op::Return, &[])?;
     }
-    compiler.emit(Op::LdaUndefined, &[])?;
-    compiler.emit(Op::Return, &[])?;
     let mut code = compiler.finish();
     code.parameters = u32::try_from(parameters.len()).map_err(|_| CompileError::TooLarge)?;
     Ok(code)
 }
 
+fn units(text: &str) -> Vec<u16> {
+    text.encode_utf16().collect()
+}
+
 impl<'a> Compiler<'a> {
-    fn new(ast: &'a Ast, strict: bool, outer: Rc<BTreeSet<Atom>>) -> Compiler<'a> {
+    fn new(
+        ast: &'a Ast,
+        strict: bool,
+        outer: Rc<Enclosing>,
+        captures: &'a FunctionCaptures,
+    ) -> Compiler<'a> {
         Compiler {
             ast,
             emitter: Emitter::default(),
@@ -408,6 +609,10 @@ impl<'a> Compiler<'a> {
             completion: None,
             arguments: false,
             outer,
+            captures,
+            lexical_this: false,
+            var_scope: None,
+            hoisted: BTreeMap::new(),
         }
     }
 
@@ -637,16 +842,182 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// Betritt einen Block mit den lexikalischen Deklarationen aus `items`
-    /// und gibt die Marke für [`Compiler::leave_block`] zurück.
+    /// Anhang B.3.2: die Funktionsdeklarationen in Blöcken, in `case`- und
+    /// `default`-Klauseln und nach Anhang B.3.3 in den Zweigen von `if`, die
+    /// außerhalb des strikten Modus zusätzlich die gleichnamige var-Bindung
+    /// setzen, mit ihrem Namen. Das gilt, wenn eine `var`-Deklaration an
+    /// ihrer Stelle keinen frühen Fehler ergäbe: Keine lexikalische
+    /// Deklaration auf dem Weg nach außen hat denselben Namen, auch keine
+    /// zweite Funktion im selben Block, und keiner der Namen in `excluded`
+    /// (parameterNames) ist es.
+    fn hoisted_functions(&self, body: &[NodeId], excluded: &BTreeSet<Atom>) -> Vec<(Atom, NodeId)> {
+        let mut found = Vec::new();
+        if self.strict {
+            return found;
+        }
+        let mut path = vec![self.lexically_declared(body, false)];
+        for &item in body {
+            self.hoisting_walk(item, &mut path, excluded, &mut found);
+        }
+        found
+    }
+
+    /// Sucht in einer Anweisung nach Funktionsdeklarationen in Blöcken,
+    /// ohne in Funktionen hinabzusteigen. `path` hält die lexikalisch
+    /// deklarierten Namen der Bereiche außen.
+    fn hoisting_walk(
+        &self,
+        node: NodeId,
+        path: &mut Vec<Vec<Atom>>,
+        excluded: &BTreeSet<Atom>,
+        found: &mut Vec<(Atom, NodeId)>,
+    ) {
+        match *self.ast.node(node) {
+            Node::Block(list) => self.hoisting_block(self.ast.list(list), path, excluded, found),
+            Node::If {
+                consequent,
+                alternate,
+                ..
+            } => {
+                for clause in std::iter::once(consequent).chain(alternate) {
+                    if matches!(self.ast.node(clause), Node::FunctionDeclaration(_)) {
+                        self.hoisting_block(&[clause], path, excluded, found);
+                    } else {
+                        self.hoisting_walk(clause, path, excluded, found);
+                    }
+                }
+            }
+            Node::While { body, .. } | Node::DoWhile { body, .. } | Node::Labeled { body, .. } => {
+                self.hoisting_walk(body, path, excluded, found);
+            }
+            Node::For { init, body, .. } => {
+                let names =
+                    init.map_or_else(Vec::new, |init| self.lexically_declared(&[init], false));
+                path.push(names);
+                self.hoisting_walk(body, path, excluded, found);
+                path.pop();
+            }
+            Node::Switch { cases, .. } => {
+                let mut items = Vec::new();
+                for &case in self.ast.list(cases) {
+                    if let Node::Case { body, .. } = *self.ast.node(case) {
+                        items.extend_from_slice(self.ast.list(body));
+                    }
+                }
+                self.hoisting_block(&items, path, excluded, found);
+            }
+            // Was der Übersetzer sonst nicht kann, übersetzt er gar nicht.
+            _ => {}
+        }
+    }
+
+    fn hoisting_block(
+        &self,
+        items: &[NodeId],
+        path: &mut Vec<Vec<Atom>>,
+        excluded: &BTreeSet<Atom>,
+        found: &mut Vec<(Atom, NodeId)>,
+    ) {
+        path.push(self.lexically_declared(items, true));
+        for &item in items {
+            let Node::FunctionDeclaration(id) = *self.ast.node(item) else {
+                self.hoisting_walk(item, path, excluded, found);
+                continue;
+            };
+            let Some(name) = self
+                .ast
+                .function(id)
+                .filter(|function| !function.generator && !function.is_async)
+                .and_then(|function| function.name)
+            else {
+                continue;
+            };
+            let conflict = path.split_last().is_some_and(|(own, outer)| {
+                own.iter().filter(|&&atom| atom == name).count() > 1
+                    || outer.iter().any(|names| names.contains(&name))
+            });
+            if !conflict && !excluded.contains(&name) {
+                found.push((name, item));
+            }
+        }
+        path.pop();
+    }
+
+    /// Die einfachen Namen aus LexicallyDeclaredNames der Anweisungen, mit
+    /// den Funktionen, wenn sie dort lexikalisch sind. Namen in Mustern
+    /// fehlen; die übersetzt der Übersetzer noch nicht.
+    fn lexically_declared(&self, items: &[NodeId], functions: bool) -> Vec<Atom> {
+        let mut names = Vec::new();
+        for &item in items {
+            match *self.ast.node(item) {
+                Node::Variables { kind, declarators } if kind != DeclarationKind::Var => {
+                    for &declarator in self.ast.list(declarators) {
+                        if let Node::Declarator { target, .. } = *self.ast.node(declarator)
+                            && let Node::BindingIdentifier(atom) = *self.ast.node(target)
+                        {
+                            names.push(atom);
+                        }
+                    }
+                }
+                Node::ClassDeclaration(id) => {
+                    names.extend(self.ast.class(id).and_then(|class| class.name));
+                }
+                Node::FunctionDeclaration(id) if functions => {
+                    names.extend(self.ast.function(id).and_then(|function| function.name));
+                }
+                _ => {}
+            }
+        }
+        names
+    }
+
+    /// Ein Ort für eine Bindung namens `atom` im Bereich `scope`: ein Platz
+    /// in seinem Kontext, wenn eine innere Funktion den Namen nennt, sonst
+    /// ein Register.
+    fn locate(&mut self, scope: &mut BlockScope, atom: Atom) -> Result<Location> {
+        if self.captures.names.contains(&atom) {
+            let slot = scope.add_slot()?;
+            return Ok(Location::Context { depth: 0, slot });
+        }
+        Ok(Location::Register(self.allocate()?))
+    }
+
+    /// Gibt den Bindungen an `locations` im neuen Bereich die Lücke.
+    fn set_holes(&mut self, locations: &[Location]) -> Result<()> {
+        if locations.is_empty() {
+            return Ok(());
+        }
+        self.emit(Op::LdaHole, &[])?;
+        for &location in locations {
+            self.store_location(location)?;
+        }
+        Ok(())
+    }
+
+    /// Betritt einen Block mit den Deklarationen aus `items` und gibt die
+    /// Marke für [`Compiler::leave_block`] zurück: BlockDeclarationInstantiation
+    /// (Abschnitt 14.2.3), die Funktionen darin entstehen sofort.
     fn enter_block(&mut self, items: &[NodeId], in_switch: bool) -> Result<u32> {
         let mark = self.next_register;
         let mut scope = BlockScope::default();
-        let mut registers = Vec::new();
+        let mut holes = Vec::new();
+        let mut functions = Vec::new();
         for &item in items {
+            if let Node::FunctionDeclaration(id) = *self.ast.node(item) {
+                let name = self.block_function(item, id)?;
+                // Außerhalb des strikten Modus darf eine Funktion im selben
+                // Block wiederkommen, die letzte gilt (Anhang B.3.2.4).
+                if !scope.bindings.contains_key(&name) {
+                    let location = self.locate(&mut scope, name)?;
+                    let binding = LocalBinding::initialized(location, BindingKind::Mutable);
+                    scope.bindings.insert(name, binding);
+                }
+                functions.push((name, id, item));
+                continue;
+            }
             for (atom, constant, end) in self.lexical_declarations(item)? {
-                let register = self.allocate()?;
-                registers.push(register);
+                let location = self.locate(&mut scope, atom)?;
+                holes.push(location);
                 let kind = if constant {
                     BindingKind::Const
                 } else {
@@ -655,7 +1026,7 @@ impl<'a> Compiler<'a> {
                 scope.bindings.insert(
                     atom,
                     LocalBinding {
-                        register,
+                        location,
                         kind,
                         initialized_from: end,
                         in_switch,
@@ -663,26 +1034,66 @@ impl<'a> Compiler<'a> {
                 );
             }
         }
-        if !registers.is_empty() {
-            self.emit(Op::LdaHole, &[])?;
-            for register in registers {
-                self.emit(Op::Star, &[i64::from(register)])?;
+        if scope.has_context() {
+            self.emit(Op::PushContext, &[i64::from(scope.slots)])?;
+        }
+        self.set_holes(&holes)?;
+        self.scopes.push(scope);
+        for (name, id, node) in functions {
+            self.function_declaration(node, id)?;
+            if let Some(binding) = self.lookup(name) {
+                self.store_location(binding.location)?;
             }
         }
-        self.scopes.push(scope);
         Ok(mark)
     }
 
-    fn leave_block(&mut self, mark: u32) {
-        self.scopes.pop();
+    fn leave_block(&mut self, mark: u32) -> Result<()> {
+        if self.scopes.pop().is_some_and(|scope| scope.has_context()) {
+            self.emit(Op::PopContext, &[])?;
+        }
         self.release(mark);
+        Ok(())
+    }
+
+    /// Der Name einer Funktionsdeklaration in einem Block.
+    fn block_function(&self, node: NodeId, id: FunctionId) -> Result<Atom> {
+        self.ast
+            .function(id)
+            .filter(|function| !function.generator && !function.is_async)
+            .and_then(|function| function.name)
+            .ok_or_else(|| self.unsupported(node))
+    }
+
+    /// Wie viele Bereiche einen eigenen Kontext haben.
+    fn open_contexts(&self) -> u32 {
+        let count = self
+            .scopes
+            .iter()
+            .filter(|scope| scope.has_context())
+            .count();
+        u32::try_from(count).unwrap_or(u32::MAX)
     }
 
     fn lookup(&self, atom: Atom) -> Option<LocalBinding> {
-        self.scopes
-            .iter()
-            .rev()
-            .find_map(|scope| scope.bindings.get(&atom).copied())
+        let mut depth: u32 = 0;
+        for scope in self.scopes.iter().rev() {
+            if let Some(&binding) = scope.bindings.get(&atom) {
+                return Some(binding.at_depth(depth));
+            }
+            if scope.has_context() {
+                depth = depth.saturating_add(1);
+            }
+        }
+        None
+    }
+
+    /// Die Bindung `atom` im Bereich mit der Stelle `index` in `scopes`.
+    fn lookup_in(&self, index: usize, atom: Atom) -> Option<LocalBinding> {
+        let binding = *self.scopes.get(index)?.bindings.get(&atom)?;
+        let inner = self.scopes.get(index.checked_add(1)?..)?;
+        let depth = inner.iter().filter(|scope| scope.has_context()).count();
+        Some(binding.at_depth(u32::try_from(depth).ok()?))
     }
 
     fn is_arguments(&self, atom: Atom) -> bool {
@@ -694,30 +1105,84 @@ impl<'a> Compiler<'a> {
     }
 
     /// ResolveBinding (Abschnitt 9.4.2) beim Übersetzen: eine Bindung in
-    /// einem Register oder `None` für die globale Umgebung. Eine Bindung
-    /// aus einem Register des umgebenden Codes bräuchte eine Closure, das
-    /// Objekt `arguments` fehlt noch.
+    /// einem Register oder Kontext oder `None` für die globale Umgebung.
+    /// Das Objekt `arguments` fehlt noch, auch in Pfeilfunktionen.
     fn resolve(&self, atom: Atom, node: NodeId) -> Result<Option<LocalBinding>> {
         if let Some(binding) = self.lookup(atom) {
             return Ok(Some(binding));
         }
-        if self.outer.contains(&atom) || (self.arguments && self.is_arguments(atom)) {
+        if self.arguments && self.is_arguments(atom) {
             return Err(self.unsupported(node));
+        }
+        let mut depth = self.open_contexts();
+        let mut enclosing = Some(&self.outer);
+        while let Some(current) = enclosing {
+            for layout in &current.contexts {
+                if let Some(binding) = layout.bindings.get(&atom) {
+                    let initialized_from = if binding.lexical { usize::MAX } else { 0 };
+                    return Ok(Some(LocalBinding {
+                        location: Location::Context {
+                            depth,
+                            slot: binding.slot,
+                        },
+                        kind: binding.kind,
+                        initialized_from,
+                        in_switch: false,
+                    }));
+                }
+                depth = depth.checked_add(1).ok_or(CompileError::TooLarge)?;
+            }
+            if current.registers.contains(&atom) {
+                return Err(self.unsupported(node));
+            }
+            enclosing = current.parent.as_ref();
         }
         Ok(None)
     }
 
-    /// Die Namen, die eine Funktion sähe, die hier entsteht: die Bindungen
-    /// aller offenen Bereiche und die des umgebenden Codes.
-    fn visible_names(&self) -> Rc<BTreeSet<Atom>> {
-        if self.scopes.iter().all(|scope| scope.bindings.is_empty()) {
+    /// Was eine Funktion sähe, die hier entsteht: die offenen Kontexte vom
+    /// innersten an und dahinter, was dieser Code vom umgebenden sieht.
+    fn enclosing(&self) -> Rc<Enclosing> {
+        let mut contexts = Vec::new();
+        let mut registers = BTreeSet::new();
+        for scope in self.scopes.iter().rev() {
+            let mut layout = ContextLayout {
+                bindings: BTreeMap::new(),
+                this: scope.this,
+            };
+            for (&atom, &binding) in &scope.bindings {
+                match binding.location {
+                    Location::Register(_) => {
+                        registers.insert(atom);
+                    }
+                    Location::Context { slot, .. } => {
+                        let binding = ContextBinding {
+                            slot,
+                            kind: binding.kind,
+                            lexical: binding.is_lexical(),
+                        };
+                        layout.bindings.insert(atom, binding);
+                    }
+                }
+            }
+            if scope.has_context() {
+                contexts.push(layout);
+            }
+        }
+        // Das Objekt `arguments` gibt es noch nicht.
+        if self.arguments
+            && let Some(atom) = self.ast.find_atom(&units("arguments"))
+        {
+            registers.insert(atom);
+        }
+        if contexts.is_empty() && registers.is_empty() {
             return Rc::clone(&self.outer);
         }
-        let mut names = BTreeSet::clone(&self.outer);
-        for scope in &self.scopes {
-            names.extend(scope.bindings.keys().copied());
-        }
-        Rc::new(names)
+        Rc::new(Enclosing {
+            contexts,
+            registers,
+            parent: Some(Rc::clone(&self.outer)),
+        })
     }
 
     /// Ob eine Stelle im Quelltext die Bindung vor ihrer Initialisierung
@@ -746,9 +1211,9 @@ impl<'a> Compiler<'a> {
                 for &item in items {
                     self.statement(item)?;
                 }
-                self.leave_block(mark);
-                Ok(())
+                self.leave_block(mark)
             }
+            Node::FunctionDeclaration(_) => self.block_function_evaluation(node),
             Node::Empty | Node::Debugger => Ok(()),
             Node::If {
                 test,
@@ -785,6 +1250,44 @@ impl<'a> Compiler<'a> {
         };
         self.emit(Op::LdaUndefined, &[])?;
         self.emit(Op::Star, &[completion])
+    }
+
+    /// Eine Funktionsdeklaration in einem Block: Das Funktionsobjekt
+    /// entstand beim Betreten. Nach Anhang B.3.2 kommt es hier außerdem in
+    /// die var-Bindung der Funktion oder die globale Bindung des Scripts,
+    /// wenn GlobalDeclarationInstantiation sie angelegt hat.
+    fn block_function_evaluation(&mut self, node: NodeId) -> Result<()> {
+        let Some(&hoisted) = self.hoisted.get(&node) else {
+            return Ok(());
+        };
+        let name = match *self.ast.node(node) {
+            Node::FunctionDeclaration(id) => self.block_function(node, id)?,
+            _ => return Err(self.unsupported(node)),
+        };
+        let Some(binding) = self.lookup(name) else {
+            return Err(self.unsupported(node));
+        };
+        match hoisted {
+            Some(flag) => {
+                self.emit(Op::Ldar, &[i64::from(flag)])?;
+                let skip = self.jump(Op::JumpIfFalse)?;
+                let constant = self.name(name)?;
+                let register = self.allocate()?;
+                self.emit(Op::ResolveGlobal, &[constant, i64::from(register)])?;
+                self.load_location(binding.location)?;
+                self.emit(Op::StaGlobal, &[constant, i64::from(register)])?;
+                self.release(register);
+                self.bind(skip)
+            }
+            None => {
+                let target = self
+                    .var_scope
+                    .and_then(|index| self.lookup_in(index, name))
+                    .ok_or_else(|| self.unsupported(node))?;
+                self.load_location(binding.location)?;
+                self.store_location(target.location)
+            }
+        }
     }
 
     /// `var`, `let` und `const` (Abschnitte 14.3.1.2 und 14.3.2.1).
@@ -832,10 +1335,7 @@ impl<'a> Compiler<'a> {
                         .last()
                         .and_then(|scope| scope.bindings.get(&atom).copied())
                     {
-                        Some(binding) => {
-                            let register = i64::from(binding.register);
-                            self.emit(Op::Star, &[register])?;
-                        }
+                        Some(binding) => self.store_location(binding.location)?,
                         None => {
                             let name = self.name(atom)?;
                             self.emit(Op::InitGlobal, &[name])?;
@@ -860,16 +1360,28 @@ impl<'a> Compiler<'a> {
         self.reset_completion()?;
         self.expression(test)?;
         let otherwise = self.jump(Op::JumpIfFalse)?;
-        self.statement(consequent)?;
+        self.clause(consequent)?;
         match alternate {
             Some(alternate) => {
                 let end = self.jump(Op::Jump)?;
                 self.bind(otherwise)?;
-                self.statement(alternate)?;
+                self.clause(alternate)?;
                 self.bind(end)
             }
             None => self.bind(otherwise),
         }
+    }
+
+    /// Ein Zweig von `if`. Eine Funktionsdeklaration dort steht nach Anhang
+    /// B.3.3 wie in einem eigenen Block.
+    fn clause(&mut self, node: NodeId) -> Result<()> {
+        if !matches!(self.ast.node(node), Node::FunctionDeclaration(_)) {
+            return self.statement(node);
+        }
+        self.position(node)?;
+        let mark = self.enter_block(&[node], false)?;
+        self.statement(node)?;
+        self.leave_block(mark)
     }
 
     /// Anweisungen mit Marken (Abschnitt 14.13). Die Marken einer Schleife
@@ -886,13 +1398,10 @@ impl<'a> Compiler<'a> {
             Node::While { .. } | Node::DoWhile { .. } | Node::For { .. } | Node::Switch { .. } => {
                 self.breakable(body, labels)
             }
+            // Anhang B.3.1.
+            Node::FunctionDeclaration(_) => Err(self.unsupported(body)),
             _ => {
-                self.targets.push(Target {
-                    kind: TargetKind::Labeled,
-                    labels,
-                    breaks: Vec::new(),
-                    continues: Vec::new(),
-                });
+                self.push_target(Target::new(TargetKind::Labeled, labels));
                 self.statement(body)?;
                 let target = self.pop_target();
                 self.bind_all(target.breaks)
@@ -900,13 +1409,16 @@ impl<'a> Compiler<'a> {
         }
     }
 
+    /// Ein Ziel, an dem so viele Kontexte offen sind wie jetzt.
+    fn push_target(&mut self, mut target: Target) {
+        target.contexts = self.open_contexts();
+        self.targets.push(target);
+    }
+
     fn pop_target(&mut self) -> Target {
-        self.targets.pop().unwrap_or(Target {
-            kind: TargetKind::Labeled,
-            labels: Vec::new(),
-            breaks: Vec::new(),
-            continues: Vec::new(),
-        })
+        self.targets
+            .pop()
+            .unwrap_or(Target::new(TargetKind::Labeled, Vec::new()))
     }
 
     /// Schleifen und `switch` mit ihren Marken.
@@ -917,12 +1429,7 @@ impl<'a> Compiler<'a> {
         } else {
             TargetKind::Loop
         };
-        let target = Target {
-            kind,
-            labels,
-            breaks: Vec::new(),
-            continues: Vec::new(),
-        };
+        let target = Target::new(kind, labels);
         match *self.ast.node(node) {
             Node::While { test, body } => self.while_loop(target, test, body),
             Node::DoWhile { body, test } => self.do_while_loop(target, body, test),
@@ -943,7 +1450,7 @@ impl<'a> Compiler<'a> {
     /// Übersetzt den Rumpf einer Schleife und bindet ihre Sprünge mit
     /// `continue` an das Ende des Rumpfs.
     fn loop_body(&mut self, target: Target, body: NodeId) -> Result<Target> {
-        self.targets.push(target);
+        self.push_target(target);
         self.statement(body)?;
         let mut target = self.pop_target();
         self.bind_all(std::mem::take(&mut target.continues))?;
@@ -974,8 +1481,11 @@ impl<'a> Compiler<'a> {
         self.bind_all(target.breaks)
     }
 
-    /// `for` (Abschnitt 14.7.4.2). Ohne Closures braucht es keine Kopien
-    /// der Bindungen je Durchlauf (CreatePerIterationEnvironment).
+    /// `for` (Abschnitt 14.7.4.2). Liegen die Bindungen aus `let` im Kopf in
+    /// einem Kontext, bekommt jeder Durchlauf eine Kopie davon
+    /// (CreatePerIterationEnvironment): vor dem ersten Test und vor jedem
+    /// Schritt danach. Bindungen in Registern sieht keine innere Funktion,
+    /// sie brauchen keine Kopie.
     fn for_loop(
         &mut self,
         target: Target,
@@ -984,10 +1494,21 @@ impl<'a> Compiler<'a> {
         update: Option<NodeId>,
         body: NodeId,
     ) -> Result<()> {
+        let mut per_iteration = false;
         let mark = match init {
             Some(init) if matches!(self.ast.node(init), Node::Variables { .. }) => {
                 let mark = self.enter_block(&[init], false)?;
                 self.statement(init)?;
+                per_iteration = matches!(
+                    self.ast.node(init),
+                    Node::Variables {
+                        kind: DeclarationKind::Let,
+                        ..
+                    }
+                ) && self.scopes.last().is_some_and(BlockScope::has_context);
+                if per_iteration {
+                    self.emit(Op::CloneContext, &[])?;
+                }
                 Some(mark)
             }
             // Der Parser legt einen Ausdruck im Kopf in `Node::Expression`.
@@ -1011,6 +1532,9 @@ impl<'a> Compiler<'a> {
             None => None,
         };
         let target = self.loop_body(target, body)?;
+        if per_iteration {
+            self.emit(Op::CloneContext, &[])?;
+        }
         if let Some(update) = update {
             self.expression(update)?;
         }
@@ -1020,7 +1544,7 @@ impl<'a> Compiler<'a> {
         }
         self.bind_all(target.breaks)?;
         if let Some(mark) = mark {
-            self.leave_block(mark);
+            self.leave_block(mark)?;
         }
         Ok(())
     }
@@ -1055,7 +1579,7 @@ impl<'a> Compiler<'a> {
             }
         }
         let mut otherwise = Some(self.jump(Op::Jump)?);
-        self.targets.push(target);
+        self.push_target(target);
         let mut tests = tests.into_iter();
         for &case in cases {
             let Node::Case { test, body } = *self.ast.node(case) else {
@@ -1077,13 +1601,14 @@ impl<'a> Compiler<'a> {
         }
         let target = self.pop_target();
         self.bind_all(target.breaks)?;
-        self.leave_block(mark);
+        self.leave_block(mark)?;
         self.release(input);
         Ok(())
     }
 
     /// `break` und `continue` (Abschnitte 14.8.2 und 14.9.2). Die frühen
-    /// Fehler garantieren ein passendes Ziel.
+    /// Fehler garantieren ein passendes Ziel. Kontexte, die dazwischen
+    /// offen sind, gibt der Sprung ab.
     fn jump_to_target(
         &mut self,
         node: NodeId,
@@ -1098,11 +1623,17 @@ impl<'a> Compiler<'a> {
             };
             kind_fits && label.is_none_or(|label| target.labels.contains(&label))
         });
-        let Some(index) = index else {
+        let Some(contexts) = index
+            .and_then(|index| self.targets.get(index))
+            .map(|target| target.contexts)
+        else {
             return Err(self.unsupported(node));
         };
+        for _ in contexts..self.open_contexts() {
+            self.emit(Op::PopContext, &[])?;
+        }
         let jump = self.jump(Op::Jump)?;
-        if let Some(target) = self.targets.get_mut(index) {
+        if let Some(target) = index.and_then(|index| self.targets.get_mut(index)) {
             if is_continue {
                 target.continues.push(jump);
             } else {
@@ -1132,7 +1663,7 @@ impl<'a> Compiler<'a> {
             Node::Boolean(true) => self.emit(Op::LdaTrue, &[]),
             Node::Boolean(false) => self.emit(Op::LdaFalse, &[]),
             Node::Null => self.emit(Op::LdaNull, &[]),
-            Node::This => self.emit(Op::Ldar, &[THIS]),
+            Node::This => self.load_this(node),
             Node::Identifier(atom) => self.load_identifier(node, atom),
             Node::Template {
                 quasis,
@@ -1252,6 +1783,7 @@ impl<'a> Compiler<'a> {
         let supported = matches!(
             function.kind,
             FunctionKind::Normal
+                | FunctionKind::Arrow
                 | FunctionKind::Method
                 | FunctionKind::Getter
                 | FunctionKind::Setter
@@ -1263,7 +1795,7 @@ impl<'a> Compiler<'a> {
         let template = FunctionTemplate {
             function: id,
             binds_name,
-            outer: self.visible_names(),
+            outer: self.enclosing(),
         };
         let template = self.constant(Constant::Function(template))?;
         self.position(node)?;
@@ -1672,19 +2204,52 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn load_local(&mut self, binding: LocalBinding, atom: Atom, position: usize) -> Result<()> {
-        let register = i64::from(binding.register);
-        if Self::needs_hole_check(binding, position) {
-            let name = self.name(atom)?;
-            self.emit(Op::CheckHole, &[register, name])?;
+    /// Lädt den Wert einer Bindung ohne Prüfung in den Akkumulator.
+    fn load_location(&mut self, location: Location) -> Result<()> {
+        match location {
+            Location::Register(register) => self.emit(Op::Ldar, &[i64::from(register)]),
+            Location::Context { depth, slot } => {
+                self.emit(Op::LdaContext, &[i64::from(depth), i64::from(slot)])
+            }
         }
-        self.emit(Op::Ldar, &[register])
     }
 
-    /// PutValue für eine Bindung im Register (SetMutableBinding, Abschnitt
-    /// 9.1.1.1.5): erst die TDZ, dann die Konstante.
+    /// Schreibt den Akkumulator ohne Prüfung in eine Bindung.
+    fn store_location(&mut self, location: Location) -> Result<()> {
+        match location {
+            Location::Register(register) => self.emit(Op::Star, &[i64::from(register)]),
+            Location::Context { depth, slot } => {
+                self.emit(Op::StaContext, &[i64::from(depth), i64::from(slot)])
+            }
+        }
+    }
+
+    fn load_local(&mut self, binding: LocalBinding, atom: Atom, position: usize) -> Result<()> {
+        let check = Self::needs_hole_check(binding, position);
+        match binding.location {
+            Location::Register(register) => {
+                let register = i64::from(register);
+                if check {
+                    let name = self.name(atom)?;
+                    self.emit(Op::CheckHole, &[register, name])?;
+                }
+                self.emit(Op::Ldar, &[register])
+            }
+            Location::Context { .. } => {
+                self.load_location(binding.location)?;
+                if check {
+                    let name = self.name(atom)?;
+                    self.emit(Op::ThrowIfHole, &[name])?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// PutValue für eine Bindung in einem Register oder Kontext
+    /// (SetMutableBinding, Abschnitt 9.1.1.1.5): erst die TDZ, dann die
+    /// Konstante.
     fn store_local(&mut self, binding: LocalBinding, atom: Atom, position: usize) -> Result<()> {
-        let register = i64::from(binding.register);
         if binding.kind == BindingKind::FunctionName {
             if self.strict {
                 let name = self.name(atom)?;
@@ -1693,14 +2258,56 @@ impl<'a> Compiler<'a> {
             return Ok(());
         }
         let constant = binding.kind == BindingKind::Const;
-        if Self::needs_hole_check(binding, position) || constant {
-            let name = self.name(atom)?;
-            self.emit(Op::CheckHole, &[register, name])?;
-            if constant {
-                return self.emit(Op::ThrowConstAssignment, &[name]);
+        if !Self::needs_hole_check(binding, position) && !constant {
+            return self.store_location(binding.location);
+        }
+        let name = self.name(atom)?;
+        match binding.location {
+            Location::Register(register) => {
+                self.emit(Op::CheckHole, &[i64::from(register), name])?;
+            }
+            Location::Context { .. } => {
+                // Der Wert wartet in einem Register, während der
+                // Akkumulator die Bindung prüft.
+                let value = self.allocate()?;
+                self.emit(Op::Star, &[i64::from(value)])?;
+                self.load_location(binding.location)?;
+                self.emit(Op::ThrowIfHole, &[name])?;
+                if !constant {
+                    self.emit(Op::Ldar, &[i64::from(value)])?;
+                }
+                self.release(value);
             }
         }
-        self.emit(Op::Star, &[register])
+        if constant {
+            return self.emit(Op::ThrowConstAssignment, &[name]);
+        }
+        self.store_location(binding.location)
+    }
+
+    /// `this` (Abschnitt 13.2.1): in Pfeilfunktionen aus dem Kontext der
+    /// Funktion oder des Scripts, das sie umgibt.
+    fn load_this(&mut self, node: NodeId) -> Result<()> {
+        if !self.lexical_this {
+            return self.emit(Op::Ldar, &[THIS]);
+        }
+        let mut depth = self.open_contexts();
+        let mut enclosing = Some(&self.outer);
+        let mut found = None;
+        'search: while let Some(current) = enclosing {
+            for layout in &current.contexts {
+                if let Some(slot) = layout.this {
+                    found = Some((depth, slot));
+                    break 'search;
+                }
+                depth = depth.checked_add(1).ok_or(CompileError::TooLarge)?;
+            }
+            enclosing = current.parent.as_ref();
+        }
+        let Some((depth, slot)) = found else {
+            return Err(self.unsupported(node));
+        };
+        self.emit(Op::LdaContext, &[i64::from(depth), i64::from(slot)])
     }
 
     /// Ein Bezeichner als Ausdruck: ResolveBinding und GetValue.

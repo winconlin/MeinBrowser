@@ -152,7 +152,7 @@ const OBJECT_KINDS: [u64; 3] = [KIND_OBJECT, KIND_ARRAY, KIND_FUNCTION];
 
 /// Die internen Felder eines Funktionsobjekts, Werte vor den eingebetteten
 /// Plätzen.
-pub(crate) const FUNCTION_FIELDS: usize = 2;
+pub(crate) const FUNCTION_FIELDS: usize = 3;
 
 fn is_object(kind: u64) -> bool {
     OBJECT_KINDS.contains(&kind)

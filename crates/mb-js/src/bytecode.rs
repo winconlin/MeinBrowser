@@ -13,7 +13,11 @@
 //! Register sind Plätze im Rahmen: erst `this`, dann bei Scripts der
 //! Abschlusswert und bei Funktionen das Funktionsobjekt selbst und die
 //! Parameter, dann Bindungen und Zwischenwerte. Der Akkumulator ist
-//! implizit. Ein zweistelliger Befehl wie [`Op::Add`] rechnet mit dem
+//! implizit. Bindungen, die innere Funktionen sehen, liegen statt in
+//! Registern in Kontexten: internen Zellen im Heap, deren erstes Feld der
+//! äußere Kontext ist und deren übrige Felder die Bindungen halten. Jeder
+//! Rahmen hat einen aktuellen Kontext, und ein Funktionsobjekt merkt sich
+//! den, in dem es entstand ([[Environment]]). Ein zweistelliger Befehl wie [`Op::Add`] rechnet mit dem
 //! Register als linkem und dem Akkumulator als rechtem Operanden und legt
 //! das Ergebnis in den Akkumulator.
 //!
@@ -24,7 +28,7 @@
 
 #![forbid(unsafe_code)]
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::rc::Rc;
 
@@ -90,6 +94,24 @@ ops! {
     CheckHole [Register, Constant],
     /// Wirft den TypeError für eine Zuweisung an eine Konstante.
     ThrowConstAssignment [Constant],
+    /// Wirft den ReferenceError der TDZ, wenn der Akkumulator die Lücke
+    /// hält.
+    ThrowIfHole [Constant],
+
+    /// Ein neuer Kontext mit so vielen Plätzen für Bindungen, wie die Zahl
+    /// sagt, alle *undefined*, im aktuellen. Er wird der aktuelle.
+    PushContext [Immediate],
+    /// Der äußere Kontext wird wieder der aktuelle.
+    PopContext [],
+    /// Eine Kopie des aktuellen Kontexts im selben äußeren wird der aktuelle
+    /// (CreatePerIterationEnvironment, Abschnitt 14.7.4.4).
+    CloneContext [],
+    /// Akkumulator := der Platz mit der zweiten Zahl im Kontext so viele
+    /// Stufen außerhalb des aktuellen, wie die erste sagt. Die Plätze
+    /// zählen ab 1.
+    LdaContext [Immediate, Immediate],
+    /// Derselbe Platz := Akkumulator.
+    StaContext [Immediate, Immediate],
 
     /// GetIdentifierReference (Abschnitt 9.1.2.1) in der globalen Umgebung:
     /// legt ab, wo der Name gefunden wurde, für [`Op::LdaGlobalRef`] und
@@ -214,7 +236,8 @@ ops! {
     JumpLoop [Jump],
 
     /// Ein neues Funktionsobjekt für die Funktion in der ersten Konstante,
-    /// mit dem Namen aus der zweiten (SetFunctionName).
+    /// mit dem Namen aus der zweiten (SetFunctionName) und dem aktuellen
+    /// Kontext als [[Environment]].
     CreateClosure [Constant, Constant],
     /// Dasselbe mit dem Schlüssel im Register als Namen.
     CreateClosureKeyed [Constant, Register],
@@ -273,9 +296,56 @@ pub struct FunctionTemplate {
     /// Ob der Rumpf den eigenen Namen bindet, wie ein benannter
     /// Funktionsausdruck (Abschnitt 15.2.5).
     pub binds_name: bool,
-    /// Die Namen, die der umgebende Code in Registern hält. Ein Zugriff des
-    /// Rumpfs darauf bräuchte eine Closure.
-    pub outer: Rc<BTreeSet<Atom>>,
+    /// Was die Funktion vom umgebenden Code sieht.
+    pub outer: Rc<Enclosing>,
+}
+
+/// Was eine Funktion vom Code sieht, in dem sie entsteht: die Kontexte
+/// dort, vom aktuellen nach außen, und die Namen, die der Code dort in
+/// Registern hält, dann dasselbe für die Funktion um ihn herum bis hinaus
+/// zum Script. Leer ist es für Funktionen, die nur die globale Umgebung
+/// sehen.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Enclosing {
+    pub(crate) contexts: Vec<ContextLayout>,
+    /// Die Namen in Registern. Eine innere Funktion nennt sie nie, denn
+    /// was sie nennt, liegt in Kontexten; nur `arguments` steht hier für das
+    /// Objekt, das es noch nicht gibt. Ein Zugriff darauf ist nicht
+    /// unterstützt.
+    pub(crate) registers: BTreeSet<Atom>,
+    pub(crate) parent: Option<Rc<Enclosing>>,
+}
+
+/// Die Plätze eines Kontexts.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct ContextLayout {
+    pub(crate) bindings: BTreeMap<Atom, ContextBinding>,
+    /// Der Platz mit `this` der Funktion oder des Scripts, für
+    /// Pfeilfunktionen.
+    pub(crate) this: Option<u32>,
+}
+
+/// Eine Bindung in einem Kontext.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ContextBinding {
+    pub(crate) slot: u32,
+    pub(crate) kind: BindingKind,
+    /// Ob die Bindung vor ihrer Initialisierung die Lücke hält. Dann prüft
+    /// jeder Zugriff aus einer inneren Funktion die TDZ.
+    pub(crate) lexical: bool,
+}
+
+/// Wie eine Bindung auf Zuweisungen reagiert.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BindingKind {
+    Mutable,
+    /// Aus `const`: Zuweisen wirft einen TypeError.
+    Const,
+    /// Der Name eines benannten Funktionsausdrucks in seinem Rumpf
+    /// (Abschnitt 15.2.5): Zuweisen wirft nur im strikten Modus einen
+    /// TypeError, sonst geschieht nichts (SetMutableBinding, Abschnitt
+    /// 9.1.1.1.5).
+    FunctionName,
 }
 
 /// Ein gelesener Befehl.
