@@ -7,7 +7,7 @@
 use std::collections::BTreeSet;
 use std::rc::Rc;
 
-use mb_js::ast::Ast;
+use mb_js::ast::{Ast, Node};
 use mb_js::bytecode::{Code, Constant, FunctionTemplate, Op, Operand};
 use mb_js::compiler::{CompileError, compile_function, compile_script};
 use mb_js::parser::parse_script;
@@ -57,6 +57,12 @@ fn check_code(code: &Code, source_length: usize) -> Stats {
             .is_some_and(|end| end <= code.register_count()),
         "parameters fit their frame after this and callee"
     );
+    if let Some(register) = code.arguments_register() {
+        assert!(
+            register < code.register_count(),
+            "arguments register is in frame"
+        );
+    }
     let mut stats = Stats::default();
     let mut starts = BTreeSet::new();
     let mut targets = Vec::new();
@@ -181,6 +187,17 @@ fn check_error(error: CompileError, source_length: usize) -> bool {
     }
 }
 
+/// Context layouts support structural equality, not a total ordering.
+/// Preserve the complete template identity, including the enclosing
+/// context chain, rather than relying on allocation addresses or IDs alone.
+fn remember_template(seen: &mut Vec<FunctionTemplate>, template: &FunctionTemplate) -> bool {
+    if seen.contains(template) {
+        return false;
+    }
+    seen.push(template.clone());
+    true
+}
+
 /// Follow the function templates the compiler exposes, including global
 /// declarations whose templates are constructed during script evaluation.
 /// Compilation does not invoke a function, even for a recursive source or
@@ -191,14 +208,9 @@ fn check_functions(
     mut pending: Vec<FunctionTemplate>,
     stats: &mut Stats,
 ) {
-    let mut seen = BTreeSet::new();
+    let mut seen = Vec::new();
     while let Some(template) = pending.pop() {
-        let identity = (
-            template.function.index(),
-            template.binds_name,
-            Rc::clone(&template.outer),
-        );
-        if !seen.insert(identity) {
+        if !remember_template(&mut seen, &template) {
             continue;
         }
         let function = ast
@@ -208,7 +220,12 @@ fn check_functions(
         assert!(!template.binds_name || function.name.is_some());
         match compile_function(ast, &template) {
             Ok(code) => {
-                assert_eq!(code.parameter_count(), ast.list(function.parameters).len());
+                let positional = ast
+                    .list(function.parameters)
+                    .iter()
+                    .filter(|&&parameter| !matches!(ast.node(parameter), Node::Rest(_)))
+                    .count();
+                assert_eq!(code.parameter_count(), positional);
                 stats.include(check_code(&code, source_length));
                 stats.functions += 1;
                 pending.extend(
@@ -371,9 +388,8 @@ mod tests {
     #[test]
     fn unsupported_deferred_bodies_preserve_positions() {
         for source in [
-            "function f(a=1){return a;}",
             "function f(){try {} catch(e){}}",
-            "let f=function(){return ()=>1;};",
+            "function f([a]){return a;}",
         ] {
             let stats = checked(source);
             assert_eq!(stats.functions, 0);
@@ -383,5 +399,67 @@ mod tests {
             checked("f();").calls > 0,
             "unknown callees can still compile"
         );
+    }
+
+    #[test]
+    fn defaults_rest_arguments_arrows_and_captures_are_supported() {
+        for (source, expected_functions) in [
+            ("function f(a=1,...r){return a+r.length;}", 1),
+            ("function f(...r){return r.length;}", 1),
+            ("function f(a){arguments[0]=2;return a;}", 1),
+            ("let f=function(){return ()=>1;};", 2),
+            (
+                "function factory(a){return function inner(){return a;};}",
+                2,
+            ),
+        ] {
+            let stats = checked(source);
+            assert_eq!(stats.functions, expected_functions, "{source}");
+            assert_eq!(stats.unsupported_functions, 0, "{source}");
+        }
+    }
+
+    #[test]
+    fn template_deduplication_preserves_binding_and_structural_outer_context() {
+        let source: Vec<u16> =
+            "function factory(a){return function inner(){return a;};} function other(){}"
+                .encode_utf16()
+                .collect();
+        let ast = parse_script(&source).expect("identity regression parses");
+        let script = compile_script(&ast).expect("factory script compiles");
+        let factory = FunctionTemplate {
+            function: script.functions[0].1,
+            binds_name: false,
+            outer: Rc::default(),
+        };
+        let code = compile_function(&ast, &factory).expect("factory compiles");
+        let captured = code
+            .constants()
+            .iter()
+            .find_map(|constant| match constant {
+                Constant::Function(template) => Some(template.clone()),
+                _ => None,
+            })
+            .expect("factory exposes its captured function template");
+        assert_ne!(captured.outer, Rc::default(), "a real captured context");
+
+        let mut seen = Vec::new();
+        assert!(remember_template(&mut seen, &captured));
+        assert!(!remember_template(&mut seen, &captured.clone()));
+        let mut equal_contents = captured.clone();
+        equal_contents.outer = Rc::new((*captured.outer).clone());
+        assert!(!Rc::ptr_eq(&equal_contents.outer, &captured.outer));
+        assert!(!remember_template(&mut seen, &equal_contents));
+
+        let mut different_outer = captured.clone();
+        different_outer.outer = Rc::default();
+        assert!(remember_template(&mut seen, &different_outer));
+        let mut different_binding = captured.clone();
+        different_binding.binds_name = !different_binding.binds_name;
+        assert!(remember_template(&mut seen, &different_binding));
+        let mut different_function = captured;
+        different_function.function = factory.function;
+        assert!(remember_template(&mut seen, &different_function));
+        assert_eq!(seen.len(), 4);
     }
 }

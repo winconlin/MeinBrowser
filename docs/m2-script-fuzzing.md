@@ -1,6 +1,6 @@
 # M2: Compiler- und Script-Fuzzing zur Prüfung
 
-Das Ziel `js-execute` ergänzt die M2-Prüfung aus [Architektur, Abschnitt 8.3](architektur.md#83-sicherheit-in-jedem-meilenstein) für den nach PR #71 und #72 vorhandenen Bytecode-Compiler und Interpreter, erweitert um die Funktionsstufe aus PR #75. Es liegt im separaten Entwicklungsworkspace `fuzz/`. Engine-Dateien und Produktionsabhängigkeiten bleiben unverändert. Die Modelle aus [m2-runtime-fuzzing.md](m2-runtime-fuzzing.md) prüfen die Laufzeitbausteine weiterhin direkt.
+Das Ziel `js-execute` ergänzt die M2-Prüfung aus [Architektur, Abschnitt 8.3](architektur.md#83-sicherheit-in-jedem-meilenstein) für den nach PR #71 und #72 vorhandenen Bytecode-Compiler und Interpreter, erweitert um die Funktionsstufe aus PR #75. Es liegt im separaten Entwicklungsworkspace `fuzz/`. Engine-Dateien und Produktionsabhängigkeiten bleiben unverändert. Die Modelle aus [m2-runtime-fuzzing.md](m2-runtime-fuzzing.md) prüfen die Laufzeitbausteine weiterhin direkt. Der Compilerteil berücksichtigt auch die Kontext- und Parameterformate aus PR #77 und #79.
 
 ## Beliebige Eingaben übersetzen
 
@@ -14,7 +14,7 @@ Ein unabhängiger Checker prüft erfolgreich erzeugten Bytecode:
 - Sprünge bleiben im Code und treffen Befehlsanfänge. Ein `JumpLoop` darf bei einer leeren Schleife auf sich selbst zeigen.
 - Vorhandene Quelltextpositionen liegen innerhalb der Quelle. Eine fehlende Position, etwa im Prolog eines leeren Scripts, ist zulässig.
 
-Eine iterative, nach Funktions-ID, Namensbindung und äußerem Bindungssatz deduplizierte Warteschlange folgt zusätzlich erreichbaren Funktionsvorlagen: globalen Funktionsdeklarationen und `Constant::Function` im erzeugten Code. Die öffentliche `compile_function`-API übersetzt ihre Rümpfe ohne Aufruf; der Checker prüft den erzeugten Code ebenso. Noch nicht unterstützte Rümpfe, etwa für echte Closures oder das implizite `arguments`-Objekt, sind normale Compilerergebnisse mit geprüfter Fehlerposition. Nicht unterstützte übergeordnete Konstrukte können verhindern, dass innere Vorlagen überhaupt sichtbar werden.
+Eine iterative, nach Funktions-ID, Namensbindung und struktureller Gleichheit des vollständigen äußeren Kontexts deduplizierte Warteschlange folgt zusätzlich erreichbaren Funktionsvorlagen: globalen Funktionsdeklarationen und `Constant::Function` im erzeugten Code. Die öffentliche `compile_function`-API übersetzt ihre Rümpfe ohne Aufruf; der Checker prüft den erzeugten Code ebenso. Noch nicht unterstützte Rümpfe, etwa mit Generatoren, Async-Funktionen oder `try`/`catch`, sind normale Compilerergebnisse mit geprüfter Fehlerposition. Unterstützte Closures, Pfeilfunktionen, `arguments`, Vorgabe- und Restparameter werden auch im Compilerteil geprüft; Restparameter zählen nicht zu den positionalen Parameterregistern. Nicht unterstützte übergeordnete Konstrukte können verhindern, dass innere Vorlagen überhaupt sichtbar werden.
 
 Dieser Teil führt den Eingabetext nicht aus. Auch Quelltexte mit nicht endenden Schleifen werden ausschließlich übersetzt. Geprüft wird vom Compiler erzeugter Bytecode, kein Loader für beliebige gespeicherte Bytecode-Dateien.
 
