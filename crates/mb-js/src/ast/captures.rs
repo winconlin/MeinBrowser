@@ -1,7 +1,9 @@
 //! Was innere Funktionen sehen: für jede Funktion und für das Script die
 //! Namen, auf die tiefer verschachtelte Funktionen zugreifen, und ob
 //! Pfeilfunktionen darin `this` lesen. Bindungen mit diesen Namen legt der
-//! Übersetzer in Kontexte statt in Register.
+//! Übersetzer in Kontexte statt in Register. Außerdem steht für jede
+//! Funktion, ob ihr Code oder der ihrer Pfeilfunktionen den Namen
+//! `arguments` nennt.
 //!
 //! Gezählt wird nach Namen, nicht nach Bindungen: Greift eine innere
 //! Funktion auf `x` zu, liegen alle Bindungen namens `x` der umgebenden
@@ -36,6 +38,10 @@ pub(crate) struct FunctionCaptures {
     pub(crate) names: BTreeSet<Atom>,
     /// Ob Pfeilfunktionen darin, auch ineinander, `this` lesen.
     pub(crate) this: bool,
+    /// Ob der Code der Funktion oder ihrer Pfeilfunktionen, auch
+    /// ineinander, den Bezeichner `arguments` enthält. Beim Script bleibt es
+    /// falsch.
+    pub(crate) arguments: bool,
 }
 
 impl Captures {
@@ -77,6 +83,7 @@ impl Ast {
             }
         }
         uses.sort_by_key(|&(position, _)| position);
+        let arguments = self.find_atom(&"arguments".encode_utf16().collect::<Vec<u16>>());
         let mut starts: Vec<usize> = self.functions.iter().map(|f| f.range.start).collect();
         for node in &self.nodes {
             let (key, function) = match *node {
@@ -122,7 +129,12 @@ impl Ast {
                 stack.pop();
             }
             match found {
-                Use::Name(atom) => captures.add_name(&stack, atom),
+                Use::Name(atom) => {
+                    if Some(atom) == arguments {
+                        captures.add_arguments(&stack);
+                    }
+                    captures.add_name(&stack, atom);
+                }
                 Use::This => captures.add_this(&stack),
             }
         }
@@ -163,6 +175,20 @@ impl Captures {
         match owner {
             Some(captures) => captures.this = true,
             None => self.script.this = true,
+        }
+    }
+
+    /// Der Bezeichner `arguments` in der innersten Funktion auf `stack`: Er
+    /// gehört ihr oder, wenn sie eine Pfeilfunktion ist, der nächsten
+    /// Funktion außen, die keine ist.
+    fn add_arguments(&mut self, stack: &[Open]) {
+        if let Some(captures) = stack
+            .iter()
+            .rev()
+            .find(|open| !open.arrow)
+            .and_then(|open| self.functions.get_mut(open.index))
+        {
+            captures.arguments = true;
         }
     }
 }

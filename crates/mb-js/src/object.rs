@@ -6,16 +6,20 @@
 //!
 //! Jede interne Methode ist eine Funktion, die nach der Art des Objekts
 //! verzweigt. Bisher gibt es gewöhnliche Objekte, Funktionsobjekte, die
-//! dieselben internen Methoden haben und dazu [[Call]] (`function`), und
-//! Arrays, die nur [[DefineOwnProperty]] anders umsetzen (`array`). Alle
-//! Arten, die
+//! dieselben internen Methoden haben und dazu [[Call]] (`function`),
+//! Arrays, die nur [[DefineOwnProperty]] anders umsetzen (`array`), und
+//! arguments-Objekte (`arguments`). Deren verknüpfte Indizes lesen ihren
+//! Wert aus der Bindung des Parameters, schon beim Suchen einer eigenen
+//! Eigenschaft; so folgen [[GetOwnProperty]], [[Get]] und [[Set]] ihrer
+//! Fassung, ohne die Prototypkette anders zu durchlaufen. Alle Arten, die
 //! [[GetOwnProperty]], [[GetPrototypeOf]], [[Get]], [[Set]] und
-//! [[HasProperty]] gewöhnlich umsetzen, durchlaufen die Prototypkette in
-//! einer Schleife statt rekursiv (RS-8). Kommt eine Art mit eigenen
-//! Fassungen dazu, etwa Proxy, verlässt die Schleife die Kette dort.
+//! [[HasProperty]] so umsetzen, durchlaufen die Prototypkette in einer
+//! Schleife statt rekursiv (RS-8). Kommt eine Art mit eigenen Fassungen
+//! dazu, etwa Proxy, verlässt die Schleife die Kette dort.
 
 #![forbid(unsafe_code)]
 
+mod arguments;
 mod array;
 pub(crate) mod shape;
 mod storage;
@@ -29,10 +33,11 @@ use crate::operations::{call, create_data_property};
 use crate::value::{Kind, Ref, Value};
 use storage::{ACCESSOR, CONFIGURABLE, ENUMERABLE, WRITABLE, object_of};
 
+pub(crate) use arguments::{create_mapped_arguments_object, create_unmapped_arguments_object};
 pub use array::array_create;
 
-/// Eingebettete Plätze eines gewöhnlichen Objekts und eines
-/// Funktionsobjekts.
+/// Eingebettete Plätze eines gewöhnlichen Objekts, eines Funktionsobjekts
+/// und eines arguments-Objekts.
 pub(crate) const INLINE: usize = 4;
 
 /// Ein Schlüssel, wie er im Heap steht: Index oder Atom beziehungsweise
@@ -64,9 +69,17 @@ enum Own<'h> {
     },
 }
 
+/// Die eigene Eigenschaft `key`. Ein verknüpfter Index eines
+/// arguments-Objekts hat den Wert der Bindung seines Parameters.
 fn find_own<'h>(heap: &'h Heap, object: Ref<'h>, key: Key<'_>) -> Option<Own<'h>> {
     let (stored, attributes) = match key {
-        Key::Index(index) => storage::element(heap, object, index)?,
+        Key::Index(index) => {
+            let (stored, attributes) = storage::element(heap, object, index)?;
+            match arguments::mapped_value(heap, object, index) {
+                Some(value) if attributes & ACCESSOR == 0 => (value, attributes),
+                _ => (stored, attributes),
+            }
+        }
         Key::Named(name) => {
             let (position, attributes) = shape::find(heap, heap.object_shape(object)?, name)?;
             (storage::slot(heap, object, position)?, attributes)
@@ -118,7 +131,10 @@ pub fn get_prototype_of<'s>(
     object: Local<'_>,
 ) -> Completion<Option<Local<'s>>> {
     match class(agent, object)? {
-        ObjectClass::Ordinary | ObjectClass::Array | ObjectClass::Function => {
+        ObjectClass::Ordinary
+        | ObjectClass::Array
+        | ObjectClass::Function
+        | ObjectClass::Arguments => {
             let heap = agent.heap();
             let prototype =
                 object_of(heap, object).and_then(|object| heap.object_prototype(object));
@@ -134,7 +150,10 @@ pub fn set_prototype_of(
     prototype: Option<Local<'_>>,
 ) -> Completion<bool> {
     match class(agent, object)? {
-        ObjectClass::Ordinary | ObjectClass::Array | ObjectClass::Function => {}
+        ObjectClass::Ordinary
+        | ObjectClass::Array
+        | ObjectClass::Function
+        | ObjectClass::Arguments => {}
     }
     if let Some(prototype) = prototype {
         // Der Prototyp muss ein Objekt sein.
@@ -168,7 +187,10 @@ pub fn set_prototype_of(
 /// [[IsExtensible]] (Abschnitt 10.1.3).
 pub fn is_extensible(agent: &mut Agent, object: Local<'_>) -> Completion<bool> {
     match class(agent, object)? {
-        ObjectClass::Ordinary | ObjectClass::Array | ObjectClass::Function => {
+        ObjectClass::Ordinary
+        | ObjectClass::Array
+        | ObjectClass::Function
+        | ObjectClass::Arguments => {
             let heap = agent.heap();
             Ok(object_of(heap, object).is_some_and(|object| heap.object_extensible(object)))
         }
@@ -178,7 +200,10 @@ pub fn is_extensible(agent: &mut Agent, object: Local<'_>) -> Completion<bool> {
 /// [[PreventExtensions]] (Abschnitt 10.1.4).
 pub fn prevent_extensions(agent: &mut Agent, object: Local<'_>) -> Completion<bool> {
     match class(agent, object)? {
-        ObjectClass::Ordinary | ObjectClass::Array | ObjectClass::Function => {
+        ObjectClass::Ordinary
+        | ObjectClass::Array
+        | ObjectClass::Function
+        | ObjectClass::Arguments => {
             let heap = agent.heap();
             if let Some(object) = object_of(heap, object) {
                 heap.prevent_object_extensions(object);
@@ -196,9 +221,10 @@ pub fn get_own_property<'s>(
     key: PropertyKey<'_>,
 ) -> Completion<Option<PropertyDescriptor<'s>>> {
     match class(agent, object)? {
-        ObjectClass::Ordinary | ObjectClass::Array | ObjectClass::Function => {
-            Ok(ordinary_get_own_property(agent.heap(), scope, object, key))
-        }
+        ObjectClass::Ordinary
+        | ObjectClass::Array
+        | ObjectClass::Function
+        | ObjectClass::Arguments => Ok(ordinary_get_own_property(agent.heap(), scope, object, key)),
     }
 }
 
@@ -245,6 +271,9 @@ pub fn define_own_property(
             ordinary_define_own_property(agent, scope, object, key, descriptor)
         }
         ObjectClass::Array => array::define_own_property(agent, scope, object, key, descriptor),
+        ObjectClass::Arguments => {
+            arguments::define_own_property(agent, scope, object, key, descriptor)
+        }
     }
 }
 
@@ -635,7 +664,9 @@ pub fn set(
     }
 }
 
-/// [[Delete]] (Abschnitt 10.1.10, OrdinaryDelete 10.1.10.1).
+/// [[Delete]] (Abschnitt 10.1.10, OrdinaryDelete 10.1.10.1). Bei einem
+/// arguments-Objekt endet danach die Verknüpfung des Index (Abschnitt
+/// 10.4.4.5).
 pub fn delete(
     agent: &mut Agent,
     scope: &Scope,
@@ -649,6 +680,12 @@ pub fn delete(
         return Ok(false);
     }
     remove_property(agent.heap_mut(), scope, object, key)?;
+    if let PropertyKey::Index(index) = key {
+        let heap = agent.heap();
+        if let Some(object) = object_of(heap, object) {
+            arguments::unmap(heap, object, index);
+        }
+    }
     Ok(true)
 }
 
@@ -698,7 +735,10 @@ pub fn own_property_keys<'s>(
     object: Local<'_>,
 ) -> Completion<Vec<PropertyKey<'s>>> {
     match class(agent, object)? {
-        ObjectClass::Ordinary | ObjectClass::Array | ObjectClass::Function => {}
+        ObjectClass::Ordinary
+        | ObjectClass::Array
+        | ObjectClass::Function
+        | ObjectClass::Arguments => {}
     }
     let heap = agent.heap();
     let Some(object) = object_of(heap, object) else {
