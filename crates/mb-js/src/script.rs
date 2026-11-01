@@ -5,7 +5,7 @@
 
 use std::rc::Rc;
 
-use crate::agent::{Abrupt, Agent, Completion, ErrorKind};
+use crate::agent::{Abrupt, Agent, Budget, Completion, ErrorKind};
 use crate::ast::Ast;
 use crate::bytecode::FunctionTemplate;
 use crate::compiler::{CompileError, Script, compile_script};
@@ -25,21 +25,50 @@ pub enum ScriptError {
     /// einer Funktion, endete es beim ersten Aufruf der Funktion, denn
     /// Funktionen werden erst dann übersetzt.
     Unsupported(usize),
-    /// Das Script endete abrupt. Eine Ausnahme hält der Agent, siehe
-    /// [`Agent::take_exception`].
+    /// Das Script endete abrupt. Nur bei [`Abrupt::Throw`] hält der Agent
+    /// eine JavaScript-Ausnahme, siehe [`Agent::take_exception`].
     Abrupt(Abrupt),
 }
 
 impl Agent {
     /// Liest, übersetzt und führt ein Script im Realm `realm` aus und gibt
     /// seinen Abschlusswert zurück. Ein Script, das zu viel Bytecode,
-    /// Register oder Konstanten bräuchte, wirft einen RangeError.
+    /// Register oder Konstanten bräuchte, wirft einen RangeError. Ohne
+    /// bestehende Hostquote gilt [`crate::agent::DEFAULT_EXECUTION_STEPS`].
     pub fn evaluate_script<'s>(
         &mut self,
         scope: &'s Scope,
         realm: RealmId,
         source: &[u16],
     ) -> Result<Local<'s>, ScriptError> {
+        self.with_default_execution_budget(|agent| {
+            agent.evaluate_script_inner(scope, realm, source)
+        })
+    }
+
+    /// Wie [`Agent::evaluate_script`], mit einer zusätzlichen Hostquote.
+    /// Verschachtelte Quoten und Aufrufe bleiben gemeinsam wirksam. Ein
+    /// Schritt wird vor Parse und globalen Deklarationen verbraucht;
+    /// Nullquoten und vorab abgebrochene Aufträge erzeugen daher keine
+    /// Bindungen. Das Budget ist keine Schranke für Parser-/Compilerarbeit
+    /// oder die Kosten eines einzelnen Bytecodebefehls.
+    pub fn evaluate_script_within<'s>(
+        &mut self,
+        scope: &'s Scope,
+        realm: RealmId,
+        source: &[u16],
+        budget: Rc<Budget>,
+    ) -> Result<Local<'s>, ScriptError> {
+        self.with_execution_budget(budget, |agent| agent.evaluate_script(scope, realm, source))
+    }
+
+    fn evaluate_script_inner<'s>(
+        &mut self,
+        scope: &'s Scope,
+        realm: RealmId,
+        source: &[u16],
+    ) -> Result<Local<'s>, ScriptError> {
+        self.spend_execution_steps(1).map_err(ScriptError::Abrupt)?;
         let ast = Rc::new(parse_script(source).map_err(ScriptError::Syntax)?);
         let script = match compile_script(&ast) {
             Ok(script) => script,
@@ -50,6 +79,9 @@ impl Agent {
                 return Err(ScriptError::Abrupt(self.throw_error(ErrorKind::RangeError)));
             }
         };
+        // Parse und Übersetzen laufen ohne Bytecodeschritte. Ein dort
+        // gesetztes Abbruchsignal muss vor der ersten Bindung wirken.
+        self.spend_execution_steps(0).map_err(ScriptError::Abrupt)?;
         self.script_evaluation(scope, realm, &ast, &script)
             .map_err(|abrupt| match abrupt {
                 Abrupt::Unsupported(position) => ScriptError::Unsupported(position),
@@ -165,3 +197,6 @@ fn global_declaration_instantiation(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod budget_tests;

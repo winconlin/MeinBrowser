@@ -1,6 +1,6 @@
 # M2: Compiler- und Script-Fuzzing zur Prüfung
 
-Das Ziel `js-execute` ergänzt die M2-Prüfung aus [Architektur, Abschnitt 8.3](architektur.md#83-sicherheit-in-jedem-meilenstein) für den nach PR #71 und #72 vorhandenen Bytecode-Compiler und Interpreter, erweitert um die Funktionsstufe aus PR #75. Es liegt im separaten Entwicklungsworkspace `fuzz/`. Engine-Dateien und Produktionsabhängigkeiten bleiben unverändert. Die Modelle aus [m2-runtime-fuzzing.md](m2-runtime-fuzzing.md) prüfen die Laufzeitbausteine weiterhin direkt. Der Compilerteil berücksichtigt auch die Kontext- und Parameterformate aus PR #77 und #79.
+Das Ziel `js-execute` ergänzt die M2-Prüfung aus [Architektur, Abschnitt 8.3](architektur.md#83-sicherheit-in-jedem-meilenstein) für den nach PR #71 und #72 vorhandenen Bytecode-Compiler und Interpreter, erweitert um die Funktionsstufe aus PR #75. Es liegt im separaten Entwicklungsworkspace `fuzz/`. Der Interpreter verwendet die in [m2-ausfuehrungsbudget.md](m2-ausfuehrungsbudget.md) beschriebenen Hostquoten und weiterhin ausschließlich eigene Workspace-Crates. Die Modelle aus [m2-runtime-fuzzing.md](m2-runtime-fuzzing.md) prüfen die Laufzeitbausteine weiterhin direkt. Der Compilerteil berücksichtigt auch die Kontext- und Parameterformate aus PR #77 und #79.
 
 ## Beliebige Eingaben übersetzen
 
@@ -16,7 +16,7 @@ Ein unabhängiger Checker prüft erfolgreich erzeugten Bytecode:
 
 Eine iterative, nach Funktions-ID, Namensbindung und struktureller Gleichheit des vollständigen äußeren Kontexts deduplizierte Warteschlange folgt zusätzlich erreichbaren Funktionsvorlagen: globalen Funktionsdeklarationen und `Constant::Function` im erzeugten Code. Die öffentliche `compile_function`-API übersetzt ihre Rümpfe ohne Aufruf; der Checker prüft den erzeugten Code ebenso. Noch nicht unterstützte Rümpfe, etwa mit Generatoren, Async-Funktionen oder `try`/`catch`, sind normale Compilerergebnisse mit geprüfter Fehlerposition. Unterstützte Closures, Pfeilfunktionen, `arguments`, Vorgabe- und Restparameter werden auch im Compilerteil geprüft; Restparameter zählen nicht zu den positionalen Parameterregistern. Nicht unterstützte übergeordnete Konstrukte können verhindern, dass innere Vorlagen überhaupt sichtbar werden.
 
-Dieser Teil führt den Eingabetext nicht aus. Auch Quelltexte mit nicht endenden Schleifen werden ausschließlich übersetzt. Geprüft wird vom Compiler erzeugter Bytecode, kein Loader für beliebige gespeicherte Bytecode-Dateien.
+Dieser Compilerteil führt den Eingabetext nicht aus. Auch Quelltexte mit nicht endenden Schleifen werden hier ausschließlich übersetzt. Der zusätzliche budgetierte Ausführungsteil ist unten beschrieben. Geprüft wird vom Compiler erzeugter Bytecode, kein Loader für beliebige gespeicherte Bytecode-Dateien.
 
 ## Begrenzte Vorlagen ausführen
 
@@ -41,11 +41,15 @@ Jeder Fall läuft in einem frischen Agent und Realm, einmal mit normalen und ein
 
 ## Grenzen und Annahmen
 
-Die Eingabe bleibt auf 4 KiB begrenzt. Pro Fall entstehen höchstens vier Scripts mit jeweils höchstens 2.048 UTF-16-Codeeinheiten. Jede erzeugte Schleife hat nach ihrer Vorlagensemantik höchstens acht Durchläufe. Die einzige rekursive Vorlage startet mit `n = Byte3 % 9` und vermindert `n` bis null: höchstens acht rekursive Abstiege beziehungsweise neun gleichzeitig aktive Funktionsaufrufe, zuzüglich Script-Rahmen. Der Interpreter erhält ausschließlich diese Vorlagen; beliebige Eingabequellen bleiben auf den Compilerteil beschränkt. Der vorhandene Läufer beendet außerdem langsame Eingaben und begrenzt die RSS wie in [fuzzing.md](fuzzing.md) beschrieben. Ein fehlerhafter Interpreter kann auch bei einer begrenzten Vorlage hängen; das ist ein fehlgeschlagener Fuzzing-Lauf.
+Die Eingabe bleibt auf 4 KiB begrenzt. Pro Fall entstehen höchstens vier Scripts mit jeweils höchstens 2.048 UTF-16-Codeeinheiten. Jede erzeugte Schleife hat nach ihrer Vorlagensemantik höchstens acht Durchläufe. Die einzige rekursive Vorlage startet mit `n = Byte3 % 9` und vermindert `n` bis null: höchstens acht rekursive Abstiege beziehungsweise neun gleichzeitig aktive Funktionsaufrufe, zuzüglich Script-Rahmen. Die Vorlagen bleiben ein eigener Teil mit bekannten Ergebnissen. Zusätzlich werden beliebige Eingabequellen unter einer eigenen strikten Hostquote ausgewertet. Der vorhandene Läufer beendet außerdem langsame Eingaben und begrenzt die RSS wie in [fuzzing.md](fuzzing.md) beschrieben. Ein fehlerhafter Interpreter kann auch bei einer begrenzten Vorlage hängen; das ist ein fehlgeschlagener Fuzzing-Lauf.
 
 Für die Ausführung gilt ein logisches Heapbudget von 1 MiB. Parser- und Compilerstrukturen sowie Prozess-RAM sind damit nicht begrenzt. Die Registerstapeltiefe ist außerhalb von `mb-js` nicht öffentlich abfragbar: Der Harness prüft Folge-Scripts und Heapgültigkeit, während die vorhandenen internen Engine-Tests die direkte Registerstapelprüfung behalten.
 
-Die Vorlagen sind keine vollständige ECMAScript-Implementierung und erfassen nicht alle schon unterstützten Konstrukte. Echte Closures, das implizite `arguments`-Objekt, `new`, Arrow-/Async-/Generatorfunktionen, Default-/Rest-/Destrukturierungsparameter, Jobs, Modulevaluation, DOM-Bindings und ein allgemeines Ausführungsbudget gehören nicht zu diesem Modell. `arguments` wird ausschließlich als ausdrücklich benannter Parameter oder lexikalische Bindung verwendet. Die `this`-Orakel betreffen Objekt-Receiver, den globalen Receiver eines abgetrennten nicht strikten Aufrufs sowie striktes `undefined`; das noch unvollständige Wrapping primitiver Receiver wird nicht als spezifikationsgetreu vorausgesetzt. Test262, Engine-Regressionstests und die weiteren M2-Aufgaben bleiben erforderlich.
+Die Vorlagen sind keine vollständige ECMAScript-Implementierung und erfassen nicht alle schon unterstützten Konstrukte. Echte Closures, das implizite `arguments`-Objekt, `new`, Arrow-/Async-/Generatorfunktionen, Default-/Rest-/Destrukturierungsparameter, Jobs, Modulevaluation, DOM-Bindings gehören nicht zu diesem Vorlagenmodell. Der Interpreter besitzt inzwischen Standard- und Hostquoten; deren Vertrag und Grenzen stehen in [m2-ausfuehrungsbudget.md](m2-ausfuehrungsbudget.md). `arguments` wird ausschließlich als ausdrücklich benannter Parameter oder lexikalische Bindung verwendet. Die `this`-Orakel betreffen Objekt-Receiver, den globalen Receiver eines abgetrennten nicht strikten Aufrufs sowie striktes `undefined`; das noch unvollständige Wrapping primitiver Receiver wird nicht als spezifikationsgetreu vorausgesetzt. Test262, Engine-Regressionstests und die weiteren M2-Aufgaben bleiben erforderlich.
+
+## Beliebige Quellen unter Quote ausführen
+
+`bounded.rs` wertet jede UTF-8-/UTF-16-Fassung in einem frischen Agent/Realm mit 512 Schritten und 1 MiB logischem Heapbudget aus, normal und mit Stress-GC. Der Harness prüft den tatsächlich übergebenen Budgetzustand bei Host-Abbrüchen, entnimmt Ausnahmen genau einmal und prüft nach GC den Heap. Primitive Werte und Fehler werden semantisch verglichen; Objekte, Symbole und BigInts bleiben passive Typklassen. Falls ein Modus OOM liefert, wird wegen unterschiedlicher GC-/Cachekosten keine Ergebnisgleichheit verlangt; beide Ausführungen bleiben auf gültige Heaps geprüft. Die Beobachtung führt keine Getter aus. Parser/Compiler und einzelne native Operationen benötigen weiterhin die äußeren Zeit-/RSS-Limits.
 
 ## Lokal prüfen
 
@@ -66,7 +70,7 @@ python3 fuzz/run.py js-execute --seconds 30 --seed 1
 ## Prüfpunkte für Claude
 
 1. Passen die Compilerinvarianten in `fuzz/src/execution/compiler.rs` zum Bytecodeformat, insbesondere Präfixe, signierte Sprungweiten und das Ziel einer leeren Schleife?
-2. Bleibt beliebiger Eingabetext vollständig vom Interpreter getrennt? Prüfen: `execution.rs` und `programs.rs`.
+2. Verwendet jede Auswertung beliebiger Eingabe in `bounded.rs` eine explizite Hostquote, und ruft die Ergebnisbeobachtung weder Getter noch Konversionen auf? Die Vorlagen in `programs.rs` behalten ihre festen Quelltextgrenzen.
 3. Terminieren die Vorlagen für alle Byteparameter nach ihrer Sprachsemantik, und werden sämtliche Quelltextparameter sicher als Zahlen oder Hexescapes eingesetzt?
 4. Stimmen Orakel, Fehlerarten, Auswertungsreihenfolge und Zustand zwischen Folge-Scripts mit dem unterstützten Sprachumfang überein?
 5. Bleiben normale Ergebnisse und geworfene Werte über Sammlungen hinweg verwurzelt, und werden Ausnahmen vollständig entnommen?

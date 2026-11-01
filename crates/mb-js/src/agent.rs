@@ -18,6 +18,9 @@
 #![forbid(unsafe_code)]
 
 use std::collections::BTreeMap;
+use std::rc::Rc;
+
+pub use mb_base::{Budget, Cancel, Exhausted};
 
 use crate::function::SharedFunction;
 use crate::heap::{Heap, Local, Options, OutOfMemory, Persistent, Scope};
@@ -34,6 +37,12 @@ use crate::value::{Kind, Value};
 /// 13 KiB. Der Rest bleibt für den Code, der das Script startet.
 pub const STACK_BUDGET: usize = 384 * 1024;
 
+/// Standardquote eines äußersten Script- oder Funktionsaufrufs. Ein Schritt
+/// fällt vor jeder Script-Auswertung, bei jedem Interpreterlauf-Einstieg
+/// und vor jedem Bytecodebefehl an. Parser, Compiler und die Arbeit eines
+/// einzelnen Befehls sind damit nicht vollständig begrenzt.
+pub const DEFAULT_EXECUTION_STEPS: u64 = 1_000_000;
+
 /// Eine abrupte Beendigung, die Rust-Code mit `?` nach oben reicht.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Abrupt {
@@ -48,6 +57,9 @@ pub enum Abrupt {
     /// ersten Aufruf übersetzt, darum zeigt sich das zur Laufzeit. Kein
     /// Skript kann das abfangen.
     Unsupported(usize),
+    /// Die Arbeitsquote ist verbraucht oder der Host hat abgebrochen.
+    /// Das ist keine JavaScript-Ausnahme und kein Skript kann es abfangen.
+    Exhausted(Exhausted),
 }
 
 impl From<OutOfMemory> for Abrupt {
@@ -98,6 +110,9 @@ pub struct Agent {
     runs: usize,
     /// Die Lage des Rust-Stapels beim äußersten Lauf.
     stack_start: usize,
+    /// Alle aktiven Hostquoten. Verschachtelte Aufrufe belasten sie
+    /// gemeinsam; eine zusätzliche Quote ersetzt keine äußere.
+    execution_budgets: Vec<Rc<Budget>>,
 }
 
 impl Agent {
@@ -120,6 +135,7 @@ impl Agent {
             exception: None,
             runs: 0,
             stack_start: 0,
+            execution_budgets: Vec::new(),
         };
         agent.scope(|agent, scope| -> Result<(), OutOfMemory> {
             for symbol in WellKnownSymbol::ALL {
@@ -155,6 +171,63 @@ impl Agent {
         let result = f(self, &scope);
         self.heap.leave_scope(&scope);
         result
+    }
+
+    /// Führt `f` unter einer zusätzlichen Arbeitsquote aus. Jeder Schritt
+    /// belastet alle aktiven Quoten; dasselbe `Rc` zählt dabei nur einmal.
+    /// Nach normaler oder abrupter Rückkehr gilt wieder der vorherige
+    /// Quotenstapel. Der Verbrauch im übergebenen Budget bleibt erhalten,
+    /// sodass ein Host dieselbe Quote über mehrere Scripts teilen kann.
+    ///
+    /// Dies begrenzt die Script- und Interpreter-Einstiege sowie
+    /// Bytecodebefehle, nicht die Laufzeit jeder einzelnen Hostoperation.
+    pub fn with_execution_budget<R>(
+        &mut self,
+        budget: Rc<Budget>,
+        f: impl FnOnce(&mut Agent) -> R,
+    ) -> R {
+        let previous = self.execution_budgets.len();
+        if !self
+            .execution_budgets
+            .iter()
+            .any(|active| Rc::ptr_eq(active, &budget))
+        {
+            self.execution_budgets.push(budget);
+        }
+        let result = f(self);
+        self.execution_budgets.truncate(previous);
+        result
+    }
+
+    /// Ein äußerster Aufruf erhält eine endliche Standardquote. Direkte
+    /// JS-Aufrufe und native Wiedereintritte behalten bestehende Quoten.
+    pub(crate) fn with_default_execution_budget<R>(
+        &mut self,
+        f: impl FnOnce(&mut Agent) -> R,
+    ) -> R {
+        if self.execution_budgets.is_empty() {
+            self.with_execution_budget(Rc::new(Budget::new(DEFAULT_EXECUTION_STEPS)), f)
+        } else {
+            f(self)
+        }
+    }
+
+    /// Auch null Schritte fragen ein Abbruchsignal ab. Bei mehreren
+    /// Quoten kann eine frühere Quote den Versuch bereits bezahlt haben,
+    /// wenn eine spätere ihn ablehnt. Kein Befehl läuft danach weiter.
+    pub(crate) fn spend_execution_steps(&self, steps: u64) -> Completion<()> {
+        assert!(
+            !self.execution_budgets.is_empty(),
+            "Ausführung braucht eine Arbeitsquote"
+        );
+        for budget in &self.execution_budgets {
+            if !budget.spend(steps) {
+                return Err(Abrupt::Exhausted(
+                    budget.exhausted().expect("abgelehnte Arbeitsquote"),
+                ));
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn empty_shape<'s>(&self, scope: &'s Scope) -> Local<'s> {
@@ -217,6 +290,7 @@ impl Agent {
     /// RangeError. Jeder Lauf, der beginnt, endet mit
     /// [`Agent::leave_interpreter`], auch abrupt.
     pub(crate) fn enter_interpreter(&mut self) -> Completion<()> {
+        self.spend_execution_steps(1)?;
         let marker = 0u8;
         let here = std::hint::black_box(std::ptr::from_ref(&marker)).addr();
         if self.runs == 0 {
