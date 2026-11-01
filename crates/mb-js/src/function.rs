@@ -1,8 +1,10 @@
 //! ECMAScript-Funktionsobjekte (Abschnitt 10.2).
 //!
 //! Ein Funktionsobjekt ist ein Objekt der Art [`ObjectClass::Function`] mit
-//! zwei internen Feldern vor seinen Eigenschaften: der Nummer seiner
-//! gemeinsamen Daten im Agent und der Nummer seines Realms ([[Realm]]).
+//! drei internen Feldern vor seinen Eigenschaften: der Nummer seiner
+//! gemeinsamen Daten im Agent, der Nummer seines Realms ([[Realm]]) und dem
+//! Kontext, in dem es entstand ([[Environment]]; *undefined* für Funktionen,
+//! die nur die globale Umgebung sehen).
 //! Die gemeinsamen Daten ([`SharedFunction`]) gehören zu der Stelle im
 //! Quelltext, an der die Funktionsobjekte entstehen: der Syntaxbaum, die
 //! Funktion darin und, sobald sie das erste Mal aufgerufen wurde, ihr
@@ -11,9 +13,8 @@
 //! Funktionsobjekt gewöhnlich um, [[Call]] steht im Interpreter.
 //!
 //! [[ThisMode]], [[Strict]], [[FormalParameters]] und [[ECMAScriptCode]]
-//! folgen aus der Funktion im Syntaxbaum. [[Environment]] fehlt noch: Ohne
-//! Closures sieht eine Funktion außer ihren eigenen Bindungen nur die
-//! globale Umgebung. Ebenso fehlen [[HomeObject]] und alles für Klassen.
+//! folgen aus der Funktion im Syntaxbaum. Es fehlen noch [[HomeObject]] und
+//! alles für Klassen.
 
 #![forbid(unsafe_code)]
 
@@ -34,6 +35,8 @@ use crate::value::{Kind, Value};
 const SHARED: usize = 0;
 /// Das interne Feld mit der Nummer des Realms.
 const REALM: usize = 1;
+/// Das interne Feld mit dem Kontext.
+const ENVIRONMENT: usize = 2;
 
 /// Die gemeinsamen Daten der Funktionsobjekte einer Stelle im Quelltext.
 pub(crate) struct SharedFunction {
@@ -87,20 +90,45 @@ pub(crate) fn function_parts(heap: &Heap, value: Value<'_>) -> Option<(usize, Re
     ))
 }
 
+/// Der Kontext ([[Environment]]) des Funktionsobjekts `value`, `None` für
+/// andere Werte.
+pub(crate) fn function_environment<'h>(heap: &'h Heap, value: Value<'_>) -> Option<Value<'h>> {
+    let Kind::Object(object) = value.kind() else {
+        return None;
+    };
+    heap.function_field(object, ENVIRONMENT)
+}
+
 /// Ein neues Funktionsobjekt für die gemeinsamen Daten `shared` im Realm
-/// `realm` mit dem Namen `name`: OrdinaryFunctionCreate mit
-/// %Function.prototype% (Abschnitt 10.2.3), SetFunctionName mit dem Präfix
-/// für Getter und Setter und für gewöhnliche Funktionen MakeConstructor.
-/// Das sind InstantiateOrdinaryFunctionObject und
-/// InstantiateOrdinaryFunctionExpression (Abschnitte 15.2.4 und 15.2.5)
-/// sowie die Schritte aus DefineMethod und MethodDefinitionEvaluation
-/// (Abschnitte 15.4.2 und 15.4.4) ohne MakeMethod.
+/// `realm` mit dem Namen `name`, das nur die globale Umgebung sieht.
 pub(crate) fn instantiate_function<'s>(
     agent: &mut Agent,
     scope: &'s Scope,
     realm: RealmId,
     shared: i32,
     name: PropertyKey<'_>,
+) -> Completion<Local<'s>> {
+    let environment = agent.heap().local(scope, Value::UNDEFINED);
+    instantiate_closure(agent, scope, realm, shared, name, environment)
+}
+
+/// Ein neues Funktionsobjekt für die gemeinsamen Daten `shared` im Realm
+/// `realm` mit dem Namen `name` und dem Kontext `environment`:
+/// OrdinaryFunctionCreate mit
+/// %Function.prototype% (Abschnitt 10.2.3), SetFunctionName mit dem Präfix
+/// für Getter und Setter und für gewöhnliche Funktionen MakeConstructor.
+/// Das sind InstantiateOrdinaryFunctionObject und
+/// InstantiateOrdinaryFunctionExpression (Abschnitte 15.2.4 und 15.2.5)
+/// sowie die Schritte aus DefineMethod und MethodDefinitionEvaluation
+/// (Abschnitte 15.4.2 und 15.4.4) ohne MakeMethod. Pfeilfunktionen
+/// (Abschnitt 15.3.4) haben wie Methoden kein `prototype`.
+pub(crate) fn instantiate_closure<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    realm: RealmId,
+    shared: i32,
+    name: PropertyKey<'_>,
+    environment: Local<'_>,
 ) -> Completion<Local<'s>> {
     let found = usize::try_from(shared)
         .ok()
@@ -132,6 +160,7 @@ pub(crate) fn instantiate_function<'s>(
     if let Kind::Object(object) = heap.get(function).kind() {
         heap.set_function_field(object, SHARED, Value::int32(shared));
         heap.set_function_field(object, REALM, Value::int32(realm_number));
+        heap.set_function_field(object, ENVIRONMENT, heap.get(environment));
     }
     set_function_length(agent, scope, function, length)?;
     let prefix = match kind {
