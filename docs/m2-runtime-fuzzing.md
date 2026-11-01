@@ -1,6 +1,6 @@
 # M2: Laufzeit-Fuzzing zur Prüfung
 
-Diese Vorarbeit ergänzt die GC-Belastungstests aus [Architektur, Abschnitt 8.3](architektur.md#83-sicherheit-in-jedem-meilenstein) und das Fuzzing weiterer JavaScript-Stufen aus Abschnitt 8.2, Punkt 14. Die ersten Modelle entstanden für Heap, Agent und gewöhnliche Objekte nach PR #66. Arrays und primitive numerische Umwandlungen ergänzen die Prüfung auf Grundlage von `main` nach PR #70. Die Engine-Dateien bleiben unverändert. Das Ziel ist `js-runtime` im separaten Entwicklungsworkspace `fuzz/`.
+Diese Vorarbeit ergänzt die GC-Belastungstests aus [Architektur, Abschnitt 8.3](architektur.md#83-sicherheit-in-jedem-meilenstein) und das Fuzzing weiterer JavaScript-Stufen aus Abschnitt 8.2, Punkt 14. Die ersten Modelle entstanden für Heap, Agent und gewöhnliche Objekte nach PR #66. Arrays und primitive numerische Umwandlungen ergänzen die Prüfung auf Grundlage von `main` nach PR #70. Die direkten Laufzeitmodelle liegen im Testwerkzeug; das Ausführungsbudget der Engine ist getrennt in [m2-ausfuehrungsbudget.md](m2-ausfuehrungsbudget.md) beschrieben. Das Ziel ist `js-runtime` im separaten Entwicklungsworkspace `fuzz/`.
 
 ## Was geprüft wird
 

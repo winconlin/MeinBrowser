@@ -1,8 +1,9 @@
-//! Compilerprüfung beliebiger Eingaben und Ausführung begrenzter Vorlagen.
+//! Compilerprüfung, begrenzte Vorlagen und Ausführung unter einer Hostquote.
 //!
-//! Beliebiger Eingabetext wird nur kompiliert. Der Interpreter erhält
-//! Quelltext aus festen Vorlagen mit begrenzten Zahlenparametern.
+//! Beliebiger Eingabetext wird zusätzlich mit kleinem Arbeits- und
+//! Heapbudget ausgeführt; die Vorlagen behalten ihre unabhängigen Orakel.
 
+mod bounded;
 mod compiler;
 mod programs;
 
@@ -12,4 +13,5 @@ pub fn js_execute(data: &[u8]) {
     }
     compiler::exercise(data);
     programs::exercise(data);
+    bounded::exercise(data);
 }

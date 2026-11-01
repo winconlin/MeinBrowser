@@ -157,10 +157,12 @@ fn start<'s>(
     this: Local<'_>,
     flags: &[u32],
 ) -> Completion<Local<'s>> {
-    agent.enter_interpreter()?;
-    let result = start_frame(agent, scope, realm, code, unit, this, flags);
-    agent.leave_interpreter();
-    result
+    agent.with_default_execution_budget(|agent| {
+        agent.enter_interpreter()?;
+        let result = start_frame(agent, scope, realm, code, unit, this, flags);
+        agent.leave_interpreter();
+        result
+    })
 }
 
 fn start_frame<'s>(
@@ -207,10 +209,12 @@ pub(crate) fn call_function<'s>(
     this: Local<'_>,
     arguments: &[Local<'_>],
 ) -> Completion<Local<'s>> {
-    agent.enter_interpreter()?;
-    let result = call_frame(agent, scope, function, this, arguments);
-    agent.leave_interpreter();
-    result
+    agent.with_default_execution_budget(|agent| {
+        agent.enter_interpreter()?;
+        let result = call_frame(agent, scope, function, this, arguments);
+        agent.leave_interpreter();
+        result
+    })
 }
 
 fn call_frame<'s>(
@@ -237,6 +241,7 @@ fn run(agent: &mut Agent, activation: Activation<'_>, accumulator: Local<'_>) ->
         let Some(top) = stack.last_mut() else {
             return Ok(());
         };
+        agent.spend_execution_steps(1)?;
         let code = top.source.code();
         let Some(instruction) = code.decode(top.offset) else {
             // Kann nicht vorkommen: Der Übersetzer schreibt nur gültige

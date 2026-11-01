@@ -115,6 +115,7 @@ dependencies = [
 name = "mb-js"
 version = "0.0.0"
 dependencies = [
+ "mb-base",
  "mb-unicode",
 ]
 

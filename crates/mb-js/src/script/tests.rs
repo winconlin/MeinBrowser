@@ -1697,40 +1697,44 @@ fn calls_run_on_a_small_stack() {
         .stack_size(1 << 20)
         .spawn(|| {
             let (mut agent, realm) = checked();
-            let deep = "function f(n) { return n === 0 ? 0 : f(n - 1) + 1; } f(100000)";
-            assert_eq!(run(&mut agent, realm, deep), "100000");
-            assert_eq!(run(&mut agent, realm, "function g() { return g(); } g()"), "RangeError");
-            for source in [
-                "var o = {get a() { return this.a; }}; o.a",
-                "var p = {valueOf() { return +p; }}; +p",
-                "var q = {set a(v) { this.a = v; }}; q.a = 1",
-                "var r = {toString() { return 'x' + r; }}; '' + r",
-            ] {
-                assert_eq!(run(&mut agent, realm, source), "RangeError", "{source}");
-            }
-            // Übersetzt wird erst beim ersten Aufruf, auch in der tiefsten
-            // Verschachtelung, die das Budget erlaubt.
-            let counting = "var n = 0, limit = Infinity, deep; function a(x) { return x; } \
-                            var o = {get a() { n++; if (n < limit) return this.a; return deep(); }}; \
-                            o.a";
-            assert_eq!(run(&mut agent, realm, counting), "RangeError");
-            let levels = run(&mut agent, realm, "n");
-            for (open, middle, close) in [
-                ("(", "1", ")"),
-                ("[{a: ", "1", "}]"),
-                ("{ let a = 1; ", "a;", " }"),
-                ("if (1) ", "1;", ""),
-                ("1 ? ", "1", " : 1"),
-                ("a(", "1", ")"),
-            ] {
-                let body = deepest_body(open, middle, close);
-                let source = format!(
-                    "n = 0; limit = {levels} - 1; deep = function () {{ {body} }}; \
-                     typeof o.a"
-                );
-                let result = run(&mut agent, realm, &source);
-                assert!(result.starts_with('"'), "{open}…{close}: {result}");
-            }
+            // This trusted regression targets frame/stack limits independently
+            // of the normal execution quota. Other script tests keep that quota.
+            agent.with_execution_budget(std::rc::Rc::new(crate::agent::Budget::unlimited()), |agent| {
+                let deep = "function f(n) { return n === 0 ? 0 : f(n - 1) + 1; } f(100000)";
+                assert_eq!(run(agent, realm, deep), "100000");
+                assert_eq!(run(agent, realm, "function g() { return g(); } g()"), "RangeError");
+                for source in [
+                    "var o = {get a() { return this.a; }}; o.a",
+                    "var p = {valueOf() { return +p; }}; +p",
+                    "var q = {set a(v) { this.a = v; }}; q.a = 1",
+                    "var r = {toString() { return 'x' + r; }}; '' + r",
+                ] {
+                    assert_eq!(run(agent, realm, source), "RangeError", "{source}");
+                }
+                // Übersetzt wird erst beim ersten Aufruf, auch in der tiefsten
+                // Verschachtelung, die das Budget erlaubt.
+                let counting = "var n = 0, limit = Infinity, deep; function a(x) { return x; } \
+                                var o = {get a() { n++; if (n < limit) return this.a; return deep(); }}; \
+                                o.a";
+                assert_eq!(run(agent, realm, counting), "RangeError");
+                let levels = run(agent, realm, "n");
+                for (open, middle, close) in [
+                    ("(", "1", ")"),
+                    ("[{a: ", "1", "}]"),
+                    ("{ let a = 1; ", "a;", " }"),
+                    ("if (1) ", "1;", ""),
+                    ("1 ? ", "1", " : 1"),
+                    ("a(", "1", ")"),
+                ] {
+                    let body = deepest_body(open, middle, close);
+                    let source = format!(
+                        "n = 0; limit = {levels} - 1; deep = function () {{ {body} }}; \
+                         typeof o.a"
+                    );
+                    let result = run(agent, realm, &source);
+                    assert!(result.starts_with('"'), "{open}…{close}: {result}");
+                }
+            });
         })
         .expect("Faden");
     assert!(thread.join().is_ok());

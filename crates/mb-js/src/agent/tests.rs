@@ -133,3 +133,46 @@ fn out_of_memory_ends_abruptly() {
     });
     assert_eq!(tiny.err(), Some(OutOfMemory));
 }
+
+#[test]
+fn exhausted_runs_release_interpreter_depth_and_active_quotas() {
+    use std::rc::Rc;
+
+    use crate::script::ScriptError;
+
+    let mut agent = checked();
+    let realm = agent.create_realm().expect("realm");
+    for source in [
+        "for (;;) {}",
+        "function recurse() { return recurse(); } recurse();",
+        "var o = {get x() {for (var i=0;i<512;i++) {}}}; o.x;",
+    ] {
+        let budget = Rc::new(Budget::new(128));
+        let result = agent.scope(|agent, scope| {
+            agent
+                .evaluate_script_within(scope, realm, &units(source), Rc::clone(&budget))
+                .map(|_| ())
+        });
+        assert_eq!(
+            result,
+            Err(ScriptError::Abrupt(Abrupt::Exhausted(Exhausted::Steps)))
+        );
+        assert_eq!(agent.runs, 0, "all reentrant interpreter runs ended");
+        assert!(
+            agent.execution_budgets.is_empty(),
+            "scoped quotas were removed"
+        );
+        assert_eq!(agent.heap_mut().push_registers(0), Some(0));
+        agent.heap_mut().collect();
+        agent.heap().verify().expect("valid collected heap");
+        agent.scope(|agent, scope| {
+            assert!(agent.take_exception(scope).is_none());
+            let value = agent
+                .evaluate_script(scope, realm, &units("2+3"))
+                .expect("recovery");
+            assert_eq!(agent.heap().get(value).as_number(), Some(5.0));
+        });
+        assert_eq!(agent.runs, 0);
+        assert!(agent.execution_budgets.is_empty());
+    }
+}
