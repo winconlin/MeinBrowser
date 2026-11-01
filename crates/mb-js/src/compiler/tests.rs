@@ -759,6 +759,118 @@ fn parameters_and_this_are_copied_into_the_context() {
     );
 }
 
+/// Der Code der ersten Funktionsdeklaration in `source`.
+fn first_function(source: &str) -> Code {
+    let ast = parse_script(&units(source)).expect("gültig");
+    let Some(&Node::FunctionDeclaration(id)) = ast.body().first().map(|&item| ast.node(item))
+    else {
+        panic!("keine Funktion");
+    };
+    let template = FunctionTemplate {
+        function: id,
+        binds_name: false,
+        outer: Rc::default(),
+    };
+    compile_function(&ast, &template).expect("übersetzbar")
+}
+
+#[test]
+fn arguments_and_rest_parameters_read_all_arguments() {
+    // Das verknüpfte Objekt braucht die Parameter im Kontext.
+    let code = first_function("function f(a) { return arguments; }");
+    assert_eq!(
+        lines(&code),
+        [
+            "PushContext 1",
+            "Ldar r2",
+            "StaContext 0 1",
+            "CreateMappedArguments r3",
+            "Star r4",
+            "Ldar r4",
+            "Return",
+            "LdaUndefined",
+            "Return"
+        ]
+    );
+    assert_eq!(code.arguments_register(), Some(3));
+    assert_eq!(code.parameter_map(), [Some(1)]);
+    // Ein späterer Parameter gleichen Namens verdeckt den früheren.
+    let code = first_function("function f(a, b, a) { return arguments; }");
+    assert_eq!(code.parameter_map(), [None, Some(2), Some(1)]);
+    let code = first_function("function f(a) { 'use strict'; return arguments; }");
+    assert!(lines(&code).contains(&"CreateArguments r3".to_owned()));
+    assert_eq!(code.parameter_map(), []);
+    // Ohne den Bezeichner gibt es kein Objekt.
+    let code = first_function("function f(a) { return a; }");
+    assert_eq!(code.arguments_register(), None);
+    let code = first_function("function f(a, ...r) { return r; }");
+    assert_eq!(
+        lines(&code),
+        [
+            "CreateRestParameter r3 1",
+            "Star r4",
+            "Ldar r4",
+            "Return",
+            "LdaUndefined",
+            "Return"
+        ]
+    );
+    assert_eq!(
+        (code.parameter_count(), code.arguments_register()),
+        (1, Some(3))
+    );
+}
+
+#[test]
+fn defaults_initialize_parameters_in_their_own_scope() {
+    // Die Argumente liegen in r2 und r3, die Bindungen in r4 und r5. Bis
+    // zur Initialisierung halten sie die Lücke; `a` ist im Vorgabewert von
+    // `b` schon initialisiert.
+    let code = first_function("function f(a, b = a) { return b; }");
+    assert_eq!(
+        lines(&code),
+        [
+            "LdaHole",
+            "Star r4",
+            "Star r5",
+            "Ldar r2",
+            "Star r4",
+            "Ldar r3",
+            "JumpIfNotUndefined @19",
+            "Ldar r4",
+            "Star r5",
+            "Ldar r5",
+            "Return",
+            "LdaUndefined",
+            "Return"
+        ]
+    );
+    let code = first_function("function f(a = a) {}");
+    assert!(lines(&code).contains(&"CheckHole r3 a".to_owned()));
+    // Ein `var` mit dem Namen eines Parameters liegt im Bereich des Rumpfs
+    // und beginnt mit dessen Wert.
+    let code = first_function("function f(a = 1) { var a; return () => a; }");
+    assert_eq!(
+        lines(&code),
+        [
+            "PushContext 1",
+            "LdaHole",
+            "StaContext 0 1",
+            "Ldar r2",
+            "JumpIfNotUndefined @16",
+            "LdaSmi 1",
+            "StaContext 0 1",
+            "PushContext 1",
+            "LdaContext 1 1",
+            "StaContext 0 1",
+            "CreateClosure fn0 ",
+            "Return",
+            "LdaUndefined",
+            "Return"
+        ]
+    );
+}
+
 #[test]
 fn for_with_let_copies_its_context() {
     let looped = listing("for (let i = 0; i < 2; i++) f = () => i;");

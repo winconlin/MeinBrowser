@@ -911,17 +911,46 @@ fn named_function_expressions_bind_their_name() {
 }
 
 #[test]
-fn arguments_and_defaults_are_not_yet_supported() {
-    // Funktionen werden erst beim ersten Aufruf übersetzt.
+fn arguments_and_its_name() {
     check(&[
-        ("function f() { return arguments; } f", "Objekt"),
-        ("function f() { return arguments; } f()", "Unsupported(22)"),
-        ("function f() { var arguments; } f()", "Unsupported(0)"),
+        (
+            "function f() { return typeof arguments; } f()",
+            "\"object\"",
+        ),
+        ("function f() { return arguments.length; } f(1, 2, 3)", "3"),
+        ("function f(a) { return arguments[2]; } f(1, 2, 3)", "3"),
+        ("function f(a) { return 0 in arguments; } f()", "false"),
+        (
+            "function f() { return arguments.callee === f; } f()",
+            "true",
+        ),
+        (
+            "function f() { arguments.length = 7; return arguments.length; } f()",
+            "7",
+        ),
+        (
+            "function f() { return arguments === arguments; } f()",
+            "true",
+        ),
+        ("function f() { return arguments; } f() === f()", "false"),
+        // `var` deklariert nichts Neues, eine Funktion ersetzt das Objekt.
+        (
+            "function f() { var arguments; return typeof arguments; } f()",
+            "\"object\"",
+        ),
+        (
+            "function f() { var arguments = 1; return arguments; } f()",
+            "1",
+        ),
+        (
+            "function f() { function arguments() {} return typeof arguments; } f()",
+            "\"function\"",
+        ),
         ("function f(arguments) { return arguments; } f(3)", "3"),
         // `arguments` verdeckt den Namen eines Funktionsausdrucks.
         (
             "var f = function arguments() { return arguments === f; }; f()",
-            "Unsupported(38)",
+            "false",
         ),
         (
             "var f = function arguments(arguments) { return arguments; }; f(4)",
@@ -931,19 +960,253 @@ fn arguments_and_defaults_are_not_yet_supported() {
             "var f = function arguments() { let arguments = 5; return arguments; }; f()",
             "5",
         ),
-        ("function f(a = 1) {} f()", "Unsupported(0)"),
         // Eine Pfeilfunktion meint das Objekt der Funktion um sie herum.
+        ("function f() { return () => arguments[0]; } f(6)()", "6"),
         (
-            "function f() { return () => arguments; } f()()",
-            "Unsupported(28)",
+            "function f() { return () => () => arguments.length; } f(1, 2)()()",
+            "2",
         ),
         (
             "function f() { let arguments = 6; return () => arguments; } f()()",
             "6",
         ),
+        (
+            "function f() { return function () { return arguments.length; }(1, 2); } f(1)",
+            "2",
+        ),
         ("var f = () => arguments; f()", "ReferenceError"),
-        ("var f = (a = 1) => a; f()", "Unsupported(8)"),
+        (
+            "var f = () => { var arguments = 1; return arguments; }; f()",
+            "1",
+        ),
+        // Aufrufe aus der Engine.
+        ("var o = { get x() { return arguments.length; } }; o.x", "0"),
+        (
+            "var o = { set x(v) { this.n = arguments[0]; } }; o.x = 5; o.n",
+            "5",
+        ),
+        // Anhang B.3.2.1: Die Funktion im Block setzt das Objekt nicht.
+        (
+            "function f() { var r = typeof arguments; { function arguments() {} r += typeof arguments; } return r + typeof arguments; } f()",
+            "\"objectfunctionobject\"",
+        ),
+        (
+            "var f = () => { var arguments; { function arguments() { return 7; } } return arguments(); }; f()",
+            "7",
+        ),
         ("var f = async () => 1; f", "Unsupported(8)"),
+    ]);
+}
+
+#[test]
+fn mapped_arguments_share_the_parameter_bindings() {
+    check(&[
+        ("function f(a) { a = 2; return arguments[0]; } f(1)", "2"),
+        ("function f(a) { arguments[0] = 2; return a; } f(1)", "2"),
+        (
+            "function f(a, b) { b = 3; return arguments[1]; } f(1, 2)",
+            "3",
+        ),
+        // Nur Argumente, die es gibt, sind verknüpft.
+        (
+            "function f(a) { a = 2; return arguments[0]; } f()",
+            "undefined",
+        ),
+        (
+            "function f(a) { arguments[0] = 2; return a; } f()",
+            "undefined",
+        ),
+        (
+            "function f(a) { arguments[0] = 2; return arguments.length; } f()",
+            "0",
+        ),
+        // Beim selben Namen ist der letzte Parameter verknüpft.
+        (
+            "function f(a, a) { return arguments[0] + ',' + arguments[1] + ',' + a; } f(1, 2)",
+            "\"1,2,2\"",
+        ),
+        (
+            "function f(a, a) { a = 9; return arguments[0] + ',' + arguments[1]; } f(1, 2)",
+            "\"1,9\"",
+        ),
+        (
+            "function f(a, a) { arguments[0] = 9; return a; } f(1, 2)",
+            "2",
+        ),
+        // Löschen beendet die Verknüpfung.
+        (
+            "function f(a) { delete arguments[0]; arguments[0] = 3; return a; } f(1)",
+            "1",
+        ),
+        (
+            "function f(a) { delete arguments[0]; a = 4; return arguments[0]; } f(1)",
+            "undefined",
+        ),
+        // Auch Closures und Pfeilfunktionen sehen dieselbe Bindung.
+        (
+            "function f(a) { var g = () => arguments[0]; a = 3; return g(); } f(1)",
+            "3",
+        ),
+        (
+            "function f(a, b) { arguments[1] = 'x'; return (function () { return b; })(); } f(1, 2)",
+            "\"x\"",
+        ),
+        (
+            "function f(a) { function a() {} return typeof arguments[0]; } f(1)",
+            "\"function\"",
+        ),
+    ]);
+}
+
+#[test]
+fn unmapped_arguments_keep_their_values() {
+    check(&[
+        (
+            "function f(a) { 'use strict'; a = 2; return arguments[0]; } f(1)",
+            "1",
+        ),
+        (
+            "function f(a) { 'use strict'; arguments[0] = 2; return a; } f(1)",
+            "1",
+        ),
+        (
+            "function f(a = 0) { a = 2; return arguments[0]; } f(1)",
+            "1",
+        ),
+        (
+            "function f(a, ...r) { a = 2; return arguments[0]; } f(1)",
+            "1",
+        ),
+        (
+            "function f(a, ...r) { arguments[0] = 2; return a; } f(1)",
+            "1",
+        ),
+        (
+            "function f() { 'use strict'; return arguments.length; } f(1, 2)",
+            "2",
+        ),
+        // Abweichung: Ohne %ThrowTypeError% ist `callee` *undefined*.
+        (
+            "function f() { 'use strict'; return arguments.callee; } f()",
+            "undefined",
+        ),
+        (
+            "function f() { 'use strict'; arguments.callee = 1; } f()",
+            "TypeError",
+        ),
+        (
+            "function f() { 'use strict'; return delete arguments.callee; } f()",
+            "TypeError",
+        ),
+    ]);
+}
+
+#[test]
+fn parameters_with_defaults() {
+    check(&[
+        ("function f(a = 1) { return a; } f()", "1"),
+        ("function f(a = 1) { return a; } f(undefined)", "1"),
+        ("function f(a = 1) { return a; } f(null)", "null"),
+        ("function f(a = 1) { return a; } f(0)", "0"),
+        ("function f(a, b = a + 1) { return b; } f(1)", "2"),
+        (
+            "function f(a = 1, b) { return a + b; } f(undefined, 2)",
+            "3",
+        ),
+        ("function f(a = 1) { return arguments.length; } f()", "0"),
+        (
+            "function f(a = arguments.length) { return a; } f(undefined, 2)",
+            "2",
+        ),
+        (
+            "function f(a = () => arguments.length) { return a(); } f(undefined, 1, 2)",
+            "3",
+        ),
+        // Bis zu seiner Initialisierung hält ein Parameter die Lücke.
+        ("function f(a = b, b) { return a; } f()", "ReferenceError"),
+        ("function f(a = b, b) { return a; } f(1)", "1"),
+        ("function f(a = a) {} f()", "ReferenceError"),
+        ("function f(g = () => b, b = g()) {} f()", "ReferenceError"),
+        // Ausdrücke in Parametern sehen den Rumpf nicht.
+        (
+            "var x = 'außen'; function f(g = () => x) { var x = 'innen'; return g(); } f()",
+            "\"außen\"",
+        ),
+        (
+            "function f(a, g = () => a) { var a; return g(); } f(1)",
+            "1",
+        ),
+        (
+            "function f(a, g = () => a) { var a = 2; return g(); } f(1)",
+            "1",
+        ),
+        (
+            "function f(a, g = () => a) { a = 2; return g(); } f(1)",
+            "2",
+        ),
+        (
+            "function f(a, g = () => { a = 5; }) { var a; g(); return a; } f(1)",
+            "1",
+        ),
+        ("function f(a = 1) { var a; return a; } f()", "1"),
+        ("function f(a = 1) { var a = 2; return a; } f()", "2"),
+        (
+            "function f(a = 1) { function a() {} return typeof a; } f()",
+            "\"function\"",
+        ),
+        (
+            "function f(a = 1) { function arguments() {} return typeof arguments; } f()",
+            "\"function\"",
+        ),
+        (
+            "function f(a = 1) { let arguments = 2; return arguments; } f()",
+            "2",
+        ),
+        (
+            "function f(a = 1) { var arguments; return typeof arguments; } f()",
+            "\"object\"",
+        ),
+        // NamedEvaluation und `this`.
+        (
+            "function f(g = function () {}) { return g.name; } f()",
+            "\"g\"",
+        ),
+        ("function f(g = () => 1) { return g.name; } f()", "\"g\""),
+        ("var o = { m(a = this) { return a === o; } }; o.m()", "true"),
+        (
+            "var o = { m(g = () => this) { return g() === o; } }; o.m()",
+            "true",
+        ),
+        // Der Name eines Funktionsausdrucks gilt in den Parametern, auch
+        // wenn ihn ein `var` im Rumpf verdeckt.
+        (
+            "var f = function g(a = g) { var g; return a === f && g === undefined; }; f()",
+            "true",
+        ),
+        ("var f = (a, b = a * 2) => a + b; f(3)", "9"),
+        ("function f(a, b = 1, c) {} f.length", "1"),
+    ]);
+}
+
+#[test]
+fn rest_parameters_collect_the_remaining_arguments() {
+    check(&[
+        (
+            "function f(a, ...r) { return r.length + ',' + r[0] + ',' + r[1]; } f(1, 2, 3)",
+            "\"2,2,3\"",
+        ),
+        ("function f(...r) { return r.length; } f()", "0"),
+        ("function f(a, b, ...r) { return r.length; } f(1)", "0"),
+        // Ein Array: `length` folgt den Indizes.
+        ("function f(...r) { r[5] = 1; return r.length; } f(1)", "6"),
+        ("function f(...r) { return r; } f() === f()", "false"),
+        ("var f = (...r) => r.length; f(1, 2)", "2"),
+        (
+            "function f(a = 1, ...r) { return a + r[0]; } f(undefined, 2)",
+            "3",
+        ),
+        ("function f(...r) { return () => r[0]; } f(4)()", "4"),
+        ("function f(a, ...r) {} f.length", "1"),
     ]);
 }
 
@@ -1377,6 +1640,23 @@ fn contexts_survive_collections() {
                   function make(x) { return function (y) { return () => x + y; }; } \
                   a[0]() + a[3]() + make('p')('q')()";
     assert_eq!(run(&mut agent, realm, source), "\"n00n33pq\"");
+}
+
+/// arguments-Objekte, Rest-Parameter und Vorgabewerte überstehen jede
+/// Sammlung.
+#[test]
+fn arguments_survive_collections() {
+    let (mut agent, realm) = agent_with(Options {
+        stress: true,
+        verify: true,
+        ..Options::default()
+    });
+    let source = "function m(a, b) { b = 'b' + a; return arguments; } \
+                  function u(a, ...r) { return r; } \
+                  function d(a, g = () => a + arguments.length) { return g; } \
+                  var o = m('x', 'y', 'z'); var r = u(1, 'p', 'q'); \
+                  o[0] + o[1] + o[2] + o.length + r[0] + r[1] + r.length + d('s', undefined, 3)()";
+    assert_eq!(run(&mut agent, realm, source), "\"xbxz3pq2s3\"");
 }
 
 /// Verschachtelte Pfeilfunktionen, jede mit einem eigenen Kontext, so tief,

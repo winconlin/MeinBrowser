@@ -26,7 +26,9 @@ pub fn is_callable(heap: &Heap, value: Value<'_>) -> bool {
     match value.kind() {
         Kind::Object(object) => match heap.object_class(object) {
             Some(ObjectClass::Function) => true,
-            Some(ObjectClass::Ordinary | ObjectClass::Array) | None => false,
+            Some(ObjectClass::Ordinary | ObjectClass::Array | ObjectClass::Arguments) | None => {
+                false
+            }
         },
         _ => false,
     }
