@@ -1,0 +1,1 @@
+function f(){return arguments;}function outer(x){return function(){return x;};}function defaults(a=1){return a;}

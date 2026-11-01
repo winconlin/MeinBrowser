@@ -166,7 +166,16 @@ def execution_seeds():
     write("js-execute", "source-widths", "127;128;32768;70000;")
     write("js-execute", "source-constants", "".join(f"{value}.25;" for value in range(300)))
     write("js-execute", "source-utf16le-surrogate", struct.pack("<4H", 0x27, 0xD800, 0x27, 0x3B))
-    for family in range(16):
+    write("js-execute", "source-functions", "function f(x){return x+1;} f(2);"
+          "var g=function inner(v){if(v>0)return inner(v-1);return 0;};g(2);")
+    write("js-execute", "source-lazy-loops", "function forever(){for(;;);}"
+          "function recur(){return recur();}")
+    write("js-execute", "source-function-unsupported", "function f(){return arguments;}"
+          "function outer(x){return function(){return x;};}"
+          "function defaults(a=1){return a;}")
+    write("js-execute", "source-function-calls", "var o={m(x,y){return x+y;},"
+          "get v(){return 1;},set v(x){}};o.m(1,2);o?.m?.(3);o.v+=1;")
+    for family in range(32):
         write("js-execute", f"template-{family:02}", bytes([family, 127, 128, 8]))
     write("js-execute", "loop-zero", bytes([1, 250, 3, 0]))
     write("js-execute", "loop-break", bytes([2, 8, 3, 8]))
@@ -174,6 +183,14 @@ def execution_seeds():
     write("js-execute", "unicode-pair", bytes([10, 0xD8, 0, 1]))
     write("js-execute", "unicode-low", bytes([12, 0xDC, 0, 0]))
     write("js-execute", "unicode-high", bytes([12, 0xD8, 0, 0]))
+    write("js-execute", "function-recursion-zero", bytes([25, 123, 45, 0]))
+    write("js-execute", "function-recursion-eight", bytes([25, 128, 255, 8]))
+    write("js-execute", "function-this-absent", bytes([21, 0, 0, 0]))
+    write("js-execute", "function-optional-absent", bytes([22, 5, 0, 0]))
+    write("js-execute", "function-optional-present", bytes([22, 5, 1, 0]))
+    write("js-execute", "function-arguments", bytes([24, 128, 127, 8]))
+    write("js-execute", "function-utf16", bytes([26, 0xD8, 0, 1]))
+    write("js-execute", "function-callback", bytes([27, 255, 1, 8]))
 
 
 def main():

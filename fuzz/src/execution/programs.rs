@@ -1,8 +1,9 @@
 //! Only generated, bounded programs are executed. Input bytes become small
 //! numbers or explicit UTF-16 escapes, never arbitrary JavaScript syntax.
 //!
-//! Byte 0 modulo sixteen selects a family; bytes 1..3 supply a, b and c.
-//! Missing bytes are zero. Numeric values are i8, loop counts c modulo nine.
+//! Byte 0 modulo thirty-two selects a family; bytes 1..3 supply a, b and c.
+//! Missing bytes are zero. Numeric values are i8, loop counts and recursive
+//! arguments are c modulo nine. No template captures an outer local binding.
 
 use mb_js::agent::{Abrupt, Agent, ErrorKind, Exception};
 use mb_js::heap::{Local, Options, Scope};
@@ -10,7 +11,7 @@ use mb_js::realm::RealmId;
 use mb_js::script::ScriptError;
 use mb_js::value::Kind;
 
-const FAMILIES: usize = 16;
+const FAMILIES: usize = 32;
 const MAX_SOURCE_UNITS: usize = 2048;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -205,11 +206,217 @@ fn program(data: &[u8]) -> Vec<Step> {
             ),
             Step::number("n".to_owned(), x + 2.0),
         ],
-        _ => vec![
+        15 => vec![
             Step::number(format!("var x = ({a}); let y = ({b}); x + y"), x + y),
             Step::error("let x;".to_owned(), ErrorKind::SyntaxError),
             Step::number("x + y".to_owned(), x + y),
             Step::number(format!("y = ({c}); x + y"), x + z),
+        ],
+        16 => vec![
+            Step::number(
+                format!("function f(p, q) {{ return p + q; }} f(({a}), ({b}))"),
+                x + y,
+            ),
+            Step::number(format!("f(({b}), ({c}))"), y + z),
+            Step::number(format!("f(({a}), ({c}))"), x + z),
+        ],
+        17 => vec![
+            Step {
+                source: format!("function f(p, q) {{ return typeof q; }} f(({a}))"),
+                expected: Outcome::Value(Primitive::string("undefined")),
+            },
+            Step::number(
+                format!("function g(p) {{ return p; }} g(({b}), ({a}), ({c}))"),
+                y,
+            ),
+        ],
+        18 => vec![
+            Step::number(
+                format!("function f(p, p) {{ return p; }} f(({a}), ({b}))"),
+                y,
+            ),
+            Step {
+                source: format!("f(({c}))"),
+                expected: Outcome::Value(Primitive::Undefined),
+            },
+        ],
+        19 => vec![
+            Step::number(
+                format!(
+                    "var x = ({a}); function f(x) {{ var y = ({b}); return x + y; }} f(({c})) + x"
+                ),
+                z + y + x,
+            ),
+            Step::number(
+                format!("let z = ({b}); function g() {{ return z; }} g()"),
+                y,
+            ),
+        ],
+        20 => vec![
+            Step::number(
+                format!(
+                    "var o = {{v: ({a}), m(p) {{ return this.v + p; }}}}; (o.m)(({b})) + o['m'](({c}))"
+                ),
+                2.0 * x + y + z,
+            ),
+            Step::number(format!("o.v = ({a}) + ({c}); o.m(({b}))"), x + z + y),
+        ],
+        21 => vec![
+            Step {
+                source: "var o = {m() { return this; }}; var f = o.m; f() === globalThis"
+                    .to_owned(),
+                expected: Outcome::Value(Primitive::Boolean(true)),
+            },
+            Step {
+                source: "function strict() { 'use strict'; return this; } strict()".to_owned(),
+                expected: Outcome::Value(Primitive::Undefined),
+            },
+            Step {
+                source: "o.m() === o".to_owned(),
+                expected: Outcome::Value(Primitive::Boolean(true)),
+            },
+        ],
+        22 => {
+            let present = raw_b & 1 != 0;
+            let object = if present {
+                format!("{{v: ({a}), m(p) {{ return this.v + p; }}}}")
+            } else {
+                "{}".to_owned()
+            };
+            vec![Step::number(
+                format!(
+                    "var hits = 0; var o = {object}; var v = o.m?.((hits += 1, ({b}))) ?? ({c}); hits * 1000 + v"
+                ),
+                if present { 1000.0 + x + y } else { z },
+            )]
+        }
+        23 => vec![
+            Step::number(
+                format!(
+                    "var f = function named(p) {{ named = ({a}); return p + (named === f ? ({b}) : 1000); }}; f(({c}))"
+                ),
+                z + y,
+            ),
+            Step {
+                source: "typeof named".to_owned(),
+                expected: Outcome::Value(Primitive::string("undefined")),
+            },
+            Step::error(
+                format!("var g = function fixed() {{ 'use strict'; fixed = ({a}); }}; g()"),
+                ErrorKind::TypeError,
+            ),
+            Step::number(format!("f(({a}))"), x + y),
+        ],
+        24 => vec![
+            Step::number(
+                format!("var f = function arguments(arguments) {{ return arguments; }}; f(({a}))"),
+                x,
+            ),
+            Step::number(
+                format!(
+                    "var g = function arguments() {{ let arguments = ({b}); return arguments; }}; g()"
+                ),
+                y,
+            ),
+            Step::number(
+                format!("function h(arguments) {{ return arguments + ({c}); }} h(({b}))"),
+                y + z,
+            ),
+        ],
+        25 => {
+            let count = i32::from(raw_c % 9);
+            let sum = f64::from(count * (count + 1) / 2);
+            vec![
+                Step::number(
+                    format!(
+                        "var bias = ({a}); var f = function sum(n) {{ return n === 0 ? bias : n + sum(n - 1); }}; f({count})"
+                    ),
+                    x + sum,
+                ),
+                Step::number("f(0)".to_owned(), x),
+                Step::number(format!("bias = ({b}); f({count})"), y + sum),
+            ]
+        }
+        26 => {
+            let units = units(raw_a, raw_b, raw_c);
+            let string = literal(&units);
+            vec![
+                Step {
+                    source: format!("function f() {{ return {string}; }} f()"),
+                    expected: Outcome::Value(Primitive::String(units.clone())),
+                },
+                Step {
+                    source: "f()[0] + f()[1]".to_owned(),
+                    expected: Outcome::Value(Primitive::String(units.clone())),
+                },
+                Step {
+                    source: format!("function g() {{ throw {string}; }} g()"),
+                    expected: Outcome::Thrown(Primitive::String(units.clone())),
+                },
+                Step {
+                    source: "f()".to_owned(),
+                    expected: Outcome::Value(Primitive::String(units)),
+                },
+            ]
+        }
+        27 => vec![
+            Step::number(
+                format!(
+                    "var o = {{v: ({a}), get x() {{ return this.v + ({b}); }}, set x(p) {{ this.v = p * 2; }}}}; o.x = ({c}); o.x"
+                ),
+                2.0 * z + y,
+            ),
+            Step::number(format!("o.x = ({a}); o.x"), 2.0 * x + y),
+            Step::number("o.v".to_owned(), 2.0 * x),
+        ],
+        28 => vec![
+            Step::number(
+                "function C(p, q) {} C.length * 100 + (C.prototype.constructor === C ? 10 : 0) + ({__proto__: C.prototype} instanceof C ? 1 : 0)".to_owned(),
+                211.0,
+            ),
+            Step {
+                source: "C.name".to_owned(),
+                expected: Outcome::Value(Primitive::string("C")),
+            },
+            Step::number("var o = {m(p) { return p; }}; o.m.length".to_owned(), 1.0),
+            Step {
+                source: "typeof o.m.prototype".to_owned(),
+                expected: Outcome::Value(Primitive::string("undefined")),
+            },
+        ],
+        29 => vec![
+            Step::error(
+                format!("var hits = ({a}); var notCallable = ({b}); notCallable(hits++, hits++);"),
+                ErrorKind::TypeError,
+            ),
+            Step::number("hits".to_owned(), x + 2.0),
+            Step::number(
+                "function f(p, q) { return p * 1000 + q; } f(hits++, hits++)".to_owned(),
+                (x + 2.0) * 1000.0 + x + 3.0,
+            ),
+            Step::number("hits".to_owned(), x + 4.0),
+        ],
+        30 => vec![
+            Step::error(
+                format!(
+                    "var hits = ({a}); function f(p) {{ hits += 1; const x = p; x = ({b}); return x; }} f(({c}))"
+                ),
+                ErrorKind::TypeError,
+            ),
+            Step::number("hits".to_owned(), x + 1.0),
+            Step::number(format!("function good(p) {{ return p + ({c}); }} good(({b}))"), y + z),
+            Step::number(format!("good(({a}))"), x + z),
+        ],
+        _ => vec![
+            Step::number(
+                format!("function f(p) {{ return g(p); function g(q) {{ return q + ({b}); }} }} f(({a}))"),
+                x + y,
+            ),
+            Step::number(format!("f(({c}))"), z + y),
+            Step::number(
+                format!("function factory() {{ return function(p) {{ return p + ({a}); }}; }} factory()(({b}))"),
+                x + y,
+            ),
         ],
     }
 }
@@ -344,6 +551,93 @@ mod tests {
                 Outcome::Error(ErrorKind::SyntaxError),
                 Outcome::Value(Primitive::number(5.0)),
                 Outcome::Value(Primitive::number(6.0)),
+            ]
+        );
+    }
+
+    #[test]
+    fn bounded_function_recursion_checks_each_depth_and_cached_global_reads() {
+        for depth in 0..=8 {
+            exercise(&[25, 250, 127, depth]);
+        }
+        let steps = program(&[25, 250, 127, 8]);
+        assert_eq!(
+            run(&steps, true),
+            [
+                Outcome::Value(Primitive::number(30.0)),
+                Outcome::Value(Primitive::number(-6.0)),
+                Outcome::Value(Primitive::number(163.0)),
+            ]
+        );
+    }
+
+    #[test]
+    fn arguments_bindings_and_function_names_follow_distinct_shadowing_rules() {
+        let steps = program(&[24, 128, 255, 127]);
+        assert_eq!(
+            run(&steps, true),
+            [
+                Outcome::Value(Primitive::number(-128.0)),
+                Outcome::Value(Primitive::number(-1.0)),
+                Outcome::Value(Primitive::number(126.0)),
+            ]
+        );
+        let steps = program(&[23, 2, 3, 4]);
+        assert_eq!(
+            run(&steps, true),
+            [
+                Outcome::Value(Primitive::number(7.0)),
+                Outcome::Value(Primitive::string("undefined")),
+                Outcome::Error(ErrorKind::TypeError),
+                Outcome::Value(Primitive::number(5.0)),
+            ]
+        );
+    }
+
+    #[test]
+    fn failed_calls_keep_argument_side_effects_and_allow_later_calls() {
+        let steps = program(&[29, 127, 0, 0]);
+        assert_eq!(
+            run(&steps, true),
+            [
+                Outcome::Error(ErrorKind::TypeError),
+                Outcome::Value(Primitive::number(129.0)),
+                Outcome::Value(Primitive::number(129_130.0)),
+                Outcome::Value(Primitive::number(131.0)),
+            ]
+        );
+        let steps = program(&[30, 2, 3, 4]);
+        assert_eq!(
+            run(&steps, true),
+            [
+                Outcome::Error(ErrorKind::TypeError),
+                Outcome::Value(Primitive::number(3.0)),
+                Outcome::Value(Primitive::number(7.0)),
+                Outcome::Value(Primitive::number(6.0)),
+            ]
+        );
+    }
+
+    #[test]
+    fn returned_and_thrown_surrogates_and_accessor_values_survive_collection() {
+        let steps = program(&[26, 0xd8, 0, 0]);
+        let string = Primitive::String(vec![0xd800, 0]);
+        assert_eq!(
+            run(&steps, true),
+            [
+                Outcome::Value(string.clone()),
+                Outcome::Value(string.clone()),
+                Outcome::Thrown(string.clone()),
+                Outcome::Value(string),
+            ]
+        );
+        let steps = program(&[27, 2, 3, 4]);
+        assert_eq!(
+            run(&steps, true),
+            [
+                Outcome::Value(Primitive::number(11.0)),
+                Outcome::Value(Primitive::number(7.0)),
+                Outcome::Value(Primitive::number(4.0)),
             ]
         );
     }
