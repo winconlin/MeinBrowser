@@ -197,6 +197,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "mb-webidl"
+version = "0.0.0"
+
+[[package]]
 name = "mb-xml"
 version = "0.0.0"
 dependencies = [
@@ -226,6 +230,7 @@ dependencies = [
  "mb-unicode",
  "mb-url",
  "mb-web",
+ "mb-webidl",
  "mb-xml",
 ]
 

@@ -221,6 +221,9 @@ dependencies = [
 [[package]]
 name = "mb-webidl"
 version = "0.0.0"
+dependencies = [
+ "testdata",
+]
 
 [[package]]
 name = "mb-xml"

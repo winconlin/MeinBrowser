@@ -95,9 +95,8 @@ pub const SOURCES: [Source; 9] = [
         name: "webref",
         repository: "https://github.com/w3c/webref",
         commit: "85e517c8fb6271560d09c1b550c40bcfc849f580",
-        // Die aus den Editor's Drafts gelesenen CSS-Definitionen, siehe
-        // `crates/mb-style/src/properties/webref.rs`.
-        paths: &["/ed/css/"],
+        // CSS-Definitionen für mb-style und WebIDL-Fragmente für mb-webidl.
+        paths: &["/ed/css/", "/ed/idl/"],
     },
     Source {
         name: "xml-conformance-suite",

@@ -28,6 +28,7 @@ mb-text = { path = "../crates/mb-text" }
 mb-unicode = { path = "../crates/mb-unicode" }
 mb-url = { path = "../crates/mb-url" }
 mb-web = { path = "../crates/mb-web" }
+mb-webidl = { path = "../crates/mb-webidl" }
 mb-xml = { path = "../crates/mb-xml" }
 
 [dev-dependencies]
@@ -137,6 +138,13 @@ bench = false
 [[bin]]
 name = "js-execute"
 path = "fuzz_targets/js_execute.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "webidl"
+path = "fuzz_targets/webidl.rs"
 test = false
 doc = false
 bench = false

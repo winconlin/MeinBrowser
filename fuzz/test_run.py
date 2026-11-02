@@ -5,6 +5,7 @@ import io
 import os
 from pathlib import Path
 import tempfile
+import tomllib
 import unittest
 from unittest.mock import patch
 
@@ -12,6 +13,15 @@ import run
 
 
 class RunnerTests(unittest.TestCase):
+    def test_target_registry_matches_manifest_and_workflow(self):
+        manifest = tomllib.loads((run.ROOT / "fuzz" / "Cargo.toml").read_text())
+        expected = [target["name"] for target in manifest["bin"]]
+        self.assertEqual(list(run.TARGETS), expected)
+        workflow = (run.ROOT / ".github" / "workflows" / "fuzz.yml").read_text()
+        line = next(line for line in workflow.splitlines() if line.strip().startswith("target: ["))
+        actual = [name.strip() for name in line.split("[", 1)[1].split("]", 1)[0].split(",")]
+        self.assertEqual(actual, expected)
+
     def execute(self, mode):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

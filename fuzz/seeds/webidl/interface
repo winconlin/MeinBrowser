@@ -1,0 +1,1 @@
+[Exposed=Window] interface Example { readonly attribute DOMString name; undefined run(optional long x=0); };
