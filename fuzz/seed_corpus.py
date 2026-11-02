@@ -63,6 +63,9 @@ def runtime_seeds():
     def conversions(name, commands):
         write("js-runtime", name, bytes([3]) + bytes(value for command in commands for value in command))
 
+    def text_keys(name, commands):
+        write("js-runtime", name, bytes([4]) + bytes(value for command in commands for value in command))
+
     heap("heap-cycle", [
         (1, 0, 2, 0), (1, 1, 1, 0), (2, 0, 0, 1), (2, 1, 0, 0),
         (4, 2, 0, 0), (5, 0, 0, 0), (5, 1, 0, 0), (6, 0, 0, 0),
@@ -151,6 +154,31 @@ def runtime_seeds():
     ])
     conversions("conversion-ieee", [
         (0, index * 37 % 256, index * 131 % 256, 255 - index)
+        for index in range(64)
+    ])
+    text_keys("text-key-numbers", [(3, index, 0, 0) for index in range(32)])
+    text_keys("text-key-indexes", [(6, index, 0, 0) for index in range(21)])
+    text_keys("text-key-primitives-symbols", [
+        (0, 0, 0, 0), (1, 0, 0, 0), (2, 0, 0, 0), (2, 1, 0, 0),
+        (8, 0, 0, 0), (8, 1, 0, 0), (8, 2, 255, 255), (8, 3, 0, 0),
+        (3, 1, 0, 0), (6, 2, 0, 0),
+    ])
+    text_keys("text-key-dyadics", [
+        (5, a, b, exponent)
+        for exponent in range(9)
+        for a, b in [(1, 0), (255, 255), (255, 127), (0, 128)]
+    ])
+    text_keys("text-key-utf16", [
+        (7, 0xD8, 0, 1), (7, 0xDC, 0, 1), (7, 0, 0, 0), (7, 0, 0, 1),
+        (7, 0xFE, 0xFF, 2), (7, 0xFF, 0xFF, 2), (7, 0xD8, 0, 16),
+    ])
+    text_keys("text-key-noncanonical", [
+        (9, a, b, style)
+        for style in range(8)
+        for a, b in [(0, 0), (1, 0), (255, 255), (0, 16)]
+    ])
+    text_keys("text-key-max-commands", [
+        (index, index * 37 % 256, index * 131 % 256, 255 - index)
         for index in range(64)
     ])
 
