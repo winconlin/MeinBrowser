@@ -156,7 +156,7 @@ def runtime_seeds():
 
 
 def execution_seeds():
-    # Raw source reaches the compiler only; all execution uses templates.
+    # Raw source also runs under a strict host quota; templates have oracles.
     write("js-execute", "source-loops", "for(;;); while(true){} do {} while(true);")
     write("js-execute", "source-properties", "var a=[1,,3]; let o={a:1,['b']:2};"
           "o.c=a[2]; delete o.a; 'b' in o; 0 instanceof o;")
@@ -172,10 +172,11 @@ def execution_seeds():
           "function recur(){return recur();}")
     write("js-execute", "source-function-unsupported", "function f(){return arguments;}"
           "function outer(x){return function(){return x;};}"
-          "function defaults(a=1){return a;}")
+          "function defaults(a=1){return a;}"
+          "function pending(){try{return 1;}catch(e){return 2;}}")
     write("js-execute", "source-function-calls", "var o={m(x,y){return x+y;},"
           "get v(){return 1;},set v(x){}};o.m(1,2);o?.m?.(3);o.v+=1;")
-    for family in range(32):
+    for family in range(64):
         write("js-execute", f"template-{family:02}", bytes([family, 127, 128, 8]))
     write("js-execute", "loop-zero", bytes([1, 250, 3, 0]))
     write("js-execute", "loop-break", bytes([2, 8, 3, 8]))
@@ -191,6 +192,18 @@ def execution_seeds():
     write("js-execute", "function-arguments", bytes([24, 128, 127, 8]))
     write("js-execute", "function-utf16", bytes([26, 0xD8, 0, 1]))
     write("js-execute", "function-callback", bytes([27, 255, 1, 8]))
+    write("js-execute", "closure-loop-zero", bytes([37, 250, 7, 0]))
+    write("js-execute", "closure-loop-let", bytes([37, 250, 7, 8]))
+    write("js-execute", "closure-loop-var", bytes([38, 250, 7, 8]))
+    write("js-execute", "closure-loop-const", bytes([39, 250, 7, 8]))
+    write("js-execute", "closure-utf16", bytes([62, 0xD8, 0, 0]))
+    write("js-execute", "arguments-mapping", bytes([46, 5, 9, 3]))
+    write("js-execute", "arguments-deletion", bytes([48, 5, 9, 3]))
+    write("js-execute", "default-environment", bytes([52, 5, 9, 3]))
+    write("js-execute", "default-tdz", bytes([53, 5, 9, 3]))
+    write("js-execute", "source-closures-parameters", "function make(p=1){"
+          "return (q,...rest)=>{p+=q;return arguments[0]+p+rest.length;};}"
+          "var f=make(2); f(3,4); f(5);")
 
 
 def main():

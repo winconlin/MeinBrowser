@@ -1,6 +1,6 @@
 # M2: Compiler- und Script-Fuzzing zur Prüfung
 
-Das Ziel `js-execute` ergänzt die M2-Prüfung aus [Architektur, Abschnitt 8.3](architektur.md#83-sicherheit-in-jedem-meilenstein) für den nach PR #71 und #72 vorhandenen Bytecode-Compiler und Interpreter, erweitert um die Funktionsstufe aus PR #75. Es liegt im separaten Entwicklungsworkspace `fuzz/`. Der Interpreter verwendet die in [m2-ausfuehrungsbudget.md](m2-ausfuehrungsbudget.md) beschriebenen Hostquoten und weiterhin ausschließlich eigene Workspace-Crates. Die Modelle aus [m2-runtime-fuzzing.md](m2-runtime-fuzzing.md) prüfen die Laufzeitbausteine weiterhin direkt. Der Compilerteil berücksichtigt auch die Kontext- und Parameterformate aus PR #77 und #79.
+Das Ziel `js-execute` ergänzt die M2-Prüfung aus [Architektur, Abschnitt 8.3](architektur.md#83-sicherheit-in-jedem-meilenstein) für den nach PR #71 und #72 vorhandenen Bytecode-Compiler und Interpreter, erweitert um die Funktionsstufe aus PR #75. Es liegt im separaten Entwicklungsworkspace `fuzz/`. Der Interpreter verwendet die in [m2-ausfuehrungsbudget.md](m2-ausfuehrungsbudget.md) beschriebenen Hostquoten und weiterhin ausschließlich eigene Workspace-Crates. Die Modelle aus [m2-runtime-fuzzing.md](m2-runtime-fuzzing.md) prüfen die Laufzeitbausteine weiterhin direkt. Compilerprüfung und Vorlagenmodell berücksichtigen auch Closures und Pfeilfunktionen aus PR #77 sowie `arguments`, Vorgabe- und Restparameter aus PR #79. Die Ausführungstests aus PR #81 bleiben ein unabhängiger zusätzlicher Prüfweg, siehe [m2-test262-ausfuehrung.md](m2-test262-ausfuehrung.md).
 
 ## Beliebige Eingaben übersetzen
 
@@ -20,7 +20,7 @@ Dieser Compilerteil führt den Eingabetext nicht aus. Auch Quelltexte mit nicht 
 
 ## Begrenzte Vorlagen ausführen
 
-Zusätzlich erzeugen die ersten vier Eingabebytes einen Fall aus 32 festen Programmfamilien. Byte 0 modulo 32 wählt die Familie; fehlende Bytes sind null. Zahlenparameter sind als `i8` begrenzt. Schleifengrenzen entstehen aus Byte 3 modulo neun. Zeichenkettenparameter werden ausschließlich als UTF-16-Hexescapes eingesetzt; roher Eingabetext wird nie in ausführbaren Quelltext eingebaut.
+Zusätzlich erzeugen die ersten vier Eingabebytes einen Fall aus 64 festen Programmfamilien. Byte 0 modulo 64 wählt die Familie; fehlende Bytes sind null. Zahlenparameter sind als `i8` begrenzt. Schleifengrenzen entstehen aus Byte 3 modulo neun. Zeichenkettenparameter werden ausschließlich als UTF-16-Hexescapes eingesetzt; roher Eingabetext wird nie in ausführbaren Quelltext eingebaut.
 
 | Familien | Geprüfter Teilumfang |
 | --- | --- |
@@ -36,8 +36,56 @@ Zusätzlich erzeugen die ersten vier Eingabebytes einen Fall aus 32 festen Progr
 | 25 | Rekursive Summe mit absteigendem Parameter 0 bis 8 und veränderlichem globalem Wert |
 | 26–28 | UTF-16-Rückgaben und geworfene Werte, Getter/Setter, Funktionsmetadaten und `instanceof` ohne `new` |
 | 29–31 | Argumentauswertung vor TypeError, Folgeaufrufe nach Fehlern, lokale Funktionsdeklarationen und zurückgegebene Funktionen ohne eingefangene Bindungen |
+| 32–35 | Veränderliche Closures, gemeinsame Bindungen von Geschwisterfunktionen, getrennte Factory-Aufrufe und mehrstufige Kontextketten |
+| 36 | Entkommene, noch nicht initialisierte Bindung, wiederholter TDZ-Fehler und erfolgreicher Folgeaufruf |
+| 37–39 | Pro Schleifendurchlauf getrennte `let`-/Block-`const`-Bindungen gegenüber einer gemeinsam verwendeten `var`-Bindung, mit null bis acht Durchläufen |
+| 40–43 | Lexikalisches `this` und `arguments` von Pfeilfunktionen, eingefangene veränderliche Bindungen sowie Vorgabe- und Restparameter von Pfeilfunktionen |
+| 44–49 | Gemappte und ungemappte `arguments`-Objekte, doppelte und fehlende Parameter, explizites `undefined`, Löschen der Kopplung und nach Rückkehr gemeinsam veränderliche Parameter |
+| 50–53 | Reihenfolge und Seiteneffekte von Vorgabewerten, Unterscheidung von fehlend/`undefined` gegenüber `null`/0/false, getrennte Parameter- und Körperumgebung sowie TDZ bei Initialisierung |
+| 54–59 | Unabhängigkeit von Restarrays und `arguments`, neue Restarray-Identität je Aufruf, Längen und Funktionsmetadaten, Closures aus Vorgabewerten und ungemappte Argumente bei nicht einfachen Parameterlisten |
+| 60–63 | Lexikalisches `this` aus Gettern, ausdrücklich überschattetes `arguments`, über Closures eingefangene UTF-16-Werte und Zustand nach geworfenen Werten |
 
 Jeder Fall läuft in einem frischen Agent und Realm, einmal mit normalen und einmal mit erzwungenen GC-Zeitpunkten (`stress: true`), jeweils mit aktivierter Heapprüfung. Die erwarteten primitiven Ergebnisse und Fehler stammen aus kleinen mathematischen Orakeln beziehungsweise den festen Vorlagen. Geworfene Werte und normale Ergebnisse werden nach einer Sammlung aus gültigen Handles gelesen. Folge-Scripts prüfen unter anderem den erhaltenen Zustand nach einer gescheiterten Zuweisung oder Deklaration. Ausnahmen müssen genau einmal entnommen werden, der Heap muss nach jeder Ausführung gültig sein.
+
+## Orakel für Closures und Parameterlisten
+
+Die neuen Familien stehen in `fuzz/src/execution/programs/parameters.rs`. Ihre
+Erwartungen entstehen aus begrenzter Ganzzahl-/Floatarithmetik, festen
+Fehlerarten, Booleschen Werten und den erzeugten UTF-16-Codeeinheiten. Kein
+Erwartungswert wird durch die Engine oder einen zweiten JavaScript-Lauf
+berechnet. Die beiden GC-Ausführungen müssen jeweils unabhängig zum Orakel
+passen; ihre gegenseitige Gleichheit allein wäre kein ausreichender Test.
+
+Die Modelle unterscheiden insbesondere diese Verträge aus ECMA-262:
+
+- Geschwister-Closures sehen dieselbe eingefangene Bindung; getrennte
+  Factory-Aufrufe haben verschiedene Bindungen, auch bei gemeinsamem
+  gecachtem Funktionscode. Die Bindungen bleiben nach Rückkehr und GC gültig.
+- Bei einfachen, nicht strikten Parameterlisten koppelt `arguments` die
+  tatsächlich vorhandenen Argumente an Parameter. Bei doppelten Namen zählt
+  nur das letzte Vorkommen; ein fehlendes Argument ist nicht dasselbe wie
+  ein ausdrücklich übergebenes `undefined`. Das Löschen eines Indexes trennt
+  seine Kopplung. Nur `arguments.length` zu ändern löscht keine Indexwerte.
+- Strikter Code und nicht einfache Parameterlisten verwenden ungemappte
+  Argumente. Bereits ein Vorgabe- oder Restparameter betrifft die ganze
+  Liste. Ein Restarray ist unabhängig von `arguments` und entsteht je Aufruf neu.
+- Vorgabewerte laufen von links nach rechts, nur bei fehlenden oder
+  `undefined`-Argumenten. Eine Closure im Vorgabewert kann die
+  Parameterumgebung behalten, während ein gleichnamiges `var` im Körper eine
+  getrennte Bindung erhält. Spätere Parameter bleiben bis zu ihrer
+  Initialisierung in der TDZ.
+- Pfeilfunktionen erben `this` und ein nicht ausdrücklich überschattetes
+  `arguments`; ein anderer Receiver beim späteren Aufruf ändert sie nicht.
+  Schleifen mit `let` und mit einer Block-`const` erzeugen getrennte
+  eingefangene Bindungen, während `var` geteilt bleibt.
+
+Maßgeblich sind insbesondere FunctionDeclarationInstantiation (§10.2.11),
+Argumentobjekte (§10.4.4), Pfeilfunktionen (§15.3) und
+CreatePerIterationEnvironment (§14.7.4.4). Konkrete Regressionen prüfen
+unterschiedliche Zahlen, null bis acht Schleifendurchläufe, Zustände nach
+Initialisierungsfehlern sowie einzelne Surrogate nach GC. Die Startkorpora
+enthalten einen Fall jeder der 64 Familien und zusätzliche Fälle für diese
+Grenzen; `seed_corpus.py` erzeugt sie bytegleich neu.
 
 ## Grenzen und Annahmen
 
@@ -45,7 +93,7 @@ Die Eingabe bleibt auf 4 KiB begrenzt. Pro Fall entstehen höchstens vier Script
 
 Für die Ausführung gilt ein logisches Heapbudget von 1 MiB. Parser- und Compilerstrukturen sowie Prozess-RAM sind damit nicht begrenzt. Die Registerstapeltiefe ist außerhalb von `mb-js` nicht öffentlich abfragbar: Der Harness prüft Folge-Scripts und Heapgültigkeit, während die vorhandenen internen Engine-Tests die direkte Registerstapelprüfung behalten.
 
-Die Vorlagen sind keine vollständige ECMAScript-Implementierung und erfassen nicht alle schon unterstützten Konstrukte. Echte Closures, das implizite `arguments`-Objekt, `new`, Arrow-/Async-/Generatorfunktionen, Default-/Rest-/Destrukturierungsparameter, Jobs, Modulevaluation, DOM-Bindings gehören nicht zu diesem Vorlagenmodell. Der Interpreter besitzt inzwischen Standard- und Hostquoten; deren Vertrag und Grenzen stehen in [m2-ausfuehrungsbudget.md](m2-ausfuehrungsbudget.md). `arguments` wird ausschließlich als ausdrücklich benannter Parameter oder lexikalische Bindung verwendet. Die `this`-Orakel betreffen Objekt-Receiver, den globalen Receiver eines abgetrennten nicht strikten Aufrufs sowie striktes `undefined`; das noch unvollständige Wrapping primitiver Receiver wird nicht als spezifikationsgetreu vorausgesetzt. Test262, Engine-Regressionstests und die weiteren M2-Aufgaben bleiben erforderlich.
+Die Vorlagen sind keine vollständige ECMAScript-Implementierung und erfassen nicht alle schon unterstützten Konstrukte. `new`, Async-/Generatorfunktionen, Destrukturierungsparameter, Jobs, Modulevaluation und DOM-Bindings gehören nicht zu diesem Vorlagenmodell. Auch weitere Eigenschaften von Argumentobjekten, etwa Deskriptoränderungen oder `@@iterator`, und komplexere Parameterinteraktionen bleiben auszubauen. Der Interpreter besitzt inzwischen Standard- und Hostquoten; deren Vertrag und Grenzen stehen in [m2-ausfuehrungsbudget.md](m2-ausfuehrungsbudget.md). Die neuen Familien prüfen neben ausdrücklichen `arguments`-Bindungen auch das implizite Objekt. Die `this`-Orakel betreffen Objekt-Receiver, den globalen Receiver eines abgetrennten nicht strikten Aufrufs sowie striktes `undefined`; das noch unvollständige Wrapping primitiver Receiver wird nicht als spezifikationsgetreu vorausgesetzt. Test262, Engine-Regressionstests und die weiteren M2-Aufgaben bleiben erforderlich.
 
 ## Beliebige Quellen unter Quote ausführen
 
@@ -74,5 +122,6 @@ python3 fuzz/run.py js-execute --seconds 30 --seed 1
 3. Terminieren die Vorlagen für alle Byteparameter nach ihrer Sprachsemantik, und werden sämtliche Quelltextparameter sicher als Zahlen oder Hexescapes eingesetzt?
 4. Stimmen Orakel, Fehlerarten, Auswertungsreihenfolge und Zustand zwischen Folge-Scripts mit dem unterstützten Sprachumfang überein?
 5. Bleiben normale Ergebnisse und geworfene Werte über Sammlungen hinweg verwurzelt, und werden Ausnahmen vollständig entnommen?
-6. Folgen Call-Fenster und verzögerte Funktionsübersetzung dem aktuellen Format? Sind Parameter, Namensbindungen und ausdrücklich gebundenes `arguments` korrekt behandelt, und endet die Rekursion für jeden Byteparameter?
-7. Müssen bei der nächsten M2-Stufe Vorlagen, bislang nicht unterstützte Compilerfälle oder Bytecodeannahmen aktualisiert werden? Neue Konstrukte gezielt ergänzen; Abweichungen untersuchen und bestehende Zusicherungen beibehalten.
+6. Folgen Call-Fenster und verzögerte Funktionsübersetzung dem aktuellen Format? Sind Parameter, Namensbindungen sowie implizites und ausdrücklich gebundenes `arguments` korrekt behandelt, und endet die Rekursion für jeden Byteparameter?
+7. Stimmen in `programs/parameters.rs` insbesondere die Kopplung doppelter und fehlender Argumente, die Trennung von Parameter- und Körperumgebung sowie die Bindungen pro Schleifendurchlauf mit der Spezifikation überein? Bleiben eingefangene Werte nach Rückkehr, Fehlern und GC erreichbar?
+8. Müssen bei der nächsten M2-Stufe Vorlagen, bislang nicht unterstützte Compilerfälle oder Bytecodeannahmen aktualisiert werden? Neue Konstrukte gezielt ergänzen; Abweichungen untersuchen und bestehende Zusicherungen beibehalten.

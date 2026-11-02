@@ -1,9 +1,12 @@
 //! Only generated, bounded programs are executed. Input bytes become small
 //! numbers or explicit UTF-16 escapes, never arbitrary JavaScript syntax.
 //!
-//! Byte 0 modulo thirty-two selects a family; bytes 1..3 supply a, b and c.
+//! Byte 0 modulo sixty-four selects a family; bytes 1..3 supply a, b and c.
 //! Missing bytes are zero. Numeric values are i8, loop counts and recursive
-//! arguments are c modulo nine. No template captures an outer local binding.
+//! arguments are c modulo nine. Closure and parameter families additionally
+//! test captured bindings, argument mapping and parameter environments.
+
+mod parameters;
 
 use mb_js::agent::{Abrupt, Agent, ErrorKind, Exception};
 use mb_js::heap::{Local, Options, Scope};
@@ -11,7 +14,7 @@ use mb_js::realm::RealmId;
 use mb_js::script::ScriptError;
 use mb_js::value::Kind;
 
-const FAMILIES: usize = 32;
+const FAMILIES: usize = 64;
 const MAX_SOURCE_UNITS: usize = 2048;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -407,7 +410,7 @@ fn program(data: &[u8]) -> Vec<Step> {
             Step::number(format!("function good(p) {{ return p + ({c}); }} good(({b}))"), y + z),
             Step::number(format!("good(({a}))"), x + z),
         ],
-        _ => vec![
+        31 => vec![
             Step::number(
                 format!("function f(p) {{ return g(p); function g(q) {{ return q + ({b}); }} }} f(({a}))"),
                 x + y,
@@ -418,6 +421,7 @@ fn program(data: &[u8]) -> Vec<Step> {
                 x + y,
             ),
         ],
+        _ => parameters::program(family, a, b, c, [raw_a, raw_b, raw_c]),
     }
 }
 

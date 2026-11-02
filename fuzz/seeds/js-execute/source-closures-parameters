@@ -1,0 +1,1 @@
+function make(p=1){return (q,...rest)=>{p+=q;return arguments[0]+p+rest.length;};}var f=make(2); f(3,4); f(5);
