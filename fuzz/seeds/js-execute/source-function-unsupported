@@ -1,1 +1,1 @@
-function f(){return arguments;}function outer(x){return function(){return x;};}function defaults(a=1){return a;}
+function f(){return arguments;}function outer(x){return function(){return x;};}function defaults(a=1){return a;}function pending(){try{return 1;}catch(e){return 2;}}
