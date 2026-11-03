@@ -1,0 +1,1 @@
+interface mixin M { undefined f(); }; interface X { constructor(); }; X includes M; namespace N { readonly attribute long n; }; enum E {"a","b"};

@@ -4,7 +4,8 @@
 //! `mb-encoding` und die benannten Zeichenreferenzen des HTML Standard für
 //! `mb-html` (beides Abschnitt 4.4) sowie die CSS-Regeln aus dem Abschnitt
 //! „Rendering“ des HTML Standard für `mb-style` (Abschnitt 4.6). Die
-//! erzeugten Dateien werden eingecheckt.
+//! WebIDL-Grammatiktabellen für `mb-webidl` kommen aus `data/webidl/`.
+//! Die erzeugten Dateien werden eingecheckt.
 //!
 //! Aufruf: `cargo run -p datagen [-- --check]`. Mit `--check` schreibt das
 //! Programm nichts, sondern prüft nur, ob die eingecheckten Dateien aktuell
@@ -18,6 +19,7 @@ mod idna;
 mod rendering;
 mod ucd;
 mod unicode;
+mod webidl;
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -35,7 +37,7 @@ struct Generator {
     run: fn(Read<'_>) -> Result<String, String>,
 }
 
-const GENERATORS: [Generator; 5] = [
+const GENERATORS: [Generator; 6] = [
     Generator {
         data: unicode::DATA,
         output: unicode::OUTPUT,
@@ -60,6 +62,11 @@ const GENERATORS: [Generator; 5] = [
         data: rendering::DATA,
         output: rendering::OUTPUT,
         run: rendering::run,
+    },
+    Generator {
+        data: webidl::DATA,
+        output: webidl::OUTPUT,
+        run: webidl::run,
     },
 ];
 

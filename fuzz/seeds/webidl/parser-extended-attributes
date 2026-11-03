@@ -1,0 +1,1 @@
+[Exposed=(Window,Worker), Named=(A(B,C))] dictionary D { required DOMString x; sequence<long> values = []; };
