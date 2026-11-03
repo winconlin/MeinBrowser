@@ -30,6 +30,6 @@ Fremde Crates sind nicht erlaubt, auch nicht als dev- oder build-dependency.
 
 Einzige Ausnahme ist das Fuzzing unter `fuzz/`: ein eigener Cargo-Workspace mit `cargo-fuzz` und `libfuzzer-sys` (entschieden am 30.10.2026). Es wird nicht ausgeliefert, und kein Crate des Browsers hängt davon ab. Anleitung: [docs/fuzzing.md](docs/fuzzing.md).
 
-Tabellen aus Rohdaten unter `data/` (zurzeit die Unicode-Zeichendatenbank mit der IDNA-Zuordnungstabelle, die Daten des WHATWG Encoding Standard, die benannten Zeichenreferenzen und die CSS-Blöcke aus dem Abschnitt „Rendering“ des HTML Standard) erzeugt `cargo run -p datagen`. Die erzeugten Dateien werden eingecheckt.
+Tabellen aus Rohdaten unter `data/` (zurzeit die Unicode-Zeichendatenbank mit der IDNA-Zuordnungstabelle, die Daten des WHATWG Encoding Standard, die benannten Zeichenreferenzen, die CSS-Blöcke aus dem Abschnitt „Rendering“ des HTML Standard und die normative WebIDL-Grammatik) erzeugt `cargo run -p datagen`. Die erzeugten Dateien werden eingecheckt.
 
 Externe Testsammlungen (zurzeit Teile der WPT, html5lib-tests, Testdateien von Unicode, css-parsing-tests, webref, die XML-Testsuite des W3C, Deflate-Testdaten aus Go und die PNG-Testbilder von image-png) liegen nicht im Repository. `cargo run -p testdata` holt sie mit `git` in der Version, die `tools/testdata/src/lib.rs` festlegt, nach `target/testdata/`.

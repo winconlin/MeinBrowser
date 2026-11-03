@@ -6,7 +6,7 @@ geplanten IDL-Leser und Binding-Generator. Er zerlegt Quelltext nach dem
 Anhang [IDL grammar](https://webidl.spec.whatwg.org/#idl-grammar).
 Gelesener Quellstand des Standards:
 [`296213a1d9c8293850295c6e77d3b13dce8681a9`](https://github.com/whatwg/webidl/blob/296213a1d9c8293850295c6e77d3b13dce8681a9/index.bs#L15426).
-Es wird keine fremde Parser- oder Browserimplementierung verwendet.
+Es wird keine fremde Parser- oder Browserimplementierung verwendet. Inzwischen baut darauf der [Syntaxparser](m2-webidl-parser.md) auf; dessen Grenzen und nächste Schritte stehen separat.
 
 ## API und Verhalten
 
@@ -96,10 +96,10 @@ python3 fuzz/run.py webidl --seconds 30 --seed 1
    Standardstand prüfen, besonders die Fallback-Regeln und WebIDLs eigene
    String- und Kommentarregeln. Bei Standardänderungen die Referenz und die
    feste Terminalmenge gemeinsam aktualisieren.
-2. Darauf den LL(1)-Parser mit AST für Definitionen, Typen, Mitglieder und
-   Extended Attributes aufbauen. Trivia überspringen; Token-Ranges für
-   Fehlerpositionen erhalten. Escaped Identifier und numerische Werte erst
-   mit ihren jeweiligen semantischen Regeln auswerten.
+2. Der LL(1)-Syntaxparser ist implementiert und liefert Produktionsbäume
+   für Definitionen, Typen, Mitglieder und Extended Attributes. Seine
+   Prüfpunkte stehen in [m2-webidl-parser.md](m2-webidl-parser.md). Escaped
+   Identifier und Zahlenwerte bleiben semantisch auszuwerten.
 3. Namensauflösung, Partials, Mixins/Includes, Typprüfung und die Bedeutung
    der Extended Attributes implementieren. Das bisherige Lesen der
    webref-Dateien bestätigt diese Schritte noch nicht.

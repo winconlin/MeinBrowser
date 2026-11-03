@@ -222,6 +222,7 @@ dependencies = [
 name = "mb-webidl"
 version = "0.0.0"
 dependencies = [
+ "mb-base",
  "testdata",
 ]
 
