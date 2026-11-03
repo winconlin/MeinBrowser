@@ -237,6 +237,13 @@ def execution_seeds():
 def main():
     execution_seeds()
     runtime_seeds()
+    write("webidl", "interface", "[Exposed=Window] interface Example { readonly attribute DOMString name; undefined run(optional long x=0); };")
+    write("webidl", "types", "dictionary Options { required DOMString name; sequence<long> values; }; typedef (DOMString or long) Choice; callback Handler = undefined (Choice value);")
+    write("webidl", "numbers", "0 08 0129 -0Xff 0x 08.5 -.5 .5E-2 1e+ 1... ....5 -Infinity NaN")
+    write("webidl", "comments-strings", '/* a /* b */ tail // CR\rstill\u2028here\n"raw\\"next" "multi\nline"')
+    write("webidl", "unicode", "\u000c\u00a0\ufeffé🦀 _interface __x -name a-b")
+    write("webidl", "unfinished-comments", "/*x" * 1024)
+    write("webidl", "invalid-utf8", bytes([0xff, 0xc0, 0xaf, 0, 0xe2, 0x28, 0xa1]))
     write("html", "document", "<!doctype html><table><tr><td>x</table><template><p>y</template>")
     write("html", "text-modes", "<textarea>&amp;</textarea><script>'<&'</script><svg><title>x</title></svg>")
     write("css", "stylesheet", "@layer a { div:nth-child(2n+1) { color: red; width: 10px } }")

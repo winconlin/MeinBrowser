@@ -1,0 +1,1 @@
+dictionary Options { required DOMString name; sequence<long> values; }; typedef (DOMString or long) Choice; callback Handler = undefined (Choice value);
