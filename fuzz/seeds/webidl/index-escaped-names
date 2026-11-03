@@ -1,0 +1,1 @@
+interface _interface {}; partial interface _interface { attribute _interface value; }; interface mixin _mixin {}; _interface includes _mixin;

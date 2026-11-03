@@ -1,0 +1,1 @@
+interface Example { undefined run(Missing value); };

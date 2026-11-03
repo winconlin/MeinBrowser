@@ -267,3 +267,10 @@ dependencies = [
  "mb-web",
  "testdata",
 ]
+
+[[package]]
+name = "webidl-check"
+version = "0.0.0"
+dependencies = [
+ "mb-webidl",
+]

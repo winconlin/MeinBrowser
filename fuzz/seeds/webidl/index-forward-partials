@@ -1,0 +1,1 @@
+partial interface X { attribute Options options; }; X includes M; partial interface mixin M { undefined run(X value); }; interface X : Base {}; interface Base {}; interface mixin M {}; dictionary Options {};
