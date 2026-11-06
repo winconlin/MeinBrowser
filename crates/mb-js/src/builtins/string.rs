@@ -1,12 +1,13 @@
-//! %String% (Abschnitt 22.1.1). Die Methoden von %String.prototype% kommen
-//! mit der Welle für Zeichenketten.
+//! %String% (Abschnitt 22.1.1) und `String.prototype[@@iterator]` (in
+//! `iterator`). Die übrigen Methoden von %String.prototype% kommen mit der
+//! Welle für Zeichenketten.
 
-use super::{link_constructor, units};
+use super::{define_symbol_function, iterator::STRING_ITERATOR, link_constructor, units};
 use crate::agent::{Agent, Completion};
 use crate::builtin::{Builtin, BuiltinCall, create_builtin_function};
 use crate::conversion::to_string;
 use crate::heap::{Local, Scope};
-use crate::key::symbol_description;
+use crate::key::{WellKnownSymbol, symbol_description};
 use crate::object::{get_prototype_from_constructor, string_create};
 use crate::realm::{Intrinsic, RealmId};
 use crate::value::Kind;
@@ -22,6 +23,14 @@ pub(super) fn create(agent: &mut Agent, scope: &Scope, realm: RealmId) -> Comple
     let prototype = agent.intrinsic(scope, realm, Intrinsic::StringPrototype);
     let constructor = create_builtin_function(agent, scope, realm, &CONSTRUCTOR)?;
     link_constructor(agent, scope, constructor, prototype)?;
+    define_symbol_function(
+        agent,
+        scope,
+        realm,
+        prototype,
+        WellKnownSymbol::Iterator,
+        &STRING_ITERATOR,
+    )?;
     agent.set_intrinsic(realm, Intrinsic::String, constructor);
     Ok(())
 }

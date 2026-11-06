@@ -503,7 +503,10 @@ fn string_objects_have_index_properties_and_length() {
         let prototype = agent.intrinsic(scope, realm, Intrinsic::StringPrototype);
         let found = prototype_of(agent, scope, object);
         assert!(same(agent, found, prototype));
-        assert_eq!(keys(agent, scope, prototype), ["length", "constructor"]);
+        assert_eq!(
+            keys(agent, scope, prototype),
+            ["length", "constructor", "Symbol"]
+        );
     });
 }
 
@@ -704,4 +707,146 @@ fn builtins_survive_collections() {
     );
     agent.heap_mut().collect();
     agent.heap().verify().expect("gültiger Heap");
+}
+
+/// Wert und Attribute einer Dateneigenschaft mit einem bekannten Symbol als
+/// Schlüssel.
+fn symbol_data<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    object: Local<'_>,
+    symbol: WellKnownSymbol,
+) -> (Local<'s>, [Option<bool>; 3]) {
+    let key = agent.well_known_symbol(scope, symbol);
+    let descriptor = get_own_property(agent, scope, object, PropertyKey::Symbol(key))
+        .expect("kein Fehler")
+        .unwrap_or_else(|| panic!("keine Eigenschaft {}", symbol.description()));
+    let value = descriptor.value.expect("Dateneigenschaft");
+    (
+        value,
+        [
+            descriptor.writable,
+            descriptor.enumerable,
+            descriptor.configurable,
+        ],
+    )
+}
+
+#[test]
+fn symbol_holds_the_well_known_symbols() {
+    let (mut agent, realm) = agent_with(false);
+    agent.scope(|agent, scope| {
+        let global = agent.global_object(scope, realm);
+        let constructor = agent.intrinsic(scope, realm, Intrinsic::Symbol);
+        let prototype = agent.intrinsic(scope, realm, Intrinsic::SymbolPrototype);
+        let function = agent.intrinsic(scope, realm, Intrinsic::FunctionPrototype);
+        let (value, attributes) = data(agent, scope, global, "Symbol");
+        assert!(same(agent, value, constructor));
+        assert_eq!(attributes, HIDDEN);
+        assert!(is_constructor(agent, agent.heap().get(constructor)));
+        let parent = prototype_of(agent, scope, constructor);
+        assert!(same(agent, parent, function));
+        let (value, attributes) = data(agent, scope, constructor, "prototype");
+        assert!(same(agent, value, prototype));
+        assert_eq!(attributes, READ_ONLY);
+        let (value, attributes) = data(agent, scope, prototype, "constructor");
+        assert!(same(agent, value, constructor));
+        assert_eq!(attributes, HIDDEN);
+        let (length, _) = data(agent, scope, constructor, "length");
+        assert_eq!(describe(agent, length), "0");
+        let (name, _) = data(agent, scope, constructor, "name");
+        assert_eq!(describe(agent, name), "\"Symbol\"");
+        for symbol in WellKnownSymbol::ALL {
+            let name = symbol
+                .description()
+                .strip_prefix("Symbol.")
+                .expect("Beschreibung mit Symbol.");
+            let (value, attributes) = data(agent, scope, constructor, name);
+            let expected = agent.well_known_symbol(scope, symbol);
+            assert!(same(agent, value, expected), "{name}");
+            assert_eq!(attributes, READ_ONLY, "{name}");
+        }
+        assert_eq!(
+            keys(agent, scope, constructor).len(),
+            3 + WellKnownSymbol::ALL.len()
+        );
+    });
+}
+
+#[test]
+fn iterator_prototypes_inherit_from_iterator_prototype() {
+    let (mut agent, realm) = agent_with(false);
+    agent.scope(|agent, scope| {
+        let object = agent.intrinsic(scope, realm, Intrinsic::ObjectPrototype);
+        let iterator = agent.intrinsic(scope, realm, Intrinsic::IteratorPrototype);
+        let parent = prototype_of(agent, scope, iterator);
+        assert!(same(agent, parent, object));
+        assert_eq!(keys(agent, scope, iterator), ["Symbol"]);
+        let (method, attributes) = symbol_data(agent, scope, iterator, WellKnownSymbol::Iterator);
+        assert_eq!(attributes, HIDDEN);
+        let (name, _) = data(agent, scope, method, "name");
+        assert_eq!(describe(agent, name), "\"[Symbol.iterator]\"");
+        for (intrinsic, tag) in [
+            (Intrinsic::ArrayIteratorPrototype, "Array Iterator"),
+            (Intrinsic::StringIteratorPrototype, "String Iterator"),
+        ] {
+            let prototype = agent.intrinsic(scope, realm, intrinsic);
+            let parent = prototype_of(agent, scope, prototype);
+            assert!(same(agent, parent, iterator), "{tag}");
+            assert_eq!(keys(agent, scope, prototype), ["next", "Symbol"], "{tag}");
+            let (next, attributes) = data(agent, scope, prototype, "next");
+            assert_eq!(attributes, HIDDEN, "{tag}");
+            assert!(!is_constructor(agent, agent.heap().get(next)), "{tag}");
+            let (value, attributes) =
+                symbol_data(agent, scope, prototype, WellKnownSymbol::ToStringTag);
+            assert_eq!(describe(agent, value), format!("{tag:?}"));
+            assert_eq!(attributes, [Some(false), Some(false), Some(true)], "{tag}");
+        }
+    });
+}
+
+#[test]
+fn array_and_string_prototypes_return_iterators() {
+    let (mut agent, realm) = agent_with(false);
+    agent.scope(|agent, scope| {
+        let array = agent.intrinsic(scope, realm, Intrinsic::ArrayPrototype);
+        let values = agent.intrinsic(scope, realm, Intrinsic::ArrayPrototypeValues);
+        let (value, attributes) = data(agent, scope, array, "values");
+        assert!(same(agent, value, values));
+        assert_eq!(attributes, HIDDEN);
+        let (value, attributes) = symbol_data(agent, scope, array, WellKnownSymbol::Iterator);
+        assert!(same(agent, value, values));
+        assert_eq!(attributes, HIDDEN);
+        for name in ["keys", "entries"] {
+            let (_, attributes) = data(agent, scope, array, name);
+            assert_eq!(attributes, HIDDEN, "{name}");
+        }
+        let string = agent.intrinsic(scope, realm, Intrinsic::StringPrototype);
+        let (_, attributes) = symbol_data(agent, scope, string, WellKnownSymbol::Iterator);
+        assert_eq!(attributes, HIDDEN);
+    });
+    check(&[
+        ("[].values.name + [].values.length", "\"values0\""),
+        ("[].keys.name + [].keys.length", "\"keys0\""),
+        ("[].entries.name + [].entries.length", "\"entries0\""),
+        ("[][Symbol.iterator].name", "\"values\""),
+        ("''[Symbol.iterator].name", "\"[Symbol.iterator]\""),
+        ("''[Symbol.iterator].length", "0"),
+        (
+            "[].values().next.name + [].values().next.length",
+            "\"next0\"",
+        ),
+        ("''[Symbol.iterator]().next.name", "\"next\""),
+        ("[].values()[Symbol.iterator].length", "0"),
+        (
+            "[].values()[Symbol.iterator] === ''[Symbol.iterator]()[Symbol.iterator]",
+            "true",
+        ),
+        ("[].values().next === [].keys().next", "true"),
+        ("new ([].values)()", "TypeError"),
+        ("new ([].values().next)()", "TypeError"),
+        ("new (''[Symbol.iterator])()", "TypeError"),
+        ("typeof [].values()", "\"object\""),
+        ("[].values() instanceof Object", "true"),
+    ]);
 }

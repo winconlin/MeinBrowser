@@ -31,7 +31,8 @@ pub fn is_callable(heap: &Heap, value: Value<'_>) -> bool {
                 | ObjectClass::Array
                 | ObjectClass::Arguments
                 | ObjectClass::Error
-                | ObjectClass::Primitive,
+                | ObjectClass::Primitive
+                | ObjectClass::Iterator,
             )
             | None => false,
         },

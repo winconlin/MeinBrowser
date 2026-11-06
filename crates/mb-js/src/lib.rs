@@ -15,6 +15,7 @@ pub mod function;
 pub mod heap;
 pub mod host;
 pub mod interpreter;
+mod iterator;
 pub mod key;
 pub mod lexer;
 pub mod number;
