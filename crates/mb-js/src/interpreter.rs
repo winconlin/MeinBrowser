@@ -16,6 +16,14 @@
 //! dürfen, begrenzt [`crate::agent::STACK_BUDGET`] (RS-8); wie viele Rahmen
 //! es gibt, begrenzt der Registerstapel.
 //!
+//! `new` legt das neue Objekt vor dem Rahmen an und gibt es der Funktion
+//! als `this` in Register 0, das der Code nie überschreibt. Gibt der Rahmen
+//! von [[Construct]] kein Objekt zurück, gilt dieses. Ein Aufruf in
+//! Endposition ([`Op::TailCall`]) nimmt die Argumente in Handles, baut den
+//! Rahmen ab und legt den neuen an dieselbe Stelle; der Stapel wächst also
+//! nicht. Nur im Rahmen von [[Construct]] bleibt er ein gewöhnlicher Aufruf,
+//! denn danach ist das Ergebnis noch zu prüfen.
+//!
 //! Ausnahmen: Wirft ein Befehl, sucht der Lauf in der Ausnahmetabelle des
 //! obersten Rahmens nach einem Handler, dann in denen der Aufrufer, und
 //! baut die Rahmen dazwischen ab. Hat keiner seines Stapels einen, endet
@@ -35,13 +43,15 @@ use crate::compare::{is_less_than, is_loosely_equal, is_strictly_equal};
 use crate::compiler::{CompileError, compile_function};
 use crate::conversion::{to_boolean, to_number, to_numeric, to_property_key, to_string};
 use crate::descriptor::PropertyDescriptor;
-use crate::function::{Compiled, function_environment, function_parts, instantiate_closure};
+use crate::function::{
+    Compiled, function_environment, function_parts, instantiate_closure, is_constructor,
+};
 use crate::heap::{Heap, Local, Scope};
 use crate::key::{PropertyKey, array_index};
 use crate::number;
 use crate::object::{
     array_create, create_mapped_arguments_object, create_unmapped_arguments_object,
-    ordinary_object_create, set_prototype_of,
+    ordinary_create_from_constructor, ordinary_object_create, set_prototype_of,
 };
 use crate::operations::{
     create_data_property_or_throw, define_property_or_throw, get, has_property, is_callable, set,
@@ -69,8 +79,15 @@ enum Flow {
     Jump(usize),
     Return,
     /// Ruft die Funktion im Platz `callee` des Registerstapels auf, `this`
-    /// liegt dahinter und dann `count` Argumente.
+    /// liegt dahinter und dann `count` Argumente. Mit `construct` ist es
+    /// [[Construct]] mit der Funktion als new.target.
     Call {
+        callee: usize,
+        count: usize,
+        construct: bool,
+    },
+    /// Derselbe Aufruf ohne `construct` an der Stelle des Rahmens.
+    TailCall {
         callee: usize,
         count: usize,
     },
@@ -100,6 +117,8 @@ struct Activation<'c> {
     base: usize,
     /// Der nächste Befehl.
     offset: usize,
+    /// Ob der Rahmen zu [[Construct]] gehört.
+    construct: bool,
 }
 
 /// Wo die Argumente eines Aufrufs liegen.
@@ -202,6 +221,7 @@ fn start_frame<'s>(
         realm,
         base,
         offset: 0,
+        construct: false,
     };
     let result = run(agent, activation, accumulator);
     agent.heap_mut().truncate_registers(header);
@@ -232,7 +252,8 @@ fn call_frame<'s>(
     this: Local<'_>,
     arguments: &[Local<'_>],
 ) -> Completion<Local<'s>> {
-    let activation = enter_function(agent, scope, function, this, Arguments::Locals(arguments))?;
+    let arguments = Arguments::Locals(arguments);
+    let activation = enter_function(agent, scope, function, this, arguments, None)?;
     let header = activation.base.saturating_sub(HEADER);
     let accumulator = agent.heap().local(scope, Value::UNDEFINED);
     let result = run(agent, activation, accumulator);
@@ -270,10 +291,29 @@ fn run(agent: &mut Agent, activation: Activation<'_>, accumulator: Local<'_>) ->
             }
             Err(abrupt) => return Err(abrupt),
         };
+        // Nach einem Endaufruf aus dem Rahmen von [[Construct]] prüft dieses
+        // noch das Ergebnis (Abschnitt 10.2.2, Schritte 10 bis 12); der Rahmen
+        // bleibt darum.
+        let flow = match flow {
+            Flow::TailCall { callee, count } if top.construct => Flow::Call {
+                callee,
+                count,
+                construct: false,
+            },
+            flow => flow,
+        };
         match flow {
             Flow::Next => top.offset = instruction.end,
             Flow::Jump(target) => top.offset = target,
             Flow::Return => {
+                if top.construct {
+                    // [[Construct]] (Abschnitt 10.2.2), Schritte 10 und 11:
+                    // Ohne Objekt als Ergebnis gilt das neue Objekt.
+                    let heap = agent.heap();
+                    if !matches!(heap.get(accumulator).kind(), Kind::Object(_)) {
+                        heap.set(accumulator, heap.register(top.base));
+                    }
+                }
                 let header = top.base.saturating_sub(HEADER);
                 stack.pop();
                 if stack.is_empty() {
@@ -281,7 +321,11 @@ fn run(agent: &mut Agent, activation: Activation<'_>, accumulator: Local<'_>) ->
                 }
                 agent.heap_mut().truncate_registers(header);
             }
-            Flow::Call { callee, count } => {
+            Flow::Call {
+                callee,
+                count,
+                construct,
+            } => {
                 top.offset = instruction.end;
                 let next = agent.scope(|agent, inner| {
                     let heap = agent.heap();
@@ -289,13 +333,54 @@ fn run(agent: &mut Agent, activation: Activation<'_>, accumulator: Local<'_>) ->
                     let this = heap.local(inner, heap.register(place(callee, 1)));
                     let first = place(callee, 2);
                     let arguments = Arguments::Registers { first, count };
-                    enter_function(agent, inner, function, this, arguments)
+                    let new_target = construct.then_some(function);
+                    enter_function(agent, inner, function, this, arguments, new_target)
                 });
                 // Scheitert der Aufruf, etwa am Registerstapel, wirft der
                 // Befehl des Aufrufers.
                 match next {
-                    Ok(next) => stack.push(next),
+                    Ok(mut next) => {
+                        next.construct = construct;
+                        stack.push(next);
+                    }
                     Err(Abrupt::Throw) => catch(agent, &mut stack, accumulator, instruction.start)?,
+                    Err(abrupt) => return Err(abrupt),
+                }
+            }
+            Flow::TailCall { callee, count } => {
+                // PrepareForTailCall (Abschnitt 15.10.3): Funktion, `this` und
+                // Argumente kommen in Handles, dann geht der Rahmen, und der
+                // neue entsteht an seiner Stelle.
+                let header = top.base.saturating_sub(HEADER);
+                let realm = top.realm;
+                let next = agent.scope(|agent, inner| {
+                    let heap = agent.heap();
+                    let function = heap.local(inner, heap.register(callee));
+                    let this = heap.local(inner, heap.register(place(callee, 1)));
+                    let first = place(callee, 2);
+                    let arguments: Vec<Local<'_>> = (0..count)
+                        .map(|index| heap.local(inner, heap.register(place(first, index))))
+                        .collect();
+                    agent.heap_mut().truncate_registers(header);
+                    let arguments = Arguments::Locals(&arguments);
+                    enter_function(agent, inner, function, this, arguments, None)
+                });
+                stack.pop();
+                match next {
+                    Ok(next) => stack.push(next),
+                    // Scheitert der Aufruf, wirft ihn der Aufruf im Rahmen
+                    // darunter; einen Handler hatte der abgebaute Rahmen an
+                    // dieser Stelle nie. Der Fehler gehört trotzdem zum Realm
+                    // des abgebauten Rahmens wie bei Call. Ohne Rahmen
+                    // darunter geht die Ausnahme an den Aufrufer des Laufs.
+                    Err(Abrupt::Throw) => {
+                        agent.set_error_realm(realm);
+                        let Some(caller) = stack.last() else {
+                            return Err(Abrupt::Throw);
+                        };
+                        let offset = caller.offset.saturating_sub(1);
+                        catch(agent, &mut stack, accumulator, offset)?;
+                    }
                     Err(abrupt) => return Err(abrupt),
                 }
             }
@@ -357,6 +442,9 @@ fn catch(
 /// weg. Braucht der Code alle, etwa für `arguments`, bekommt er sie
 /// außerdem als interne Zelle.
 ///
+/// Liest der Code new.target, bekommt er `new_target` in dessen Register,
+/// ohne bleibt es *undefined* wie für [[Call]].
+///
 /// Abweichung: Im nicht strikten Modus bleibt ein primitiver Wert als
 /// `this` primitiv, denn Wrapper-Objekte gibt es noch nicht.
 fn enter_function(
@@ -365,6 +453,7 @@ fn enter_function(
     function: Local<'_>,
     this: Local<'_>,
     arguments: Arguments<'_, '_>,
+    new_target: Option<Local<'_>>,
 ) -> Completion<Activation<'static>> {
     let Some((shared, realm)) = function_parts(agent.heap(), agent.heap().get(function)) else {
         return Err(agent.throw_error(ErrorKind::TypeError));
@@ -427,11 +516,15 @@ fn enter_function(
         }
         heap.set_register(place(base, register), Value::internal(cell));
     }
+    if let (Some(register), Some(new_target)) = (code.new_target_register(), new_target) {
+        heap.set_register(place(base, register), heap.get(new_target));
+    }
     Ok(Activation {
         source: Source::Shared(code),
         realm,
         base,
         offset: 0,
+        construct: false,
     })
 }
 
@@ -1186,17 +1279,49 @@ impl<'c> Frame<'c, '_> {
                     instantiate_closure(agent, scope, self.realm, shared, name, environment)?;
                 self.set_accumulator(agent, function);
             }
-            Op::Call => {
+            Op::Call | Op::TailCall => {
                 // EvaluateCall (Abschnitt 13.3.6.2): IsCallable erst nach
-                // den Argumenten.
+                // den Argumenten, PrepareForTailCall danach.
                 let callee = self.register(agent, scope, first);
                 if !is_callable(agent.heap(), agent.heap().get(callee)) {
                     return Err(agent.throw_error(ErrorKind::TypeError));
                 }
+                let callee = self.slot(first);
+                let count = usize::try_from(second).unwrap_or(0);
+                return Ok(if instruction.op == Op::Call {
+                    Flow::Call {
+                        callee,
+                        count,
+                        construct: false,
+                    }
+                } else {
+                    Flow::TailCall { callee, count }
+                });
+            }
+            Op::Construct => {
+                // EvaluateNew (Abschnitt 13.3.5.1.1): IsConstructor erst nach
+                // den Argumenten. Dann [[Construct]] (Abschnitt 10.2.2) mit
+                // dem Konstruktor als new.target: Das neue Objekt entsteht
+                // vor dem Rahmen.
+                let constructor = self.register(agent, scope, first);
+                if !is_constructor(agent, agent.heap().get(constructor)) {
+                    return Err(agent.throw_error(ErrorKind::TypeError));
+                }
+                let this = ordinary_create_from_constructor(
+                    agent,
+                    scope,
+                    constructor,
+                    Intrinsic::ObjectPrototype,
+                    self.realm,
+                )?;
+                let callee = self.slot(first);
+                let heap = agent.heap();
+                heap.set_register(place(callee, 1), heap.get(this));
                 let count = usize::try_from(second).unwrap_or(0);
                 return Ok(Flow::Call {
-                    callee: self.slot(first),
+                    callee,
                     count,
+                    construct: true,
                 });
             }
             Op::CreateArguments | Op::CreateMappedArguments | Op::CreateRestParameter => {

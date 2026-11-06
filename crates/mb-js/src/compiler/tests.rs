@@ -400,7 +400,7 @@ fn unsupported_constructs_name_their_place() {
         ("x = {async a() {}};", 5),
         ("x = {1n: 1};", 5),
         ("x = [...a];", 5),
-        ("new a();", 0),
+        ("new a(...b);", 6),
         ("a?.b(...c);", 5),
         ("try {} catch ([e]) {}", 14),
         ("for (var k in o);", 0),
@@ -987,4 +987,152 @@ fn captures_follow_names_into_inner_functions() {
     let script = captures.script();
     assert_eq!(script.names, BTreeSet::from([name("a"), name("c")]));
     assert!(!script.this);
+}
+
+/// `new`: Konstruktor und Argumente liegen wie bei einem Aufruf, `this`
+/// setzt erst [`Op::Construct`].
+#[test]
+fn new_puts_constructor_and_arguments_in_a_row() {
+    assert_eq!(
+        listing("new C(1);"),
+        [
+            "LdaGlobal C",
+            "Star r2",
+            "LdaSmi 1",
+            "Star r4",
+            "Construct r2 1",
+            "Star r1",
+            "Ldar r1",
+            "Return"
+        ]
+    );
+    assert_eq!(listing("new C;"), listing("new C();"));
+}
+
+/// `new.target` liegt in einem eigenen Register, für Pfeilfunktionen auch
+/// im Kontext der Funktion.
+#[test]
+fn new_target_has_a_register_and_a_place_for_arrows() {
+    let code = first_function("function f() { return new.target; }");
+    assert_eq!(code.new_target_register(), Some(2));
+    assert_eq!(
+        lines(&code),
+        ["Ldar r2", "Return", "LdaUndefined", "Return"]
+    );
+    assert_eq!(
+        first_function("function f() {}").new_target_register(),
+        None
+    );
+    let source = "function f() { return () => new.target; }";
+    let ast = parse_script(&units(source)).expect("gültig");
+    let Some(&Node::FunctionDeclaration(id)) = ast.body().first().map(|&item| ast.node(item))
+    else {
+        panic!("keine Funktion");
+    };
+    let template = FunctionTemplate {
+        function: id,
+        binds_name: false,
+        outer: Rc::default(),
+    };
+    let code = compile_function(&ast, &template).expect("übersetzbar");
+    assert_eq!(code.new_target_register(), Some(2));
+    assert_eq!(
+        lines(&code),
+        [
+            "PushContext 1",
+            "Ldar r2",
+            "StaContext 0 1",
+            "CreateClosure fn0 ",
+            "Return",
+            "LdaUndefined",
+            "Return"
+        ]
+    );
+    let arrow = compile_function(&ast, &first_template(&code)).expect("übersetzbar");
+    assert_eq!(arrow.new_target_register(), None);
+    assert_eq!(lines(&arrow), ["LdaContext 0 1", "Return"]);
+}
+
+/// Die Endaufrufe im Code einer Funktion.
+fn tail_calls(code: &Code) -> usize {
+    lines(code)
+        .iter()
+        .filter(|line| line.starts_with("TailCall"))
+        .count()
+}
+
+/// IsInTailPosition (Abschnitt 15.10.1): wie viele Aufrufe in der ersten
+/// Funktion zu [`Op::TailCall`] werden.
+#[test]
+fn calls_in_tail_position_become_tail_calls() {
+    let cases = [
+        ("return g();", 1),
+        ("return (g());", 1),
+        ("return a, g();", 1),
+        ("return a ? g() : h();", 2),
+        ("return a && g();", 1),
+        ("return a || g();", 1),
+        ("return a ?? g();", 1),
+        ("return g() ?? a;", 0),
+        ("return g() + 1;", 0),
+        ("return !g();", 0),
+        ("return x = g();", 0),
+        ("return g()();", 1),
+        ("return g(h());", 1),
+        ("return a.b();", 1),
+        ("return a[b]();", 1),
+        ("return a?.b();", 1),
+        ("return a?.b().c;", 0),
+        ("return new G();", 0),
+        ("g();", 0),
+        ("if (a) return g(); else return h();", 2),
+        ("for (;;) { return g(); }", 1),
+        ("for (let i = 0; ; ) return g(i);", 1),
+        ("for (const i = 0; ; ) return g(i);", 1),
+        ("while (a) return g();", 1),
+        ("do return g(); while (a);", 1),
+        ("l: { return g(); }", 1),
+        ("switch (a) { case 1: return g(); default: return h(); }", 2),
+        ("{ let x = 1; return g(x); }", 1),
+        ("{ void 0; return g(); }", 1),
+        ("try { return g(); } catch (e) {}", 0),
+        ("try {} catch (e) { return g(); }", 1),
+        ("try {} catch (e) { return g(); } finally {}", 0),
+        ("try {} finally { return g(); }", 1),
+        ("try {} catch (e) {} finally { return g(); }", 1),
+        ("try { try {} catch (e) { return g(); } } finally {}", 0),
+        ("try {} finally { try { return g(); } catch (e) {} }", 0),
+        ("try { g(); } catch (e) {} return h();", 1),
+    ];
+    for (body, expected) in cases {
+        let strict = format!("function f() {{ 'use strict'; {body} }}");
+        assert_eq!(tail_calls(&first_function(&strict)), expected, "{strict}");
+        let sloppy = format!("function f() {{ {body} }}");
+        assert_eq!(tail_calls(&first_function(&sloppy)), 0, "{sloppy}");
+    }
+    // Der Rumpf einer Pfeilfunktion ohne Block steht in Endposition.
+    for (source, expected) in [
+        ("function f() { 'use strict'; return () => g(); }", 1),
+        (
+            "function f() { 'use strict'; return () => a ? g() : h(); }",
+            2,
+        ),
+        ("function f() { 'use strict'; return () => { g(); }; }", 0),
+        ("function f() { return () => g(); }", 0),
+    ] {
+        let ast = parse_script(&units(source)).expect("gültig");
+        let Some(&Node::FunctionDeclaration(id)) = ast.body().first().map(|&item| ast.node(item))
+        else {
+            panic!("keine Funktion");
+        };
+        let template = FunctionTemplate {
+            function: id,
+            binds_name: false,
+            outer: Rc::default(),
+        };
+        let code = compile_function(&ast, &template).expect("übersetzbar");
+        assert_eq!(tail_calls(&code), 0, "{source}");
+        let arrow = compile_function(&ast, &first_template(&code)).expect("übersetzbar");
+        assert_eq!(tail_calls(&arrow), expected, "{source}");
+    }
 }

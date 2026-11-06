@@ -65,6 +65,12 @@ fn check_code(code: &Code, source_length: usize) -> Stats {
             "arguments register is in frame"
         );
     }
+    if let Some(register) = code.new_target_register() {
+        assert!(
+            register < code.register_count(),
+            "new.target register is in frame"
+        );
+    }
     let mut stats = Stats::default();
     let mut starts = BTreeSet::new();
     let mut targets = Vec::new();
@@ -135,7 +141,10 @@ fn check_code(code: &Code, source_length: usize) -> Stats {
             operand_at += width;
         }
         match instruction.op {
-            Op::Call => {
+            Op::Call | Op::TailCall | Op::Construct => {
+                if instruction.op == Op::TailCall {
+                    assert!(code.is_strict(), "tail calls only in strict code");
+                }
                 let callee = usize::try_from(instruction.operand(0)).expect("callee register");
                 let arguments =
                     usize::try_from(instruction.operand(1)).expect("nonnegative argument count");
@@ -425,6 +434,17 @@ mod tests {
             stats.handlers, 3,
             "catch and finally, then the function's finally"
         );
+    }
+
+    #[test]
+    fn new_new_target_and_tail_calls_are_checked() {
+        let stats = checked(
+            "'use strict'; function f(n){ return n ? f(n - 1) : new.target; } \
+             new f(1); let g = () => f(0);",
+        );
+        assert_eq!(stats.functions, 2);
+        assert_eq!(stats.unsupported_functions, 0);
+        assert_eq!(stats.calls, 3, "new, then a tail call in each function");
     }
 
     #[test]

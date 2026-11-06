@@ -29,8 +29,9 @@
 //! Kontext als [[Environment]] und mit ihrer [`FunctionTemplate`] die
 //! Beschreibung der Kontexte um sie herum ([`Enclosing`]); daraus findet
 //! der Übersetzer ihre Bindungen. Pfeilfunktionen lesen `this` aus einem
-//! Platz im Kontext der Funktion oder des Scripts, in dem sie stehen. Ein
-//! `for` mit `let` kopiert seinen Kontext für jeden Durchlauf.
+//! Platz im Kontext der Funktion oder des Scripts, in dem sie stehen,
+//! `new.target` aus einem im Kontext der Funktion. Ein `for` mit `let`
+//! kopiert seinen Kontext für jeden Durchlauf.
 //!
 //! Funktionsdeklarationen in Blöcken sind dort lexikalisch und entstehen
 //! beim Betreten. Außerhalb des strikten Modus setzen sie nach Anhang B.3.2
@@ -65,7 +66,15 @@
 //! Aufrufe: Funktion, `this` und Argumente liegen in Registern
 //! hintereinander ([`Op::Call`]). Ist die Funktion eine Eigenschaft, ist
 //! ihre Basis `this`; das gilt auch in Klammern, `(a.b)()` ruft mit `a` als
-//! `this` auf.
+//! `this` auf. `new` legt den Konstruktor und die Argumente genauso ab,
+//! `this` setzt erst [`Op::Construct`].
+//!
+//! Endaufrufe: Im strikten Modus wird ein Aufruf in Endposition
+//! (IsInTailPosition, Abschnitt 15.10.1) zu [`Op::TailCall`]. In Endposition
+//! stehen Aufrufe im Ausdruck von `return` und im Rumpf einer
+//! Pfeilfunktion ohne Block, nach HasCallInTailPosition (Abschnitt
+//! 15.10.2) auch hinter Klammern, Komma, `? :`, `&&`, `||` und `??`, nicht
+//! aber im Block von `try` und mit `finally` auch nicht in `catch`.
 //!
 //! Tiefe: Ketten zweistelliger Operatoren und Ketten von Zugriffen und
 //! Aufrufen wie `a.b(c)[d]?.e` baut der Parser in Schleifen, sie werden
@@ -196,6 +205,8 @@ struct BlockScope {
     slots: u32,
     /// Der Platz mit `this`.
     this: Option<u32>,
+    /// Der Platz mit `new.target`.
+    new_target: Option<u32>,
 }
 
 impl BlockScope {
@@ -352,8 +363,16 @@ struct Compiler<'a> {
     outer: Rc<Enclosing>,
     /// Was innere Funktionen dieses Codes sehen.
     captures: &'a FunctionCaptures,
-    /// Ob `this` aus dem umgebenden Code kommt, wie in Pfeilfunktionen.
+    /// Ob `this` und `new.target` aus dem umgebenden Code kommen, wie in
+    /// Pfeilfunktionen.
     lexical_this: bool,
+    /// Das Register mit `new.target`, in Funktionen, die es lesen.
+    new_target: Option<u32>,
+    /// Die Aufrufe in Endposition im Ausdruck, der gerade übersetzt wird.
+    tail_calls: BTreeSet<NodeId>,
+    /// Wie viele Bereiche um die aktuelle Stelle eine Ausnahme fangen oder
+    /// `finally` haben; dort gibt es keine Endaufrufe.
+    protected: u32,
     /// Wo in `scopes` die Bindungen aus `var` einer Funktion liegen.
     var_scope: Option<usize>,
     /// Die Funktionsdeklarationen in Blöcken, die nach Anhang B.3.2 auch die
@@ -432,9 +451,9 @@ struct Formal {
 /// FunctionDeclarationInstantiation (Abschnitt 10.2.11). Die Register:
 /// `this`, das Funktionsobjekt, die Parameter ohne den Rest-Parameter,
 /// dann die Argumente als interne Zelle, wenn das arguments-Objekt oder der
-/// Rest-Parameter sie braucht, dann die übrigen Bindungen. Was innere
-/// Funktionen davon sehen, kommt in einen Kontext, die Parameter mit einer
-/// Kopie.
+/// Rest-Parameter sie braucht, dann `new.target`, wenn der Code es liest,
+/// dann die übrigen Bindungen. Was innere Funktionen davon sehen, kommt in
+/// einen Kontext, die Parameter mit einer Kopie.
 ///
 /// Ohne Vorgabewerte teilen sich Parameter, `arguments`, `var`, die
 /// Funktionen und die lexikalischen Deklarationen des Rumpfs einen
@@ -524,6 +543,9 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
     } else {
         None
     };
+    if captures.new_target && !arrow {
+        compiler.new_target = Some(compiler.allocate()?);
+    }
     // Anhang B.3.2.1: Zu parameterNames gehört dann auch `arguments`
     // (test262 block-decl-func-skip-arguments).
     let mut excluded = parameter_names;
@@ -657,6 +679,9 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
     if captures.this && !arrow {
         parameters.this = Some(parameters.add_slot()?);
     }
+    if captures.arrow_new_target && !arrow {
+        parameters.new_target = Some(parameters.add_slot()?);
+    }
     // Der Name eines Funktionsausdrucks liegt außen (funcEnv, Abschnitt
     // 15.2.5); das Objekt `arguments` und jede Bindung im Bereich der
     // Parameter verdecken ihn.
@@ -687,6 +712,10 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
         }
         if let Some(slot) = parameters.this {
             compiler.emit(Op::Ldar, &[THIS])?;
+            compiler.emit(Op::StaContext, &[0, i64::from(slot)])?;
+        }
+        if let (Some(slot), Some(register)) = (parameters.new_target, compiler.new_target) {
+            compiler.emit(Op::Ldar, &[i64::from(register)])?;
             compiler.emit(Op::StaContext, &[0, i64::from(slot)])?;
         }
     }
@@ -753,8 +782,10 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
     }
     if function.expression_body {
         for &expression in body {
+            compiler.tail_calls = compiler.tail_position_calls(expression);
             compiler.expression(expression)?;
         }
+        compiler.tail_calls.clear();
         compiler.emit(Op::Return, &[])?;
     } else {
         for &item in body {
@@ -763,10 +794,12 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
         compiler.emit(Op::LdaUndefined, &[])?;
         compiler.emit(Op::Return, &[])?;
     }
+    let new_target = compiler.new_target;
     let mut code = compiler.finish();
     code.parameters = u32::try_from(registers.len()).map_err(|_| CompileError::TooLarge)?;
     code.arguments = cell.and_then(|cell| u32::try_from(cell).ok());
     code.parameter_map = parameter_map;
+    code.new_target = new_target;
     Ok(code)
 }
 
@@ -795,6 +828,9 @@ impl<'a> Compiler<'a> {
             outer,
             captures,
             lexical_this: false,
+            new_target: None,
+            tail_calls: BTreeSet::new(),
+            protected: 0,
             var_scope: None,
             hoisted: BTreeMap::new(),
         }
@@ -1395,6 +1431,7 @@ impl<'a> Compiler<'a> {
             let mut layout = ContextLayout {
                 bindings: BTreeMap::new(),
                 this: scope.this,
+                new_target: scope.new_target,
             };
             for (&atom, &binding) in &scope.bindings {
                 match binding.location {
@@ -1474,7 +1511,12 @@ impl<'a> Compiler<'a> {
             // Der Parser lässt `return` nur in Funktionen zu.
             Node::Return(argument) => {
                 match argument {
-                    Some(argument) => self.expression(argument)?,
+                    Some(argument) => {
+                        self.tail_calls = self.tail_position_calls(argument);
+                        let result = self.expression(argument);
+                        self.tail_calls.clear();
+                        result?;
+                    }
                     None => self.emit(Op::LdaUndefined, &[])?,
                 }
                 self.position(node)?;
@@ -1967,7 +2009,16 @@ impl<'a> Compiler<'a> {
             self.push_target(target);
         }
         let start = self.emitter.offset();
+        // HasCallInTailPosition (Abschnitt 15.10.2.1): Im Block nie, in
+        // `catch` nur ohne `finally`.
+        self.protected = self
+            .protected
+            .checked_add(1)
+            .ok_or(CompileError::TooLarge)?;
         self.statement(block)?;
+        if finalizer.is_none() {
+            self.protected = self.protected.saturating_sub(1);
+        }
         let mut end = self.emitter.offset();
         if let Some(handler) = handler {
             let skip = self.jump(Op::Jump)?;
@@ -1976,6 +2027,9 @@ impl<'a> Compiler<'a> {
             self.catch_clause(handler)?;
             end = self.emitter.offset();
             self.bind(skip)?;
+        }
+        if finalizer.is_some() {
+            self.protected = self.protected.saturating_sub(1);
         }
         let Some(finalizer) = finalizer else {
             self.release(mark);
@@ -2132,6 +2186,8 @@ impl<'a> Compiler<'a> {
                 self.chain(node, ChainEnd::Value).map(|_| ())
             }
             Node::Chain(chain) => self.chain(chain, ChainEnd::Value).map(|_| ()),
+            Node::New { callee, arguments } => self.construct(node, callee, arguments),
+            Node::NewTarget => self.load_new_target(node),
             Node::Function(id) => self.closure(node, id, ClosureName::Static(&[])),
             _ => Err(self.unsupported(node)),
         }
@@ -2514,7 +2570,8 @@ impl<'a> Compiler<'a> {
 
     /// Ein Aufruf der Funktion im Akkumulator (EvaluateCall, Abschnitt
     /// 13.3.6.2): Funktion, `this` und Argumente in den Registern ab
-    /// `callee`. Ohne Basis ist `this` *undefined*.
+    /// `callee`. Ohne Basis ist `this` *undefined*. In Endposition wird es
+    /// ein [`Op::TailCall`].
     fn call(&mut self, node: NodeId, callee: u32, has_this: bool, arguments: List) -> Result<()> {
         let register = i64::from(callee);
         self.emit(Op::Star, &[register])?;
@@ -2522,6 +2579,31 @@ impl<'a> Compiler<'a> {
             self.emit(Op::LdaUndefined, &[])?;
             self.emit(Op::Star, &[register + 1])?;
         }
+        let op = if self.tail_calls.contains(&node) {
+            Op::TailCall
+        } else {
+            Op::Call
+        };
+        self.call_arguments(node, op, callee, arguments)
+    }
+
+    /// `new` (EvaluateNew, Abschnitt 13.3.5.1.1): erst der Konstruktor,
+    /// dann die Argumente, dann [`Op::Construct`].
+    fn construct(&mut self, node: NodeId, callee: NodeId, arguments: List) -> Result<()> {
+        let mark = self.next_register;
+        let register = self.allocate()?;
+        self.allocate()?;
+        self.expression(callee)?;
+        self.emit(Op::Star, &[i64::from(register)])?;
+        self.call_arguments(node, Op::Construct, register, arguments)?;
+        self.release(mark);
+        Ok(())
+    }
+
+    /// Die Argumente eines Aufrufs in die Register hinter `callee` und
+    /// `this`, dann der Befehl.
+    fn call_arguments(&mut self, node: NodeId, op: Op, callee: u32, arguments: List) -> Result<()> {
+        let register = i64::from(callee);
         // Die Argumente folgen auf `this`; Zwischenwerte davor sind schon
         // zurückgegeben.
         let first = self.next_register;
@@ -2540,9 +2622,48 @@ impl<'a> Compiler<'a> {
         }
         self.position(node)?;
         let count = i64::try_from(arguments.len()).map_err(|_| CompileError::TooLarge)?;
-        self.emit(Op::Call, &[register, count])?;
+        self.emit(op, &[register, count])?;
         self.release(first);
         Ok(())
+    }
+
+    /// Die Aufrufe in Endposition im Ausdruck `node`, nach
+    /// HasCallInTailPosition (Abschnitt 15.10.2.2), wenn der Ausdruck selbst
+    /// in Endposition steht: im strikten Modus und nicht in `try`.
+    fn tail_position_calls(&self, node: NodeId) -> BTreeSet<NodeId> {
+        let mut calls = BTreeSet::new();
+        if !self.strict || self.protected > 0 {
+            return calls;
+        }
+        let mut pending = vec![node];
+        while let Some(node) = pending.pop() {
+            match *self.ast.node(node) {
+                Node::Paren(inner) => pending.push(inner),
+                Node::Sequence(list) => pending.extend(self.ast.list(list).last()),
+                Node::Conditional {
+                    consequent,
+                    alternate,
+                    ..
+                } => pending.extend([consequent, alternate]),
+                Node::Binary {
+                    operator:
+                        BinaryOperator::LogicalAnd
+                        | BinaryOperator::LogicalOr
+                        | BinaryOperator::Coalesce,
+                    right,
+                    ..
+                } => pending.push(right),
+                Node::Call { .. } => {
+                    calls.insert(node);
+                }
+                // Am Ende einer optionalen Kette zählt nur ein Aufruf.
+                Node::Chain(chain) if self.is_call(chain) => {
+                    calls.insert(chain);
+                }
+                _ => {}
+            }
+        }
+        calls
     }
 
     /// Ein Glied einer Kette mit der Basis im Akkumulator: GetValue auf den
@@ -2716,12 +2837,34 @@ impl<'a> Compiler<'a> {
         if !self.lexical_this {
             return self.emit(Op::Ldar, &[THIS]);
         }
+        self.load_lexical(node, |layout| layout.this)
+    }
+
+    /// `new.target` (Abschnitt 13.3.12.1): GetNewTarget aus dem eigenen
+    /// Register, in Pfeilfunktionen aus dem Kontext der Funktion.
+    fn load_new_target(&mut self, node: NodeId) -> Result<()> {
+        if self.lexical_this {
+            return self.load_lexical(node, |layout| layout.new_target);
+        }
+        match self.new_target {
+            Some(register) => self.emit(Op::Ldar, &[i64::from(register)]),
+            None => Err(self.unsupported(node)),
+        }
+    }
+
+    /// Liest den innersten Platz, den `slot` in den Kontexten um den Code
+    /// nennt, für `this` und `new.target` in Pfeilfunktionen.
+    fn load_lexical(
+        &mut self,
+        node: NodeId,
+        slot: impl Fn(&ContextLayout) -> Option<u32>,
+    ) -> Result<()> {
         let mut depth = self.open_contexts();
         let mut enclosing = Some(&self.outer);
         let mut found = None;
         'search: while let Some(current) = enclosing {
             for layout in &current.contexts {
-                if let Some(slot) = layout.this {
+                if let Some(slot) = slot(layout) {
                     found = Some((depth, slot));
                     break 'search;
                 }

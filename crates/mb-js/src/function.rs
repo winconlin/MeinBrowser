@@ -10,11 +10,13 @@
 //! Funktion darin und, sobald sie das erste Mal aufgerufen wurde, ihr
 //! Bytecode mit den Konstanten als Werten. Wie die Atome bleiben sie
 //! vorerst, solange der Agent lebt. Seine internen Methoden setzt ein
-//! Funktionsobjekt gewöhnlich um, [[Call]] steht im Interpreter.
+//! Funktionsobjekt gewöhnlich um, [[Call]] und [[Construct]] stehen im
+//! Interpreter.
 //!
-//! [[ThisMode]], [[Strict]], [[FormalParameters]] und [[ECMAScriptCode]]
-//! folgen aus der Funktion im Syntaxbaum. Es fehlen noch [[HomeObject]] und
-//! alles für Klassen.
+//! [[ThisMode]], [[Strict]], [[FormalParameters]], [[ECMAScriptCode]] und
+//! ob es [[Construct]] gibt, folgen aus der Funktion im Syntaxbaum; jeder
+//! Konstruktor ist bisher einer der Art ~base~. Es fehlen noch
+//! [[HomeObject]] und alles für Klassen.
 
 #![forbid(unsafe_code)]
 
@@ -99,6 +101,30 @@ pub(crate) fn function_environment<'h>(heap: &'h Heap, value: Value<'_>) -> Opti
     heap.function_field(object, ENVIRONMENT)
 }
 
+/// GetFunctionRealm (Abschnitt 7.3.24): der Realm eines Funktionsobjekts,
+/// für andere Objekte `current`, der aktuelle. Gebundene Funktionen und
+/// Proxys kommen mit den eingebauten Objekten.
+pub(crate) fn get_function_realm(heap: &Heap, value: Value<'_>, current: RealmId) -> RealmId {
+    function_parts(heap, value).map_or(current, |(_, realm)| realm)
+}
+
+/// IsConstructor (Abschnitt 7.2.4): Bisher haben nur Funktionsobjekte
+/// [[Construct]], die MakeConstructor bekamen.
+pub(crate) fn is_constructor(agent: &Agent, value: Value<'_>) -> bool {
+    function_parts(agent.heap(), value)
+        .and_then(|(shared, _)| agent.functions.get(shared))
+        .and_then(|entry| entry.unit.function(entry.template.function))
+        .is_some_and(constructs)
+}
+
+/// Ob Funktionsobjekte der Funktion MakeConstructor bekommen: gewöhnliche
+/// Funktionen aus Deklarationen und Ausdrücken, keine Generatoren und keine
+/// mit `async` (Abschnitte 15.2.4 und 15.2.5). Pfeilfunktionen (Abschnitt
+/// 15.3.4), Methoden, Getter und Setter (Abschnitt 15.4) nicht.
+fn constructs(function: &Function) -> bool {
+    function.kind == FunctionKind::Normal && !function.generator && !function.is_async
+}
+
 /// Ein neues Funktionsobjekt für die gemeinsamen Daten `shared` im Realm
 /// `realm` mit dem Namen `name`, das nur die globale Umgebung sieht.
 pub(crate) fn instantiate_function<'s>(
@@ -137,13 +163,13 @@ pub(crate) fn instantiate_closure<'s>(
             let function = entry.unit.function(entry.template.function)?;
             Some((
                 function.kind,
-                function.generator || function.is_async,
+                constructs(function),
                 expected_argument_count(&entry.unit, function),
             ))
         });
     // Die Nummer stammt aus den Konstanten des Codes, der die Funktion
     // anlegt; es gibt sie immer.
-    let Some((kind, special, length)) = found else {
+    let Some((kind, constructor, length)) = found else {
         return Err(agent.throw_error(ErrorKind::TypeError));
     };
     let realm_number = i32::try_from(realm.index()).map_err(|_| OutOfMemory)?;
@@ -169,7 +195,7 @@ pub(crate) fn instantiate_closure<'s>(
         _ => None,
     };
     set_function_name(agent, scope, function, name, prefix)?;
-    if kind == FunctionKind::Normal && !special {
+    if constructor {
         make_constructor(agent, scope, realm, function)?;
     }
     Ok(function)
@@ -241,8 +267,8 @@ pub(crate) fn set_function_name(
 }
 
 /// MakeConstructor (Abschnitt 10.2.5) ohne die Fälle für Klassen: ein
-/// neues Objekt mit `constructor` als `prototype`. [[Construct]] kommt mit
-/// `new`.
+/// neues Objekt mit `constructor` als `prototype`. [[Construct]] folgt wie
+/// in [`is_constructor`] aus der Funktion.
 fn make_constructor(
     agent: &mut Agent,
     scope: &Scope,

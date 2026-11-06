@@ -1,9 +1,9 @@
 //! Was innere Funktionen sehen: für jede Funktion und für das Script die
 //! Namen, auf die tiefer verschachtelte Funktionen zugreifen, und ob
-//! Pfeilfunktionen darin `this` lesen. Bindungen mit diesen Namen legt der
-//! Übersetzer in Kontexte statt in Register. Außerdem steht für jede
-//! Funktion, ob ihr Code oder der ihrer Pfeilfunktionen den Namen
-//! `arguments` nennt.
+//! Pfeilfunktionen darin `this` oder `new.target` lesen. Bindungen mit
+//! diesen Namen legt der Übersetzer in Kontexte statt in Register. Außerdem
+//! steht für jede Funktion, ob ihr Code oder der ihrer Pfeilfunktionen den
+//! Namen `arguments` oder `new.target` enthält.
 //!
 //! Gezählt wird nach Namen, nicht nach Bindungen: Greift eine innere
 //! Funktion auf `x` zu, liegen alle Bindungen namens `x` der umgebenden
@@ -42,6 +42,11 @@ pub(crate) struct FunctionCaptures {
     /// ineinander, den Bezeichner `arguments` enthält. Beim Script bleibt es
     /// falsch.
     pub(crate) arguments: bool,
+    /// Ob der Code der Funktion oder ihrer Pfeilfunktionen, auch ineinander,
+    /// `new.target` enthält. Beim Script bleibt es falsch.
+    pub(crate) new_target: bool,
+    /// Ob Pfeilfunktionen darin, auch ineinander, `new.target` lesen.
+    pub(crate) arrow_new_target: bool,
 }
 
 impl Captures {
@@ -59,6 +64,7 @@ impl Captures {
 enum Use {
     Name(Atom),
     This,
+    NewTarget,
 }
 
 /// Eine Funktion auf dem Stapel um die aktuelle Stelle.
@@ -79,6 +85,7 @@ impl Ast {
             match *node {
                 Node::Identifier(atom) => uses.push((to_usize(start), Use::Name(atom))),
                 Node::This => uses.push((to_usize(start), Use::This)),
+                Node::NewTarget => uses.push((to_usize(start), Use::NewTarget)),
                 _ => {}
             }
         }
@@ -136,6 +143,7 @@ impl Ast {
                     captures.add_name(&stack, atom);
                 }
                 Use::This => captures.add_this(&stack),
+                Use::NewTarget => captures.add_new_target(&stack),
             }
         }
         captures
@@ -189,6 +197,23 @@ impl Captures {
             .and_then(|open| self.functions.get_mut(open.index))
         {
             captures.arguments = true;
+        }
+    }
+
+    /// `new.target` in der innersten Funktion auf `stack`: Es gehört ihr
+    /// oder, wenn sie eine Pfeilfunktion ist, der nächsten Funktion außen,
+    /// die keine ist; dann liest die Pfeilfunktion es aus deren Kontext.
+    /// Außerhalb aller Funktionen lässt der Parser es nicht zu.
+    fn add_new_target(&mut self, stack: &[Open]) {
+        let arrow = stack.last().is_some_and(|open| open.arrow);
+        if let Some(captures) = stack
+            .iter()
+            .rev()
+            .find(|open| !open.arrow)
+            .and_then(|open| self.functions.get_mut(open.index))
+        {
+            captures.new_target = true;
+            captures.arrow_new_target |= arrow;
         }
     }
 }
