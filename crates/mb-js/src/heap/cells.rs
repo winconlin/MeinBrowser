@@ -3,10 +3,10 @@
 //! zusammen; hier steht nur, wie die Zellen im Heap liegen.
 
 use super::{
-    Heap, KIND_ARGUMENTS, KIND_ARRAY, KIND_ERROR, KIND_FUNCTION, KIND_OBJECT, KIND_SHAPE,
-    KIND_SLOTS, KIND_SPARSE, KIND_SYMBOL, KIND_WEAK, Local, NONE, OBJECT_REFS, OutOfMemory, Scope,
-    cell_words, header, header_flags, header_kind, header_length, is_object, is_value_cell,
-    object_fields, packed, packed_high, packed_low, to_usize, with_flags,
+    Heap, KIND_ARGUMENTS, KIND_ARRAY, KIND_BUILTIN, KIND_ERROR, KIND_FUNCTION, KIND_OBJECT,
+    KIND_PRIMITIVE, KIND_SHAPE, KIND_SLOTS, KIND_SPARSE, KIND_SYMBOL, KIND_WEAK, Local, NONE,
+    OBJECT_REFS, OutOfMemory, Scope, cell_words, header, header_flags, header_kind, header_length,
+    is_object, is_value_cell, object_fields, packed, packed_high, packed_low, to_usize, with_flags,
 };
 use crate::value::{Ref, RefKind, Value};
 
@@ -68,6 +68,14 @@ pub(crate) enum ObjectClass {
     /// Ein Fehlerobjekt mit [[ErrorData]] (Abschnitt 20.5.1.1), sonst
     /// gewöhnlich. [[ErrorData]] hat keinen Wert, die Art sagt alles.
     Error,
+    /// Eine eingebaute Funktion (Abschnitt 10.3) mit
+    /// [`BUILTIN_FIELDS`](super::BUILTIN_FIELDS) internen Feldern.
+    Builtin,
+    /// Ein Boolean-, Number-, String- oder Symbol-Objekt mit
+    /// [[BooleanData]], [[NumberData]], [[StringData]] oder [[SymbolData]]
+    /// (Abschnitte 20.3.4, 21.1.4, 22.1.4 und 20.4.4). Das interne Feld
+    /// hält den primitiven Wert, seine Art sagt, welches Feld es ist.
+    Primitive,
 }
 
 impl ObjectClass {
@@ -78,6 +86,8 @@ impl ObjectClass {
             ObjectClass::Function => KIND_FUNCTION,
             ObjectClass::Arguments => KIND_ARGUMENTS,
             ObjectClass::Error => KIND_ERROR,
+            ObjectClass::Builtin => KIND_BUILTIN,
+            ObjectClass::Primitive => KIND_PRIMITIVE,
         }
     }
 
@@ -88,6 +98,8 @@ impl ObjectClass {
             KIND_FUNCTION => Some(ObjectClass::Function),
             KIND_ARGUMENTS => Some(ObjectClass::Arguments),
             KIND_ERROR => Some(ObjectClass::Error),
+            KIND_BUILTIN => Some(ObjectClass::Builtin),
+            KIND_PRIMITIVE => Some(ObjectClass::Primitive),
             _ => None,
         }
     }
@@ -362,5 +374,36 @@ impl Heap {
     pub(crate) fn set_arguments_map(&self, object: Ref<'_>, map: Value<'_>) -> bool {
         self.field_word(object, KIND_ARGUMENTS, 0)
             .is_some_and(|word| self.store(object.offset(), word, map.bits()))
+    }
+
+    /// Ein internes Feld einer eingebauten Funktion, `None` für andere
+    /// Zellen.
+    pub(crate) fn builtin_field(&self, object: Ref<'_>, index: usize) -> Option<Value<'_>> {
+        let word = self.field_word(object, KIND_BUILTIN, index)?;
+        self.word(object.offset(), word).map(Value::from_bits)
+    }
+
+    /// Schreibt ein internes Feld einer eingebauten Funktion. `false`, wenn
+    /// es das Feld nicht gibt.
+    pub(crate) fn set_builtin_field(
+        &self,
+        object: Ref<'_>,
+        index: usize,
+        value: Value<'_>,
+    ) -> bool {
+        self.field_word(object, KIND_BUILTIN, index)
+            .is_some_and(|word| self.store(object.offset(), word, value.bits()))
+    }
+
+    /// Der primitive Wert eines Wrapper-Objekts, `None` für andere Zellen.
+    pub(crate) fn primitive_data(&self, object: Ref<'_>) -> Option<Value<'_>> {
+        let word = self.field_word(object, KIND_PRIMITIVE, 0)?;
+        self.word(object.offset(), word).map(Value::from_bits)
+    }
+
+    /// Schreibt den primitiven Wert. `false` für andere Zellen.
+    pub(crate) fn set_primitive_data(&self, object: Ref<'_>, value: Value<'_>) -> bool {
+        self.field_word(object, KIND_PRIMITIVE, 0)
+            .is_some_and(|word| self.store(object.offset(), word, value.bits()))
     }
 }

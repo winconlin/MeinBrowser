@@ -1,11 +1,8 @@
 //! Typumwandlungen (Abschnitt 7.1): ToPrimitive, ToBoolean, ToNumeric,
 //! ToNumber mit StringToNumber, ToIntegerOrInfinity, ToInt32, ToUint32,
-//! ToString und ToPropertyKey. Die übrigen kommen mit den Schritten, die sie
-//! brauchen. BigInt-Werte gibt es noch nicht; bis sie kommen, ergibt
-//! ToNumeric immer eine Zahl.
-//!
-//! Solange es keine Funktionsobjekte gibt, ist keine Methode aufrufbar.
-//! ToPrimitive wirft für Objekte darum vorerst immer einen TypeError.
+//! ToString, ToObject und ToPropertyKey. Die übrigen kommen mit den
+//! Schritten, die sie brauchen. BigInt-Werte gibt es noch nicht; bis sie
+//! kommen, ergibt ToNumeric immer eine Zahl.
 
 #![forbid(unsafe_code)]
 
@@ -15,7 +12,9 @@ use crate::key::{MAX_ARRAY_INDEX, PropertyKey, WellKnownSymbol};
 use crate::lexer::number::from_power_of_two_radix;
 use crate::lexer::{is_line_terminator, is_white_space};
 use crate::number::{self, integer_or_infinity};
+use crate::object::{primitive_object_create, string_create};
 use crate::operations::{call, get, get_method, is_callable};
+use crate::realm::{Intrinsic, RealmId};
 use crate::value::{Kind, Value};
 
 /// Der Typ, den ToPrimitive bevorzugen soll.
@@ -278,6 +277,36 @@ pub fn to_string<'s>(
         return Err(agent.throw_error(ErrorKind::TypeError));
     };
     Ok(agent.heap_mut().alloc_string(scope, &units(&text))?)
+}
+
+/// ToObject (Abschnitt 7.1.20). Wrapper-Objekte bekommen ihren Prototyp
+/// aus `realm`, dem aktuellen Realm.
+pub fn to_object<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    realm: RealmId,
+    value: Local<'_>,
+) -> Completion<Local<'s>> {
+    let intrinsic = match agent.heap().get(value).kind() {
+        Kind::Object(_) => {
+            let heap = agent.heap();
+            return Ok(heap.local(scope, heap.get(value)));
+        }
+        Kind::Boolean(_) => Intrinsic::BooleanPrototype,
+        Kind::Number(_) => Intrinsic::NumberPrototype,
+        Kind::String(_) => {
+            let prototype = agent.intrinsic(scope, realm, Intrinsic::StringPrototype);
+            return string_create(agent, scope, value, prototype);
+        }
+        Kind::Symbol(_) => Intrinsic::SymbolPrototype,
+        // BigInt-Werte gibt es noch nicht, Lücken und interne Zellen sind
+        // keine Werte der Sprache.
+        Kind::Undefined | Kind::Null | Kind::BigInt(_) | Kind::Hole | Kind::Internal(_) => {
+            return Err(agent.throw_error(ErrorKind::TypeError));
+        }
+    };
+    let prototype = agent.intrinsic(scope, realm, intrinsic);
+    Ok(primitive_object_create(agent, scope, value, prototype)?)
 }
 
 /// ToPropertyKey (Abschnitt 7.1.21). Eine Zahl, deren Zeichenkette ein

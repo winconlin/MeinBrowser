@@ -5,11 +5,12 @@
 //! benannten Eigenschaften, Array-Indizes liegen als Elemente daneben.
 //!
 //! Jede interne Methode ist eine Funktion, die nach der Art des Objekts
-//! verzweigt. Bisher gibt es gewöhnliche Objekte, Funktionsobjekte, die
-//! dieselben internen Methoden haben und dazu [[Call]] (`function`),
-//! Arrays, die nur [[DefineOwnProperty]] anders umsetzen (`array`),
-//! Fehlerobjekte, die sich nur durch [[ErrorData]] unterscheiden, und
-//! arguments-Objekte (`arguments`). Deren verknüpfte Indizes lesen ihren
+//! verzweigt. Bisher gibt es gewöhnliche Objekte, Funktionsobjekte und
+//! eingebaute Funktionen, die dieselben internen Methoden haben und dazu
+//! [[Call]] (`function`, `builtin`), Arrays, die nur [[DefineOwnProperty]]
+//! anders umsetzen (`array`), Fehlerobjekte, die sich nur durch
+//! [[ErrorData]] unterscheiden, Wrapper-Objekte für primitive Werte
+//! (`primitive`) und arguments-Objekte (`arguments`). Deren verknüpfte Indizes lesen ihren
 //! Wert aus der Bindung des Parameters, schon beim Suchen einer eigenen
 //! Eigenschaft; so folgen [[GetOwnProperty]], [[Get]] und [[Set]] ihrer
 //! Fassung, ohne die Prototypkette anders zu durchlaufen. Alle Arten, die
@@ -22,6 +23,7 @@
 
 mod arguments;
 mod array;
+mod primitive;
 pub(crate) mod shape;
 mod storage;
 
@@ -38,6 +40,7 @@ use storage::{ACCESSOR, CONFIGURABLE, ENUMERABLE, WRITABLE, object_of};
 
 pub(crate) use arguments::{create_mapped_arguments_object, create_unmapped_arguments_object};
 pub use array::array_create;
+pub(crate) use primitive::{primitive_object_create, string_create};
 
 /// Eingebettete Plätze eines gewöhnlichen Objekts, eines Funktionsobjekts
 /// und eines arguments-Objekts.
@@ -127,12 +130,24 @@ pub fn ordinary_object_create<'s>(
         .alloc_object(scope, ObjectClass::Ordinary, INLINE, shape, prototype)
 }
 
-/// OrdinaryCreateFromConstructor (Abschnitt 10.1.13) mit
-/// GetPrototypeFromConstructor (Abschnitt 10.1.14): ein gewöhnliches Objekt,
-/// dessen Prototyp der Wert von `prototype` des Konstruktors ist, wenn das
-/// ein Objekt ist, sonst das Intrinsic `fallback` aus dessen Realm. `current`
-/// ist der aktuelle Realm für GetFunctionRealm.
+/// OrdinaryCreateFromConstructor (Abschnitt 10.1.13): ein gewöhnliches
+/// Objekt mit dem Prototyp aus [`get_prototype_from_constructor`].
 pub(crate) fn ordinary_create_from_constructor<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    constructor: Local<'_>,
+    fallback: Intrinsic,
+    current: RealmId,
+) -> Completion<Local<'s>> {
+    let prototype = get_prototype_from_constructor(agent, scope, constructor, fallback, current)?;
+    Ok(ordinary_object_create(agent, scope, Some(prototype))?)
+}
+
+/// GetPrototypeFromConstructor (Abschnitt 10.1.14): der Wert von
+/// `prototype` des Konstruktors, wenn das ein Objekt ist, sonst das
+/// Intrinsic `fallback` aus dessen Realm. `current` ist der aktuelle Realm
+/// für GetFunctionRealm.
+pub(crate) fn get_prototype_from_constructor<'s>(
     agent: &mut Agent,
     scope: &'s Scope,
     constructor: Local<'_>,
@@ -142,14 +157,12 @@ pub(crate) fn ordinary_create_from_constructor<'s>(
     let units: Vec<u16> = "prototype".encode_utf16().collect();
     let key = agent.key_from_units(scope, &units)?;
     let found = get(agent, scope, constructor, key, constructor)?;
-    let prototype = if matches!(agent.heap().get(found).kind(), Kind::Object(_)) {
-        found
-    } else {
-        let heap = agent.heap();
-        let realm = get_function_realm(heap, heap.get(constructor), current);
-        agent.intrinsic(scope, realm, fallback)
-    };
-    Ok(ordinary_object_create(agent, scope, Some(prototype))?)
+    if matches!(agent.heap().get(found).kind(), Kind::Object(_)) {
+        return Ok(found);
+    }
+    let heap = agent.heap();
+    let realm = get_function_realm(heap, heap.get(constructor), current);
+    Ok(agent.intrinsic(scope, realm, fallback))
 }
 
 /// Ein neues Fehlerobjekt (Abschnitt 20.5.1.1, Schritt 2): erweiterbar,
@@ -177,7 +190,9 @@ pub fn get_prototype_of<'s>(
         | ObjectClass::Array
         | ObjectClass::Function
         | ObjectClass::Arguments
-        | ObjectClass::Error => {
+        | ObjectClass::Error
+        | ObjectClass::Builtin
+        | ObjectClass::Primitive => {
             let heap = agent.heap();
             let prototype =
                 object_of(heap, object).and_then(|object| heap.object_prototype(object));
@@ -197,7 +212,9 @@ pub fn set_prototype_of(
         | ObjectClass::Array
         | ObjectClass::Function
         | ObjectClass::Arguments
-        | ObjectClass::Error => {}
+        | ObjectClass::Error
+        | ObjectClass::Builtin
+        | ObjectClass::Primitive => {}
     }
     if let Some(prototype) = prototype {
         // Der Prototyp muss ein Objekt sein.
@@ -235,7 +252,9 @@ pub fn is_extensible(agent: &mut Agent, object: Local<'_>) -> Completion<bool> {
         | ObjectClass::Array
         | ObjectClass::Function
         | ObjectClass::Arguments
-        | ObjectClass::Error => {
+        | ObjectClass::Error
+        | ObjectClass::Builtin
+        | ObjectClass::Primitive => {
             let heap = agent.heap();
             Ok(object_of(heap, object).is_some_and(|object| heap.object_extensible(object)))
         }
@@ -249,7 +268,9 @@ pub fn prevent_extensions(agent: &mut Agent, object: Local<'_>) -> Completion<bo
         | ObjectClass::Array
         | ObjectClass::Function
         | ObjectClass::Arguments
-        | ObjectClass::Error => {
+        | ObjectClass::Error
+        | ObjectClass::Builtin
+        | ObjectClass::Primitive => {
             let heap = agent.heap();
             if let Some(object) = object_of(heap, object) {
                 heap.prevent_object_extensions(object);
@@ -271,7 +292,9 @@ pub fn get_own_property<'s>(
         | ObjectClass::Array
         | ObjectClass::Function
         | ObjectClass::Arguments
-        | ObjectClass::Error => Ok(ordinary_get_own_property(agent.heap(), scope, object, key)),
+        | ObjectClass::Error
+        | ObjectClass::Builtin
+        | ObjectClass::Primitive => Ok(ordinary_get_own_property(agent.heap(), scope, object, key)),
     }
 }
 
@@ -314,7 +337,11 @@ pub fn define_own_property(
     descriptor: &PropertyDescriptor<'_>,
 ) -> Completion<bool> {
     match class(agent, object)? {
-        ObjectClass::Ordinary | ObjectClass::Function | ObjectClass::Error => {
+        ObjectClass::Ordinary
+        | ObjectClass::Function
+        | ObjectClass::Error
+        | ObjectClass::Builtin
+        | ObjectClass::Primitive => {
             ordinary_define_own_property(agent, scope, object, key, descriptor)
         }
         ObjectClass::Array => array::define_own_property(agent, scope, object, key, descriptor),
@@ -786,7 +813,9 @@ pub fn own_property_keys<'s>(
         | ObjectClass::Array
         | ObjectClass::Function
         | ObjectClass::Arguments
-        | ObjectClass::Error => {}
+        | ObjectClass::Error
+        | ObjectClass::Builtin
+        | ObjectClass::Primitive => {}
     }
     let heap = agent.heap();
     let Some(object) = object_of(heap, object) else {

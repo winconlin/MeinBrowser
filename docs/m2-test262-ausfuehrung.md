@@ -13,12 +13,14 @@ cargo run --locked -p testdata
 cargo test --locked -p mb-js script::test262 -- --nocapture
 ```
 
-Die Auswahl steht in `crates/mb-js/src/script/test262/runtime.txt`: 164 Dateien,
-davon 156 positive und acht mit erwartetem Laufzeitfehler. Sie ergeben 301
-Sprachvarianten und mit zwei GC-Modi 602 Ausführungen. Geprüft werden unter
+Die Auswahl steht in `crates/mb-js/src/script/test262/runtime.txt`: 180 Dateien,
+davon 165 positive und 15 mit erwartetem Laufzeitfehler. Sie ergeben 331
+Sprachvarianten und mit zwei GC-Modi 662 Ausführungen. Geprüft werden unter
 anderem Exponentiation, `??`, logische Zuweisungen, Pfeilfunktionen, Closures,
 Vorgabewerte, `arguments`, Methoden, Schleifenbindungen, TDZ-Fehler, `try`
-mit `catch` und `finally`, `new` mit [[Construct]] und `new.target`. Die
+mit `catch` und `finally`, `new` mit [[Construct]] und `new.target`,
+`assert.throws` und Kommentare mit Zeilenenden, deren Tests einen
+`Test262Error` erwarten. Die
 Sammlung bleibt im bereits festgelegten Commit
 `91c70759363c46557b694792bf34a2551a7af5ba`; `tools/testdata` holt nun auch
 `harness/` und `INTERPRETING.md`. Kein externer Testcode wird ausgeliefert.
@@ -34,21 +36,25 @@ Testquelle wird ausschließlich `"use strict";` mit Zeilenumbruch vorangestellt.
 ## Harness und heutige Grenzen
 
 Die originalen Dateien `assert.js` und `sta.js` werden unverändert im Realm
-ausgewertet. Ihr Fehlerzweig ruft über `assert._toString` die Funktion
-`String` auf, die es noch nicht gibt; statt eines `Test262Error` käme dann ein
-ReferenceError, und der könnte einen erwarteten ReferenceError erfüllen.
-Fehlerkonstruktoren gibt es ebenfalls noch nicht. Deshalb ersetzt die eigene
-Testdatei `same-value.js` vorübergehend nur
-`assert.sameValue` und `assert.notSameValue`. Test262s `INTERPRETING.md`
-erlaubt das Ersetzen von Harness-Funktionen ausdrücklich. Beide verwenden
-den originalen `_isSameValue`-Algorithmus einschließlich NaN und vorzeichenbehafteter
-Null und werfen bei Abweichungen einen String. Diese Strings
-können keinen erwarteten Engine-Fehlertyp erfüllen. Die übrigen Funktionen
-des originalen Harness bleiben erhalten; nicht unterstützte Aufrufe führen
-zum Fehlschlag.
+ausgewertet, ohne eigene Anpassung. Sie brauchen `Function.prototype.call`,
+`Object.prototype.toString`, `String` und Fehlerkonstruktoren; diese
+eingebauten Funktionen hat die Engine jetzt.
 
-Diese Auswahl benötigt weder `print` noch die Host-API `$262`. Beide sind
-noch nicht eingerichtet. Module, asynchrone Tests, Agenten, `locale` und
+Jeder Agent bekommt vor seinem Realm den Host aus
+`script/test262/host.rs`. Er legt in jedem neuen Realm, auch in denen von
+`$262.createRealm()`, die Eigenschaften `print` und `$262` des globalen
+Objekts an, beschreibbar, konfigurierbar und nicht aufzählbar, wie
+`INTERPRETING.md` es verlangt. `$262` hat `createRealm`, `evalScript`, `gc`
+und `global` mit denselben Attributen; das ist eine Lesart, denn
+`INTERPRETING.md` nennt für diese keine. `evalScript` und `print` wandeln ihr
+Argument mit ToString. `evalScript` wertet im Realm seines `$262` aus und
+wirft bei einem frühen Fehler einen SyntaxError dieses Realms. `print` hält
+die Ausgaben für den Läufer fest; ausgewertet werden sie noch nicht, denn
+nur Tests mit dem Flag `async` brauchen sie. Es fehlen `detachArrayBuffer`,
+`IsHTMLDDA`, `agent` und `AbstractModuleSource`, bis die Engine die Teile
+dafür hat; Tests, die sie brauchen, schlagen fehl.
+
+Module, asynchrone Tests, Agenten, `locale` und
 weitere Flags werden als nicht unterstützt abgelehnt. Vorschlags-Features
 aus `features.txt` sind nicht zugelassen. Der Metadatenleser unterstützt nur
 den hier benötigten Teil des Test262-Formats, keinen allgemeinen YAML-Parser;
@@ -67,48 +73,63 @@ dies keine vollständigen Grenzen für Prozess-RAM, Parser-/Compilerarbeit,
 native Einzelkosten oder Wandzeit.
 
 Ein positiver Test muss normal enden. Bei einem negativen Laufzeittest
-müssen sowohl Phase als auch der genaue `ErrorKind` passen. Die Engine
+müssen sowohl Phase als auch die genaue Fehlerart passen. Die Engine
 meldet ein Größenlimit des äußeren Compilers derzeit ebenfalls als
 `RangeError`; deshalb werden Parse und Übersetzen bei negativen
 Laufzeittests vorab separat geprüft. Ein Compilerlimit kann so keinen
-erwarteten Laufzeitfehler erfüllen. Die Engine
-legt Fehlerobjekte bisher nur für eigene Fehler an, die `catch` fängt, und
-hat noch keine Fehlerkonstruktoren: Nur ihre ausdrücklich
-gespeicherten Fehlerarten werden akzeptiert, keine Strings oder Objekte
-mit einer passenden `name`-Eigenschaft. Bei der Beobachtung werden keine
-JavaScript-Getter oder Konversionen aufgerufen.
+erwarteten Laufzeitfehler erfüllen.
+
+`INTERPRETING.md` vergleicht den Namen des Konstruktors der geworfenen
+Ausnahme. Der Läufer liest dafür weder `constructor` noch `name`, sondern
+ordnet ohne JavaScript ein: Ein Fehler der Engine, den kein `catch` fing,
+zählt nach seiner Art. Ein Fehlerobjekt zählt als RangeError,
+ReferenceError, SyntaxError oder TypeError, wenn sein direkter Prototyp der
+Prototyp dieser Art in einem Realm des Agents ist. Ein Objekt, dessen
+direkter Prototyp `Test262Error.prototype` ist, gelesen als eigene
+Dateneigenschaften des globalen Objekts und des Konstruktors, zählt als
+`Test262Error`. Strings, Objekte mit passendem `name` oder `constructor` und
+Objekte, die nur weiter oben in ihrer Prototypkette einen dieser Prototypen
+haben, zählen nicht; das ist strenger als der Vergleich der Namen. Als
+erwartete Art liest der Metadatenleser bisher nur diese fünf; EvalError,
+URIError und Error lehnt er ab, in `test/language/` erwartet sie kein Test.
+Bei der Beobachtung werden keine JavaScript-Getter oder Konversionen
+aufgerufen.
 
 Harness-Fehler, nicht unterstützter Code, fehlende Testdaten, Speicher- und
 Arbeitserschöpfung sind Fehlschläge. Sie werden nicht übersprungen und können
 keinen erwarteten JavaScript-Fehler erfüllen. Nach jeder Auswertung werden
 Register, ausstehende Ausnahme und Heap geprüft, nach dem Test zusätzlich
 eine Sammlung mit Heapprüfung durchgeführt. Eigene Tests des Läufers prüfen
-unter anderem absichtlich falsche Assertions, NaN und +/-0, falsche Fehlerart
-und Phase, Harness-Fehler, Realm-Isolation, gemeinsame Quoten und geworfene
-Objekte mit nicht aufzurufenden Gettern.
+unter anderem absichtlich falsche Assertions und ihre Meldungen,
+`assert.throws`, NaN und +/-0, falsche Fehlerart und Phase, `Test262Error`
+als erwartete Art, Harness-Fehler, Realm-Isolation, `print` und `$262`
+samt den Attributen, gemeinsame Quoten und geworfene Objekte mit nicht
+aufzurufenden Gettern.
 
 ## Anschluss für Claude
 
-1. Sobald `String` vorhanden ist (`try`, `new` und Fehlerobjekte gibt es
-   schon), die beiden SameValue-Anpassungen entfernen und mit dem
-   vollständigen originalen Harness prüfen. Erst dann Tests mit `assert.throws` oder abgefangenen
-   Assertion-Fehlern aufnehmen.
-2. Für breitere Tests die vollständige Host-API aus `INTERPRETING.md`, später
-   Module und asynchrone Abschlüsse implementieren. Neue Anforderungen im
-   Metadatenleser ausdrücklich ergänzen.
-3. Neue Fälle mit Pfad in die feste Liste aufnehmen. Es gibt weder eine
+1. Die übrigen Teile der Host-API aus `INTERPRETING.md` mit den Teilen der
+   Engine ergänzen, die sie brauchen, später Module und asynchrone
+   Abschlüsse mit `print`. Neue Anforderungen im Metadatenleser ausdrücklich
+   ergänzen.
+2. Neue Fälle mit Pfad in die feste Liste aufnehmen. Es gibt weder eine
    automatische Auswahl bestandener Tests noch eine Ausnahmeliste für
    fehlgeschlagene ausgewählte Fälle.
 
-Vier bei der Vorbereitung untersuchte Dateien benötigen noch fehlende
-Standardbibliothek und sind deshalb nicht Teil dieser ersten Auswahl:
+Elf bei der Vorbereitung untersuchte Dateien benötigen noch fehlende
+Standardbibliothek und sind deshalb nicht Teil dieser Auswahl:
 
 | Test unter `test/language/` | Voraussetzung |
 | --- | --- |
 | `expressions/arrow-function/cannot-override-this-with-thisArg.js` | `Array.prototype.forEach` |
+| `expressions/call/11.2.3-3_4.js`, `11.2.3-3_6.js`, `11.2.3-3_7.js` | `Object.defineProperty` |
+| `expressions/call/11.2.3-3_5.js` | `eval` |
 | `expressions/exponentiation/applying-the-exp-operator_A23.js` | `Math.PI`, `Math.E` |
 | `expressions/exponentiation/exp-operator-evaluation-order.js` | `Array.prototype.push` |
 | `expressions/exponentiation/exp-operator-precedence-update-expression-semantics.js` | `Math.pow` |
+| `expressions/instanceof/primitive-prototype-with-object.js` | `Function` |
+| `expressions/instanceof/prototype-getter-with-object-throws.js` | `Object.defineProperty`, `Function` |
+| `expressions/new/ctorExpr-isCtor-after-args-eval.js` | `Array` |
 
 Sie sind konkrete Kandidaten für die nächste Erweiterung der Liste.
 

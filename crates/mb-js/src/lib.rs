@@ -4,6 +4,8 @@
 
 pub mod agent;
 pub mod ast;
+pub mod builtin;
+mod builtins;
 pub mod bytecode;
 pub mod compare;
 pub mod compiler;
@@ -11,6 +13,7 @@ pub mod conversion;
 pub mod descriptor;
 pub mod function;
 pub mod heap;
+pub mod host;
 pub mod interpreter;
 pub mod key;
 pub mod lexer;

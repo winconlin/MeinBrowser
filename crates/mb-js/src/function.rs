@@ -24,6 +24,7 @@ use std::rc::Rc;
 
 use crate::agent::{Agent, Completion, ErrorKind};
 use crate::ast::{Ast, Function, FunctionKind, Node};
+use crate::builtin::{builtin_entry, builtin_parts};
 use crate::bytecode::{Code, FunctionTemplate};
 use crate::descriptor::PropertyDescriptor;
 use crate::heap::{Heap, Local, ObjectClass, OutOfMemory, Persistent, Scope};
@@ -101,16 +102,22 @@ pub(crate) fn function_environment<'h>(heap: &'h Heap, value: Value<'_>) -> Opti
     heap.function_field(object, ENVIRONMENT)
 }
 
-/// GetFunctionRealm (Abschnitt 7.3.24): der Realm eines Funktionsobjekts,
-/// für andere Objekte `current`, der aktuelle. Gebundene Funktionen und
-/// Proxys kommen mit den eingebauten Objekten.
+/// GetFunctionRealm (Abschnitt 7.3.24): der Realm eines Funktionsobjekts
+/// oder einer eingebauten Funktion, für andere Objekte `current`, der
+/// aktuelle. Gebundene Funktionen und Proxys kommen mit den eingebauten
+/// Objekten.
 pub(crate) fn get_function_realm(heap: &Heap, value: Value<'_>, current: RealmId) -> RealmId {
-    function_parts(heap, value).map_or(current, |(_, realm)| realm)
+    function_parts(heap, value)
+        .or_else(|| builtin_parts(heap, value))
+        .map_or(current, |(_, realm)| realm)
 }
 
-/// IsConstructor (Abschnitt 7.2.4): Bisher haben nur Funktionsobjekte
-/// [[Construct]], die MakeConstructor bekamen.
+/// IsConstructor (Abschnitt 7.2.4): Funktionsobjekte, die MakeConstructor
+/// bekamen, und eingebaute Funktionen, deren Eintrag [[Construct]] nennt.
 pub(crate) fn is_constructor(agent: &Agent, value: Value<'_>) -> bool {
+    if let Some(builtin) = builtin_entry(agent, value) {
+        return builtin.constructor;
+    }
     function_parts(agent.heap(), value)
         .and_then(|(shared, _)| agent.functions.get(shared))
         .and_then(|entry| entry.unit.function(entry.template.function))
@@ -218,7 +225,7 @@ fn expected_argument_count(ast: &Ast, function: &Function) -> u32 {
 }
 
 /// SetFunctionLength (Abschnitt 10.2.10).
-fn set_function_length(
+pub(crate) fn set_function_length(
     agent: &mut Agent,
     scope: &Scope,
     function: Local<'_>,

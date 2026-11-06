@@ -19,6 +19,12 @@ test/language/expressions/arrow-function/scope-paramsbody-var-close.js
 test/language/expressions/arrow-function/scope-paramsbody-var-open.js
 test/language/expressions/arrow-function/statement-body-requires-braces-must-return-explicitly-missing.js
 test/language/expressions/arrow-function/statement-body-requires-braces-must-return-explicitly.js
+test/language/expressions/arrow-function/strict.js
+test/language/expressions/arrow-function/throw-new.js
+test/language/expressions/call/11.2.3-3_1.js
+test/language/expressions/call/11.2.3-3_2.js
+test/language/expressions/call/11.2.3-3_3.js
+test/language/expressions/call/11.2.3-3_8.js
 test/language/expressions/coalesce/chainable-if-parenthesis-covered-logical-and.js
 test/language/expressions/coalesce/chainable-if-parenthesis-covered-logical-or.js
 test/language/expressions/coalesce/chainable-with-bitwise-and.js
@@ -83,6 +89,7 @@ test/language/expressions/new.target/value-via-call.js
 test/language/expressions/new.target/value-via-member.js
 test/language/expressions/new/ctorExpr-fn-ref-before-args-eval-fn-wrapup.js
 test/language/expressions/new/ctorExpr-fn-ref-before-args-eval.js
+test/language/expressions/new/ctorExpr-isCtor-after-args-eval-fn-wrapup.js
 test/language/expressions/object/method-definition/meth-dflt-params-arg-val-not-undefined.js
 test/language/expressions/object/method-definition/meth-dflt-params-arg-val-undefined.js
 test/language/expressions/object/method-definition/meth-dflt-params-ref-prior.js
@@ -106,6 +113,13 @@ test/language/function-code/10.4.3-1-24-s.js
 test/language/function-code/10.4.3-1-24gs.js
 test/language/global-code/decl-lex-restricted-global.js
 test/language/identifier-resolution/assign-to-global-undefined.js
+test/language/line-terminators/comment-multi-lf.js
+test/language/line-terminators/comment-multi-ls.js
+test/language/line-terminators/comment-multi-ps.js
+test/language/line-terminators/comment-single-cr.js
+test/language/line-terminators/comment-single-lf.js
+test/language/line-terminators/comment-single-ls.js
+test/language/line-terminators/comment-single-ps.js
 test/language/statements/const/global-use-before-initialization-in-declaration-statement.js
 test/language/statements/const/global-use-before-initialization-in-prior-statement.js
 test/language/statements/for/12.6.3_2-3-a-ii-11.js
@@ -161,6 +175,8 @@ test/language/statements/try/12.14-4.js
 test/language/statements/try/12.14-6.js
 test/language/statements/try/12.14-8.js
 test/language/statements/try/12.14-9.js
+test/language/statements/try/completion-values-fn-finally-abrupt.js
+test/language/statements/try/completion-values-fn-finally-normal.js
 test/language/statements/try/completion-values-fn-finally-return.js
 test/language/statements/try/scope-catch-block-var-none.js
 test/language/statements/try/scope-catch-param-lex-close.js

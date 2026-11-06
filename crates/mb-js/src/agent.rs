@@ -1,8 +1,9 @@
 //! Der Agent (Abschnitt 9.6): Heap mit dem Registerstapel, Atome, die
 //! Wurzel aller Gestalten, die bekannten Symbole, die Realms, die
-//! gemeinsamen Daten der Funktionen und die Ausnahme, die gerade geworfen
-//! wird. Warteschlange der Jobs und Symbolregister kommen mit den
-//! Schritten, die sie brauchen.
+//! gemeinsamen Daten der Funktionen, die Einträge der eingebauten
+//! Funktionen, der Host und die Ausnahme, die gerade geworfen wird.
+//! Warteschlange der Jobs und Symbolregister kommen mit den Schritten, die
+//! sie brauchen.
 //!
 //! Atome sind die Zeichenketten, die als Eigenschaftsschlüssel dienen. Zu
 //! jedem Inhalt gibt es höchstens eines, also vergleicht man Schlüssel über
@@ -22,8 +23,10 @@ use std::rc::Rc;
 
 pub use mb_base::{Budget, Cancel, Exhausted};
 
+use crate::builtin::Builtin;
 use crate::function::SharedFunction;
 use crate::heap::{Heap, Local, Options, OutOfMemory, Persistent, Scope};
+use crate::host::Host;
 use crate::key::WellKnownSymbol;
 use crate::object::{error_create, shape};
 use crate::realm::{Intrinsic, Realm, RealmId};
@@ -131,6 +134,12 @@ pub struct Agent {
     pub(crate) realms: Vec<Realm>,
     /// Die gemeinsamen Daten der Funktionen, nach ihrer Nummer.
     pub(crate) functions: Vec<SharedFunction>,
+    /// Die Einträge der eingebauten Funktionen, nach ihrer Nummer.
+    pub(crate) builtins: Vec<&'static Builtin>,
+    /// Die Nummern der Einträge nach ihrer Adresse.
+    pub(crate) builtin_numbers: BTreeMap<usize, i32>,
+    /// Der Host, der neue Realms um seine globalen Eigenschaften ergänzt.
+    host: Option<Rc<dyn Host>>,
     exception: Option<Pending>,
     /// Wie viele Läufe des Interpreters gerade ineinander laufen.
     runs: usize,
@@ -158,6 +167,9 @@ impl Agent {
             symbols: BTreeMap::new(),
             realms: Vec::new(),
             functions: Vec::new(),
+            builtins: Vec::new(),
+            builtin_numbers: BTreeMap::new(),
+            host: None,
             exception: None,
             runs: 0,
             stack_start: 0,
@@ -182,6 +194,16 @@ impl Agent {
 
     pub fn heap_mut(&mut self) -> &mut Heap {
         &mut self.heap
+    }
+
+    /// Setzt den Host. Er gilt für die Realms, die danach entstehen.
+    pub fn set_host(&mut self, host: Rc<dyn Host>) {
+        self.host = Some(host);
+    }
+
+    /// Der Host, wenn es einen gibt.
+    pub fn host(&self) -> Option<Rc<dyn Host>> {
+        self.host.clone()
     }
 
     /// Die Realms und zugleich der Heap, in dem die Werte ihrer Bindungen
