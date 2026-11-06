@@ -19,6 +19,20 @@ pub(super) enum Negative {
     Test262Error,
 }
 
+/// Abgelehnte Metadaten: der Grund und die Features, die bis dahin gelesen
+/// waren.
+#[derive(Debug)]
+pub(super) struct Rejected {
+    pub(super) reason: String,
+    pub(super) features: Vec<String>,
+}
+
+impl std::fmt::Display for Rejected {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.reason)
+    }
+}
+
 #[derive(Debug, Default)]
 pub(super) struct Metadata {
     pub(super) flags: Vec<String>,
@@ -68,12 +82,25 @@ fn inline_list(value: &str) -> Result<Vec<String>, String> {
 }
 
 impl Metadata {
-    pub(super) fn read(source: &str) -> Result<Self, String> {
+    /// Liest die Metadaten. Lehnt der Leser sie ab, nennt der Fehler auch
+    /// die Features, die er bis dahin las, damit der Läufer über ganz
+    /// `language/` Vorschläge auch dann überspringt.
+    pub(super) fn read(source: &str) -> Result<Self, Rejected> {
+        let mut result = Self::default();
+        match result.fill(source) {
+            Ok(()) => Ok(result),
+            Err(reason) => Err(Rejected {
+                reason,
+                features: result.features,
+            }),
+        }
+    }
+
+    fn fill(&mut self, source: &str) -> Result<(), String> {
         let (_, rest) = source
             .split_once("/*---")
             .ok_or("Test262-Metadaten fehlen")?;
         let (yaml, _) = rest.split_once("---*/").ok_or("Metadaten nicht beendet")?;
-        let mut result = Self::default();
         let mut keys = BTreeSet::new();
         let mut current = "";
         let mut phase = None;
@@ -85,9 +112,9 @@ impl Metadata {
             }
             if let Some(item) = trimmed.strip_prefix("- ") {
                 let list = match current {
-                    "flags" => Some(&mut result.flags),
-                    "includes" => Some(&mut result.includes),
-                    "features" => Some(&mut result.features),
+                    "flags" => Some(&mut self.flags),
+                    "includes" => Some(&mut self.includes),
+                    "features" => Some(&mut self.features),
                     _ => None,
                 };
                 if let Some(list) = list {
@@ -109,9 +136,9 @@ impl Metadata {
                 }
                 let value = value.trim();
                 match key {
-                    "flags" => result.flags = inline_list(value)?,
-                    "includes" => result.includes = inline_list(value)?,
-                    "features" => result.features = inline_list(value)?,
+                    "flags" => self.flags = inline_list(value)?,
+                    "includes" => self.includes = inline_list(value)?,
+                    "features" => self.features = inline_list(value)?,
                     "negative" if !value.is_empty() => {
                         return Err("negative braucht phase und type als Block".to_owned());
                     }
@@ -134,7 +161,7 @@ impl Metadata {
             }
         }
         let mut flags = BTreeSet::new();
-        for flag in &result.flags {
+        for flag in &self.flags {
             if !matches!(
                 flag.as_str(),
                 "raw" | "noStrict" | "onlyStrict" | "generated"
@@ -145,23 +172,23 @@ impl Metadata {
                 return Err(format!("doppeltes Flag: {flag}"));
             }
         }
-        if (result.raw() && (result.flag("noStrict") || result.flag("onlyStrict")))
-            || (result.flag("noStrict") && result.flag("onlyStrict"))
+        if (self.raw() && (self.flag("noStrict") || self.flag("onlyStrict")))
+            || (self.flag("noStrict") && self.flag("onlyStrict"))
         {
             return Err("widersprüchliche Modusflags".to_owned());
         }
-        if result
+        if self
             .includes
             .iter()
             .any(|name| !relative_path(name) || !name.ends_with(".js") || name.contains("_FIXTURE"))
         {
             return Err("ungültiger Harness-Pfad".to_owned());
         }
-        if result.raw() && !result.includes.is_empty() {
+        if self.raw() && !self.includes.is_empty() {
             return Err("raw mit includes wird nicht unterstützt".to_owned());
         }
         if keys.contains("negative") {
-            result.negative = Some(match (phase.as_deref(), error_type.as_deref()) {
+            self.negative = Some(match (phase.as_deref(), error_type.as_deref()) {
                 (Some("parse"), Some("SyntaxError")) => Negative::Parse,
                 (Some("runtime"), Some("Test262Error")) => Negative::Test262Error,
                 (Some("runtime"), Some(name)) => Negative::Runtime(match name {
@@ -178,7 +205,7 @@ impl Metadata {
                 }
             });
         }
-        Ok(result)
+        Ok(())
     }
 
     fn flag(&self, flag: &str) -> bool {

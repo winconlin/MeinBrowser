@@ -16,6 +16,7 @@ use crate::script::ScriptError;
 use crate::value::Kind;
 
 mod host;
+mod language;
 mod metadata;
 #[cfg(test)]
 mod tests;
