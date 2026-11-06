@@ -236,6 +236,16 @@ pub fn to_integer_or_infinity(
     Ok(integer_or_infinity(number))
 }
 
+/// ToLength (Abschnitt 7.1.22): eine ganze Zahl von 0 bis 2⁵³ − 1.
+pub fn to_length(agent: &mut Agent, scope: &Scope, value: Local<'_>) -> Completion<f64> {
+    /// 2⁵³ − 1, die größte ganze Zahl, die eine Gleitkommazahl exakt hält.
+    const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
+    // ToIntegerOrInfinity liefert nie NaN und nie -0, `clamp` also eine
+    // ganze Zahl zwischen den Grenzen.
+    let length = to_integer_or_infinity(agent, scope, value)?;
+    Ok(length.clamp(0.0, MAX_SAFE_INTEGER))
+}
+
 /// ToInt32 (Abschnitt 7.1.8).
 pub fn to_int32(agent: &mut Agent, scope: &Scope, value: Local<'_>) -> Completion<i32> {
     let integer = to_integer_or_infinity(agent, scope, value)?;

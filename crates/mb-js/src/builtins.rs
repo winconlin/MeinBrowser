@@ -5,23 +5,32 @@
 //! Bisher sind es die Teile, die die Harness von Test262 braucht:
 //! %Function.prototype% mit `call`, %Object% mit
 //! `Object.prototype.toString`, %String% und die Fehlerkonstruktoren mit
-//! `Error.prototype.toString`. Die übrigen Eigenschaften dieser Objekte und
-//! die anderen eingebauten Objekte kommen in Wellen (Schritt 8 des Plans).
+//! `Error.prototype.toString`. Dazu kommen, was `for`-`of` und die
+//! Ausbreitung brauchen: die Iteratoren für Arrays und Zeichenketten mit
+//! `Array.prototype.values`, `keys`, `entries` und den Methoden für
+//! @@iterator, und %Symbol% mit den bekannten Symbolen, damit Scripts
+//! eigene Iteratoren bauen können. Die übrigen Eigenschaften dieser Objekte
+//! und die anderen eingebauten Objekte kommen in Wellen (Schritt 8 des
+//! Plans).
 //!
 //! Wo nichts anderes steht, sind Eigenschaften eingebauter Objekte
 //! beschreibbar und konfigurierbar, aber nicht aufzählbar (Abschnitt 18).
 
 #![forbid(unsafe_code)]
 
+mod array;
 mod error;
 mod function;
+mod iterator;
 mod object;
 mod string;
+mod symbol;
 
 use crate::agent::{Agent, Completion};
-use crate::builtin::Builtin;
+use crate::builtin::{Builtin, create_builtin_function};
 use crate::descriptor::PropertyDescriptor;
 use crate::heap::{Local, Scope};
+use crate::key::{PropertyKey, WellKnownSymbol};
 use crate::operations::define_property_or_throw;
 use crate::realm::RealmId;
 
@@ -40,7 +49,10 @@ pub(crate) fn create_intrinsics(
 ) -> Completion<()> {
     function::create(agent, scope, realm)?;
     object::create(agent, scope, realm)?;
+    iterator::create(agent, scope, realm)?;
+    array::create(agent, scope, realm)?;
     string::create(agent, scope, realm)?;
+    symbol::create(agent, scope, realm)?;
     error::create(agent, scope, realm)
 }
 
@@ -60,6 +72,50 @@ fn link_constructor(
     let key = agent.key_from_units(scope, &units("constructor"))?;
     let descriptor = PropertyDescriptor::data(constructor, true, false, true);
     define_property_or_throw(agent, scope, prototype, key, &descriptor)
+}
+
+/// Eine eingebaute Funktion als Eigenschaft von `object` mit einem bekannten
+/// Symbol als Schlüssel, mit den üblichen Attributen. Ihr Name aus dem
+/// Eintrag lautet etwa `"[Symbol.iterator]"`.
+fn define_symbol_function<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    realm: RealmId,
+    object: Local<'_>,
+    symbol: WellKnownSymbol,
+    builtin: &'static Builtin,
+) -> Completion<Local<'s>> {
+    let function = create_builtin_function(agent, scope, realm, builtin)?;
+    define_symbol_property(agent, scope, object, symbol, function)?;
+    Ok(function)
+}
+
+/// `value` als Eigenschaft von `object` mit einem bekannten Symbol als
+/// Schlüssel, beschreibbar und konfigurierbar, nicht aufzählbar.
+fn define_symbol_property(
+    agent: &mut Agent,
+    scope: &Scope,
+    object: Local<'_>,
+    symbol: WellKnownSymbol,
+    value: Local<'_>,
+) -> Completion<()> {
+    let key = PropertyKey::Symbol(agent.well_known_symbol(scope, symbol));
+    let descriptor = PropertyDescriptor::data(value, true, false, true);
+    define_property_or_throw(agent, scope, object, key, &descriptor)
+}
+
+/// @@toStringTag mit der Zeichenkette `tag`: nur konfigurierbar, wie bei
+/// allen Prototypen, die eine haben (etwa Abschnitt 23.1.5.2.2).
+fn define_to_string_tag(
+    agent: &mut Agent,
+    scope: &Scope,
+    object: Local<'_>,
+    tag: &str,
+) -> Completion<()> {
+    let value = agent.heap_mut().alloc_string(scope, &units(tag))?;
+    let key = PropertyKey::Symbol(agent.well_known_symbol(scope, WellKnownSymbol::ToStringTag));
+    let descriptor = PropertyDescriptor::data(value, false, false, true);
+    define_property_or_throw(agent, scope, object, key, &descriptor)
 }
 
 /// Die Funktionen einer Tabelle als Eigenschaften von `object`.

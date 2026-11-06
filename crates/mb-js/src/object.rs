@@ -10,7 +10,8 @@
 //! [[Call]] (`function`, `builtin`), Arrays, die nur [[DefineOwnProperty]]
 //! anders umsetzen (`array`), Fehlerobjekte, die sich nur durch
 //! [[ErrorData]] unterscheiden, Wrapper-Objekte für primitive Werte
-//! (`primitive`) und arguments-Objekte (`arguments`). Deren verknüpfte Indizes lesen ihren
+//! (`primitive`), Iteratoren für Arrays und Zeichenketten, die nur interne
+//! Felder dazu haben, und arguments-Objekte (`arguments`). Deren verknüpfte Indizes lesen ihren
 //! Wert aus der Bindung des Parameters, schon beim Suchen einer eigenen
 //! Eigenschaft; so folgen [[GetOwnProperty]], [[Get]] und [[Set]] ihrer
 //! Fassung, ohne die Prototypkette anders zu durchlaufen. Alle Arten, die
@@ -38,7 +39,9 @@ use crate::realm::{Intrinsic, RealmId};
 use crate::value::{Kind, Ref, Value};
 use storage::{ACCESSOR, CONFIGURABLE, ENUMERABLE, WRITABLE, object_of};
 
-pub(crate) use arguments::{create_mapped_arguments_object, create_unmapped_arguments_object};
+pub(crate) use arguments::{
+    create_mapped_arguments_object, create_unmapped_arguments_object, define_arguments_iterator,
+};
 pub use array::array_create;
 pub(crate) use primitive::{primitive_object_create, string_create};
 
@@ -192,7 +195,8 @@ pub fn get_prototype_of<'s>(
         | ObjectClass::Arguments
         | ObjectClass::Error
         | ObjectClass::Builtin
-        | ObjectClass::Primitive => {
+        | ObjectClass::Primitive
+        | ObjectClass::Iterator => {
             let heap = agent.heap();
             let prototype =
                 object_of(heap, object).and_then(|object| heap.object_prototype(object));
@@ -214,7 +218,8 @@ pub fn set_prototype_of(
         | ObjectClass::Arguments
         | ObjectClass::Error
         | ObjectClass::Builtin
-        | ObjectClass::Primitive => {}
+        | ObjectClass::Primitive
+        | ObjectClass::Iterator => {}
     }
     if let Some(prototype) = prototype {
         // Der Prototyp muss ein Objekt sein.
@@ -254,7 +259,8 @@ pub fn is_extensible(agent: &mut Agent, object: Local<'_>) -> Completion<bool> {
         | ObjectClass::Arguments
         | ObjectClass::Error
         | ObjectClass::Builtin
-        | ObjectClass::Primitive => {
+        | ObjectClass::Primitive
+        | ObjectClass::Iterator => {
             let heap = agent.heap();
             Ok(object_of(heap, object).is_some_and(|object| heap.object_extensible(object)))
         }
@@ -270,7 +276,8 @@ pub fn prevent_extensions(agent: &mut Agent, object: Local<'_>) -> Completion<bo
         | ObjectClass::Arguments
         | ObjectClass::Error
         | ObjectClass::Builtin
-        | ObjectClass::Primitive => {
+        | ObjectClass::Primitive
+        | ObjectClass::Iterator => {
             let heap = agent.heap();
             if let Some(object) = object_of(heap, object) {
                 heap.prevent_object_extensions(object);
@@ -294,7 +301,8 @@ pub fn get_own_property<'s>(
         | ObjectClass::Arguments
         | ObjectClass::Error
         | ObjectClass::Builtin
-        | ObjectClass::Primitive => Ok(ordinary_get_own_property(agent.heap(), scope, object, key)),
+        | ObjectClass::Primitive
+        | ObjectClass::Iterator => Ok(ordinary_get_own_property(agent.heap(), scope, object, key)),
     }
 }
 
@@ -341,7 +349,8 @@ pub fn define_own_property(
         | ObjectClass::Function
         | ObjectClass::Error
         | ObjectClass::Builtin
-        | ObjectClass::Primitive => {
+        | ObjectClass::Primitive
+        | ObjectClass::Iterator => {
             ordinary_define_own_property(agent, scope, object, key, descriptor)
         }
         ObjectClass::Array => array::define_own_property(agent, scope, object, key, descriptor),
@@ -815,7 +824,8 @@ pub fn own_property_keys<'s>(
         | ObjectClass::Arguments
         | ObjectClass::Error
         | ObjectClass::Builtin
-        | ObjectClass::Primitive => {}
+        | ObjectClass::Primitive
+        | ObjectClass::Iterator => {}
     }
     let heap = agent.heap();
     let Some(object) = object_of(heap, object) else {

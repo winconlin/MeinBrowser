@@ -2438,3 +2438,496 @@ fn new_and_tail_calls_survive_collections() {
                   f(3, '')";
     assert_eq!(run(&mut agent, realm, source), "\"x3truex2truex1true\"");
 }
+
+/// Ein Iterator, der seine Aufrufe in `log` mitschreibt: `@` für
+/// @@iterator, `n` für `next`, `r` für `return`, jeweils hinter seinem
+/// Namen. Er liefert 1 bis `count`.
+const ITER: &str = "var log = ''; \
+    function iter(name, count) { \
+        var i = 0; var it = {}; \
+        it[Symbol.iterator] = function () { log += name + '@'; return it; }; \
+        it.next = function () { log += name + 'n'; i++; return { done: i > count, value: i }; }; \
+        it.return = function () { log += name + 'r'; return {}; }; \
+        return it; \
+    } ";
+
+fn check_iter(cases: &[(&str, &str)]) {
+    for &(source, expected) in cases {
+        let source = format!("{ITER}{source}");
+        assert_eq!(eval(&source), expected, "{source}");
+    }
+}
+
+#[test]
+fn for_of_iterates_arrays_strings_and_arguments() {
+    check(&[
+        ("var s = ''; for (var x of [1, 2, 3]) s += x; s", "\"123\""),
+        ("var s = 0; for (let x of [1, 2, 3]) s += x; s", "6"),
+        ("var s = 0; for (const x of [1, 2]) { s += x; } s", "3"),
+        // Codepunkte, ein einzelnes Surrogat bleibt eine Einheit.
+        (
+            "var s = ''; for (var c of 'a\\uD83D\\uDE00b\\uD800') s += c.length; s",
+            "\"1211\"",
+        ),
+        ("var n = 0; for (var c of '') n++; n", "0"),
+        (
+            "function f() { var s = ''; for (var x of arguments) s += x; return s; } f(1, 2, 3)",
+            "\"123\"",
+        ),
+        (
+            "function f(a) { a = 5; var s = ''; for (var x of arguments) s += x; return s; } f(1, 2)",
+            "\"52\"",
+        ),
+        // Ein Element, das während der Schleife dazukommt, kommt noch dran.
+        (
+            "var a = [1, 2]; var n = 0; for (var x of a) { if (n++ === 0) a[2] = 3; } n",
+            "3",
+        ),
+        (
+            "var a = [, 1]; var s = ''; for (var x of a) s += x; s",
+            "\"undefined1\"",
+        ),
+    ]);
+}
+
+#[test]
+fn for_of_binds_each_kind_of_target() {
+    check(&[
+        ("for (var g of [7]); g", "7"),
+        ("for (h of [8]); h", "8"),
+        ("var o = {}; for (o.p of [1, 2]); o.p", "2"),
+        (
+            "var a = []; var i = 0; for (a[i++] of 'xy'); a[0] + a[1] + i",
+            "\"xy2\"",
+        ),
+        ("function f() { for (var x of [1, 2]); return x; } f()", "2"),
+        ("function f() { var y; for (y of [3]); return y; } f()", "3"),
+        ("'use strict'; for (u of [1]);", "ReferenceError"),
+        ("for (const x of [1]) x = 2;", "TypeError"),
+        // Jeder Durchlauf hat eigene Bindungen.
+        (
+            "var fs = [], i = 0; for (let x of [1, 2, 3]) fs[i++] = function () { return x; }; \
+             '' + fs[0]() + fs[1]() + fs[2]()",
+            "\"123\"",
+        ),
+        (
+            "var fs = [], i = 0; for (const x of 'ab') { let y = x + i; fs[i++] = () => y + x; } \
+             fs[0]() + fs[1]()",
+            "\"a0ab1b\"",
+        ),
+        // Die rechte Seite sieht die Namen aus dem Kopf in der TDZ.
+        ("for (let x of [x]);", "ReferenceError"),
+        ("let x = 1; { for (let x of [x]); }", "ReferenceError"),
+        (
+            "var f; for (let x of (f = function () { return x; }, [1])); f()",
+            "ReferenceError",
+        ),
+        ("var x = 1; for (var x of [x + 1]); x", "2"),
+        // Funktionen im Rumpf nach Anhang B.3.2.
+        (
+            "for (var x of [1]) { function g() { return 'g'; } } g()",
+            "\"g\"",
+        ),
+        (
+            "for (let g of [1]) { function g() {} } typeof g",
+            "\"undefined\"",
+        ),
+    ]);
+}
+
+#[test]
+fn for_of_has_a_completion_value() {
+    check(&[
+        ("1; for (var x of []);", "undefined"),
+        ("for (var x of [1, 2]) x * 10;", "20"),
+        ("1; for (var x of [1]) { 2; break; }", "2"),
+        ("1; for (var x of [1]) { break; }", "undefined"),
+        // `if` macht aus ~empty~ *undefined* (Abschnitt 14.6.2).
+        (
+            "1; for (var x of [1, 2]) { if (x == 2) continue; x; }",
+            "undefined",
+        ),
+        ("1; for (var x of ['a', 'b']) { x; continue; }", "\"b\""),
+    ]);
+}
+
+#[test]
+fn for_of_closes_iterators_it_leaves() {
+    check_iter(&[
+        (
+            "for (var x of iter('a', 2)) log += x; log",
+            "\"a@an1an2an\"",
+        ),
+        ("for (var x of iter('a', 5)) break; log", "\"a@anar\""),
+        ("for (var x of iter('a', 2)) continue; log", "\"a@ananan\""),
+        (
+            "function f() { for (var x of iter('a', 5)) return x; } f() + log",
+            "\"1a@anar\"",
+        ),
+        (
+            "try { for (var x of iter('a', 5)) throw 'e'; } catch (e) { log += e; } log",
+            "\"a@anare\"",
+        ),
+        (
+            "outer: for (var x of iter('a', 2)) for (var y of iter('b', 2)) continue outer; log",
+            "\"a@anb@bnbranb@bnbran\"",
+        ),
+        (
+            "outer: for (var x of iter('a', 2)) for (var y of iter('b', 2)) break outer; log",
+            "\"a@anb@bnbrar\"",
+        ),
+        (
+            "block: { for (var x of iter('a', 2)) break block; log += 'x'; } log",
+            "\"a@anar\"",
+        ),
+        (
+            "function f() { for (var x of iter('a', 5)) try { return 'v'; } finally { log += 'f'; } } \
+             f() + log",
+            "\"va@anfar\"",
+        ),
+        (
+            "function f() { try { for (var x of iter('a', 5)) return 'v'; } finally { log += 'f'; } } \
+             f() + log",
+            "\"va@anarf\"",
+        ),
+        (
+            "for (var x of iter('a', 3)) { try { if (x < 3) continue; } finally { log += 'f'; } } log",
+            "\"a@anfanfanfan\"",
+        ),
+        // Ein Fehler beim Binden schließt den Iterator auch.
+        (
+            "(function () { 'use strict'; try { for (u of iter('a', 1)); } catch (e) { log += 'c'; } })(); log",
+            "\"a@anarc\"",
+        ),
+        (
+            "var o = { set p(v) { throw 's'; } }; \
+             try { for (o.p of iter('a', 1)); } catch (e) { log += e; } log",
+            "\"a@anars\"",
+        ),
+        (
+            "try { for (var x of iter('a', 1)) null.p; } catch (e) { log += e.constructor === TypeError; } log",
+            "\"a@anartrue\"",
+        ),
+    ]);
+}
+
+#[test]
+fn for_of_follows_the_iterator_protocol() {
+    check_iter(&[
+        ("for (var x of 1);", "TypeError"),
+        ("for (var x of {});", "TypeError"),
+        ("for (var x of undefined);", "TypeError"),
+        (
+            "var it = {}; it[Symbol.iterator] = function () { return 1; }; for (var x of it);",
+            "TypeError",
+        ),
+        (
+            "var it = {}; it[Symbol.iterator] = 1; for (var x of it);",
+            "TypeError",
+        ),
+        (
+            "var it = {}; it[Symbol.iterator] = function () { return {}; }; for (var x of it);",
+            "TypeError",
+        ),
+        (
+            "var it = iter('a', 5); it.next = function () { return 1; }; for (var x of it);",
+            "TypeError",
+        ),
+        // `next` steht einmal fest.
+        (
+            "var it = iter('a', 2); var next = it.next; \
+             it.next = function () { it.next = null; return next(); }; \
+             for (var x of it) log += x; log",
+            "\"a@an1an2an\"",
+        ),
+        // Fehler aus `next`, `done` und `value` schließen den Iterator nicht.
+        (
+            "var it = iter('a', 5); it.next = function () { throw 'n'; }; \
+             try { for (var x of it); } catch (e) { log += e; } log",
+            "\"a@n\"",
+        ),
+        (
+            "var it = iter('a', 5); it.next = function () { return { get done() { throw 'd'; } }; }; \
+             try { for (var x of it); } catch (e) { log += e; } log",
+            "\"a@d\"",
+        ),
+        (
+            "var it = iter('a', 5); it.next = function () { return { done: 0, get value() { throw 'v'; } }; }; \
+             try { for (var x of it); } catch (e) { log += e; } log",
+            "\"a@v\"",
+        ),
+        (
+            "var it = iter('a', 5); it.next = function () { return { done: 'ja', value: 1 }; }; \
+             for (var x of it) log += x; log",
+            "\"a@\"",
+        ),
+        // `return` beim Verlassen: Ohne Ausnahme gelten sein Fehler und ein
+        // Ergebnis, das kein Objekt ist; mit einer bleibt sie.
+        (
+            "var it = iter('a', 5); it.return = function () { throw 'r'; }; \
+             try { for (var x of it) break; } catch (e) { log += e; } log",
+            "\"a@anr\"",
+        ),
+        (
+            "var it = iter('a', 5); it.return = function () { return 1; }; \
+             try { for (var x of it) break; } catch (e) { log += e.constructor === TypeError; } log",
+            "\"a@antrue\"",
+        ),
+        (
+            "var it = iter('a', 5); it.return = function () { throw 'r'; }; \
+             try { for (var x of it) throw 'e'; } catch (e) { log += e; } log",
+            "\"a@ane\"",
+        ),
+        (
+            "var it = iter('a', 5); it.return = 1; \
+             try { for (var x of it) throw 'e'; } catch (e) { log += e; } log",
+            "\"a@ane\"",
+        ),
+        (
+            "var it = iter('a', 5); it.return = 1; \
+             try { for (var x of it) break; } catch (e) { log += e.constructor === TypeError; } log",
+            "\"a@antrue\"",
+        ),
+        (
+            "var it = iter('a', 5); it.return = null; for (var x of it) break; log",
+            "\"a@an\"",
+        ),
+        (
+            "var it = iter('a', 5); it.return = function () { return 1; }; \
+             try { for (var x of it) throw 'e'; } catch (e) { log += e; } log",
+            "\"a@ane\"",
+        ),
+    ]);
+}
+
+#[test]
+fn spread_fills_arrays() {
+    check_iter(&[
+        ("[...'ab', ...[1, 2], 3].length", "5"),
+        (
+            "var a = [...'a\\uD83D\\uDE00']; a.length + a[1]",
+            "\"2\u{1F600}\"",
+        ),
+        (
+            "var a = [, ...[1]]; a.length + ' ' + (0 in a) + a[1]",
+            "\"2 false1\"",
+        ),
+        ("var a = [...[], , ...[]]; a.length", "1"),
+        ("[...[1, , 3]][1]", "undefined"),
+        ("[...[1, , 3]].length", "3"),
+        ("[...iter('a', 2)].length + log", "\"2a@ananan\""),
+        (
+            "var a = [...[1].keys(), ...[5].entries()]; a[0] + a[1][0] + a[1][1]",
+            "5",
+        ),
+        ("[...1]", "TypeError"),
+        ("[...{}]", "TypeError"),
+        ("[...null]", "TypeError"),
+        (
+            "var it = iter('a', 5); it.next = function () { throw 'n'; }; \
+             try { [...it]; } catch (e) { log += e; } log",
+            "\"a@n\"",
+        ),
+    ]);
+}
+
+#[test]
+fn spread_fills_arguments() {
+    check_iter(&[
+        (
+            "function f(a, b, c) { return '' + a + b + c + arguments.length; } f(...[1, 2], 3)",
+            "\"1233\"",
+        ),
+        (
+            "function f(a, b, c) { return '' + a + b + c + arguments.length; } f(...[])",
+            "\"undefinedundefinedundefined0\"",
+        ),
+        (
+            "function f(a, b, c) { return '' + a + b + c + arguments.length; } f(0, ...'ab', ...[])",
+            "\"0ab3\"",
+        ),
+        (
+            "function f(...r) { return r.length + r[3]; } f(...iter('a', 3), 'x') + log",
+            "\"4xa@anananan\"",
+        ),
+        (
+            "var o = { m: function (x) { return this === o && x; } }; o.m(...[5])",
+            "5",
+        ),
+        ("var o = { m(x) { return x; } }; o?.m(...[6])", "6"),
+        ("var n = null; n?.m(...(log = 'x', [])); log", "\"\""),
+        ("var o = {}; o.m?.(...(log = 'x', [])); log", "\"\""),
+        (
+            "function C(a, b) { this.s = a + b; } new C(...['x', 'y']).s",
+            "\"xy\"",
+        ),
+        (
+            "function D() { this.t = new.target === D; } new D(...[]).t",
+            "true",
+        ),
+        ("String(...['ab', 'c'])", "\"ab\""),
+        ("new String(...['ab']).length", "2"),
+        ("String(Symbol(...['d']))", "\"Symbol(d)\""),
+        ("new Symbol(...[])", "TypeError"),
+        ("function f() {} f(...1)", "TypeError"),
+        ("var x = 1; x(...[])", "TypeError"),
+        ("var x = 1; new x(...[])", "TypeError"),
+        ("var x = () => 1; new x(...[])", "TypeError"),
+        // Erst die Argumente, dann IsCallable und IsConstructor.
+        (
+            "var x = 1; try { x(...(log += 'a', [])); } catch (e) { log += 'c'; } log",
+            "\"ac\"",
+        ),
+        (
+            "var x = 1; try { new x(...(log += 'a', [])); } catch (e) { log += 'c'; } log",
+            "\"ac\"",
+        ),
+    ]);
+}
+
+#[test]
+fn spread_calls_in_tail_position_replace_the_frame() {
+    let (mut agent, realm) = checked();
+    let budget = std::rc::Rc::new(crate::agent::Budget::unlimited());
+    agent.with_execution_budget(budget, |agent| {
+        let source = "'use strict'; function f(n) { return n === 0 ? 'ende' : f(...[n - 1]); } \
+                      f(100000)";
+        assert_eq!(run(agent, realm, source), "\"ende\"");
+        let source = "function f(n) { return n === 0 ? 'ende' : f(...[n - 1]); } f(100000)";
+        assert_eq!(run(agent, realm, source), "RangeError");
+    });
+}
+
+#[test]
+fn symbols_come_from_the_symbol_function() {
+    check(&[
+        ("typeof Symbol()", "\"symbol\""),
+        ("typeof Symbol.iterator", "\"symbol\""),
+        ("Symbol('d') === Symbol('d')", "false"),
+        (
+            "String(Symbol('d')) + String(Symbol())",
+            "\"Symbol(d)Symbol()\"",
+        ),
+        ("String(Symbol(1))", "\"Symbol(1)\""),
+        ("String(Symbol.iterator)", "\"Symbol(Symbol.iterator)\""),
+        ("new Symbol()", "TypeError"),
+        ("Symbol(Symbol())", "TypeError"),
+        ("Symbol.length + Symbol.name", "\"0Symbol\""),
+        ("Symbol.iterator = 1; typeof Symbol.iterator", "\"symbol\""),
+        ("'use strict'; Symbol.iterator = 1;", "TypeError"),
+        ("Symbol.prototype.constructor === Symbol", "true"),
+        ("var s = Symbol(); var o = {}; o[s] = 1; o[s]", "1"),
+    ]);
+}
+
+#[test]
+fn array_and_string_iterators_step_through_their_values() {
+    check(&[
+        (
+            "var it = [1, 2].values(); var r = it.next(); r.value + ' ' + r.done",
+            "\"1 false\"",
+        ),
+        (
+            "var it = [1].values(); it.next(); var r = it.next(); r.value + ' ' + r.done",
+            "\"undefined true\"",
+        ),
+        // Einmal fertig, bleibt er fertig.
+        (
+            "var a = [1]; var it = a.values(); it.next(); it.next(); a[1] = 2; it.next().done",
+            "true",
+        ),
+        ("var r = ['a'].keys().next(); r.value", "0"),
+        (
+            "var r = ['a'].entries().next().value; '' + r.length + r[0] + r[1]",
+            "\"20a\"",
+        ),
+        ("[][Symbol.iterator] === [].values", "true"),
+        ("var it = [].values(); it[Symbol.iterator]() === it", "true"),
+        (
+            "Object.prototype.toString.call([].values())",
+            "\"[object Array Iterator]\"",
+        ),
+        (
+            "Object.prototype.toString.call(''[Symbol.iterator]())",
+            "\"[object String Iterator]\"",
+        ),
+        // Array.prototype.values nimmt jedes Objekt mit `length`.
+        (
+            "var o = { length: 2, 0: 'x', 1: 'y' }; var s = ''; \
+             for (var v of [].values.call(o)) s += v; s",
+            "\"xy\"",
+        ),
+        (
+            "var s = ''; for (var v of [].values.call('ab')) s += v; s",
+            "\"ab\"",
+        ),
+        ("[].values.call(null)", "TypeError"),
+        ("[].values().next.call({})", "TypeError"),
+        ("[].values().next.call(''[Symbol.iterator]())", "TypeError"),
+        ("''[Symbol.iterator]().next.call([].values())", "TypeError"),
+        ("''[Symbol.iterator].call(null)", "TypeError"),
+        (
+            "var it = ''[Symbol.iterator].call(12); it.next().value + it.next().value",
+            "\"12\"",
+        ),
+        (
+            "var it = 'a'[Symbol.iterator](); it.next(); var r = it.next(); r.value + ' ' + r.done",
+            "\"undefined true\"",
+        ),
+        // Die Länge kommt bei jedem Schritt neu, ToLength begrenzt sie.
+        (
+            "var o = { length: -1 }; [].values.call(o).next().done",
+            "true",
+        ),
+        (
+            "var n = 0; var o = { get length() { n++; return 1; } }; var it = [].values.call(o); \
+             it.next(); it.next(); it.next(); n",
+            "2",
+        ),
+        (
+            "var o = { get length() { throw 'l'; } }; [].values.call(o).next()",
+            "throw \"l\"",
+        ),
+    ]);
+}
+
+#[test]
+fn arguments_objects_are_iterable() {
+    check(&[
+        (
+            "function g(a) { 'use strict'; return [...arguments].length; } g(1, 2)",
+            "2",
+        ),
+        (
+            "(function () { return arguments[Symbol.iterator] === [].values; })()",
+            "true",
+        ),
+        (
+            "(function () { 'use strict'; arguments[Symbol.iterator] = 1; return arguments[Symbol.iterator]; })()",
+            "1",
+        ),
+        (
+            "(function (a) { return delete arguments[Symbol.iterator] && arguments[Symbol.iterator]; })(1)",
+            "undefined",
+        ),
+    ]);
+}
+
+/// Iteratoren, `for`-`of` und die Ausbreitung überstehen jede Sammlung.
+#[test]
+fn iteration_survives_collections() {
+    let (mut agent, realm) = agent_with(Options {
+        stress: true,
+        verify: true,
+        ..Options::default()
+    });
+    let source = format!(
+        "{ITER} var s = ''; var fs = [], i = 0; \
+         for (let c of 'x\\uD83D\\uDE00') fs[i++] = () => c; \
+         for (var e of [1, 2].entries()) s += e[0] + e[1]; \
+         function f(a, b) {{ return a + b + arguments.length; }} \
+         for (var x of iter('a', 3)) {{ if (x == 2) break; s += f(...[x, 'y'], ...'z'); }} \
+         s + fs[0]() + fs[1]().length + log + [...iter('b', 1)].length"
+    );
+    assert_eq!(run(&mut agent, realm, &source), "\"131y3x2a@ananar1\"");
+}

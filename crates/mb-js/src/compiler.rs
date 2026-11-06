@@ -40,15 +40,25 @@
 //! in Scripts entscheidet GlobalDeclarationInstantiation, ob es die
 //! globale Bindung gibt, und setzt dafür ein Register.
 //!
-//! Noch nicht unterstützt sind Generatoren, `async`, Klassen, Muster in
-//! Parametern, auch in dem von `catch`, und Funktionsdeklarationen mit
-//! Marke (Anhang B.3.1).
+//! Noch nicht unterstützt sind Generatoren, `async`, Klassen, Muster (in
+//! Parametern, auch in dem von `catch`, in Deklarationen, Zuweisungen und
+//! links in `for`-`of`), `for`-`in`, `for await`, `with`, `super`,
+//! `import()`, BigInt-Literale, reguläre Ausdrücke, Templates mit Tag und
+//! Funktionsdeklarationen mit Marke (Anhang B.3.1).
 //!
 //! `try`: Der Block und `catch` bekommen je einen Eintrag in der
 //! Ausnahmetabelle. Mit `finally` führen alle Wege hinaus durch dessen
 //! Block, auch `break`, `continue` und `return`: Jeder legt in ein Register,
 //! wie es danach weitergeht, und `finally` verzweigt an seinem Ende danach.
 //! Liegen mehrere `finally` auf dem Weg, geht es so durch alle.
+//!
+//! Iteratoren: `for`-`of` und die Ausbreitung in Array-Literalen und
+//! Aufrufen halten den Iterator Record in drei Registern
+//! ([`Op::GetIterator`], [`Op::IteratorNext`]). Verlässt ein Weg `for`-`of`
+//! vorzeitig, schließt er den Iterator: `break` direkt, `return` und
+//! Sprünge zu äußeren Zielen über ein Ziel wie bei `finally`, eine
+//! Ausnahme über einen Handler. Ein Aufruf mit Ausbreitung sammelt seine
+//! Argumente in einem Array ([`Op::CallSpread`]).
 //!
 //! Abschlusswert: Scripts führen ein Register dafür (UpdateEmpty, Abschnitt
 //! 6.2.4.4). Jede Ausdrucksanweisung schreibt ihren Wert hinein. `if`,
@@ -74,7 +84,8 @@
 //! stehen Aufrufe im Ausdruck von `return` und im Rumpf einer
 //! Pfeilfunktion ohne Block, nach HasCallInTailPosition (Abschnitt
 //! 15.10.2) auch hinter Klammern, Komma, `? :`, `&&`, `||` und `??`, nicht
-//! aber im Block von `try` und mit `finally` auch nicht in `catch`.
+//! aber im Block von `try`, mit `finally` auch nicht in `catch`, und nicht
+//! im Rumpf von `for`-`of`.
 //!
 //! Tiefe: Ketten zweistelliger Operatoren und Ketten von Zugriffen und
 //! Aufrufen wie `a.b(c)[d]?.e` baut der Parser in Schleifen, sie werden
@@ -240,6 +251,17 @@ enum Exit {
     Jump { target: usize, is_continue: bool },
     /// `return` mit dem Wert im Akkumulator.
     Return,
+}
+
+/// Was links in `for`-`of` steht.
+#[derive(Clone, Copy, Debug)]
+enum ForTarget {
+    /// `let` oder `const` mit einem Bezeichner.
+    Lexical(Atom),
+    /// `var` mit einem Bezeichner und dessen Knoten.
+    Var(Atom, NodeId),
+    /// Ein Ausdruck als Ziel einer Zuweisung.
+    Expression,
 }
 
 /// Ein Ziel von `break` und `continue`.
@@ -1047,6 +1069,10 @@ impl<'a> Compiler<'a> {
                 }
                 self.var_declared_names(body, names)?;
             }
+            Node::ForOf { left, body, .. } => {
+                self.var_declared_names(left, names)?;
+                self.var_declared_names(body, names)?;
+            }
             Node::Labeled { body, .. } => self.var_declared_names(body, names)?,
             Node::Switch { cases, .. } => {
                 for &case in self.ast.list(cases) {
@@ -1129,6 +1155,11 @@ impl<'a> Compiler<'a> {
                 let names =
                     init.map_or_else(Vec::new, |init| self.lexically_declared(&[init], false));
                 path.push(names);
+                self.hoisting_walk(body, path, excluded, found);
+                path.pop();
+            }
+            Node::ForOf { left, body, .. } => {
+                path.push(self.lexically_declared(&[left], false));
                 self.hoisting_walk(body, path, excluded, found);
                 path.pop();
             }
@@ -1497,9 +1528,11 @@ impl<'a> Compiler<'a> {
                 consequent,
                 alternate,
             } => self.if_statement(test, consequent, alternate),
-            Node::While { .. } | Node::DoWhile { .. } | Node::For { .. } | Node::Switch { .. } => {
-                self.breakable(node, Vec::new())
-            }
+            Node::While { .. }
+            | Node::DoWhile { .. }
+            | Node::For { .. }
+            | Node::ForOf { .. }
+            | Node::Switch { .. } => self.breakable(node, Vec::new()),
             Node::Labeled { .. } => self.labeled(node),
             Node::Break(label) => self.jump_to_target(node, label, false),
             Node::Continue(label) => self.jump_to_target(node, label, true),
@@ -1682,9 +1715,11 @@ impl<'a> Compiler<'a> {
             body = inner;
         }
         match *self.ast.node(body) {
-            Node::While { .. } | Node::DoWhile { .. } | Node::For { .. } | Node::Switch { .. } => {
-                self.breakable(body, labels)
-            }
+            Node::While { .. }
+            | Node::DoWhile { .. }
+            | Node::For { .. }
+            | Node::ForOf { .. }
+            | Node::Switch { .. } => self.breakable(body, labels),
             // Anhang B.3.1.
             Node::FunctionDeclaration(_) => Err(self.unsupported(body)),
             _ => {
@@ -1726,6 +1761,12 @@ impl<'a> Compiler<'a> {
                 update,
                 body,
             } => self.for_loop(target, init, test, update, body),
+            Node::ForOf {
+                left,
+                right,
+                body,
+                is_await: false,
+            } => self.for_of_loop(node, target, left, right, body),
             Node::Switch {
                 discriminant,
                 cases,
@@ -1834,6 +1875,193 @@ impl<'a> Compiler<'a> {
             self.leave_block(mark)?;
         }
         Ok(())
+    }
+
+    /// `for`-`of` (Abschnitte 14.7.5.6 und 14.7.5.7). Mit `let` oder `const`
+    /// wertet die rechte Seite in einem Bereich aus, in dem die Namen im Kopf
+    /// in der TDZ bleiben, und jeder Durchlauf bekommt einen neuen Bereich für
+    /// sie.
+    ///
+    /// Wer die Schleife mit `break` verlässt, schließt den Iterator
+    /// ([`Op::IteratorClose`]), `continue` zur Schleife selbst nicht. Die
+    /// übrigen Wege hinaus, `return` und Sprünge zu äußeren Zielen, gehen
+    /// durch ein Ziel der Art [`TargetKind::Finally`], das ihn schließt und
+    /// sie danach weiterführt. Eine Ausnahme beim Binden oder im Rumpf
+    /// schließt ihn über einen Handler ([`Op::IteratorCloseOnThrow`]) und
+    /// wird dann wieder geworfen, eine aus `next` selbst nicht.
+    fn for_of_loop(
+        &mut self,
+        node: NodeId,
+        target: Target,
+        left: NodeId,
+        right: NodeId,
+        body: NodeId,
+    ) -> Result<()> {
+        let lhs = self.for_of_target(left)?;
+        let mark = self.next_register;
+        if let ForTarget::Lexical(_) = lhs {
+            let tdz = self.enter_tdz(left)?;
+            self.expression(right)?;
+            self.leave_block(tdz)?;
+        } else {
+            self.expression(right)?;
+        }
+        self.position(right)?;
+        let iterator = self.allocate()?;
+        self.allocate()?;
+        self.allocate()?;
+        self.emit(Op::GetIterator, &[i64::from(iterator)])?;
+        let context = i64::from(self.allocate()?);
+        self.emit(Op::SaveContext, &[context])?;
+        let kind = self.allocate()?;
+        let value = self.allocate()?;
+        let item = i64::from(self.allocate()?);
+        let mut close = Target::new(TargetKind::Finally, Vec::new());
+        close.finally = Some((kind, value));
+        self.push_target(close);
+        self.reset_completion()?;
+        let start = self.emitter.offset();
+        self.position(node)?;
+        let done = self
+            .emitter
+            .jump_with(Op::IteratorNext, &[i64::from(iterator)])?;
+        let region = self.emitter.offset();
+        // HasCallInTailPosition (Abschnitt 15.10.2.1): nie im Rumpf von
+        // `for`-`of`, denn nach `return` ist der Iterator noch zu schließen.
+        self.protected = self
+            .protected
+            .checked_add(1)
+            .ok_or(CompileError::TooLarge)?;
+        self.push_target(target);
+        let block = self.for_of_binding(left, lhs, item)?;
+        self.statement(body)?;
+        if let Some(block) = block {
+            self.leave_block(block)?;
+        }
+        let mut target = self.pop_target();
+        self.protected = self.protected.saturating_sub(1);
+        self.bind_all(std::mem::take(&mut target.continues))?;
+        self.emitter.jump_loop(start)?;
+        let end = self.emitter.offset();
+        let (iterator, kind, value) = (i64::from(iterator), i64::from(kind), i64::from(value));
+        self.emitter.handler(region, end, HandlerKind::Finally);
+        self.emit(Op::RestoreContext, &[context])?;
+        self.emit(Op::Star, &[value])?;
+        self.emit(Op::IteratorCloseOnThrow, &[iterator])?;
+        self.emit(Op::Ldar, &[value])?;
+        self.emit(Op::Rethrow, &[])?;
+        let close = self.pop_target();
+        let mut after = vec![done];
+        if !target.breaks.is_empty() {
+            self.bind_all(target.breaks)?;
+            self.emit(Op::IteratorClose, &[iterator])?;
+            after.push(self.jump(Op::Jump)?);
+        }
+        if !close.breaks.is_empty() {
+            self.bind_all(close.breaks)?;
+            self.emit(Op::IteratorClose, &[iterator])?;
+            self.dispatch_exits(kind, value, close.exits)?;
+        }
+        self.bind_all(after)?;
+        self.release(mark);
+        Ok(())
+    }
+
+    /// Was links in `for`-`of` steht. Eine Deklaration hat genau einen
+    /// Bezeichner ohne Initialisierer; Muster kommen mit der
+    /// Destrukturierung, und ein Ausdruck, der keine Referenz ergibt, scheitert
+    /// erst in [`Compiler::reference`].
+    fn for_of_target(&self, left: NodeId) -> Result<ForTarget> {
+        let Node::Variables { kind, declarators } = *self.ast.node(left) else {
+            return Ok(ForTarget::Expression);
+        };
+        let &[declarator] = self.ast.list(declarators) else {
+            return Err(self.unsupported(left));
+        };
+        let Node::Declarator { target, init: None } = *self.ast.node(declarator) else {
+            return Err(self.unsupported(declarator));
+        };
+        let Node::BindingIdentifier(atom) = *self.ast.node(target) else {
+            return Err(self.unsupported(target));
+        };
+        match kind {
+            DeclarationKind::Var => Ok(ForTarget::Var(atom, target)),
+            DeclarationKind::Let | DeclarationKind::Const => Ok(ForTarget::Lexical(atom)),
+            DeclarationKind::Using | DeclarationKind::AwaitUsing => Err(self.unsupported(left)),
+        }
+    }
+
+    /// Der Bereich, in dem die rechte Seite von `for`-`of` die Namen aus
+    /// `let` und `const` im Kopf sieht (ForIn/OfHeadEvaluation, Abschnitt
+    /// 14.7.5.6): Sie halten die Lücke und werden nie initialisiert. Gibt die
+    /// Marke für [`Compiler::leave_block`] zurück.
+    fn enter_tdz(&mut self, declaration: NodeId) -> Result<u32> {
+        let mark = self.next_register;
+        let mut scope = BlockScope::default();
+        let mut holes = Vec::new();
+        for (atom, constant, _) in self.lexical_declarations(declaration)? {
+            let location = self.locate(&mut scope, atom)?;
+            holes.push(location);
+            let kind = if constant {
+                BindingKind::Const
+            } else {
+                BindingKind::Mutable
+            };
+            let binding = LocalBinding {
+                location,
+                kind,
+                initialized_from: usize::MAX,
+                in_switch: false,
+            };
+            scope.bindings.insert(atom, binding);
+        }
+        if scope.has_context() {
+            self.emit(Op::PushContext, &[i64::from(scope.slots)])?;
+        }
+        self.set_holes(&holes)?;
+        self.scopes.push(scope);
+        Ok(mark)
+    }
+
+    /// Bindet den Wert im Akkumulator an das Ziel links in `for`-`of`
+    /// (ForIn/OfBodyEvaluation, Abschnitt 14.7.5.7). Mit `let` und `const`
+    /// beginnt dafür ein neuer Bereich, dessen Marke zurückkommt; `var`
+    /// und ein Ausdruck lösen ihren Namen oder ihre Referenz in jedem
+    /// Durchlauf neu auf. Das Register `item` hält den Wert dazwischen.
+    fn for_of_binding(&mut self, left: NodeId, lhs: ForTarget, item: i64) -> Result<Option<u32>> {
+        let position = self.ast.range(left).start;
+        match lhs {
+            ForTarget::Lexical(atom) => {
+                self.emit(Op::Star, &[item])?;
+                let block = self.enter_block(&[left], false)?;
+                self.emit(Op::Ldar, &[item])?;
+                // InitializeReferencedBinding.
+                let binding = self.lookup(atom).ok_or_else(|| self.unsupported(left))?;
+                self.store_location(binding.location)?;
+                Ok(Some(block))
+            }
+            ForTarget::Var(atom, target) => {
+                if let Some(binding) = self.resolve(atom, target)? {
+                    self.store_local(binding, atom, position)?;
+                    return Ok(None);
+                }
+                let name = self.name(atom)?;
+                let register = self.allocate()?;
+                self.emit(Op::ResolveGlobal, &[name, i64::from(register)])?;
+                self.emit(Op::StaGlobal, &[name, i64::from(register)])?;
+                self.release(register);
+                Ok(None)
+            }
+            ForTarget::Expression => {
+                self.emit(Op::Star, &[item])?;
+                let reference = self.reference(left)?;
+                self.emit(Op::Ldar, &[item])?;
+                self.position(left)?;
+                self.put_value(reference, position)?;
+                self.release_reference(reference);
+                Ok(None)
+            }
+        }
     }
 
     /// `switch` (Abschnitt 14.12.4) mit CaseBlockEvaluation: erst die
@@ -2073,7 +2301,17 @@ impl<'a> Compiler<'a> {
         self.emit(Op::Ldar, &[value])?;
         self.emit(Op::Rethrow, &[])?;
         self.bind(next)?;
-        for (number, exit) in target.exits.into_iter().enumerate() {
+        self.dispatch_exits(kind, value, target.exits)?;
+        self.release(mark);
+        Ok(())
+    }
+
+    /// Geht den Weg hinaus weiter, dessen Nummer im Register `kind` liegt,
+    /// bei `return` mit dem Wert aus `value`: am Ende von `finally` und nach
+    /// dem Schließen eines Iterators. Ist es keiner der Wege, geht es
+    /// dahinter weiter.
+    fn dispatch_exits(&mut self, kind: i64, value: i64, exits: Vec<Exit>) -> Result<()> {
+        for (number, exit) in exits.into_iter().enumerate() {
             let token = FIRST_EXIT
                 .checked_add(number)
                 .and_then(|token| i64::try_from(token).ok())
@@ -2087,7 +2325,6 @@ impl<'a> Compiler<'a> {
             self.exit(exit)?;
             self.bind(next)?;
         }
-        self.release(mark);
         Ok(())
     }
 
@@ -2433,8 +2670,7 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// Array-Literale (Abschnitte 13.2.4.1 und 13.2.4.2). Die Ausbreitung
-    /// braucht Iteratoren.
+    /// Array-Literale (Abschnitte 13.2.4.1 und 13.2.4.2).
     fn array_literal(&mut self, list: List) -> Result<()> {
         self.emit(Op::CreateArray, &[])?;
         let array = self.allocate()?;
@@ -2447,7 +2683,11 @@ impl<'a> Compiler<'a> {
                     self.position(element)?;
                     self.emit(Op::ArrayHole, &[register])?;
                 }
-                Node::Spread(_) => return Err(self.unsupported(element)),
+                Node::Spread(argument) => {
+                    self.expression(argument)?;
+                    self.position(element)?;
+                    self.spread(register)?;
+                }
                 _ => {
                     self.expression(element)?;
                     self.position(element)?;
@@ -2457,6 +2697,26 @@ impl<'a> Compiler<'a> {
         }
         self.emit(Op::Ldar, &[register])?;
         self.release(array);
+        Ok(())
+    }
+
+    /// Hängt die Werte, die der Iterator des Akkumulators liefert, an das
+    /// Array im Register `array` (ArrayAccumulation für *SpreadElement*,
+    /// Abschnitt 13.2.4.1, und ArgumentListEvaluation, Abschnitt 13.3.8.1).
+    /// Einen Fehler wirft der Iterator selbst; geschlossen wird er nicht.
+    fn spread(&mut self, array: i64) -> Result<()> {
+        let iterator = self.allocate()?;
+        self.allocate()?;
+        self.allocate()?;
+        self.emit(Op::GetIterator, &[i64::from(iterator)])?;
+        let start = self.emitter.offset();
+        let done = self
+            .emitter
+            .jump_with(Op::IteratorNext, &[i64::from(iterator)])?;
+        self.emit(Op::ArrayPush, &[array])?;
+        self.emitter.jump_loop(start)?;
+        self.bind(done)?;
+        self.release(iterator);
         Ok(())
     }
 
@@ -2612,10 +2872,13 @@ impl<'a> Compiler<'a> {
         }
         let ast = self.ast;
         let arguments = ast.list(arguments);
+        if arguments
+            .iter()
+            .any(|&argument| matches!(self.ast.node(argument), Node::Spread(_)))
+        {
+            return self.spread_arguments(node, op, callee, arguments);
+        }
         for &argument in arguments {
-            if let Node::Spread(_) = *self.ast.node(argument) {
-                return Err(self.unsupported(argument));
-            }
             let slot = self.allocate()?;
             self.expression(argument)?;
             self.emit(Op::Star, &[i64::from(slot)])?;
@@ -2624,6 +2887,41 @@ impl<'a> Compiler<'a> {
         let count = i64::try_from(arguments.len()).map_err(|_| CompileError::TooLarge)?;
         self.emit(op, &[register, count])?;
         self.release(first);
+        Ok(())
+    }
+
+    /// Die Argumente eines Aufrufs mit Ausbreitung als Elemente eines neuen
+    /// Arrays im Register hinter `this`, dann der Befehl für Ausbreitung zu
+    /// `op` ([`Op::CallSpread`]).
+    fn spread_arguments(
+        &mut self,
+        node: NodeId,
+        op: Op,
+        callee: u32,
+        arguments: &[NodeId],
+    ) -> Result<()> {
+        let op = match op {
+            Op::TailCall => Op::TailCallSpread,
+            Op::Construct => Op::ConstructSpread,
+            _ => Op::CallSpread,
+        };
+        let array = self.allocate()?;
+        let register = i64::from(array);
+        self.emit(Op::CreateArray, &[])?;
+        self.emit(Op::Star, &[register])?;
+        for &argument in arguments {
+            if let Node::Spread(inner) = *self.ast.node(argument) {
+                self.expression(inner)?;
+                self.position(argument)?;
+                self.spread(register)?;
+            } else {
+                self.expression(argument)?;
+                self.emit(Op::ArrayPush, &[register])?;
+            }
+        }
+        self.position(node)?;
+        self.emit(op, &[i64::from(callee)])?;
+        self.release(array);
         Ok(())
     }
 

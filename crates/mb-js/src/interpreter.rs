@@ -24,7 +24,9 @@
 //! Rahmen ab und legt den neuen an dieselbe Stelle; der Stapel wächst also
 //! nicht. Nur im Rahmen von [[Construct]] bleibt er ein gewöhnlicher Aufruf,
 //! denn danach ist das Ergebnis noch zu prüfen. Auch eine eingebaute
-//! Funktion in Endposition läuft im Befehl, bevor der Rahmen geht.
+//! Funktion in Endposition läuft im Befehl, bevor der Rahmen geht. Mit
+//! Ausbreitung ([`Op::CallSpread`]) kommen die Argumente aus einem Array in
+//! Handles, wie die eines Endaufrufs.
 //!
 //! Ausnahmen: Wirft ein Befehl, sucht der Lauf in der Ausnahmetabelle des
 //! obersten Rahmens nach einem Handler, dann in denen der Aufrufer, und
@@ -50,11 +52,13 @@ use crate::function::{
     Compiled, function_environment, function_parts, instantiate_closure, is_constructor,
 };
 use crate::heap::{Heap, Local, Scope};
+use crate::iterator::{get_iterator, iterator_close, iterator_close_on_throw, iterator_step_value};
 use crate::key::{PropertyKey, array_index};
 use crate::number;
 use crate::object::{
     array_create, create_mapped_arguments_object, create_unmapped_arguments_object,
-    ordinary_create_from_constructor, ordinary_object_create, set_prototype_of,
+    define_arguments_iterator, ordinary_create_from_constructor, ordinary_object_create,
+    set_prototype_of,
 };
 use crate::operations::{
     create_data_property_or_throw, define_property_or_throw, get, has_property, is_callable, set,
@@ -82,17 +86,20 @@ enum Flow {
     Jump(usize),
     Return,
     /// Ruft die Funktion im Platz `callee` des Registerstapels auf, `this`
-    /// liegt dahinter und dann `count` Argumente. Mit `construct` ist es
-    /// [[Construct]] mit der Funktion als new.target.
+    /// liegt dahinter und dann `count` Argumente, mit `spread` stattdessen
+    /// ein Array mit den Argumenten. Mit `construct` ist es [[Construct]]
+    /// mit der Funktion als new.target.
     Call {
         callee: usize,
         count: usize,
         construct: bool,
+        spread: bool,
     },
     /// Derselbe Aufruf ohne `construct` an der Stelle des Rahmens.
     TailCall {
         callee: usize,
         count: usize,
+        spread: bool,
     },
 }
 
@@ -303,10 +310,15 @@ fn run(agent: &mut Agent, activation: Activation<'_>, accumulator: Local<'_>) ->
         // noch das Ergebnis (Abschnitt 10.2.2, Schritte 10 bis 12); der Rahmen
         // bleibt darum.
         let flow = match flow {
-            Flow::TailCall { callee, count } if top.construct => Flow::Call {
+            Flow::TailCall {
+                callee,
+                count,
+                spread,
+            } if top.construct => Flow::Call {
                 callee,
                 count,
                 construct: false,
+                spread,
             },
             flow => flow,
         };
@@ -333,6 +345,7 @@ fn run(agent: &mut Agent, activation: Activation<'_>, accumulator: Local<'_>) ->
                 callee,
                 count,
                 construct,
+                spread,
             } => {
                 top.offset = instruction.end;
                 let next = agent.scope(|agent, inner| {
@@ -340,8 +353,14 @@ fn run(agent: &mut Agent, activation: Activation<'_>, accumulator: Local<'_>) ->
                     let function = heap.local(inner, heap.register(callee));
                     let this = heap.local(inner, heap.register(place(callee, 1)));
                     let first = place(callee, 2);
-                    let arguments = Arguments::Registers { first, count };
                     let new_target = construct.then_some(function);
+                    if spread {
+                        let array = heap.local(inner, heap.register(first));
+                        let list = spread_list(agent, inner, array)?;
+                        let arguments = Arguments::Locals(&list);
+                        return enter_function(agent, inner, function, this, arguments, new_target);
+                    }
+                    let arguments = Arguments::Registers { first, count };
                     enter_function(agent, inner, function, this, arguments, new_target)
                 });
                 // Scheitert der Aufruf, etwa am Registerstapel, wirft der
@@ -355,7 +374,11 @@ fn run(agent: &mut Agent, activation: Activation<'_>, accumulator: Local<'_>) ->
                     Err(abrupt) => return Err(abrupt),
                 }
             }
-            Flow::TailCall { callee, count } => {
+            Flow::TailCall {
+                callee,
+                count,
+                spread,
+            } => {
                 // PrepareForTailCall (Abschnitt 15.10.3): Funktion, `this` und
                 // Argumente kommen in Handles, dann geht der Rahmen, und der
                 // neue entsteht an seiner Stelle.
@@ -366,10 +389,17 @@ fn run(agent: &mut Agent, activation: Activation<'_>, accumulator: Local<'_>) ->
                     let function = heap.local(inner, heap.register(callee));
                     let this = heap.local(inner, heap.register(place(callee, 1)));
                     let first = place(callee, 2);
-                    let arguments: Vec<Local<'_>> = (0..count)
-                        .map(|index| heap.local(inner, heap.register(place(first, index))))
-                        .collect();
+                    let arguments: Completion<Vec<Local<'_>>> = if spread {
+                        let array = heap.local(inner, heap.register(first));
+                        spread_list(agent, inner, array)
+                    } else {
+                        Ok((0..count)
+                            .map(|index| heap.local(inner, heap.register(place(first, index))))
+                            .collect())
+                    };
+                    // Auch wenn das Lesen des Arrays scheitert, geht der Rahmen.
                     agent.heap_mut().truncate_registers(header);
+                    let arguments = arguments?;
                     let arguments = Arguments::Locals(&arguments);
                     enter_function(agent, inner, function, this, arguments, None)
                 });
@@ -440,6 +470,30 @@ fn catch(
             .last()
             .map_or(0, |caller| caller.offset.saturating_sub(1));
     }
+}
+
+/// Die Argumente eines Aufrufs mit Ausbreitung aus dem Array, das der
+/// Übersetzer für ihn anlegte. Es hat für jeden Index bis zur Länge eine
+/// eigene Dateneigenschaft, und kein Code der Sprache sieht es; Get liest
+/// also nur, was dort liegt.
+fn spread_list<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    array: Local<'_>,
+) -> Completion<Vec<Local<'s>>> {
+    let length = length_key(agent, scope)?;
+    let length = get(agent, scope, array, length)?;
+    let length = agent.heap().get(length).as_number().unwrap_or(0.0);
+    let mut list = Vec::new();
+    let mut index: u32 = 0;
+    while f64::from(index) < length {
+        list.push(get(agent, scope, array, PropertyKey::Index(index))?);
+        // Mehr Argumente als Indizes kann kein Array halten.
+        index = index
+            .checked_add(1)
+            .ok_or_else(|| agent.throw_error(ErrorKind::RangeError))?;
+    }
+    Ok(list)
 }
 
 /// PrepareForOrdinaryCall, OrdinaryCallBindThis und die Argumente für
@@ -1004,7 +1058,10 @@ impl<'c> Frame<'c, '_> {
         let result = match instruction.op {
             Op::CreateArguments => {
                 let prototype = agent.intrinsic(scope, self.realm, Intrinsic::ObjectPrototype);
-                create_unmapped_arguments_object(agent, scope, prototype, arguments)?
+                let object = create_unmapped_arguments_object(agent, scope, prototype, arguments)?;
+                let values = agent.intrinsic(scope, self.realm, Intrinsic::ArrayPrototypeValues);
+                define_arguments_iterator(agent, scope, object, values)?;
+                object
             }
             Op::CreateMappedArguments => {
                 let prototype = agent.intrinsic(scope, self.realm, Intrinsic::ObjectPrototype);
@@ -1015,9 +1072,12 @@ impl<'c> Frame<'c, '_> {
                     heap.local(scope, heap.register(self.context_slot()))
                 };
                 let map = self.code.parameter_map();
-                create_mapped_arguments_object(
+                let object = create_mapped_arguments_object(
                     agent, scope, prototype, function, arguments, context, map,
-                )?
+                )?;
+                let values = agent.intrinsic(scope, self.realm, Intrinsic::ArrayPrototypeValues);
+                define_arguments_iterator(agent, scope, object, values)?;
+                object
             }
             Op::CreateRestParameter => {
                 // CreateArrayFromList (Abschnitt 7.3.17) für die Argumente
@@ -1331,9 +1391,43 @@ impl<'c> Frame<'c, '_> {
                         callee,
                         count,
                         construct: false,
+                        spread: false,
                     }
                 } else {
-                    Flow::TailCall { callee, count }
+                    Flow::TailCall {
+                        callee,
+                        count,
+                        spread: false,
+                    }
+                });
+            }
+            Op::CallSpread | Op::TailCallSpread => {
+                let callee = self.register(agent, scope, first);
+                if !is_callable(agent.heap(), agent.heap().get(callee)) {
+                    return Err(agent.throw_error(ErrorKind::TypeError));
+                }
+                if builtin_parts(agent.heap(), agent.heap().get(callee)).is_some() {
+                    let this = self.register(agent, scope, first.saturating_add(1));
+                    let array = self.register(agent, scope, first.saturating_add(2));
+                    let arguments = spread_list(agent, scope, array)?;
+                    let result = call_builtin(agent, scope, callee, this, &arguments, None)?;
+                    self.set_accumulator(agent, result);
+                    return Ok(Flow::Next);
+                }
+                let callee = self.slot(first);
+                return Ok(if instruction.op == Op::CallSpread {
+                    Flow::Call {
+                        callee,
+                        count: 0,
+                        construct: false,
+                        spread: true,
+                    }
+                } else {
+                    Flow::TailCall {
+                        callee,
+                        count: 0,
+                        spread: true,
+                    }
                 });
             }
             Op::Construct => {
@@ -1377,7 +1471,80 @@ impl<'c> Frame<'c, '_> {
                     callee,
                     count,
                     construct: true,
+                    spread: false,
                 });
+            }
+            Op::ConstructSpread => {
+                // Wie Construct, die Argumente aus dem Array.
+                let constructor = self.register(agent, scope, first);
+                if !is_constructor(agent, agent.heap().get(constructor)) {
+                    return Err(agent.throw_error(ErrorKind::TypeError));
+                }
+                if builtin_parts(agent.heap(), agent.heap().get(constructor)).is_some() {
+                    let array = self.register(agent, scope, first.saturating_add(2));
+                    let arguments = spread_list(agent, scope, array)?;
+                    let this = agent.heap().local(scope, Value::UNDEFINED);
+                    let result = call_builtin(
+                        agent,
+                        scope,
+                        constructor,
+                        this,
+                        &arguments,
+                        Some(constructor),
+                    )?;
+                    self.set_accumulator(agent, result);
+                    return Ok(Flow::Next);
+                }
+                let this = ordinary_create_from_constructor(
+                    agent,
+                    scope,
+                    constructor,
+                    Intrinsic::ObjectPrototype,
+                    self.realm,
+                )?;
+                let callee = self.slot(first);
+                let heap = agent.heap();
+                heap.set_register(place(callee, 1), heap.get(this));
+                return Ok(Flow::Call {
+                    callee,
+                    count: 0,
+                    construct: true,
+                    spread: true,
+                });
+            }
+            Op::GetIterator => {
+                let value = self.accumulator_copy(agent, scope);
+                let (iterator, next) = get_iterator(agent, scope, self.realm, value)?;
+                self.set_register(agent, first, iterator);
+                self.set_register(agent, first.saturating_add(1), next);
+                let heap = agent.heap();
+                heap.set_register(self.slot(first.saturating_add(2)), Value::FALSE);
+            }
+            Op::IteratorNext => {
+                // Der Iterator Record steht ab dem zweiten Operanden, der
+                // erste ist der Sprung.
+                let iterator = self.register(agent, scope, second);
+                let next = self.register(agent, scope, second.saturating_add(1));
+                let done = self.slot(second.saturating_add(2));
+                match iterator_step_value(agent, scope, iterator, next) {
+                    Ok(Some(value)) => self.set_accumulator(agent, value),
+                    Ok(None) => {
+                        agent.heap().set_register(done, Value::TRUE);
+                        return Ok(jump(instruction));
+                    }
+                    Err(abrupt) => {
+                        agent.heap().set_register(done, Value::TRUE);
+                        return Err(abrupt);
+                    }
+                }
+            }
+            Op::IteratorClose | Op::IteratorCloseOnThrow => {
+                let iterator = self.register(agent, scope, first);
+                if instruction.op == Op::IteratorClose {
+                    iterator_close(agent, scope, iterator)?;
+                } else {
+                    iterator_close_on_throw(agent, scope, iterator)?;
+                }
             }
             Op::CreateArguments | Op::CreateMappedArguments | Op::CreateRestParameter => {
                 self.arguments_operation(agent, scope, instruction)?;

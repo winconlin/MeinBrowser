@@ -30,7 +30,8 @@
 //!
 //! Aufrufe: Funktion, `this` und Argumente liegen in Registern
 //! hintereinander, für [`Op::Call`], [`Op::TailCall`] und [`Op::Construct`]
-//! gleich. Nach [`Op::TailCall`] folgt im Code nur noch der Weg zu
+//! gleich. Mit Ausbreitung steht statt der Argumente ein Array dort
+//! ([`Op::CallSpread`]). Nach [`Op::TailCall`] folgt im Code nur noch der Weg zu
 //! [`Op::Return`]: Ersetzt der Aufruf den Rahmen, kommt der Rahmen dort nie
 //! an, sonst gibt er das Ergebnis zurück.
 //!
@@ -277,6 +278,29 @@ ops! {
     /// [`Op::Call`]. Ist der Wert kein Konstruktor, wirft das einen
     /// TypeError, erst nach den Argumenten.
     Construct [Register, Immediate],
+    /// [`Op::Call`] mit Argumenten aus Ausbreitung: Hinter `this` liegt
+    /// statt der Argumente ein Array, das sie als Elemente hält. Der
+    /// Übersetzer legt es an; Code der Sprache sieht es nie.
+    CallSpread [Register],
+    /// [`Op::TailCall`] mit den Argumenten aus dem Array.
+    TailCallSpread [Register],
+    /// [`Op::Construct`] mit den Argumenten aus dem Array.
+    ConstructSpread [Register],
+
+    /// GetIterator (Abschnitt 7.4.4) für den Akkumulator: Das Register nimmt
+    /// den Iterator auf, die beiden danach den Wert von `next` und
+    /// [[Done]], zu Beginn *false*. Die drei sind der Iterator Record.
+    GetIterator [Register],
+    /// IteratorStepValue (Abschnitt 7.4.10) für den Iterator Record ab dem
+    /// Register: der nächste Wert im Akkumulator, oder ein Sprung, wenn der
+    /// Iterator fertig ist. Danach und nach einem Fehler gilt [[Done]].
+    IteratorNext [Jump, Register],
+    /// IteratorClose (Abschnitt 7.4.11) für den Iterator ab dem Register
+    /// nach `break`, `continue` zu einer äußeren Schleife oder `return`.
+    /// Der Akkumulator bleibt.
+    IteratorClose [Register],
+    /// Dasselbe für eine Ausnahme: Was `return` wirft, fällt weg.
+    IteratorCloseOnThrow [Register],
 
     /// Ein neues arguments-Objekt ohne Verknüpfung
     /// (CreateUnmappedArgumentsObject, Abschnitt 10.4.4.6) aus den
@@ -655,8 +679,17 @@ impl Emitter {
     /// Schreibt einen Sprung nach vorn, dessen Ziel [`Emitter::bind`]
     /// nachträgt.
     pub fn jump(&mut self, op: Op) -> Result<Label, TooLarge> {
+        self.jump_with(op, &[])
+    }
+
+    /// Dasselbe für einen Befehl, der nach der Sprungweite weitere Operanden
+    /// hat, wie [`Op::IteratorNext`].
+    pub fn jump_with(&mut self, op: Op, rest: &[i64]) -> Result<Label, TooLarge> {
         let start = self.bytes.len();
-        self.emit_with_width(op, &[0], 4)?;
+        let mut operands = vec![0];
+        operands.extend_from_slice(rest);
+        self.emit_with_width(op, &operands, 4)?;
+        // Hinter dem Präfix und dem Opcode beginnt die Sprungweite.
         Ok(Label {
             start,
             operand: start.checked_add(2).ok_or(TooLarge)?,

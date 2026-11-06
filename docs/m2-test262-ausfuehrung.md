@@ -97,19 +97,19 @@ Dateien, deren Metadaten der Leser ablehnt, scheitern als Ganzes, bisher
 sie kann nicht erwartet werden. Jede Datei der festen Auswahl muss auch hier
 bestehen.
 
-Mit diesem Stand bestehen 6.315 von 23.296 ausgeführten Dateien und 11.877
+Mit diesem Stand bestehen 6.441 von 23.296 ausgeführten Dateien und 12.120
 von 39.297 Varianten. Die Gründe der Fehlschläge gibt der Test mit
 `--nocapture` aus:
 
 | Varianten | Grund |
 | ---: | --- |
-| 15.958 | Der Übersetzer kann ein Konstrukt noch nicht (`Unsupported`) |
+| 16.014 | Der Übersetzer kann ein Konstrukt noch nicht (`Unsupported`) |
 | 4.743 | Flag `async` |
 | 2.469 | Eine Datei der Harness endet mit einem ReferenceError |
-| 2.353 | ReferenceError im Test |
-| 713 | TypeError im Test |
+| 1.986 | ReferenceError im Test |
+| 805 | TypeError im Test |
 | 675 | Flag `module` |
-| 477 | `Test262Error`: Eine Assertion schlug fehl |
+| 453 | `Test262Error`: Eine Assertion schlug fehl |
 | 30 | Die Arbeitsschritte sind erschöpft |
 | 2 | Eine Datei der Harness endet mit einem TypeError |
 

@@ -20,17 +20,22 @@
 //! das schreibt die Bindung. [[DefineOwnProperty]] und [[Delete]]
 //! (Abschnitte 10.4.4.2 und 10.4.4.5) stehen hier und in `object`.
 //!
-//! Abweichungen, bis es %ThrowTypeError% und %Array.prototype.values%
-//! gibt: Die Eigenschaft @@iterator mit %Array.prototype.values% fehlt, und
-//! `callee` eines Objekts ohne Verknüpfung hat statt %ThrowTypeError%
-//! *undefined* als Getter und Setter. Lesen ergibt darum *undefined* statt eines TypeError;
-//! Schreiben im strikten Modus wirft ihn, wie es soll.
+//! Die Eigenschaft @@iterator mit %Array.prototype.values% legt
+//! [`define_arguments_iterator`] erst nach `callee` an, in der
+//! Spezifikation kommt sie davor. Sehen lässt sich das nicht: Kein Code
+//! läuft dazwischen, und [[OwnPropertyKeys]] nennt Symbole stets nach den
+//! Zeichenketten.
+//!
+//! Abweichung, bis es %ThrowTypeError% gibt: `callee` eines Objekts ohne
+//! Verknüpfung hat statt %ThrowTypeError% *undefined* als Getter und
+//! Setter. Lesen ergibt darum *undefined* statt eines TypeError; Schreiben
+//! im strikten Modus wirft ihn, wie es soll.
 
 use super::{INLINE, ordinary_define_own_property, storage::object_of};
 use crate::agent::{Agent, Completion};
 use crate::descriptor::PropertyDescriptor;
 use crate::heap::{Heap, Local, ObjectClass, OutOfMemory, Scope};
-use crate::key::PropertyKey;
+use crate::key::{PropertyKey, WellKnownSymbol};
 use crate::operations::{create_data_property_or_throw, define_property_or_throw};
 use crate::value::{Kind, Ref, Value};
 
@@ -155,6 +160,26 @@ pub(crate) fn create_mapped_arguments_object<'s>(
     let descriptor = PropertyDescriptor::data(function, true, false, true);
     define_property_or_throw(agent, scope, object, key, &descriptor)?;
     Ok(object)
+}
+
+/// Der Schritt mit @@iterator aus CreateUnmappedArgumentsObject und
+/// CreateMappedArgumentsObject: %Array.prototype.values% als `values`,
+/// beschreibbar und konfigurierbar, nicht aufzählbar.
+pub(crate) fn define_arguments_iterator(
+    agent: &mut Agent,
+    scope: &Scope,
+    object: Local<'_>,
+    values: Local<'_>,
+) -> Completion<()> {
+    let symbol = agent.well_known_symbol(scope, WellKnownSymbol::Iterator);
+    let descriptor = PropertyDescriptor::data(values, true, false, true);
+    define_property_or_throw(
+        agent,
+        scope,
+        object,
+        PropertyKey::Symbol(symbol),
+        &descriptor,
+    )
 }
 
 /// Der Kontext und der Platz der Bindung, mit der der Index `index` des

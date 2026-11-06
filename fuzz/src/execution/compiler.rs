@@ -157,6 +157,31 @@ fn check_code(code: &Code, source_length: usize) -> Stats {
                 );
                 stats.calls += 1;
             }
+            Op::CallSpread | Op::TailCallSpread | Op::ConstructSpread => {
+                if instruction.op == Op::TailCallSpread {
+                    assert!(code.is_strict(), "tail calls only in strict code");
+                }
+                let callee = usize::try_from(instruction.operand(0)).expect("callee register");
+                assert!(
+                    callee
+                        .checked_add(3)
+                        .is_some_and(|end| end <= code.register_count()),
+                    "callee, this and the argument array fit their frame"
+                );
+                stats.calls += 1;
+            }
+            Op::GetIterator | Op::IteratorNext => {
+                // The record is the iterator, its next method and [[Done]].
+                let operand = usize::from(instruction.op == Op::IteratorNext);
+                let iterator =
+                    usize::try_from(instruction.operand(operand)).expect("iterator register");
+                assert!(
+                    iterator
+                        .checked_add(3)
+                        .is_some_and(|end| end <= code.register_count()),
+                    "the iterator record fits its frame"
+                );
+            }
             Op::CreateClosure | Op::CreateClosureKeyed => {
                 assert!(matches!(
                     code.constant(instruction.operand(0)),
@@ -378,7 +403,7 @@ mod tests {
 
     #[test]
     fn syntax_and_unsupported_paths_preserve_positions() {
-        for source in ["class A{}", "with({}){}", "f(...[]);"] {
+        for source in ["class A{}", "with({}){}", "[...a] = b;"] {
             let source: Vec<u16> = source.encode_utf16().collect();
             assert_eq!(check_source(&source), Outcome::Unsupported);
         }
@@ -420,6 +445,22 @@ mod tests {
             checked("f();").calls > 0,
             "unknown callees can still compile"
         );
+    }
+
+    #[test]
+    fn iteration_and_spread_keep_their_records_in_frame() {
+        let stats = checked(
+            "for (let x of [1, ...'ab']) { if (x) break; f(...[x], x); } \
+             outer: for (var y of o) for (z of p) continue outer; new F(...q);",
+        );
+        assert_eq!(stats.calls, 2, "a spread call and a spread construct");
+        assert_eq!(
+            stats.handlers, 3,
+            "each for-of closes its iterator on a throw"
+        );
+        let stats = checked("'use strict'; function f(a) { return f(...a); }");
+        assert_eq!(stats.functions, 1);
+        assert_eq!(stats.calls, 1, "the tail call with spread");
     }
 
     #[test]

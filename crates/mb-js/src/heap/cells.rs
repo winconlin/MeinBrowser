@@ -3,10 +3,11 @@
 //! zusammen; hier steht nur, wie die Zellen im Heap liegen.
 
 use super::{
-    Heap, KIND_ARGUMENTS, KIND_ARRAY, KIND_BUILTIN, KIND_ERROR, KIND_FUNCTION, KIND_OBJECT,
-    KIND_PRIMITIVE, KIND_SHAPE, KIND_SLOTS, KIND_SPARSE, KIND_SYMBOL, KIND_WEAK, Local, NONE,
-    OBJECT_REFS, OutOfMemory, Scope, cell_words, header, header_flags, header_kind, header_length,
-    is_object, is_value_cell, object_fields, packed, packed_high, packed_low, to_usize, with_flags,
+    Heap, KIND_ARGUMENTS, KIND_ARRAY, KIND_BUILTIN, KIND_ERROR, KIND_FUNCTION, KIND_ITERATOR,
+    KIND_OBJECT, KIND_PRIMITIVE, KIND_SHAPE, KIND_SLOTS, KIND_SPARSE, KIND_SYMBOL, KIND_WEAK,
+    Local, NONE, OBJECT_REFS, OutOfMemory, Scope, cell_words, header, header_flags, header_kind,
+    header_length, is_object, is_value_cell, object_fields, packed, packed_high, packed_low,
+    to_usize, with_flags,
 };
 use crate::value::{Ref, RefKind, Value};
 
@@ -76,6 +77,10 @@ pub(crate) enum ObjectClass {
     /// (Abschnitte 20.3.4, 21.1.4, 22.1.4 und 20.4.4). Das interne Feld
     /// hält den primitiven Wert, seine Art sagt, welches Feld es ist.
     Primitive,
+    /// Ein Iterator für Arrays (Abschnitt 23.1.5) oder Zeichenketten
+    /// (Abschnitt 22.1.5) mit [`ITERATOR_FIELDS`](super::ITERATOR_FIELDS)
+    /// internen Feldern, sonst gewöhnlich.
+    Iterator,
 }
 
 impl ObjectClass {
@@ -88,6 +93,7 @@ impl ObjectClass {
             ObjectClass::Error => KIND_ERROR,
             ObjectClass::Builtin => KIND_BUILTIN,
             ObjectClass::Primitive => KIND_PRIMITIVE,
+            ObjectClass::Iterator => KIND_ITERATOR,
         }
     }
 
@@ -100,6 +106,7 @@ impl ObjectClass {
             KIND_ERROR => Some(ObjectClass::Error),
             KIND_BUILTIN => Some(ObjectClass::Builtin),
             KIND_PRIMITIVE => Some(ObjectClass::Primitive),
+            KIND_ITERATOR => Some(ObjectClass::Iterator),
             _ => None,
         }
     }
@@ -404,6 +411,24 @@ impl Heap {
     /// Schreibt den primitiven Wert. `false` für andere Zellen.
     pub(crate) fn set_primitive_data(&self, object: Ref<'_>, value: Value<'_>) -> bool {
         self.field_word(object, KIND_PRIMITIVE, 0)
+            .is_some_and(|word| self.store(object.offset(), word, value.bits()))
+    }
+
+    /// Ein internes Feld eines Iterators, `None` für andere Zellen.
+    pub(crate) fn iterator_field(&self, object: Ref<'_>, index: usize) -> Option<Value<'_>> {
+        let word = self.field_word(object, KIND_ITERATOR, index)?;
+        self.word(object.offset(), word).map(Value::from_bits)
+    }
+
+    /// Schreibt ein internes Feld eines Iterators. `false`, wenn es das
+    /// Feld nicht gibt.
+    pub(crate) fn set_iterator_field(
+        &self,
+        object: Ref<'_>,
+        index: usize,
+        value: Value<'_>,
+    ) -> bool {
+        self.field_word(object, KIND_ITERATOR, index)
             .is_some_and(|word| self.store(object.offset(), word, value.bits()))
     }
 }

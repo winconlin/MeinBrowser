@@ -1,9 +1,10 @@
 //! Realms (Abschnitt 9.3) und die globale Umgebung (Abschnitt 9.1.1.4).
 //!
 //! Von den Intrinsics gibt es bisher die aus [`Intrinsic`]: die Prototypen,
-//! die Literale und Zugriffe auf primitive Werte brauchen, und was die
-//! Harness von Test262 braucht (siehe `builtins`); die übrigen kommen mit
-//! den eingebauten Objekten. Das globale Objekt hat die Werteigenschaften
+//! die Literale und Zugriffe auf primitive Werte brauchen, was die Harness
+//! von Test262 braucht, und die Iteratoren für `for`-`of` und die
+//! Ausbreitung (siehe `builtins`); die übrigen kommen mit den eingebauten
+//! Objekten. Das globale Objekt hat die Werteigenschaften
 //! aus Abschnitt 19.1, die Konstruktoren aus Abschnitt 19.3, die es schon
 //! gibt, und die Eigenschaften des Hosts. [[GlobalThisValue]] ist immer das
 //! globale Objekt.
@@ -73,6 +74,16 @@ pub enum Intrinsic {
     StringPrototype,
     /// %Symbol.prototype% (Abschnitt 20.4.3).
     SymbolPrototype,
+    /// %Iterator.prototype% (Abschnitt 27.1.3.3), bisher nur mit
+    /// @@iterator.
+    IteratorPrototype,
+    /// %ArrayIteratorPrototype% (Abschnitt 23.1.5.2).
+    ArrayIteratorPrototype,
+    /// %StringIteratorPrototype% (Abschnitt 22.1.5.1).
+    StringIteratorPrototype,
+    /// %Array.prototype.values% (Abschnitt 23.1.3.38), auch @@iterator von
+    /// Arrays und arguments-Objekten.
+    ArrayPrototypeValues,
     /// %Error.prototype% (Abschnitt 20.5.3) mit `name`, `message` und
     /// `toString`.
     ErrorPrototype,
@@ -93,6 +104,9 @@ pub enum Intrinsic {
     Object,
     /// %String% (Abschnitt 22.1.1).
     String,
+    /// %Symbol% (Abschnitt 20.4.1) mit den bekannten Symbolen und
+    /// `prototype`.
+    Symbol,
     /// %Error% (Abschnitt 20.5.1).
     Error,
     /// %EvalError% (Abschnitt 20.5.6.1), wie die fünf folgenden mit %Error%
@@ -605,6 +619,7 @@ fn set_default_global_bindings(
         ("RangeError", Intrinsic::RangeError),
         ("ReferenceError", Intrinsic::ReferenceError),
         ("String", Intrinsic::String),
+        ("Symbol", Intrinsic::Symbol),
         ("SyntaxError", Intrinsic::SyntaxError),
         ("TypeError", Intrinsic::TypeError),
         ("URIError", Intrinsic::URIError),

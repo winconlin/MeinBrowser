@@ -399,12 +399,12 @@ fn unsupported_constructs_name_their_place() {
         ("x = {*a() {}};", 5),
         ("x = {async a() {}};", 5),
         ("x = {1n: 1};", 5),
-        ("x = [...a];", 5),
-        ("new a(...b);", 6),
-        ("a?.b(...c);", 5),
+        ("[...a] = b;", 0),
+        ("for ([k] of o);", 5),
+        ("for (var [k] of o);", 9),
         ("try {} catch ([e]) {}", 14),
         ("for (var k in o);", 0),
-        ("for (let k of o);", 0),
+        ("for (let [k] of o);", 9),
         ("f`x`;", 0),
         ("[a] = b;", 0),
         ("let {a} = b;", 4),
@@ -1134,5 +1134,31 @@ fn calls_in_tail_position_become_tail_calls() {
         assert_eq!(tail_calls(&code), 0, "{source}");
         let arrow = compile_function(&ast, &first_template(&code)).expect("übersetzbar");
         assert_eq!(tail_calls(&arrow), expected, "{source}");
+    }
+}
+
+/// Im Rumpf von `for`-`of` steht kein Aufruf in Endposition, denn danach
+/// kann der Iterator noch zu schließen sein (HasCallInTailPosition,
+/// Abschnitt 15.10.2). Aufrufe mit Ausbreitung werden Endaufrufe wie
+/// andere.
+#[test]
+fn for_of_bodies_hold_no_tail_calls() {
+    for (body, expected) in [
+        ("for (var x of a) return g(x);", 0),
+        ("for (let x of a) { return g(x); }", 0),
+        ("for (x of a) return g();", 0),
+        ("for (;;) for (const x of a) return g();", 0),
+        ("for (var x of a); return g();", 1),
+        ("for (var x of a) break; return g();", 1),
+        ("return g(...a);", 1),
+        ("return a.b(...c, d);", 1),
+        ("return a?.b(...c);", 1),
+        ("return new G(...a);", 0),
+        ("return g(...a) + 1;", 0),
+    ] {
+        let strict = format!("function f() {{ 'use strict'; {body} }}");
+        assert_eq!(tail_calls(&first_function(&strict)), expected, "{strict}");
+        let sloppy = format!("function f() {{ {body} }}");
+        assert_eq!(tail_calls(&first_function(&sloppy)), 0, "{sloppy}");
     }
 }
