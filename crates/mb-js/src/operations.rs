@@ -20,17 +20,18 @@ pub fn is_array(heap: &Heap, value: Value<'_>) -> bool {
     }
 }
 
-/// IsCallable (Abschnitt 7.2.3). Bisher haben nur ECMAScript-
-/// Funktionsobjekte [[Call]].
+/// IsCallable (Abschnitt 7.2.3). Bisher haben ECMAScript-Funktionsobjekte
+/// und eingebaute Funktionen [[Call]].
 pub fn is_callable(heap: &Heap, value: Value<'_>) -> bool {
     match value.kind() {
         Kind::Object(object) => match heap.object_class(object) {
-            Some(ObjectClass::Function) => true,
+            Some(ObjectClass::Function | ObjectClass::Builtin) => true,
             Some(
                 ObjectClass::Ordinary
                 | ObjectClass::Array
                 | ObjectClass::Arguments
-                | ObjectClass::Error,
+                | ObjectClass::Error
+                | ObjectClass::Primitive,
             )
             | None => false,
         },
@@ -63,8 +64,9 @@ pub fn get<'s>(
 }
 
 /// GetMethod (Abschnitt 7.3.10) für ein Objekt: `None` steht für
-/// *undefined*. Für andere Werte braucht GetV (Abschnitt 7.3.3) ToObject,
-/// das mit den Realms kommt; bis dahin wirft es einen TypeError.
+/// *undefined*. Für andere Werte bräuchte GetV (Abschnitt 7.3.3) ToObject;
+/// alle Aufrufer übergeben Objekte, für andere Werte wirft es einen
+/// TypeError.
 pub fn get_method<'s>(
     agent: &mut Agent,
     scope: &'s Scope,
@@ -122,6 +124,20 @@ pub fn create_data_property_or_throw(
         return Err(agent.throw_error(ErrorKind::TypeError));
     }
     Ok(())
+}
+
+/// CreateNonEnumerableDataPropertyOrThrow (Abschnitt 7.3.7). Der Aufrufer
+/// hat ein gewöhnliches, erweiterbares Objekt ohne nicht konfigurierbare
+/// Eigenschaften; dann gelingt das Anlegen immer.
+pub fn create_non_enumerable_data_property_or_throw(
+    agent: &mut Agent,
+    scope: &Scope,
+    object: Local<'_>,
+    key: PropertyKey<'_>,
+    value: Local<'_>,
+) -> Completion<()> {
+    let descriptor = PropertyDescriptor::data(value, true, false, true);
+    define_property_or_throw(agent, scope, object, key, &descriptor)
 }
 
 /// DefinePropertyOrThrow (Abschnitt 7.3.8).

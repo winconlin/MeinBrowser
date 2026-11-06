@@ -1,12 +1,12 @@
 //! Realms (Abschnitt 9.3) und die globale Umgebung (Abschnitt 9.1.1.4).
 //!
-//! Von den Intrinsics gibt es bisher %Object.prototype%, %Function.prototype%,
-//! die Prototypen, die Literale und Zugriffe auf primitive Werte brauchen,
-//! und die Prototypen der Fehler, die die Engine wirft, noch ohne ihre
-//! Methoden und Konstruktoren; die übrigen kommen mit den eingebauten
-//! Objekten. Das globale
-//! Objekt hat die Werteigenschaften aus Abschnitt 19.1, und
-//! [[GlobalThisValue]] ist immer das globale Objekt.
+//! Von den Intrinsics gibt es bisher die aus [`Intrinsic`]: die Prototypen,
+//! die Literale und Zugriffe auf primitive Werte brauchen, und was die
+//! Harness von Test262 braucht (siehe `builtins`); die übrigen kommen mit
+//! den eingebauten Objekten. Das globale Objekt hat die Werteigenschaften
+//! aus Abschnitt 19.1, die Konstruktoren aus Abschnitt 19.3, die es schon
+//! gibt, und die Eigenschaften des Hosts. [[GlobalThisValue]] ist immer das
+//! globale Objekt.
 //!
 //! Die globale Umgebung besteht wie in der Spezifikation aus einem
 //! Objekt-Record über dem globalen Objekt und einem deklarativen Record für
@@ -18,10 +18,14 @@
 use std::collections::BTreeMap;
 
 use crate::agent::{Agent, Completion, ErrorKind};
+use crate::builtin::builtin_function_with_prototype;
+use crate::builtins::{self, FUNCTION_PROTOTYPE};
 use crate::descriptor::PropertyDescriptor;
 use crate::heap::{Local, Persistent, Scope};
 use crate::key::PropertyKey;
-use crate::object::{self, array_create, ordinary_object_create};
+use crate::object::{
+    self, array_create, ordinary_object_create, primitive_object_create, string_create,
+};
 use crate::operations::{define_property_or_throw, get, has_own_property, has_property, set};
 use crate::value::Value;
 
@@ -52,28 +56,30 @@ struct Binding {
 /// Die Intrinsics (Abschnitt 6.1.7.4), die es schon gibt.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Intrinsic {
-    /// %Object.prototype%
+    /// %Object.prototype% (Abschnitt 20.1.3) mit `toString`.
     ObjectPrototype,
-    /// %Function.prototype% (Abschnitt 20.2.3) mit `length` und `name`,
-    /// bis es eingebaute Funktionen gibt ein gewöhnliches Objekt, das sich
-    /// nicht aufrufen lässt.
+    /// %Function.prototype% (Abschnitt 20.2.3), selbst eine eingebaute
+    /// Funktion, mit `call`.
     FunctionPrototype,
     /// %Array.prototype% (Abschnitt 23.1.3): ein Array mit der Länge 0.
     ArrayPrototype,
-    /// %Boolean.prototype% (Abschnitt 20.3.3), noch ohne [[BooleanData]].
+    /// %Boolean.prototype% (Abschnitt 20.3.3), ein Boolean-Objekt mit
+    /// *false*.
     BooleanPrototype,
-    /// %Number.prototype% (Abschnitt 21.1.3), noch ohne [[NumberData]].
+    /// %Number.prototype% (Abschnitt 21.1.3), ein Number-Objekt mit +0.
     NumberPrototype,
-    /// %String.prototype% (Abschnitt 22.1.3), bis es String-Objekte gibt
-    /// ein gewöhnliches Objekt mit `length` 0. Für die leere Zeichenkette
-    /// verhält es sich wie ein String-Objekt, nur [[StringData]] fehlt.
+    /// %String.prototype% (Abschnitt 22.1.3), ein String-Objekt mit der
+    /// leeren Zeichenkette.
     StringPrototype,
     /// %Symbol.prototype% (Abschnitt 20.4.3).
     SymbolPrototype,
-    /// %Error.prototype% (Abschnitt 20.5.3) mit `name` und `message`.
+    /// %Error.prototype% (Abschnitt 20.5.3) mit `name`, `message` und
+    /// `toString`.
     ErrorPrototype,
-    /// %RangeError.prototype% (Abschnitt 20.5.6.3), wie die drei folgenden
+    /// %EvalError.prototype% (Abschnitt 20.5.6.3), wie die fünf folgenden
     /// mit `name` und `message` und %Error.prototype% als Prototyp.
+    EvalErrorPrototype,
+    /// %RangeError.prototype%
     RangeErrorPrototype,
     /// %ReferenceError.prototype%
     ReferenceErrorPrototype,
@@ -81,6 +87,27 @@ pub enum Intrinsic {
     SyntaxErrorPrototype,
     /// %TypeError.prototype%
     TypeErrorPrototype,
+    /// %URIError.prototype%
+    URIErrorPrototype,
+    /// %Object% (Abschnitt 20.1.1).
+    Object,
+    /// %String% (Abschnitt 22.1.1).
+    String,
+    /// %Error% (Abschnitt 20.5.1).
+    Error,
+    /// %EvalError% (Abschnitt 20.5.6.1), wie die fünf folgenden mit %Error%
+    /// als Prototyp.
+    EvalError,
+    /// %RangeError%
+    RangeError,
+    /// %ReferenceError%
+    ReferenceError,
+    /// %SyntaxError%
+    SyntaxError,
+    /// %TypeError%
+    TypeError,
+    /// %URIError%
+    URIError,
 }
 
 impl Intrinsic {
@@ -136,70 +163,71 @@ fn units(text: &str) -> Vec<u16> {
     text.encode_utf16().collect()
 }
 
-fn length_key<'s>(agent: &mut Agent, scope: &'s Scope) -> Completion<PropertyKey<'s>> {
-    Ok(agent.key_from_units(scope, &units("length"))?)
-}
-
 impl Agent {
     /// InitializeHostDefinedRealm (Abschnitt 9.3.1) ohne den
-    /// Ausführungskontext: die Intrinsics aus [`Intrinsic`], das globale
-    /// Objekt als gewöhnliches Objekt mit %Object.prototype% als Prototyp und
-    /// SetDefaultGlobalBindings (Abschnitt 9.3.3) für die Eigenschaften, die
-    /// es schon gibt.
+    /// Ausführungskontext: CreateIntrinsics (Abschnitt 9.3.2) für die
+    /// Intrinsics aus [`Intrinsic`], das globale Objekt als gewöhnliches
+    /// Objekt mit %Object.prototype% als Prototyp, SetDefaultGlobalBindings
+    /// (Abschnitt 9.3.3) für die Eigenschaften, die es schon gibt, und
+    /// zuletzt die Eigenschaften des Hosts
+    /// ([`Host::define_global_properties`](crate::host::Host::define_global_properties)).
+    /// Scheitert das, gibt es den Realm nicht.
     pub fn create_realm(&mut self) -> Completion<RealmId> {
-        let realm = self.scope(|agent, scope| -> Completion<Realm> {
-            let prototype = ordinary_object_create(agent, scope, None)?;
-            let function = ordinary_object_create(agent, scope, Some(prototype))?;
-            let zero = agent.heap().local(scope, Value::int32(0));
-            let empty = agent.heap_mut().alloc_string(scope, &[])?;
-            let length = length_key(agent, scope)?;
-            let name = agent.key_from_units(scope, &units("name"))?;
-            for (key, value) in [(length, zero), (name, empty)] {
-                // Wie bei eingebauten Funktionen (Abschnitte 10.2.8 und
-                // 10.2.9) weder beschreibbar noch aufzählbar.
-                let descriptor = PropertyDescriptor::data(value, false, false, true);
-                define_property_or_throw(agent, scope, function, key, &descriptor)?;
-            }
-            let array = array_create(agent, scope, 0, Some(prototype))?;
-            let boolean = ordinary_object_create(agent, scope, Some(prototype))?;
-            let number = ordinary_object_create(agent, scope, Some(prototype))?;
-            let string = ordinary_object_create(agent, scope, Some(prototype))?;
-            let descriptor = PropertyDescriptor::data(zero, false, false, false);
-            define_property_or_throw(agent, scope, string, length, &descriptor)?;
-            let symbol = ordinary_object_create(agent, scope, Some(prototype))?;
-            let error = error_prototype(agent, scope, prototype, "Error")?;
-            let range = error_prototype(agent, scope, error, "RangeError")?;
-            let reference = error_prototype(agent, scope, error, "ReferenceError")?;
-            let syntax = error_prototype(agent, scope, error, "SyntaxError")?;
-            let type_error = error_prototype(agent, scope, error, "TypeError")?;
-            let global = ordinary_object_create(agent, scope, Some(prototype))?;
-            set_default_global_bindings(agent, scope, global)?;
-            let heap = agent.heap_mut();
-            let intrinsics = [
-                (Intrinsic::ObjectPrototype, prototype),
-                (Intrinsic::FunctionPrototype, function),
-                (Intrinsic::ArrayPrototype, array),
-                (Intrinsic::BooleanPrototype, boolean),
-                (Intrinsic::NumberPrototype, number),
-                (Intrinsic::StringPrototype, string),
-                (Intrinsic::SymbolPrototype, symbol),
-                (Intrinsic::ErrorPrototype, error),
-                (Intrinsic::RangeErrorPrototype, range),
-                (Intrinsic::ReferenceErrorPrototype, reference),
-                (Intrinsic::SyntaxErrorPrototype, syntax),
-                (Intrinsic::TypeErrorPrototype, type_error),
-            ]
-            .into_iter()
-            .map(|(intrinsic, object)| (intrinsic, heap.persist(object)))
-            .collect();
-            Ok(Realm {
-                intrinsics,
-                global_object: heap.persist(global),
-                declarative: BTreeMap::new(),
-            })
-        })?;
-        self.realms.push(realm);
-        Ok(RealmId(self.realms.len().saturating_sub(1)))
+        let realm = RealmId(self.realms.len());
+        let global_object = self.scope(|agent, scope| {
+            let undefined = agent.heap().local(scope, Value::UNDEFINED);
+            agent.heap_mut().persist(undefined)
+        });
+        self.realms.push(Realm {
+            intrinsics: BTreeMap::new(),
+            global_object,
+            declarative: BTreeMap::new(),
+        });
+        let result = self.scope(|agent, scope| initialize_realm(agent, scope, realm));
+        if let Err(abrupt) = result {
+            self.discard_realm(realm);
+            return Err(abrupt);
+        }
+        Ok(realm)
+    }
+
+    /// Entfernt den Realm, dessen Aufbau scheiterte. Darin lief kein Code,
+    /// also verweist nur er selbst auf seine Objekte.
+    fn discard_realm(&mut self, realm: RealmId) {
+        if realm.0.checked_add(1) != Some(self.realms.len()) {
+            return;
+        }
+        let Some(old) = self.realms.pop() else {
+            return;
+        };
+        let heap = self.heap_mut();
+        for (_, handle) in old.intrinsics {
+            heap.release(handle);
+        }
+        for (_, binding) in old.declarative {
+            heap.release(binding.value);
+        }
+        heap.release(old.global_object);
+    }
+
+    /// Setzt ein Intrinsic des Realms, während er entsteht.
+    pub(crate) fn set_intrinsic(&mut self, realm: RealmId, intrinsic: Intrinsic, value: Local<'_>) {
+        let handle = self.heap_mut().persist(value);
+        let old = match self.realms.get_mut(realm.0) {
+            Some(entry) => entry.intrinsics.insert(intrinsic, handle),
+            None => Some(handle),
+        };
+        if let Some(old) = old {
+            self.heap_mut().release(old);
+        }
+    }
+
+    /// Setzt [[GlobalObject]] des Realms, während er entsteht.
+    fn set_global_object(&mut self, realm: RealmId, global: Local<'_>) {
+        let (realms, heap) = self.realms_and_heap();
+        if let Some(entry) = realms.get(realm.0) {
+            heap.set_persistent(&entry.global_object, global);
+        }
     }
 
     fn realm(&self, realm: RealmId) -> Option<&Realm> {
@@ -503,41 +531,62 @@ impl Agent {
     }
 }
 
-/// %Error.prototype% oder ein %NativeError.prototype% (Abschnitte 20.5.3
-/// und 20.5.6.3): ein gewöhnliches Objekt, kein Fehlerobjekt, mit dem
-/// Namen in `name` und der leeren Zeichenkette in `message`. Wie alle
-/// Werteigenschaften eingebauter Objekte sind beide schreibbar und
-/// konfigurierbar, aber nicht aufzählbar (Abschnitt 18).
-fn error_prototype<'s>(
-    agent: &mut Agent,
-    scope: &'s Scope,
-    prototype: Local<'_>,
-    name: &str,
-) -> Completion<Local<'s>> {
-    let object = ordinary_object_create(agent, scope, Some(prototype))?;
-    let name_value = agent.heap_mut().alloc_string(scope, &units(name))?;
-    let message = agent.heap_mut().alloc_string(scope, &[])?;
-    let properties = [("name", name_value), ("message", message)];
-    for (key, value) in properties {
-        let key = agent.key_from_units(scope, &units(key))?;
-        let descriptor = PropertyDescriptor::data(value, true, false, true);
-        define_property_or_throw(agent, scope, object, key, &descriptor)?;
+/// Der Aufbau eines neuen Realms in [`Agent::create_realm`].
+fn initialize_realm(agent: &mut Agent, scope: &Scope, realm: RealmId) -> Completion<()> {
+    create_intrinsics(agent, scope, realm)?;
+    let prototype = agent.intrinsic(scope, realm, Intrinsic::ObjectPrototype);
+    let global = ordinary_object_create(agent, scope, Some(prototype))?;
+    agent.set_global_object(realm, global);
+    set_default_global_bindings(agent, scope, realm, global)?;
+    if let Some(host) = agent.host() {
+        host.define_global_properties(agent, scope, realm)?;
     }
-    Ok(object)
+    Ok(())
+}
+
+/// CreateIntrinsics (Abschnitt 9.3.2) für die Intrinsics, die es schon gibt:
+/// erst %Object.prototype% und %Function.prototype%, auf denen alle anderen
+/// aufbauen, dann die Prototypen der Arrays und der primitiven Werte, dann
+/// die eingebauten Objekte aus `builtins`.
+fn create_intrinsics(agent: &mut Agent, scope: &Scope, realm: RealmId) -> Completion<()> {
+    let object = ordinary_object_create(agent, scope, None)?;
+    agent.set_intrinsic(realm, Intrinsic::ObjectPrototype, object);
+    let function =
+        builtin_function_with_prototype(agent, scope, realm, &FUNCTION_PROTOTYPE, object)?;
+    agent.set_intrinsic(realm, Intrinsic::FunctionPrototype, function);
+    let array = array_create(agent, scope, 0, Some(object))?;
+    agent.set_intrinsic(realm, Intrinsic::ArrayPrototype, array);
+    let heap = agent.heap();
+    let (no, zero) = (
+        heap.local(scope, Value::FALSE),
+        heap.local(scope, Value::int32(0)),
+    );
+    let boolean = primitive_object_create(agent, scope, no, object)?;
+    agent.set_intrinsic(realm, Intrinsic::BooleanPrototype, boolean);
+    let number = primitive_object_create(agent, scope, zero, object)?;
+    agent.set_intrinsic(realm, Intrinsic::NumberPrototype, number);
+    let empty = agent.heap_mut().alloc_string(scope, &[])?;
+    let string = string_create(agent, scope, empty, object)?;
+    agent.set_intrinsic(realm, Intrinsic::StringPrototype, string);
+    let symbol = ordinary_object_create(agent, scope, Some(object))?;
+    agent.set_intrinsic(realm, Intrinsic::SymbolPrototype, symbol);
+    builtins::create_intrinsics(agent, scope, realm)
 }
 
 /// SetDefaultGlobalBindings (Abschnitt 9.3.3) für die Werteigenschaften aus
-/// Abschnitt 19.1.
+/// Abschnitt 19.1 und die Konstruktoren aus Abschnitt 19.3, die es schon
+/// gibt.
 fn set_default_global_bindings(
     agent: &mut Agent,
     scope: &Scope,
+    realm: RealmId,
     global: Local<'_>,
 ) -> Completion<()> {
     let infinity = agent.heap().local(scope, Value::number(f64::INFINITY));
     let nan = agent.heap().local(scope, Value::number(f64::NAN));
     let undefined = agent.heap().local(scope, Value::UNDEFINED);
-    // globalThis ist schreibbar und konfigurierbar, die übrigen sind
-    // keines von beiden. Aufzählbar ist keine.
+    // globalThis ist schreibbar und konfigurierbar, die übrigen
+    // Werteigenschaften sind keines von beiden. Aufzählbar ist keine.
     let properties = [
         ("globalThis", global, true),
         ("Infinity", infinity, false),
@@ -547,6 +596,23 @@ fn set_default_global_bindings(
     for (name, value, writable) in properties {
         let key = agent.key_from_units(scope, &units(name))?;
         let descriptor = PropertyDescriptor::data(value, writable, false, writable);
+        define_property_or_throw(agent, scope, global, key, &descriptor)?;
+    }
+    let constructors = [
+        ("Error", Intrinsic::Error),
+        ("EvalError", Intrinsic::EvalError),
+        ("Object", Intrinsic::Object),
+        ("RangeError", Intrinsic::RangeError),
+        ("ReferenceError", Intrinsic::ReferenceError),
+        ("String", Intrinsic::String),
+        ("SyntaxError", Intrinsic::SyntaxError),
+        ("TypeError", Intrinsic::TypeError),
+        ("URIError", Intrinsic::URIError),
+    ];
+    for (name, intrinsic) in constructors {
+        let value = agent.intrinsic(scope, realm, intrinsic);
+        let key = agent.key_from_units(scope, &units(name))?;
+        let descriptor = PropertyDescriptor::data(value, true, false, true);
         define_property_or_throw(agent, scope, global, key, &descriptor)?;
     }
     Ok(())

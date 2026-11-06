@@ -20,10 +20,10 @@
 //! das schreibt die Bindung. [[DefineOwnProperty]] und [[Delete]]
 //! (Abschnitte 10.4.4.2 und 10.4.4.5) stehen hier und in `object`.
 //!
-//! Abweichungen, bis es eingebaute Funktionen gibt: Die Eigenschaft
-//! @@iterator mit %Array.prototype.values% fehlt, und `callee` eines
-//! Objekts ohne Verknüpfung hat statt %ThrowTypeError% *undefined* als
-//! Getter und Setter. Lesen ergibt darum *undefined* statt eines TypeError;
+//! Abweichungen, bis es %ThrowTypeError% und %Array.prototype.values%
+//! gibt: Die Eigenschaft @@iterator mit %Array.prototype.values% fehlt, und
+//! `callee` eines Objekts ohne Verknüpfung hat statt %ThrowTypeError%
+//! *undefined* als Getter und Setter. Lesen ergibt darum *undefined* statt eines TypeError;
 //! Schreiben im strikten Modus wirft ihn, wie es soll.
 
 use super::{INLINE, ordinary_define_own_property, storage::object_of};

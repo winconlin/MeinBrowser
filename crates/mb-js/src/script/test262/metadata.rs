@@ -15,6 +15,8 @@ pub(super) enum Mode {
 pub(super) enum Negative {
     Parse,
     Runtime(ErrorKind),
+    /// `phase: runtime` mit `type: Test262Error` aus `sta.js`.
+    Test262Error,
 }
 
 #[derive(Debug, Default)]
@@ -161,6 +163,7 @@ impl Metadata {
         if keys.contains("negative") {
             result.negative = Some(match (phase.as_deref(), error_type.as_deref()) {
                 (Some("parse"), Some("SyntaxError")) => Negative::Parse,
+                (Some("runtime"), Some("Test262Error")) => Negative::Test262Error,
                 (Some("runtime"), Some(name)) => Negative::Runtime(match name {
                     "RangeError" => ErrorKind::RangeError,
                     "ReferenceError" => ErrorKind::ReferenceError,

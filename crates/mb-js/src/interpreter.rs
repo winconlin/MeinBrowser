@@ -10,7 +10,8 @@
 //! Handles, damit Zwischenwerte nicht über die ganze Ausführung anwachsen.
 //!
 //! Ruft JavaScript eine Funktion auf, legt der Lauf einen Rahmen auf seinen
-//! eigenen Stapel, ohne Rekursion in Rust. Ruft die Engine eine Funktion
+//! eigenen Stapel, ohne Rekursion in Rust. Eine eingebaute Funktion läuft
+//! dagegen ohne Rahmen im Befehl des Aufrufs. Ruft die Engine eine Funktion
 //! auf, etwa einen Getter, beginnt ein neuer Lauf ([`call_function`]). Wie
 //! viel vom Stapel der Maschine solche verschachtelten Läufe brauchen
 //! dürfen, begrenzt [`crate::agent::STACK_BUDGET`] (RS-8); wie viele Rahmen
@@ -22,7 +23,8 @@
 //! Endposition ([`Op::TailCall`]) nimmt die Argumente in Handles, baut den
 //! Rahmen ab und legt den neuen an dieselbe Stelle; der Stapel wächst also
 //! nicht. Nur im Rahmen von [[Construct]] bleibt er ein gewöhnlicher Aufruf,
-//! denn danach ist das Ergebnis noch zu prüfen.
+//! denn danach ist das Ergebnis noch zu prüfen. Auch eine eingebaute
+//! Funktion in Endposition läuft im Befehl, bevor der Rahmen geht.
 //!
 //! Ausnahmen: Wirft ein Befehl, sucht der Lauf in der Ausnahmetabelle des
 //! obersten Rahmens nach einem Handler, dann in denen der Aufrufer, und
@@ -38,10 +40,11 @@ use std::rc::Rc;
 
 use crate::agent::{Abrupt, Agent, Completion, ErrorKind};
 use crate::ast::Ast;
+use crate::builtin::{builtin_parts, call_builtin};
 use crate::bytecode::{Code, Constant, HandlerKind, Instruction, Op};
 use crate::compare::{is_less_than, is_loosely_equal, is_strictly_equal};
 use crate::compiler::{CompileError, compile_function};
-use crate::conversion::{to_boolean, to_number, to_numeric, to_property_key, to_string};
+use crate::conversion::{to_boolean, to_number, to_numeric, to_object, to_property_key, to_string};
 use crate::descriptor::PropertyDescriptor;
 use crate::function::{
     Compiled, function_environment, function_parts, instantiate_closure, is_constructor,
@@ -229,7 +232,8 @@ fn start_frame<'s>(
 }
 
 /// [[Call]] eines Funktionsobjekts (Abschnitt 10.2.1), wenn die Engine es
-/// aufruft: ein neuer Lauf, der mit der Rückkehr der Funktion endet.
+/// aufruft: ein neuer Lauf, der mit der Rückkehr der Funktion endet. Für
+/// eine eingebaute Funktion (Abschnitt 10.3.1) zählt ihr Aufruf als Lauf.
 pub(crate) fn call_function<'s>(
     agent: &mut Agent,
     scope: &'s Scope,
@@ -239,7 +243,11 @@ pub(crate) fn call_function<'s>(
 ) -> Completion<Local<'s>> {
     agent.with_default_execution_budget(|agent| {
         agent.enter_interpreter()?;
-        let result = call_frame(agent, scope, function, this, arguments);
+        let result = if builtin_parts(agent.heap(), agent.heap().get(function)).is_some() {
+            call_builtin(agent, scope, function, this, arguments, None)
+        } else {
+            call_frame(agent, scope, function, this, arguments)
+        };
         agent.leave_interpreter();
         result
     })
@@ -444,9 +452,6 @@ fn catch(
 ///
 /// Liest der Code new.target, bekommt er `new_target` in dessen Register,
 /// ohne bleibt es *undefined* wie für [[Call]].
-///
-/// Abweichung: Im nicht strikten Modus bleibt ein primitiver Wert als
-/// `this` primitiv, denn Wrapper-Objekte gibt es noch nicht.
 fn enter_function(
     agent: &mut Agent,
     scope: &Scope,
@@ -459,6 +464,17 @@ fn enter_function(
         return Err(agent.throw_error(ErrorKind::TypeError));
     };
     let (code, pool) = compiled(agent, scope, shared)?;
+    // OrdinaryCallBindThis: Im nicht strikten Modus wird *undefined* und
+    // *null* zum globalen Objekt, ein primitiver Wert zu seinem Wrapper aus
+    // dem Realm der Funktion. Pfeilfunktionen lesen das Register nie.
+    let value = agent.heap().get(this);
+    let this = if code.is_strict() {
+        this
+    } else if value.is_undefined() || value.is_null() {
+        agent.global_object(scope, realm)
+    } else {
+        to_object(agent, scope, realm, this)?
+    };
     let argument_count = match arguments {
         Arguments::Registers { count, .. } => count,
         Arguments::Locals(locals) => locals.len(),
@@ -473,12 +489,6 @@ fn enter_function(
     let count = HEADER.checked_add(code.register_count());
     let Some(header) = count.and_then(|count| agent.heap_mut().push_registers(count)) else {
         return Err(agent.throw_error(ErrorKind::RangeError));
-    };
-    let value = agent.heap().get(this);
-    let this = if !code.is_strict() && (value.is_undefined() || value.is_null()) {
-        agent.global_object(scope, realm)
-    } else {
-        this
     };
     let base = place(header, HEADER);
     let heap = agent.heap();
@@ -666,6 +676,25 @@ impl<'c> Frame<'c, '_> {
 
     fn set_accumulator_value(&self, agent: &Agent, value: Value<'static>) {
         agent.heap().set(self.accumulator, value);
+    }
+
+    /// `this` und die `count` Argumente eines Aufrufs der Funktion im
+    /// Register `callee`, als Handles.
+    fn call_operands<'s>(
+        &self,
+        agent: &Agent,
+        scope: &'s Scope,
+        callee: i64,
+        count: usize,
+    ) -> (Local<'s>, Vec<Local<'s>>) {
+        let slot = self.slot(callee);
+        let heap = agent.heap();
+        let this = heap.local(scope, heap.register(place(slot, 1)));
+        let first = place(slot, 2);
+        let arguments = (0..count)
+            .map(|index| heap.local(scope, heap.register(place(first, index))))
+            .collect();
+        (this, arguments)
     }
 
     /// Die Konstante als Wert, aus dem Kopf des Rahmens.
@@ -1286,8 +1315,17 @@ impl<'c> Frame<'c, '_> {
                 if !is_callable(agent.heap(), agent.heap().get(callee)) {
                     return Err(agent.throw_error(ErrorKind::TypeError));
                 }
-                let callee = self.slot(first);
                 let count = usize::try_from(second).unwrap_or(0);
+                if builtin_parts(agent.heap(), agent.heap().get(callee)).is_some() {
+                    // Eine eingebaute Funktion läuft im Befehl, auch in
+                    // Endposition; den Rahmen baut erst das folgende Return
+                    // ab.
+                    let (this, arguments) = self.call_operands(agent, scope, first, count);
+                    let result = call_builtin(agent, scope, callee, this, &arguments, None)?;
+                    self.set_accumulator(agent, result);
+                    return Ok(Flow::Next);
+                }
+                let callee = self.slot(first);
                 return Ok(if instruction.op == Op::Call {
                     Flow::Call {
                         callee,
@@ -1307,6 +1345,24 @@ impl<'c> Frame<'c, '_> {
                 if !is_constructor(agent, agent.heap().get(constructor)) {
                     return Err(agent.throw_error(ErrorKind::TypeError));
                 }
+                let count = usize::try_from(second).unwrap_or(0);
+                if builtin_parts(agent.heap(), agent.heap().get(constructor)).is_some() {
+                    // [[Construct]] einer eingebauten Funktion (Abschnitt
+                    // 10.3.2): Sie legt ihr Objekt selbst an, `this` bleibt
+                    // uninitialisiert.
+                    let (_, arguments) = self.call_operands(agent, scope, first, count);
+                    let this = agent.heap().local(scope, Value::UNDEFINED);
+                    let result = call_builtin(
+                        agent,
+                        scope,
+                        constructor,
+                        this,
+                        &arguments,
+                        Some(constructor),
+                    )?;
+                    self.set_accumulator(agent, result);
+                    return Ok(Flow::Next);
+                }
                 let this = ordinary_create_from_constructor(
                     agent,
                     scope,
@@ -1317,7 +1373,6 @@ impl<'c> Frame<'c, '_> {
                 let callee = self.slot(first);
                 let heap = agent.heap();
                 heap.set_register(place(callee, 1), heap.get(this));
-                let count = usize::try_from(second).unwrap_or(0);
                 return Ok(Flow::Call {
                     callee,
                     count,
