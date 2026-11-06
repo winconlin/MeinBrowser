@@ -7,3 +7,4 @@ crates/mb-encoding/src/tables.rs text eol=lf
 crates/mb-html/src/entities/tables.rs text eol=lf
 crates/mb-style/src/ua/tables.rs text eol=lf
 crates/mb-webidl/src/parser/tables.rs text eol=lf
+crates/mb-js/src/script/test262/erwartete-fehlschlaege.txt text eol=lf
