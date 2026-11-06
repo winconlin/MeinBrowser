@@ -9,7 +9,8 @@
 //! Ausbreitung brauchen: die Iteratoren für Arrays und Zeichenketten mit
 //! `Array.prototype.values`, `keys`, `entries` und den Methoden für
 //! @@iterator, und %Symbol% mit den bekannten Symbolen, damit Scripts
-//! eigene Iteratoren bauen können. Die übrigen Eigenschaften dieser Objekte
+//! eigene Iteratoren bauen können. Generatoren bringen ihre Prototypen mit
+//! `next`, `return` und `throw` mit. Die übrigen Eigenschaften dieser Objekte
 //! und die anderen eingebauten Objekte kommen in Wellen (Schritt 8 des
 //! Plans).
 //!
@@ -21,6 +22,7 @@
 mod array;
 mod error;
 mod function;
+mod generator;
 mod iterator;
 mod object;
 mod string;
@@ -50,6 +52,7 @@ pub(crate) fn create_intrinsics(
     function::create(agent, scope, realm)?;
     object::create(agent, scope, realm)?;
     iterator::create(agent, scope, realm)?;
+    generator::create(agent, scope, realm)?;
     array::create(agent, scope, realm)?;
     string::create(agent, scope, realm)?;
     symbol::create(agent, scope, realm)?;

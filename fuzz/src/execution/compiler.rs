@@ -24,6 +24,8 @@ struct Stats {
     functions: usize,
     unsupported_functions: usize,
     too_large_functions: usize,
+    generators: usize,
+    yields: usize,
 }
 
 impl Stats {
@@ -35,6 +37,8 @@ impl Stats {
         self.extra_wide += other.extra_wide;
         self.calls += other.calls;
         self.handlers += other.handlers;
+        self.generators += other.generators;
+        self.yields += other.yields;
     }
 }
 
@@ -69,6 +73,12 @@ fn check_code(code: &Code, source_length: usize) -> Stats {
         assert!(
             register < code.register_count(),
             "new.target register is in frame"
+        );
+    }
+    if let Some(register) = code.generator_register() {
+        assert!(
+            register < code.register_count(),
+            "generator register is in frame"
         );
     }
     let mut stats = Stats::default();
@@ -140,6 +150,21 @@ fn check_code(code: &Code, source_length: usize) -> Stats {
             }
             operand_at += width;
         }
+        if matches!(
+            instruction.op,
+            Op::CreateGenerator | Op::Yield | Op::YieldResult | Op::ResumeGenerator | Op::YieldStar
+        ) {
+            assert!(
+                code.generator_register().is_some(),
+                "generator instructions only in generator code"
+            );
+        }
+        if matches!(instruction.op, Op::TailCall | Op::TailCallSpread) {
+            assert!(
+                code.generator_register().is_none(),
+                "no tail calls in generator bodies"
+            );
+        }
         match instruction.op {
             Op::Call | Op::TailCall | Op::Construct => {
                 if instruction.op == Op::TailCall {
@@ -175,9 +200,11 @@ fn check_code(code: &Code, source_length: usize) -> Stats {
             | Op::IteratorElement
             | Op::IteratorSkip
             | Op::IteratorClose
-            | Op::IteratorCloseOnThrow => {
+            | Op::IteratorCloseOnThrow
+            | Op::YieldStar => {
                 // The record is the iterator, its next method and [[Done]].
-                let operand = usize::from(instruction.op == Op::IteratorNext);
+                let operand =
+                    usize::from(matches!(instruction.op, Op::IteratorNext | Op::YieldStar));
                 let iterator =
                     usize::try_from(instruction.operand(operand)).expect("iterator register");
                 assert!(
@@ -199,6 +226,8 @@ fn check_code(code: &Code, source_length: usize) -> Stats {
                     "the value and its excluded keys fit their frame"
                 );
             }
+            Op::CreateGenerator => stats.generators += 1,
+            Op::Yield | Op::YieldResult => stats.yields += 1,
             Op::CreateClosure | Op::CreateClosureKeyed => {
                 assert!(matches!(
                     code.constant(instruction.operand(0)),
@@ -496,6 +525,21 @@ mod tests {
             stats.handlers, 8,
             "each non-empty array pattern, the for-of and the catch"
         );
+    }
+
+    #[test]
+    fn generators_keep_their_register_and_records_in_frame() {
+        let stats = checked(
+            "function* g(a) { var x = yield a; try { yield* x; } finally { yield; } return x; } \
+             var o = { *m() { yield 1; } }; { function* h() {} }",
+        );
+        assert_eq!(stats.functions, 3);
+        assert_eq!(stats.unsupported_functions, 0);
+        assert_eq!(stats.generators, 3, "each generator creates its object");
+        assert_eq!(stats.yields, 4, "three yields and the one of yield*");
+        let stats = checked("'use strict'; function* g() { return g(); }");
+        assert_eq!(stats.functions, 1);
+        assert_eq!(stats.calls, 1, "a plain call, never a tail call");
     }
 
     #[test]

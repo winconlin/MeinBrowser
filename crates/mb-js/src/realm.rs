@@ -81,6 +81,12 @@ pub enum Intrinsic {
     ArrayIteratorPrototype,
     /// %StringIteratorPrototype% (Abschnitt 22.1.5.1).
     StringIteratorPrototype,
+    /// %GeneratorFunction.prototype% (Abschnitt 27.6.3), der Prototyp der
+    /// Generatorfunktionen, bisher ohne `constructor`.
+    GeneratorFunctionPrototype,
+    /// %GeneratorPrototype% (Abschnitt 27.8.1) mit `next`, `return` und
+    /// `throw`.
+    GeneratorPrototype,
     /// %Array.prototype.values% (Abschnitt 23.1.3.38), auch @@iterator von
     /// Arrays und arguments-Objekten.
     ArrayPrototypeValues,

@@ -12,6 +12,7 @@ pub mod compiler;
 pub mod conversion;
 pub mod descriptor;
 pub mod function;
+mod generator;
 pub mod heap;
 pub mod host;
 pub mod interpreter;

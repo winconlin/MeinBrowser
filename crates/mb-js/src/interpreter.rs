@@ -35,6 +35,14 @@
 //! Fehler der Engine bekommt dabei den Realm des Rahmens, dessen Befehl ihn
 //! warf; ein Handler für `catch` bekommt dort sein Fehlerobjekt. Die
 //! übrigen abrupten Beendigungen fängt kein Handler.
+//!
+//! Generatoren: Der Rahmen einer Generatorfunktion kehrt nach
+//! FunctionDeclarationInstantiation mit dem Generator zurück, der eine
+//! Kopie seines Kopfs und seiner Register hält. `next` setzt ihn in einem
+//! neuen Lauf fort ([`resume_frame`]), dessen unterster Rahmen er ist; bei
+//! `yield` kommt der Rahmen zurück in den Generator, und der Lauf endet
+//! ([`Ending::Suspended`]). Andere Rahmen halten nie an: Ein Generator
+//! hält nur in seinem eigenen Rumpf an, und der läuft nur so.
 
 #![forbid(unsafe_code)]
 
@@ -51,9 +59,14 @@ use crate::descriptor::PropertyDescriptor;
 use crate::function::{
     Compiled, function_environment, function_parts, instantiate_closure, is_constructor,
 };
+use crate::generator::{
+    Resumption, generator_create, generator_yield, save_frame, set_resumption, start_executing,
+    suspended_parts, take_resumption,
+};
 use crate::heap::{Heap, Local, Scope};
 use crate::iterator::{
-    get_iterator, iterator_close, iterator_close_on_throw, iterator_step, iterator_step_value,
+    create_iterator_result_object, get_iterator, iterator_close, iterator_close_on_throw,
+    iterator_step, iterator_step_value,
 };
 use crate::key::{PropertyKey, array_index};
 use crate::number;
@@ -63,7 +76,8 @@ use crate::object::{
     set_prototype_of,
 };
 use crate::operations::{
-    create_data_property_or_throw, define_property_or_throw, get, has_property, is_callable, set,
+    call, create_data_property_or_throw, define_property_or_throw, get, get_method, has_property,
+    is_callable, set,
 };
 use crate::operators::{BinaryOp, apply_string_or_numeric_binary_operator, type_of};
 use crate::realm::{GlobalReference, Intrinsic, RealmId};
@@ -87,6 +101,8 @@ enum Flow {
     Next,
     Jump(usize),
     Return,
+    /// Der Rahmen eines Generators hält an; der Generator hält ihn schon.
+    Yield,
     /// Ruft die Funktion im Platz `callee` des Registerstapels auf, `this`
     /// liegt dahinter und dann `count` Argumente, mit `spread` stattdessen
     /// ein Array mit den Argumenten. Mit `construct` ist es [[Construct]]
@@ -103,6 +119,15 @@ enum Flow {
         count: usize,
         spread: bool,
     },
+}
+
+/// Wie ein Lauf endet, wenn nicht abrupt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Ending {
+    /// Sein unterster Rahmen kehrte zurück.
+    Returned,
+    /// Sein unterster Rahmen, der eines Generators, hielt bei `yield` an.
+    Suspended,
 }
 
 /// Der Bytecode eines Rahmens: geliehen für ein Script, geteilt für
@@ -237,7 +262,23 @@ fn start_frame<'s>(
     };
     let result = run(agent, activation, accumulator);
     agent.heap_mut().truncate_registers(header);
-    result.map(|()| accumulator)
+    returned(agent, result, accumulator)
+}
+
+/// Das Ergebnis eines Laufs, dessen unterster Rahmen ein Script oder eine
+/// gerade aufgerufene Funktion ist: der Akkumulator, wenn er zurückkehrte.
+fn returned<'s>(
+    agent: &mut Agent,
+    result: Completion<Ending>,
+    accumulator: Local<'s>,
+) -> Completion<Local<'s>> {
+    match result? {
+        Ending::Returned => Ok(accumulator),
+        // Kann nicht vorkommen: Ein solcher Rahmen beginnt am Anfang seines
+        // Codes, und eine Generatorfunktion kehrt dort mit dem Generator
+        // zurück, bevor ihr Rumpf läuft.
+        Ending::Suspended => Err(agent.throw_error(ErrorKind::RangeError)),
+    }
 }
 
 /// [[Call]] eines Funktionsobjekts (Abschnitt 10.2.1), wenn die Engine es
@@ -275,17 +316,93 @@ fn call_frame<'s>(
     let accumulator = agent.heap().local(scope, Value::UNDEFINED);
     let result = run(agent, activation, accumulator);
     agent.heap_mut().truncate_registers(header);
-    result.map(|()| accumulator)
+    returned(agent, result, accumulator)
 }
 
-/// Führt Befehle aus, bis `activation` zurückkehrt. Der Rückgabewert steht
+/// Setzt den angehaltenen Rahmen des Generators `generator` fort
+/// (GeneratorResume und GeneratorResumeAbrupt, Abschnitte 27.8.3.3 und
+/// 27.8.3.4, ab dem Wechsel des Laufs): ein neuer Lauf mit dem Rahmen aus
+/// seiner Zelle und `value` im Akkumulator; der Befehl danach liest
+/// `resumption`. Erst wenn der Rahmen steht, wird der Generator
+/// ~executing~. Das Ergebnis sagt, ob der Rahmen wieder anhielt oder
+/// zurückkehrte, mit dem Akkumulator.
+pub(crate) fn resume_frame<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    generator: Local<'_>,
+    resumption: Resumption,
+    value: Local<'_>,
+) -> Completion<(Ending, Local<'s>)> {
+    agent.with_default_execution_budget(|agent| {
+        agent.enter_interpreter()?;
+        let result = resume_suspended(agent, scope, generator, resumption, value);
+        agent.leave_interpreter();
+        result
+    })
+}
+
+fn resume_suspended<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    generator: Local<'_>,
+    resumption: Resumption,
+    value: Local<'_>,
+) -> Completion<(Ending, Local<'s>)> {
+    // Der Aufrufer prüfte, dass der Generator angehalten ist; dann hat er
+    // alle Teile.
+    let Some((function, frame, offset)) = suspended_parts(agent, scope, generator) else {
+        return Err(agent.throw_error(ErrorKind::TypeError));
+    };
+    let Some((shared, realm)) = function_parts(agent.heap(), agent.heap().get(function)) else {
+        return Err(agent.throw_error(ErrorKind::TypeError));
+    };
+    let (code, _) = compiled(agent, scope, shared)?;
+    let length = match agent.heap().get(frame).kind() {
+        Kind::Internal(cell) => agent.heap().slot_count(cell),
+        _ => 0,
+    };
+    // Kann nicht abweichen: [`Op::CreateGenerator`] legte die Zelle für
+    // diesen Code an.
+    if HEADER.checked_add(code.register_count()) != Some(length) {
+        return Err(agent.throw_error(ErrorKind::RangeError));
+    }
+    let Some(header) = agent.heap_mut().push_registers(length) else {
+        return Err(agent.throw_error(ErrorKind::RangeError));
+    };
+    let heap = agent.heap();
+    if let Kind::Internal(cell) = heap.get(frame).kind() {
+        for index in 0..length {
+            let saved = heap.slot(cell, index).unwrap_or(Value::UNDEFINED);
+            heap.set_register(place(header, index), saved);
+        }
+    }
+    start_executing(heap, heap.get(generator), resumption);
+    let accumulator = heap.local(scope, heap.get(value));
+    let activation = Activation {
+        source: Source::Shared(code),
+        realm,
+        base: place(header, HEADER),
+        offset,
+        construct: false,
+    };
+    let result = run(agent, activation, accumulator);
+    agent.heap_mut().truncate_registers(header);
+    result.map(|ending| (ending, accumulator))
+}
+
+/// Führt Befehle aus, bis `activation` zurückkehrt oder als Rahmen eines
+/// Generators anhält. Der Rückgabewert oder das Ergebnis von `yield` steht
 /// dann im Akkumulator. Die Register der Rahmen räumt bei einer abrupten
 /// Rückkehr der Aufrufer ab.
-fn run(agent: &mut Agent, activation: Activation<'_>, accumulator: Local<'_>) -> Completion<()> {
+fn run(
+    agent: &mut Agent,
+    activation: Activation<'_>,
+    accumulator: Local<'_>,
+) -> Completion<Ending> {
     let mut stack = vec![activation];
     loop {
         let Some(top) = stack.last_mut() else {
-            return Ok(());
+            return Ok(Ending::Returned);
         };
         agent.spend_execution_steps(1)?;
         let code = top.source.code();
@@ -339,9 +456,17 @@ fn run(agent: &mut Agent, activation: Activation<'_>, accumulator: Local<'_>) ->
                 let header = top.base.saturating_sub(HEADER);
                 stack.pop();
                 if stack.is_empty() {
-                    return Ok(());
+                    return Ok(Ending::Returned);
                 }
                 agent.heap_mut().truncate_registers(header);
+            }
+            Flow::Yield => {
+                // Kann nur im untersten Rahmen vorkommen: Der Rumpf eines
+                // Generators läuft nur in einem Lauf aus [`resume_frame`].
+                if stack.len() > 1 {
+                    return Err(agent.throw_error(ErrorKind::RangeError));
+                }
+                return Ok(Ending::Suspended);
             }
             Flow::Call {
                 callee,
@@ -700,6 +825,12 @@ fn key_value<'s>(agent: &Agent, scope: &'s Scope, key: PropertyKey<'_>) -> Local
     }
 }
 
+/// Der Schlüssel für den Namen `text`.
+fn named_key<'s>(agent: &mut Agent, scope: &'s Scope, text: &str) -> Completion<PropertyKey<'s>> {
+    let units: Vec<u16> = text.encode_utf16().collect();
+    Ok(agent.key_from_units(scope, &units)?)
+}
+
 fn length_key<'s>(agent: &mut Agent, scope: &'s Scope) -> Completion<PropertyKey<'s>> {
     let units: Vec<u16> = "length".encode_utf16().collect();
     Ok(agent.key_from_units(scope, &units)?)
@@ -859,7 +990,7 @@ impl<'c> Frame<'c, '_> {
                 self.set_accumulator(agent, object);
             }
             Op::DefineGetter | Op::DefineSetter => {
-                // MethodDefinitionEvaluation (Abschnitt 15.4.4): Die
+                // MethodDefinitionEvaluation (Abschnitt 15.4.5): Die
                 // Beschreibung hat nur [[Get]] oder [[Set]], ein vorhandener
                 // Accessor behält das andere.
                 let object = self.register(agent, scope, first);
@@ -1134,6 +1265,82 @@ impl<'c> Frame<'c, '_> {
         };
         self.set_accumulator(agent, result);
         Ok(())
+    }
+
+    /// Der Generator aus seinem Register, im Code einer Generatorfunktion.
+    fn generator<'s>(&self, agent: &mut Agent, scope: &'s Scope) -> Completion<Local<'s>> {
+        // Kann nicht fehlen: Nur der Code einer Generatorfunktion hat die
+        // Befehle dafür.
+        let Some(register) = self.code.generator_register() else {
+            return Err(agent.throw_error(ErrorKind::RangeError));
+        };
+        let heap = agent.heap();
+        Ok(heap.local(scope, heap.register(place(self.base, register))))
+    }
+
+    /// Ein Durchlauf der Schleife von `yield*` (Abschnitt 15.5.5, Schritt 8)
+    /// mit dem Iterator Record ab dem zweiten Operanden und dem übergebenen
+    /// Wert im Akkumulator. Eine Ausnahme des Iterators geht weiter, ohne
+    /// ihn zu schließen.
+    fn delegate(
+        &self,
+        agent: &mut Agent,
+        scope: &Scope,
+        instruction: &Instruction,
+    ) -> Completion<Flow> {
+        let record = instruction.operand(1);
+        let generator = self.generator(agent, scope)?;
+        let resumption = {
+            let heap = agent.heap();
+            take_resumption(heap, heap.get(generator))
+        };
+        let iterator = self.register(agent, scope, record);
+        let received = self.accumulator_copy(agent, scope);
+        let method = match resumption {
+            Resumption::Next => self.register(agent, scope, record.saturating_add(1)),
+            Resumption::Throw | Resumption::Return => {
+                let name = if resumption == Resumption::Throw {
+                    "throw"
+                } else {
+                    "return"
+                };
+                let key = named_key(agent, scope, name)?;
+                match get_method(agent, scope, iterator, key)? {
+                    Some(method) => method,
+                    None if resumption == Resumption::Return => {
+                        // Schritt 8.c.iii: `return` mit dem übergebenen Wert.
+                        let heap = agent.heap();
+                        set_resumption(heap, heap.get(generator), Resumption::Return);
+                        return Ok(jump(instruction));
+                    }
+                    None => {
+                        // Schritt 8.b.iii: Ohne `throw` wird der Iterator
+                        // geschlossen, dann folgt ein TypeError.
+                        iterator_close(agent, scope, iterator)?;
+                        return Err(agent.throw_error(ErrorKind::TypeError));
+                    }
+                }
+            }
+        };
+        let result = call(agent, scope, method, iterator, &[received])?;
+        if !matches!(agent.heap().get(result).kind(), Kind::Object(_)) {
+            return Err(agent.throw_error(ErrorKind::TypeError));
+        }
+        // IteratorComplete und IteratorValue (Abschnitte 7.4.7 und 7.4.8).
+        let key = named_key(agent, scope, "done")?;
+        let done = get(agent, scope, result, key)?;
+        if !to_boolean(agent.heap(), agent.heap().get(done)) {
+            self.set_accumulator(agent, result);
+            return Ok(Flow::Next);
+        }
+        let key = named_key(agent, scope, "value")?;
+        let value = get(agent, scope, result, key)?;
+        self.set_accumulator(agent, value);
+        if resumption == Resumption::Return {
+            let heap = agent.heap();
+            set_resumption(heap, heap.get(generator), Resumption::Return);
+        }
+        Ok(jump(instruction))
     }
 
     fn global_reference(&self, agent: &Agent, operand: i64) -> GlobalReference {
@@ -1606,6 +1813,59 @@ impl<'c> Frame<'c, '_> {
                     return Err(agent.throw_error(ErrorKind::TypeError));
                 }
             }
+            Op::CreateGenerator => {
+                // EvaluateGeneratorBody (Abschnitt 15.5.2), Schritte 2 bis 5;
+                // Register 1 hält das Funktionsobjekt. Der Generator kommt in
+                // sein Register, bevor der Rahmen in ihn kopiert wird.
+                let function = self.register(agent, scope, 1);
+                let header = self.base.checked_sub(HEADER);
+                let length = HEADER.checked_add(self.code.register_count());
+                // Kann nicht fehlen: Nur der Code einer Generatorfunktion hat
+                // den Befehl, und jeder Rahmen hat seinen Kopf.
+                let (Some(register), Some(header), Some(length)) =
+                    (self.code.generator_register(), header, length)
+                else {
+                    return Err(agent.throw_error(ErrorKind::RangeError));
+                };
+                let generator =
+                    generator_create(agent, scope, function, self.realm, length, instruction.end)?;
+                let heap = agent.heap();
+                heap.set_register(place(self.base, register), heap.get(generator));
+                if save_frame(heap, heap.get(generator), header).is_none() {
+                    return Err(agent.throw_error(ErrorKind::RangeError));
+                }
+                self.set_accumulator(agent, generator);
+                return Ok(Flow::Return);
+            }
+            Op::Yield | Op::YieldResult => {
+                if instruction.op == Op::Yield {
+                    let result = create_iterator_result_object(
+                        agent,
+                        scope,
+                        self.realm,
+                        self.accumulator,
+                        false,
+                    )?;
+                    self.set_accumulator(agent, result);
+                }
+                let generator = self.generator(agent, scope)?;
+                let header = self.base.checked_sub(HEADER).unwrap_or(usize::MAX);
+                let heap = agent.heap();
+                if generator_yield(heap, heap.get(generator), header, instruction.end).is_none() {
+                    return Err(agent.throw_error(ErrorKind::RangeError));
+                }
+                return Ok(Flow::Yield);
+            }
+            Op::ResumeGenerator => {
+                let generator = self.generator(agent, scope)?;
+                let heap = agent.heap();
+                match take_resumption(heap, heap.get(generator)) {
+                    Resumption::Next => return Ok(jump(instruction)),
+                    Resumption::Throw => return Err(agent.throw_value(self.accumulator)),
+                    Resumption::Return => {}
+                }
+            }
+            Op::YieldStar => return self.delegate(agent, scope, instruction),
             Op::Throw => return Err(agent.throw_value(self.accumulator)),
             Op::Rethrow => return Err(agent.rethrow(self.accumulator)),
             Op::Return => return Ok(Flow::Return),

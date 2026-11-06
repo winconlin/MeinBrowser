@@ -394,9 +394,9 @@ fn instructions_know_their_place_in_the_source() {
 #[test]
 fn unsupported_constructs_name_their_place() {
     let cases = [
-        ("function* f() {}", 0),
+        ("async function f() {}", 0),
         ("class A {}", 0),
-        ("x = {*a() {}};", 5),
+        ("x = {async *a() {}};", 5),
         ("x = {async a() {}};", 5),
         ("x = {1n: 1};", 5),
         ("let {1n: a} = b;", 5),
@@ -1373,4 +1373,109 @@ fn deep_patterns_need_no_deep_stack() {
         })
         .expect("Faden");
     assert!(thread.join().is_ok());
+}
+
+/// Die Befehle einer Funktion ohne Abstände und ohne Sprungziele.
+fn function_shape(code: &Code) -> Vec<String> {
+    lines(code)
+        .iter()
+        .map(|line| {
+            line.split(' ')
+                .map(|part| if part.starts_with('@') { "@" } else { part })
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect()
+}
+
+/// Eine Generatorfunktion legt ihren Generator nach den Parametern und
+/// Funktionsdeklarationen an und kehrt mit ihm zurück. Nach `yield` führt
+/// der Weg für `return` aus der Funktion, `yield*` wiederholt einen Durchlauf
+/// mit dem Iterator Record in drei Registern.
+#[test]
+fn generators_return_their_object_and_resume_after_yield() {
+    let code = first_function("function* g(a) { var x = yield a; return x; }");
+    assert_eq!(code.generator_register(), Some(3));
+    assert_eq!(
+        function_shape(&code),
+        [
+            "CreateGenerator",
+            "Ldar r2",
+            "Yield",
+            "ResumeGenerator @",
+            "Return",
+            "Star r4",
+            "Ldar r4",
+            "Return",
+            "LdaUndefined",
+            "Return"
+        ]
+    );
+    let code = first_function("function* g() { yield* a; }");
+    assert_eq!(
+        function_shape(&code),
+        [
+            "CreateGenerator",
+            "LdaGlobal a",
+            "GetIterator r3",
+            "LdaUndefined",
+            "YieldStar @ r3",
+            "YieldResult",
+            "JumpLoop @",
+            "ResumeGenerator @",
+            "Return",
+            "LdaUndefined",
+            "Return"
+        ]
+    );
+    // FunctionDeclarationInstantiation kommt vor dem Generator.
+    let code = first_function("function* g(a = f()) { function h() {} yield h; }");
+    let shape = function_shape(&code);
+    let create = shape
+        .iter()
+        .position(|line| line == "CreateGenerator")
+        .expect("CreateGenerator");
+    let call = shape
+        .iter()
+        .position(|line| line.starts_with("Call "))
+        .expect("Aufruf");
+    let closure = shape
+        .iter()
+        .position(|line| line.starts_with("CreateClosure"))
+        .expect("Funktion");
+    assert!(call < create && closure < create, "{shape:?}");
+    assert_eq!(first_function("function f() {}").generator_register(), None);
+}
+
+/// Ein `return` aus einem `yield` geht durch `finally`.
+#[test]
+fn returns_after_yield_pass_through_finally() {
+    let code = first_function("function* g() { try { yield 1; } finally { f(); } }");
+    let shape = function_shape(&code);
+    let resume = shape
+        .iter()
+        .position(|line| line == "ResumeGenerator @")
+        .expect("ResumeGenerator");
+    assert!(
+        shape
+            .get(resume.saturating_add(1))
+            .is_some_and(|line| line.starts_with("Star ")),
+        "{shape:?}"
+    );
+}
+
+/// IsInTailPosition (Abschnitt 15.10.1): Im Rumpf eines Generators steht
+/// kein Aufruf in Endposition, auch nicht im strikten Modus.
+#[test]
+fn generators_hold_no_tail_calls() {
+    for body in ["return g();", "return a ? g() : h();", "return g(...a);"] {
+        let strict = format!("function* f() {{ 'use strict'; {body} }}");
+        assert_eq!(tail_calls(&first_function(&strict)), 0, "{strict}");
+    }
+    let method = "var o = { *m() { 'use strict'; return g(); } };";
+    let ast = parse_script(&units(method)).expect("gültig");
+    let script = compile_script(&ast).expect("übersetzbar");
+    let code = compile_function(&ast, &first_template(&script.code)).expect("übersetzbar");
+    assert_eq!(tail_calls(&code), 0);
+    assert!(code.generator_register().is_some());
 }

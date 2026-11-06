@@ -35,6 +35,13 @@
 //! [`Op::Return`]: Ersetzt der Aufruf den Rahmen, kommt der Rahmen dort nie
 //! an, sonst gibt er das Ergebnis zurück.
 //!
+//! Generatoren: Der Code einer Generatorfunktion legt nach
+//! FunctionDeclarationInstantiation mit [`Op::CreateGenerator`] den
+//! Generator an und kehrt mit ihm zurück. [`Op::Yield`] hält den Rahmen an;
+//! der Generator bewahrt ihn auf, bis `next`, `return` oder `throw` ihn
+//! fortsetzt, und der Befehl danach, [`Op::ResumeGenerator`], verzweigt nach
+//! der Art der Fortsetzung.
+//!
 //! Im Bytecode steht keine Adresse im Heap. Zahlen, Zeichenketten und die
 //! Funktionen, die der Code anlegt, liegen als [`Constant`] bei ihm; der
 //! Interpreter legt sie im Heap an, für ein Script zu Beginn des Laufs, für
@@ -325,6 +332,38 @@ ops! {
     /// einem Fehler gilt [[Done]]. Der Akkumulator bleibt.
     IteratorSkip [Register],
 
+    /// EvaluateGeneratorBody (Abschnitt 15.5.2) nach
+    /// FunctionDeclarationInstantiation: ein neuer Generator für die
+    /// Funktion in Register 1 mit dem Prototyp aus ihrem `prototype`
+    /// (OrdinaryCreateFromConstructor mit %GeneratorPrototype%) im Register
+    /// aus [`Code::generator_register`] und im Akkumulator. Er hält den
+    /// Rahmen, der beim Befehl danach beginnt. Dann kehrt der Rahmen mit ihm
+    /// zurück.
+    CreateGenerator [],
+    /// `yield` (Yield und GeneratorYield, Abschnitte 27.8.3.7 und 27.8.3.6):
+    /// CreateIteratorResultObject mit dem Akkumulator und *false* in den
+    /// Akkumulator, dann hält der Rahmen an und gibt es zurück. Der
+    /// Generator hält den Rahmen, der beim Befehl danach weitergeht, mit dem
+    /// übergebenen Wert im Akkumulator.
+    Yield [],
+    /// Dasselbe ohne neues Ergebnis: Der Akkumulator hält schon das des
+    /// inneren Iterators von `yield*`.
+    YieldResult [],
+    /// Nach einem Halt: Wurde der Generator mit `next` fortgesetzt, springt
+    /// es; mit `throw` wirft es den Akkumulator; mit `return` geht es
+    /// weiter, zum Weg von `return` mit dem Akkumulator als Wert.
+    ResumeGenerator [Jump],
+    /// Ein Durchlauf von `yield*` (Abschnitt 15.5.5) mit dem Iterator Record
+    /// ab dem Register und dem übergebenen Wert im Akkumulator: Je nach
+    /// Fortsetzung ruft es `next`, `throw` oder `return` des Iterators auf.
+    /// Ist er nicht fertig, steht sein Ergebnis im Akkumulator für
+    /// [`Op::YieldResult`]. Ist er fertig, springt es mit seinem Wert, der
+    /// für [`Op::ResumeGenerator`] als Fortsetzung mit `next` gilt, nach
+    /// `return` als Fortsetzung mit `return`. Ohne `return` am Iterator
+    /// springt es dann mit dem übergebenen Wert, ohne `throw` schließt es ihn
+    /// und wirft einen TypeError.
+    YieldStar [Jump, Register],
+
     /// Ein neues arguments-Objekt ohne Verknüpfung
     /// (CreateUnmappedArgumentsObject, Abschnitt 10.4.4.6) aus den
     /// Argumenten in der internen Zelle im Register.
@@ -509,6 +548,9 @@ pub struct Code {
     /// liest: den Konstruktor bei [[Construct]], sonst bleibt es
     /// *undefined*.
     pub(crate) new_target: Option<u32>,
+    /// Das Register mit dem Generator im Code einer Generatorfunktion, ab
+    /// [`Op::CreateGenerator`].
+    pub(crate) generator: Option<u32>,
     pub(crate) strict: bool,
     /// Lagen im Quelltext ab einem Befehl: Paare aus Abstand im Bytecode
     /// und Abstand im Quelltext, nach dem ersten aufsteigend.
@@ -549,6 +591,12 @@ impl Code {
     /// Das Register für new.target, wenn der Code es liest.
     pub fn new_target_register(&self) -> Option<usize> {
         self.new_target
+            .and_then(|register| usize::try_from(register).ok())
+    }
+
+    /// Das Register mit dem Generator, im Code einer Generatorfunktion.
+    pub fn generator_register(&self) -> Option<usize> {
+        self.generator
             .and_then(|register| usize::try_from(register).ok())
     }
 
@@ -771,6 +819,7 @@ impl Emitter {
             arguments: None,
             parameter_map: Vec::new(),
             new_target: None,
+            generator: None,
             strict,
             positions: self.positions,
             handlers: self.handlers,

@@ -139,6 +139,56 @@ fn functions_have_length_name_and_prototype() {
     });
 }
 
+/// Generatorfunktionen und Generator-Methoden (Abschnitte 15.5.3, 15.5.4
+/// und 15.4.5): %GeneratorFunction.prototype% als Prototyp, ein
+/// `prototype` aus %GeneratorPrototype% ohne `constructor` und kein
+/// [[Construct]].
+#[test]
+fn generator_functions_have_a_generator_prototype() {
+    let (mut agent, realm) = checked();
+    agent.scope(|agent, scope| {
+        let generator_function =
+            agent.intrinsic(scope, realm, Intrinsic::GeneratorFunctionPrototype);
+        let generator = agent.intrinsic(scope, realm, Intrinsic::GeneratorPrototype);
+        for (source, name) in [
+            ("function* g(a, b = 1) {} g", "g"),
+            ("var e = function* () {}; e", "e"),
+            ("(function* own() {})", "own"),
+            ("({ *m(a) {} }).m", "m"),
+        ] {
+            let function = evaluate(agent, scope, realm, source);
+            assert_eq!(
+                keys(agent, scope, function),
+                ["length", "name", "prototype"],
+                "{source}"
+            );
+            assert_eq!(function_name(agent, scope, function), name, "{source}");
+            let actual = get_prototype_of(agent, scope, function).expect("kein Fehler");
+            assert_eq!(
+                actual.map(|actual| bits(agent, actual)),
+                Some(bits(agent, generator_function)),
+                "{source}"
+            );
+            let (prototype, flags) = data(agent, scope, function, "prototype");
+            assert_eq!(flags, [Some(true), Some(false), Some(false)], "{source}");
+            assert!(keys(agent, scope, prototype).is_empty(), "{source}");
+            let actual = get_prototype_of(agent, scope, prototype).expect("kein Fehler");
+            assert_eq!(
+                actual.map(|actual| bits(agent, actual)),
+                Some(bits(agent, generator)),
+                "{source}"
+            );
+            assert!(
+                !is_constructor(agent, agent.heap().get(function)),
+                "{source}"
+            );
+        }
+        let function = evaluate(agent, scope, realm, "g");
+        let (length, _) = data(agent, scope, function, "length");
+        assert_eq!(number(agent, length), Some(1.0));
+    });
+}
+
 #[test]
 fn the_length_ends_before_defaults_and_rest() {
     let (mut agent, realm) = checked();

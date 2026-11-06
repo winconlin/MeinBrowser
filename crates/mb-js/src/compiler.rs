@@ -40,10 +40,9 @@
 //! in Scripts entscheidet GlobalDeclarationInstantiation, ob es die
 //! globale Bindung gibt, und setzt dafür ein Register.
 //!
-//! Noch nicht unterstützt sind Generatoren, `async`, Klassen, `for`-`in`,
-//! `for await`, `with`, `super`, `import()`, BigInt-Literale, reguläre
-//! Ausdrücke, Templates mit Tag und Funktionsdeklarationen mit Marke
-//! (Anhang B.3.1).
+//! Noch nicht unterstützt sind `async`, Klassen, `for`-`in`, `for await`,
+//! `with`, `super`, `import()`, BigInt-Literale, reguläre Ausdrücke,
+//! Templates mit Tag und Funktionsdeklarationen mit Marke (Anhang B.3.1).
 //!
 //! `try`: Der Block und `catch` bekommen je einen Eintrag in der
 //! Ausnahmetabelle. Mit `finally` führen alle Wege hinaus durch dessen
@@ -71,6 +70,17 @@
 //! Schlüssel davor in Registern direkt hinter dem Wert
 //! ([`Op::CreateRestObject`]). Innere Muster übersetzt der Übersetzer
 //! rekursiv; ihre Tiefe begrenzt der Parser.
+//!
+//! Generatoren: Eine Generatorfunktion führt FunctionDeclarationInstantiation
+//! aus wie jede Funktion, dann legt [`Op::CreateGenerator`] den Generator in
+//! einem eigenen Register an und kehrt mit ihm zurück; der Rumpf dahinter
+//! läuft erst mit `next`. Nach jedem [`Op::Yield`] verzweigt
+//! [`Op::ResumeGenerator`]: mit `next` weiter im Ausdruck, mit `throw` in die
+//! Handler, mit `return` auf dem Weg von `return` durch `finally` und das
+//! Schließen der Iteratoren von `for`-`of` und Array-Mustern. `yield*`
+//! hält den Iterator Record in drei Registern und wiederholt
+//! [`Op::YieldStar`] und [`Op::YieldResult`], bis der innere Iterator
+//! fertig ist. Aufrufe in Generatoren stehen nie in Endposition.
 //!
 //! Abschlusswert: Scripts führen ein Register dafür (UpdateEmpty, Abschnitt
 //! 6.2.4.4). Jede Ausdrucksanweisung schreibt ihren Wert hinein. `if`,
@@ -436,6 +446,8 @@ struct Compiler<'a> {
     lexical_this: bool,
     /// Das Register mit `new.target`, in Funktionen, die es lesen.
     new_target: Option<u32>,
+    /// Das Register mit dem Generator, in Generatorfunktionen.
+    generator: Option<u32>,
     /// Die Aufrufe in Endposition im Ausdruck, der gerade übersetzt wird.
     tail_calls: BTreeSet<NodeId>,
     /// Wie viele Bereiche um die aktuelle Stelle eine Ausnahme fangen oder
@@ -552,8 +564,7 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
             | FunctionKind::Method
             | FunctionKind::Getter
             | FunctionKind::Setter
-    ) && !function.generator
-        && !function.is_async;
+    ) && !function.is_async;
     let captures = ast.captures().function(template.function);
     let (true, Some(captures)) = (supported, captures) else {
         return Err(CompileError::Unsupported(position));
@@ -621,6 +632,9 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
     };
     if captures.new_target && !arrow {
         compiler.new_target = Some(compiler.allocate()?);
+    }
+    if function.generator {
+        compiler.generator = Some(compiler.allocate()?);
     }
     // Anhang B.3.2.1: Zu parameterNames gehört dann auch `arguments`
     // (test262 block-decl-func-skip-arguments).
@@ -875,6 +889,12 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
             compiler.store_location(binding.location)?;
         }
     }
+    // EvaluateGeneratorBody (Abschnitt 15.5.2): Nach
+    // FunctionDeclarationInstantiation kehrt der Aufruf mit dem Generator
+    // zurück; der Rumpf läuft erst mit `next`.
+    if compiler.generator.is_some() {
+        compiler.emit(Op::CreateGenerator, &[])?;
+    }
     if function.expression_body {
         for &expression in body {
             compiler.tail_calls = compiler.tail_position_calls(expression);
@@ -890,11 +910,13 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
         compiler.emit(Op::Return, &[])?;
     }
     let new_target = compiler.new_target;
+    let generator = compiler.generator;
     let mut code = compiler.finish();
     code.parameters = u32::try_from(registers.len()).map_err(|_| CompileError::TooLarge)?;
     code.arguments = cell.and_then(|cell| u32::try_from(cell).ok());
     code.parameter_map = parameter_map;
     code.new_target = new_target;
+    code.generator = generator;
     Ok(code)
 }
 
@@ -924,6 +946,7 @@ impl<'a> Compiler<'a> {
             captures,
             lexical_this: false,
             new_target: None,
+            generator: None,
             tail_calls: BTreeSet::new(),
             protected: 0,
             var_scope: None,
@@ -1043,7 +1066,7 @@ impl<'a> Compiler<'a> {
                 .ast
                 .function(id)
                 .ok_or_else(|| self.unsupported(item))?;
-            if function.generator || function.is_async {
+            if function.is_async {
                 return Err(self.unsupported(item));
             }
             let Some(name) = function.name else {
@@ -1424,7 +1447,7 @@ impl<'a> Compiler<'a> {
     fn block_function(&self, node: NodeId, id: FunctionId) -> Result<Atom> {
         self.ast
             .function(id)
-            .filter(|function| !function.generator && !function.is_async)
+            .filter(|function| !function.is_async)
             .and_then(|function| function.name)
             .ok_or_else(|| self.unsupported(node))
     }
@@ -2588,6 +2611,7 @@ impl<'a> Compiler<'a> {
         self.allocate()?;
         let record = i64::from(iterator);
         self.emit(Op::GetIterator, &[record])?;
+        let close = self.pattern_close_target()?;
         let start = self.emitter.offset();
         let ast = self.ast;
         for &element in ast.list(list) {
@@ -2617,18 +2641,60 @@ impl<'a> Compiler<'a> {
         let end = self.emitter.offset();
         self.position(pattern)?;
         self.emit(Op::IteratorClose, &[record])?;
-        if end > start {
-            let after = self.jump(Op::Jump)?;
-            self.emitter.handler(start, end, HandlerKind::Finally);
-            let exception = i64::from(self.allocate()?);
-            self.emit(Op::Star, &[exception])?;
-            self.emit(Op::IteratorCloseOnThrow, &[record])?;
-            self.emit(Op::Ldar, &[exception])?;
-            self.emit(Op::Rethrow, &[])?;
-            self.bind(after)?;
-        }
+        self.close_on_abrupt_exits(record, start, end, close)?;
         self.release(iterator);
         Ok(())
+    }
+
+    /// In Generatoren kann aus einem `yield` in einem Element eines
+    /// Array-Musters `return` kommen. Dann schließt der Iterator wie nach
+    /// `break` (BindingInitialization und DestructuringAssignmentEvaluation,
+    /// Abschnitte 8.6.2 und 13.15.5.2: IteratorClose für jede Beendigung,
+    /// solange [[Done]] nicht gesetzt ist), über ein Ziel wie bei `finally`.
+    /// Gibt dessen Register zurück. Eigene Funktion wie
+    /// [`Compiler::close_on_abrupt_exits`], damit der Rahmen der Rekursion
+    /// über verschachtelte Muster klein bleibt.
+    fn pattern_close_target(&mut self) -> Result<Option<(i64, i64)>> {
+        if self.generator.is_none() {
+            return Ok(None);
+        }
+        let kind = self.allocate()?;
+        let value = self.allocate()?;
+        let mut target = Target::new(TargetKind::Finally, Vec::new());
+        target.finally = Some((kind, value));
+        self.push_target(target);
+        Ok(Some((i64::from(kind), i64::from(value))))
+    }
+
+    /// Nach den Elementen eines Array-Musters zwischen `start` und `end`:
+    /// ein Wurf schließt den Iterator über einen Handler, `return` aus
+    /// einem `yield` über das Ziel aus [`Compiler::pattern_close_target`].
+    fn close_on_abrupt_exits(
+        &mut self,
+        record: i64,
+        start: usize,
+        end: usize,
+        close: Option<(i64, i64)>,
+    ) -> Result<()> {
+        let closing = close.map(|registers| (registers, self.pop_target()));
+        if end <= start {
+            return Ok(());
+        }
+        let after = self.jump(Op::Jump)?;
+        self.emitter.handler(start, end, HandlerKind::Finally);
+        let exception = i64::from(self.allocate()?);
+        self.emit(Op::Star, &[exception])?;
+        self.emit(Op::IteratorCloseOnThrow, &[record])?;
+        self.emit(Op::Ldar, &[exception])?;
+        self.emit(Op::Rethrow, &[])?;
+        if let Some(((kind, value), target)) = closing
+            && !target.breaks.is_empty()
+        {
+            self.bind_all(target.breaks)?;
+            self.emit(Op::IteratorClose, &[record])?;
+            self.dispatch_exits(kind, value, target.exits)?;
+        }
+        self.bind(after)
     }
 
     /// Ein Objekt-Muster: RequireObjectCoercible, dann je Eigenschaft erst
@@ -2840,8 +2906,62 @@ impl<'a> Compiler<'a> {
             Node::New { callee, arguments } => self.construct(node, callee, arguments),
             Node::NewTarget => self.load_new_target(node),
             Node::Function(id) => self.closure(node, id, ClosureName::Static(&[])),
+            Node::Yield { argument, delegate } => self.yield_expression(node, argument, delegate),
             _ => Err(self.unsupported(node)),
         }
+    }
+
+    /// `yield` und `yield*` (Abschnitt 15.5.5). Der Parser lässt sie nur im
+    /// Rumpf eines Generators zu, nicht in seinen Parametern und nicht in
+    /// inneren Funktionen.
+    fn yield_expression(
+        &mut self,
+        node: NodeId,
+        argument: Option<NodeId>,
+        delegate: bool,
+    ) -> Result<()> {
+        if self.generator.is_none() {
+            return Err(self.unsupported(node));
+        }
+        if !delegate {
+            match argument {
+                Some(argument) => self.expression(argument)?,
+                None => self.emit(Op::LdaUndefined, &[])?,
+            }
+            self.position(node)?;
+            self.emit(Op::Yield, &[])?;
+            return self.resumption();
+        }
+        let Some(argument) = argument else {
+            return Err(self.unsupported(node));
+        };
+        self.expression(argument)?;
+        self.position(node)?;
+        let record = self.allocate()?;
+        self.allocate()?;
+        self.allocate()?;
+        self.emit(Op::GetIterator, &[i64::from(record)])?;
+        // Der erste Durchlauf ruft `next` mit *undefined*.
+        self.emit(Op::LdaUndefined, &[])?;
+        let start = self.emitter.offset();
+        let done = self
+            .emitter
+            .jump_with(Op::YieldStar, &[i64::from(record)])?;
+        self.emit(Op::YieldResult, &[])?;
+        self.emitter.jump_loop(start)?;
+        self.bind(done)?;
+        self.release(record);
+        self.resumption()
+    }
+
+    /// Der Weg nach einem Halt: Mit `next` geht es hinter dem Weg von
+    /// `return` weiter, mit `return` gilt der Akkumulator als Wert von
+    /// `return` und geht durch `finally` und das Schließen der Iteratoren von
+    /// `for`-`of`.
+    fn resumption(&mut self) -> Result<()> {
+        let next = self.jump(Op::ResumeGenerator)?;
+        self.exit(Exit::Return)?;
+        self.bind(next)
     }
 
     /// IsAnonymousFunctionDefinition (Abschnitt 8.4.3) für die Funktionen,
@@ -2881,7 +3001,7 @@ impl<'a> Compiler<'a> {
 
     /// Ein neues Funktionsobjekt im Akkumulator, für einen
     /// Funktionsausdruck (InstantiateOrdinaryFunctionExpression, Abschnitt
-    /// 15.2.5) oder eine Methode (DefineMethod, Abschnitt 15.4.2). Ein
+    /// 15.2.5) oder eine Methode (DefineMethod, Abschnitt 15.4.4). Ein
     /// benannter Funktionsausdruck heißt wie die Funktion und bindet den
     /// Namen in seinem Rumpf, sonst gilt `name`.
     fn closure(&mut self, node: NodeId, id: FunctionId, name: ClosureName<'_>) -> Result<()> {
@@ -2919,8 +3039,7 @@ impl<'a> Compiler<'a> {
                 | FunctionKind::Method
                 | FunctionKind::Getter
                 | FunctionKind::Setter
-        ) && !function.generator
-            && !function.is_async;
+        ) && !function.is_async;
         if !supported {
             return Err(self.unsupported(node));
         }
@@ -3038,7 +3157,7 @@ impl<'a> Compiler<'a> {
     }
 
     /// Methoden, Getter und Setter im Objekt im Register `object`
-    /// (MethodDefinitionEvaluation, Abschnitt 15.4.4): erst der Name, dann
+    /// (MethodDefinitionEvaluation, Abschnitt 15.4.5): erst der Name, dann
     /// das Funktionsobjekt, dann die Eigenschaft, aufzählbar und
     /// konfigurierbar.
     fn method_definition(
@@ -3344,7 +3463,9 @@ impl<'a> Compiler<'a> {
     /// in Endposition steht: im strikten Modus und nicht in `try`.
     fn tail_position_calls(&self, node: NodeId) -> BTreeSet<NodeId> {
         let mut calls = BTreeSet::new();
-        if !self.strict || self.protected > 0 {
+        // IsInTailPosition (Abschnitt 15.10.1): nie im Rumpf eines
+        // Generators.
+        if !self.strict || self.protected > 0 || self.generator.is_some() {
             return calls;
         }
         let mut pending = vec![node];
