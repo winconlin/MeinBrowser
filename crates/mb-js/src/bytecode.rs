@@ -21,6 +21,13 @@
 //! [`Op::Add`] rechnet mit dem Register als linkem und dem Akkumulator als
 //! rechtem Operanden und legt das Ergebnis in den Akkumulator.
 //!
+//! Ausnahmen: Zum Code gehört eine Tabelle von Handlern ([`Handler`]). Wirft
+//! ein Befehl, geht es beim innersten Handler weiter, dessen Bereich den
+//! Befehl enthält, die Ausnahme im Akkumulator; hat der Rahmen keinen,
+//! sucht der Interpreter im Aufrufer weiter. Den Kontext stellt der
+//! Handler mit [`Op::RestoreContext`] aus dem Register her, in das ihn
+//! [`Op::SaveContext`] zu Beginn von `try` legte.
+//!
 //! Im Bytecode steht keine Adresse im Heap. Zahlen, Zeichenketten und die
 //! Funktionen, die der Code anlegt, liegen als [`Constant`] bei ihm; der
 //! Interpreter legt sie im Heap an, für ein Script zu Beginn des Laufs, für
@@ -112,6 +119,10 @@ ops! {
     LdaContext [Immediate, Immediate],
     /// Derselbe Platz := Akkumulator.
     StaContext [Immediate, Immediate],
+    /// Register := der aktuelle Kontext, zu Beginn von `try`.
+    SaveContext [Register],
+    /// Der Kontext im Register wird der aktuelle, zu Beginn eines Handlers.
+    RestoreContext [Register],
 
     /// GetIdentifierReference (Abschnitt 9.1.2.1) in der globalen Umgebung:
     /// legt ab, wo der Name gefunden wurde, für [`Op::LdaGlobalRef`] und
@@ -265,6 +276,9 @@ ops! {
 
     /// Wirft den Akkumulator.
     Throw [],
+    /// Wirft wieder, was ein Handler für `finally` im Akkumulator bekam
+    /// ([`HandlerKind::Finally`]).
+    Rethrow [],
     /// Beendet den Rahmen mit dem Akkumulator.
     Return [],
 }
@@ -387,6 +401,27 @@ impl Instruction {
     }
 }
 
+/// Was ein Handler mit der Ausnahme bekommt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HandlerKind {
+    /// Den geworfenen Wert, für einen Fehler der Engine ein neues
+    /// Fehlerobjekt, wie ihn der Parameter von `catch` braucht.
+    Catch,
+    /// Die Ausnahme so, wie sie nach `finally` mit [`Op::Rethrow`] wieder
+    /// geworfen wird: Ein Fehler der Engine bleibt einer.
+    Finally,
+}
+
+/// Ein Eintrag der Ausnahmetabelle: Wirft ein Befehl, der in `start..end`
+/// beginnt, geht es bei `target` weiter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Handler {
+    pub start: usize,
+    pub end: usize,
+    pub target: usize,
+    pub kind: HandlerKind,
+}
+
 /// Der Bytecode einer Funktion oder eines Scripts.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Code {
@@ -409,6 +444,8 @@ pub struct Code {
     /// Lagen im Quelltext ab einem Befehl: Paare aus Abstand im Bytecode
     /// und Abstand im Quelltext, nach dem ersten aufsteigend.
     pub(crate) positions: Vec<(u32, u32)>,
+    /// Die Ausnahmetabelle, innere Handler vor den äußeren.
+    pub(crate) handlers: Vec<Handler>,
 }
 
 impl Code {
@@ -447,6 +484,18 @@ impl Code {
 
     pub fn is_strict(&self) -> bool {
         self.strict
+    }
+
+    pub fn handlers(&self) -> &[Handler] {
+        &self.handlers
+    }
+
+    /// Der innerste Handler für einen Befehl, der bei `offset` beginnt.
+    pub fn handler(&self, offset: usize) -> Option<Handler> {
+        self.handlers
+            .iter()
+            .find(|handler| handler.start <= offset && offset < handler.end)
+            .copied()
     }
 
     /// Die Lage im Quelltext, zu der der Befehl bei `offset` gehört.
@@ -522,6 +571,7 @@ pub struct Label {
 pub struct Emitter {
     bytes: Vec<u8>,
     positions: Vec<(u32, u32)>,
+    handlers: Vec<Handler>,
 }
 
 impl Emitter {
@@ -608,6 +658,18 @@ impl Emitter {
         self.emit(Op::JumpLoop, &[distance])
     }
 
+    /// Ein Handler ab hier für die Befehle in `start..end`. Der Übersetzer
+    /// trägt jeden ein, nachdem er alle in seinem Bereich eingetragen hat;
+    /// so stehen die inneren vorn.
+    pub fn handler(&mut self, start: usize, end: usize, kind: HandlerKind) {
+        self.handlers.push(Handler {
+            start,
+            end,
+            target: self.bytes.len(),
+            kind,
+        });
+    }
+
     fn check_size(&self) -> Result<(), TooLarge> {
         if i32::try_from(self.bytes.len()).is_err() {
             return Err(TooLarge);
@@ -626,6 +688,7 @@ impl Emitter {
             parameter_map: Vec::new(),
             strict,
             positions: self.positions,
+            handlers: self.handlers,
         }
     }
 }
@@ -672,7 +735,8 @@ fn display_units(formatter: &mut fmt::Formatter<'_>, units: &[u16]) -> fmt::Resu
 }
 
 /// Eine Zeile je Befehl: Abstand, Opcode und Operanden. Register stehen als
-/// `r0`, Konstanten mit ihrem Inhalt, Sprünge mit ihrem Ziel.
+/// `r0`, Konstanten mit ihrem Inhalt, Sprünge mit ihrem Ziel. Danach eine
+/// Zeile je Handler mit Art, Bereich und Ziel.
 impl fmt::Display for Code {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut offset = 0;
@@ -710,6 +774,13 @@ impl fmt::Display for Code {
             }
             writeln!(formatter)?;
             offset = instruction.end;
+        }
+        for handler in &self.handlers {
+            writeln!(
+                formatter,
+                "{:?} @{}..@{} -> @{}",
+                handler.kind, handler.start, handler.end, handler.target
+            )?;
         }
         Ok(())
     }

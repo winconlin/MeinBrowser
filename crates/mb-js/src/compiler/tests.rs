@@ -402,7 +402,7 @@ fn unsupported_constructs_name_their_place() {
         ("x = [...a];", 5),
         ("new a();", 0),
         ("a?.b(...c);", 5),
-        ("try {} catch {}", 0),
+        ("try {} catch ([e]) {}", 14),
         ("for (var k in o);", 0),
         ("for (let k of o);", 0),
         ("f`x`;", 0),
@@ -772,6 +772,78 @@ fn first_function(source: &str) -> Code {
         outer: Rc::default(),
     };
     compile_function(&ast, &template).expect("übersetzbar")
+}
+
+/// `try` mit `catch`: Der Block hat einen Handler, der den Kontext
+/// wiederherstellt und die Ausnahme in den Parameter legt.
+#[test]
+fn try_and_catch_have_a_handler() {
+    assert_eq!(
+        listing("try { a; } catch (e) { e; }"),
+        [
+            "LdaUndefined",
+            "Star r1",
+            "SaveContext r2",
+            "LdaGlobal a",
+            "Star r1",
+            "Jump @26",
+            "RestoreContext r2",
+            "Star r3",
+            "LdaUndefined",
+            "Star r1",
+            "Ldar r3",
+            "Star r1",
+            "Ldar r1",
+            "Return",
+            "Catch @5..@9 -> @15",
+        ]
+    );
+}
+
+/// `return` durch `finally`: Der Wert wartet im Register, und am Ende von
+/// `finally` geht es je nach Weg weiter.
+#[test]
+fn return_goes_through_finally() {
+    let code = first_function("function f() { try { return 1; } finally { 2; } }");
+    assert_eq!(
+        lines(&code),
+        [
+            "SaveContext r2",
+            "LdaSmi 1",
+            "Star r4",
+            "LdaSmi 2",
+            "Star r3",
+            "Jump @34",
+            "LdaSmi 0",
+            "Star r3",
+            "Jump @34",
+            "RestoreContext r2",
+            "Star r4",
+            "LdaSmi 1",
+            "Star r3",
+            "LdaSmi 2",
+            "LdaSmi 1",
+            "TestEqualStrict r3",
+            "JumpIfFalse @49",
+            "Ldar r4",
+            "Rethrow",
+            "LdaSmi 2",
+            "TestEqualStrict r3",
+            "JumpIfFalse @62",
+            "Ldar r4",
+            "Return",
+            "LdaUndefined",
+            "Return",
+            "Finally @2..@16 -> @26",
+        ]
+    );
+}
+
+#[test]
+fn var_names_come_from_all_parts_of_try() {
+    let script =
+        compile("try { var a; } catch (e) { var b, e; } finally { var c; }").expect("übersetzbar");
+    assert_eq!(names(&script.var_names), ["a", "b", "e", "c"]);
 }
 
 #[test]

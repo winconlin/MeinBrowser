@@ -40,13 +40,21 @@
 //! globale Bindung gibt, und setzt dafür ein Register.
 //!
 //! Noch nicht unterstützt sind Generatoren, `async`, Klassen, Muster in
-//! Parametern und Funktionsdeklarationen mit Marke (Anhang B.3.1).
+//! Parametern, auch in dem von `catch`, und Funktionsdeklarationen mit
+//! Marke (Anhang B.3.1).
+//!
+//! `try`: Der Block und `catch` bekommen je einen Eintrag in der
+//! Ausnahmetabelle. Mit `finally` führen alle Wege hinaus durch dessen
+//! Block, auch `break`, `continue` und `return`: Jeder legt in ein Register,
+//! wie es danach weitergeht, und `finally` verzweigt an seinem Ende danach.
+//! Liegen mehrere `finally` auf dem Weg, geht es so durch alle.
 //!
 //! Abschlusswert: Scripts führen ein Register dafür (UpdateEmpty, Abschnitt
 //! 6.2.4.4). Jede Ausdrucksanweisung schreibt ihren Wert hinein. `if`,
-//! Schleifen und `switch` liefern nie ~empty~, sondern ohne eigenen Wert
-//! *undefined*; sie setzen das Register darum zu Beginn auf *undefined*.
-//! Funktionen brauchen keinen Abschlusswert.
+//! Schleifen, `switch` und `try` liefern nie ~empty~, sondern ohne eigenen
+//! Wert *undefined*; sie setzen das Register darum zu Beginn auf
+//! *undefined*, `catch` und `finally` ebenso. Endet `finally` normal, gilt
+//! wieder der Wert von davor. Funktionen brauchen keinen Abschlusswert.
 //!
 //! Eigenschaften: Eine Referenz auf eine Eigenschaft hält ihre Basis und
 //! bei berechneten Namen den Namen in Registern. ToObject und
@@ -76,7 +84,7 @@ use crate::ast::{
 };
 use crate::bytecode::{
     BindingKind, Code, Constant, ContextBinding, ContextLayout, Emitter, Enclosing,
-    FunctionTemplate, Label, Op, TooLarge,
+    FunctionTemplate, HandlerKind, Label, Op, TooLarge,
 };
 use crate::number;
 use crate::value::Value;
@@ -123,6 +131,12 @@ pub struct Script {
 const THIS: i64 = 0;
 /// Register für den Abschlusswert eines Scripts.
 const COMPLETION: i64 = 1;
+
+/// Wie es nach `finally` weitergeht: normal hinter `try`, mit der Ausnahme
+/// wieder werfen oder ab [`FIRST_EXIT`] auf einem der Wege hinaus.
+const NORMAL: i64 = 0;
+const THROW: i64 = 1;
+const FIRST_EXIT: usize = 2;
 
 /// Wo eine Bindung liegt.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -203,6 +217,18 @@ enum TargetKind {
     /// Eine Anweisung mit Marke, aus der nur `break` mit dieser Marke
     /// herausführt.
     Labeled,
+    /// Ein `try` mit `finally`: Kein Sprung zielt hierher, aber wer den
+    /// Block oder `catch` verlässt, geht erst durch `finally`.
+    Finally,
+}
+
+/// Ein Weg aus Anweisungen hinaus, der an `finally` vorbeikommen kann.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Exit {
+    /// `break` oder `continue` zum Ziel mit dieser Stelle in `targets`.
+    Jump { target: usize, is_continue: bool },
+    /// `return` mit dem Wert im Akkumulator.
+    Return,
 }
 
 /// Ein Ziel von `break` und `continue`.
@@ -214,6 +240,13 @@ struct Target {
     continues: Vec<Label>,
     /// Wie viele Kontexte am Ziel offen sind.
     contexts: u32,
+    /// Bei `finally` die Register für die Fortsetzung danach und für den
+    /// Wert von `return` und `throw`. Die Sprünge hinein stehen in
+    /// `breaks`.
+    finally: Option<(u32, u32)>,
+    /// Bei `finally` die Wege hinaus, die dort weitergehen; der Weg mit der
+    /// Stelle `n` hat die Fortsetzung `FIRST_EXIT + n`.
+    exits: Vec<Exit>,
 }
 
 impl Target {
@@ -224,6 +257,8 @@ impl Target {
             breaks: Vec::new(),
             continues: Vec::new(),
             contexts: 0,
+            finally: None,
+            exits: Vec::new(),
         }
     }
 }
@@ -986,6 +1021,21 @@ impl<'a> Compiler<'a> {
                     }
                 }
             }
+            Node::Try {
+                block,
+                handler,
+                finalizer,
+            } => {
+                self.var_declared_names(block, names)?;
+                if let Some(handler) = handler
+                    && let Node::Catch { body, .. } = *self.ast.node(handler)
+                {
+                    self.var_declared_names(body, names)?;
+                }
+                if let Some(finalizer) = finalizer {
+                    self.var_declared_names(finalizer, names)?;
+                }
+            }
             _ => {}
         }
         Ok(())
@@ -1054,6 +1104,23 @@ impl<'a> Compiler<'a> {
                     }
                 }
                 self.hoisting_block(&items, path, excluded, found);
+            }
+            // Ein Bezeichner als Parameter von `catch` steht einer
+            // `var`-Deklaration im Block nicht im Weg (Anhang B.3.4). Muster
+            // dort übersetzt der Übersetzer noch nicht; mit ihnen kommen
+            // ihre Namen auf den Weg.
+            Node::Try {
+                block,
+                handler,
+                finalizer,
+            } => {
+                let handler = handler.and_then(|handler| match *self.ast.node(handler) {
+                    Node::Catch { body, .. } => Some(body),
+                    _ => None,
+                });
+                for part in std::iter::once(block).chain(handler).chain(finalizer) {
+                    self.hoisting_walk(part, path, excluded, found);
+                }
             }
             // Was der Übersetzer sonst nicht kann, übersetzt er gar nicht.
             _ => {}
@@ -1411,8 +1478,13 @@ impl<'a> Compiler<'a> {
                     None => self.emit(Op::LdaUndefined, &[])?,
                 }
                 self.position(node)?;
-                self.emit(Op::Return, &[])
+                self.exit(Exit::Return)
             }
+            Node::Try {
+                block,
+                handler,
+                finalizer,
+            } => self.try_statement(block, handler, finalizer),
             _ => Err(self.unsupported(node)),
         }
     }
@@ -1780,8 +1852,7 @@ impl<'a> Compiler<'a> {
     }
 
     /// `break` und `continue` (Abschnitte 14.8.2 und 14.9.2). Die frühen
-    /// Fehler garantieren ein passendes Ziel. Kontexte, die dazwischen
-    /// offen sind, gibt der Sprung ab.
+    /// Fehler garantieren ein passendes Ziel.
     fn jump_to_target(
         &mut self,
         node: NodeId,
@@ -1792,28 +1863,209 @@ impl<'a> Compiler<'a> {
             let kind_fits = if is_continue {
                 target.kind == TargetKind::Loop
             } else {
-                label.is_some() || target.kind != TargetKind::Labeled
+                label.is_some() || !matches!(target.kind, TargetKind::Labeled | TargetKind::Finally)
             };
             kind_fits && label.is_none_or(|label| target.labels.contains(&label))
         });
-        let Some(contexts) = index
-            .and_then(|index| self.targets.get(index))
-            .map(|target| target.contexts)
-        else {
+        let Some(target) = index else {
             return Err(self.unsupported(node));
         };
+        self.exit(Exit::Jump {
+            target,
+            is_continue,
+        })
+    }
+
+    /// Geht den Weg `exit` hinaus. Kontexte, die bis zum Ziel offen sind,
+    /// gibt der Sprung ab. Liegt ein `try` mit `finally` dazwischen, geht es
+    /// erst zum innersten: bis zu dessen Kontexten, mit der Nummer des Wegs
+    /// im Register für die Fortsetzung, bei `return` mit dem Wert im
+    /// Register für den Wert. Am Ende von `finally` geht der Weg weiter.
+    fn exit(&mut self, exit: Exit) -> Result<()> {
+        let floor = match exit {
+            Exit::Jump { target, .. } => target.saturating_add(1),
+            Exit::Return => 0,
+        };
+        let finally = self
+            .targets
+            .iter()
+            .rposition(|target| target.kind == TargetKind::Finally)
+            .filter(|&index| index >= floor);
+        let index = match (finally, exit) {
+            (Some(index), _) | (None, Exit::Jump { target: index, .. }) => index,
+            (None, Exit::Return) => return self.emit(Op::Return, &[]),
+        };
+        // Kann nicht fehlen: Die Stellen stammen aus `targets`.
+        let Some(target) = self.targets.get(index) else {
+            return Err(CompileError::Unsupported(0));
+        };
+        let contexts = target.contexts;
+        let registers = target.finally.filter(|_| finally.is_some());
+        if let (Some((_, value)), Exit::Return) = (registers, exit) {
+            self.emit(Op::Star, &[i64::from(value)])?;
+        }
         for _ in contexts..self.open_contexts() {
             self.emit(Op::PopContext, &[])?;
         }
-        let jump = self.jump(Op::Jump)?;
-        if let Some(target) = index.and_then(|index| self.targets.get_mut(index)) {
-            if is_continue {
-                target.continues.push(jump);
-            } else {
+        if let Some((kind, _)) = registers {
+            let exits = self
+                .targets
+                .get(index)
+                .map_or(&[][..], |target| &target.exits);
+            let position = exits.iter().position(|&known| known == exit);
+            let number = position.unwrap_or(exits.len());
+            let token = FIRST_EXIT
+                .checked_add(number)
+                .and_then(|token| i64::try_from(token).ok())
+                .ok_or(CompileError::TooLarge)?;
+            self.emit(Op::LdaSmi, &[token])?;
+            self.emit(Op::Star, &[i64::from(kind)])?;
+            let jump = self.jump(Op::Jump)?;
+            if let Some(target) = self.targets.get_mut(index) {
+                if position.is_none() {
+                    target.exits.push(exit);
+                }
                 target.breaks.push(jump);
+            }
+            return Ok(());
+        }
+        let jump = self.jump(Op::Jump)?;
+        if let Some(target) = self.targets.get_mut(index) {
+            match exit {
+                Exit::Jump {
+                    is_continue: true, ..
+                } => target.continues.push(jump),
+                _ => target.breaks.push(jump),
             }
         }
         Ok(())
+    }
+
+    /// `try` (Abschnitt 14.15.3). Zu Beginn kommt der aktuelle Kontext in
+    /// ein Register, und jeder Handler stellt ihn daraus wieder her.
+    ///
+    /// Mit `finally` führen drei Arten von Wegen in dessen Block: das
+    /// normale Ende von Block oder `catch`, ein Handler für jede Ausnahme
+    /// aus beiden und die Wege hinaus ([`Compiler::exit`]). Jeder legt in
+    /// ein Register, wie es danach weitergeht. Eine Ausnahme bleibt dabei,
+    /// wie sie geworfen wurde, und kommt danach mit [`Op::Rethrow`] wieder.
+    fn try_statement(
+        &mut self,
+        block: NodeId,
+        handler: Option<NodeId>,
+        finalizer: Option<NodeId>,
+    ) -> Result<()> {
+        self.reset_completion()?;
+        let mark = self.next_register;
+        let context = i64::from(self.allocate()?);
+        self.emit(Op::SaveContext, &[context])?;
+        if finalizer.is_some() {
+            let kind = self.allocate()?;
+            let value = self.allocate()?;
+            let mut target = Target::new(TargetKind::Finally, Vec::new());
+            target.finally = Some((kind, value));
+            self.push_target(target);
+        }
+        let start = self.emitter.offset();
+        self.statement(block)?;
+        let mut end = self.emitter.offset();
+        if let Some(handler) = handler {
+            let skip = self.jump(Op::Jump)?;
+            self.emitter.handler(start, end, HandlerKind::Catch);
+            self.emit(Op::RestoreContext, &[context])?;
+            self.catch_clause(handler)?;
+            end = self.emitter.offset();
+            self.bind(skip)?;
+        }
+        let Some(finalizer) = finalizer else {
+            self.release(mark);
+            return Ok(());
+        };
+        let target = self.pop_target();
+        let Some((kind, value)) = target.finally else {
+            return Err(self.unsupported(finalizer));
+        };
+        let (kind, value) = (i64::from(kind), i64::from(value));
+        self.emit(Op::LdaSmi, &[NORMAL])?;
+        self.emit(Op::Star, &[kind])?;
+        let normal = self.jump(Op::Jump)?;
+        self.emitter.handler(start, end, HandlerKind::Finally);
+        self.emit(Op::RestoreContext, &[context])?;
+        self.emit(Op::Star, &[value])?;
+        self.emit(Op::LdaSmi, &[THROW])?;
+        self.emit(Op::Star, &[kind])?;
+        self.bind(normal)?;
+        self.bind_all(target.breaks)?;
+        // Endet `finally` normal, zählt sein Abschlusswert nicht, endet es
+        // abrupt, gilt seiner, ohne eigenen *undefined*.
+        let saved = match self.completion {
+            Some(completion) => {
+                let saved = i64::from(self.allocate()?);
+                self.emit(Op::Ldar, &[completion])?;
+                self.emit(Op::Star, &[saved])?;
+                self.reset_completion()?;
+                Some((completion, saved))
+            }
+            None => None,
+        };
+        self.statement(finalizer)?;
+        if let Some((completion, saved)) = saved {
+            self.emit(Op::Ldar, &[saved])?;
+            self.emit(Op::Star, &[completion])?;
+        }
+        self.emit(Op::LdaSmi, &[THROW])?;
+        self.emit(Op::TestEqualStrict, &[kind])?;
+        let next = self.jump(Op::JumpIfFalse)?;
+        self.emit(Op::Ldar, &[value])?;
+        self.emit(Op::Rethrow, &[])?;
+        self.bind(next)?;
+        for (number, exit) in target.exits.into_iter().enumerate() {
+            let token = FIRST_EXIT
+                .checked_add(number)
+                .and_then(|token| i64::try_from(token).ok())
+                .ok_or(CompileError::TooLarge)?;
+            self.emit(Op::LdaSmi, &[token])?;
+            self.emit(Op::TestEqualStrict, &[kind])?;
+            let next = self.jump(Op::JumpIfFalse)?;
+            if exit == Exit::Return {
+                self.emit(Op::Ldar, &[value])?;
+            }
+            self.exit(exit)?;
+            self.bind(next)?;
+        }
+        self.release(mark);
+        Ok(())
+    }
+
+    /// CatchClauseEvaluation (Abschnitt 14.15.2) mit der Ausnahme im
+    /// Akkumulator. Der Parameter hat einen eigenen Bereich um den Block;
+    /// ein `var` mit seinem Namen im Block schreibt mit seinem
+    /// Initialisierer in ihn (Anhang B.3.4).
+    fn catch_clause(&mut self, handler: NodeId) -> Result<()> {
+        let Node::Catch { parameter, body } = *self.ast.node(handler) else {
+            return Err(self.unsupported(handler));
+        };
+        self.position(handler)?;
+        let Some(parameter) = parameter else {
+            self.reset_completion()?;
+            return self.statement(body);
+        };
+        let Node::BindingIdentifier(atom) = *self.ast.node(parameter) else {
+            return Err(self.unsupported(parameter));
+        };
+        let mark = self.next_register;
+        let mut scope = BlockScope::default();
+        let location = self.locate(&mut scope, atom)?;
+        let binding = LocalBinding::initialized(location, BindingKind::Mutable);
+        scope.bindings.insert(atom, binding);
+        if scope.has_context() {
+            self.emit(Op::PushContext, &[i64::from(scope.slots)])?;
+        }
+        self.scopes.push(scope);
+        self.store_location(location)?;
+        self.reset_completion()?;
+        self.statement(body)?;
+        self.leave_block(mark)
     }
 
     // Ausdrücke

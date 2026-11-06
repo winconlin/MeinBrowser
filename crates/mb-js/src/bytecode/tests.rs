@@ -228,3 +228,28 @@ fn disassembly_names_registers_constants_and_targets() {
          \x20 20: Return\n"
     );
 }
+
+#[test]
+fn handlers_are_found_from_the_inside_out() {
+    let mut emitter = Emitter::default();
+    emitter.emit(Op::LdaTrue, &[]).expect("passt");
+    emitter.emit(Op::LdaFalse, &[]).expect("passt");
+    emitter.handler(1, 2, HandlerKind::Catch);
+    emitter.emit(Op::LdaNull, &[]).expect("passt");
+    emitter.handler(0, 3, HandlerKind::Finally);
+    emitter.emit(Op::Return, &[]).expect("passt");
+    let code = finish(emitter);
+    let found = |offset| {
+        code.handler(offset)
+            .map(|handler| (handler.target, handler.kind))
+    };
+    assert_eq!(found(0), Some((3, HandlerKind::Finally)));
+    assert_eq!(found(1), Some((2, HandlerKind::Catch)));
+    assert_eq!(found(2), Some((3, HandlerKind::Finally)));
+    assert_eq!(found(3), None);
+    assert!(
+        code.to_string()
+            .ends_with("Catch @1..@2 -> @2\nFinally @0..@3 -> @3\n"),
+        "{code}"
+    );
+}

@@ -104,3 +104,16 @@ test/language/statements/let/global-use-before-initialization-in-declaration-sta
 test/language/statements/let/global-use-before-initialization-in-prior-statement.js
 test/language/statements/switch/scope-lex-const.js
 test/language/statements/switch/scope-lex-let.js
+test/language/statements/try/12.14-10.js
+test/language/statements/try/12.14-11.js
+test/language/statements/try/12.14-12.js
+test/language/statements/try/12.14-14.js
+test/language/statements/try/12.14-15.js
+test/language/statements/try/12.14-16.js
+test/language/statements/try/12.14-4.js
+test/language/statements/try/12.14-6.js
+test/language/statements/try/12.14-8.js
+test/language/statements/try/12.14-9.js
+test/language/statements/try/completion-values-fn-finally-return.js
+test/language/statements/try/scope-catch-block-var-none.js
+test/language/statements/try/scope-catch-param-lex-close.js

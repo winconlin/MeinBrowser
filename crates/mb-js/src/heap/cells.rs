@@ -3,10 +3,10 @@
 //! zusammen; hier steht nur, wie die Zellen im Heap liegen.
 
 use super::{
-    Heap, KIND_ARGUMENTS, KIND_ARRAY, KIND_FUNCTION, KIND_OBJECT, KIND_SHAPE, KIND_SLOTS,
-    KIND_SPARSE, KIND_SYMBOL, KIND_WEAK, Local, NONE, OBJECT_REFS, OutOfMemory, Scope, cell_words,
-    header, header_flags, header_kind, header_length, is_object, is_value_cell, object_fields,
-    packed, packed_high, packed_low, to_usize, with_flags,
+    Heap, KIND_ARGUMENTS, KIND_ARRAY, KIND_ERROR, KIND_FUNCTION, KIND_OBJECT, KIND_SHAPE,
+    KIND_SLOTS, KIND_SPARSE, KIND_SYMBOL, KIND_WEAK, Local, NONE, OBJECT_REFS, OutOfMemory, Scope,
+    cell_words, header, header_flags, header_kind, header_length, is_object, is_value_cell,
+    object_fields, packed, packed_high, packed_low, to_usize, with_flags,
 };
 use crate::value::{Ref, RefKind, Value};
 
@@ -65,6 +65,9 @@ pub(crate) enum ObjectClass {
     /// Ein arguments-Objekt (Abschnitt 10.4.4) mit dem internen Feld
     /// [[ParameterMap]].
     Arguments,
+    /// Ein Fehlerobjekt mit [[ErrorData]] (Abschnitt 20.5.1.1), sonst
+    /// gewöhnlich. [[ErrorData]] hat keinen Wert, die Art sagt alles.
+    Error,
 }
 
 impl ObjectClass {
@@ -74,6 +77,7 @@ impl ObjectClass {
             ObjectClass::Array => KIND_ARRAY,
             ObjectClass::Function => KIND_FUNCTION,
             ObjectClass::Arguments => KIND_ARGUMENTS,
+            ObjectClass::Error => KIND_ERROR,
         }
     }
 
@@ -83,6 +87,7 @@ impl ObjectClass {
             KIND_ARRAY => Some(ObjectClass::Array),
             KIND_FUNCTION => Some(ObjectClass::Function),
             KIND_ARGUMENTS => Some(ObjectClass::Arguments),
+            KIND_ERROR => Some(ObjectClass::Error),
             _ => None,
         }
     }

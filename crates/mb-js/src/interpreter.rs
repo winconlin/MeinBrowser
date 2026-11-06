@@ -15,6 +15,14 @@
 //! viel vom Stapel der Maschine solche verschachtelten Läufe brauchen
 //! dürfen, begrenzt [`crate::agent::STACK_BUDGET`] (RS-8); wie viele Rahmen
 //! es gibt, begrenzt der Registerstapel.
+//!
+//! Ausnahmen: Wirft ein Befehl, sucht der Lauf in der Ausnahmetabelle des
+//! obersten Rahmens nach einem Handler, dann in denen der Aufrufer, und
+//! baut die Rahmen dazwischen ab. Hat keiner seines Stapels einen, endet
+//! der Lauf mit [`Abrupt::Throw`], und ein äußerer Lauf sucht weiter. Ein
+//! Fehler der Engine bekommt dabei den Realm des Rahmens, dessen Befehl ihn
+//! warf; ein Handler für `catch` bekommt dort sein Fehlerobjekt. Die
+//! übrigen abrupten Beendigungen fängt kein Handler.
 
 #![forbid(unsafe_code)]
 
@@ -22,7 +30,7 @@ use std::rc::Rc;
 
 use crate::agent::{Abrupt, Agent, Completion, ErrorKind};
 use crate::ast::Ast;
-use crate::bytecode::{Code, Constant, Instruction, Op};
+use crate::bytecode::{Code, Constant, HandlerKind, Instruction, Op};
 use crate::compare::{is_less_than, is_loosely_equal, is_strictly_equal};
 use crate::compiler::{CompileError, compile_function};
 use crate::conversion::{to_boolean, to_number, to_numeric, to_property_key, to_string};
@@ -254,7 +262,14 @@ fn run(agent: &mut Agent, activation: Activation<'_>, accumulator: Local<'_>) ->
             base: top.base,
             accumulator,
         };
-        let flow = agent.scope(|agent, inner| frame.step(agent, inner, &instruction))?;
+        let flow = match agent.scope(|agent, inner| frame.step(agent, inner, &instruction)) {
+            Ok(flow) => flow,
+            Err(Abrupt::Throw) => {
+                catch(agent, &mut stack, accumulator, instruction.start)?;
+                continue;
+            }
+            Err(abrupt) => return Err(abrupt),
+        };
         match flow {
             Flow::Next => top.offset = instruction.end,
             Flow::Jump(target) => top.offset = target,
@@ -275,10 +290,62 @@ fn run(agent: &mut Agent, activation: Activation<'_>, accumulator: Local<'_>) ->
                     let first = place(callee, 2);
                     let arguments = Arguments::Registers { first, count };
                     enter_function(agent, inner, function, this, arguments)
-                })?;
-                stack.push(next);
+                });
+                // Scheitert der Aufruf, etwa am Registerstapel, wirft der
+                // Befehl des Aufrufers.
+                match next {
+                    Ok(next) => stack.push(next),
+                    Err(Abrupt::Throw) => catch(agent, &mut stack, accumulator, instruction.start)?,
+                    Err(abrupt) => return Err(abrupt),
+                }
             }
         }
+    }
+}
+
+/// Sucht für die Ausnahme, die der Befehl bei `offset` im obersten Rahmen
+/// warf, den innersten Handler, erst in diesem Rahmen, dann in den
+/// Aufrufern, und baut die Rahmen bis dahin ab. Der Handler bekommt die
+/// Ausnahme im Akkumulator. Ohne Handler bleibt der unterste Rahmen
+/// liegen und die Ausnahme geht an den Aufrufer des Laufs.
+fn catch(
+    agent: &mut Agent,
+    stack: &mut Vec<Activation<'_>>,
+    accumulator: Local<'_>,
+    mut offset: usize,
+) -> Completion<()> {
+    if let Some(top) = stack.last() {
+        agent.set_error_realm(top.realm);
+    }
+    loop {
+        let Some(top) = stack.last_mut() else {
+            return Err(Abrupt::Throw);
+        };
+        if let Some(handler) = top.source.code().handler(offset) {
+            let realm = top.realm;
+            agent.scope(|agent, scope| -> Completion<()> {
+                let value = match handler.kind {
+                    HandlerKind::Catch => agent.take_thrown_value(scope, realm)?,
+                    HandlerKind::Finally => agent.take_thrown_for_rethrow(scope)?,
+                };
+                let heap = agent.heap();
+                heap.set(accumulator, heap.get(value));
+                Ok(())
+            })?;
+            top.offset = handler.target;
+            return Ok(());
+        }
+        let header = top.base.saturating_sub(HEADER);
+        if stack.len() <= 1 {
+            return Err(Abrupt::Throw);
+        }
+        stack.pop();
+        agent.heap_mut().truncate_registers(header);
+        // Der Aufrufer steht schon hinter seinem Call; das Byte davor gehört
+        // noch zum Aufruf.
+        offset = stack
+            .last()
+            .map_or(0, |caller| caller.offset.saturating_sub(1));
     }
 }
 
@@ -789,6 +856,14 @@ impl<'c> Frame<'c, '_> {
                     heap.set_slot(cell, slot, heap.get(self.accumulator));
                 }
             }
+            Op::SaveContext => {
+                let heap = agent.heap();
+                heap.set_register(self.slot(first), heap.register(current));
+            }
+            Op::RestoreContext => {
+                let heap = agent.heap();
+                heap.set_register(current, heap.register(self.slot(first)));
+            }
             // Die übrigen Befehle führt `step` aus.
             _ => return Err(agent.throw_error(ErrorKind::RangeError)),
         }
@@ -908,7 +983,9 @@ impl<'c> Frame<'c, '_> {
             | Op::PopContext
             | Op::CloneContext
             | Op::LdaContext
-            | Op::StaContext => self.context_operation(agent, scope, instruction)?,
+            | Op::StaContext
+            | Op::SaveContext
+            | Op::RestoreContext => self.context_operation(agent, scope, instruction)?,
             Op::ResolveGlobal => {
                 let (name, key) = self.name(agent, scope, first);
                 let reference = agent.resolve_global(scope, self.realm, name, key)?;
@@ -1126,6 +1203,7 @@ impl<'c> Frame<'c, '_> {
                 self.arguments_operation(agent, scope, instruction)?;
             }
             Op::Throw => return Err(agent.throw_value(self.accumulator)),
+            Op::Rethrow => return Err(agent.rethrow(self.accumulator)),
             Op::Return => return Ok(Flow::Return),
             // Präfixe liest `Code::decode` mit dem Befehl danach.
             Op::Wide | Op::ExtraWide => return Err(agent.throw_error(ErrorKind::RangeError)),

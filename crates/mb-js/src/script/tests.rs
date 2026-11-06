@@ -363,6 +363,348 @@ fn throw_and_early_errors() {
 }
 
 #[test]
+fn try_catches_what_its_block_throws() {
+    check(&[
+        ("try { throw 1; } catch (e) { e + 1; }", "2"),
+        (
+            "try { throw 1; } catch { 'ohne Bindung'; }",
+            "\"ohne Bindung\"",
+        ),
+        ("try { 1; } catch (e) { 2; }", "1"),
+        (
+            "var log = ''; try { log += 'a'; throw 'b'; log += 'x'; } catch (e) { log += e; } log",
+            "\"ab\"",
+        ),
+        (
+            "try { try { throw 1; } catch (e) { throw e + 1; } } catch (e) { e * 10; }",
+            "20",
+        ),
+        ("try { throw 1; } catch (e) { e = 2; e; }", "2"),
+        (
+            "var e = 'außen'; try { throw 1; } catch (e) {} e",
+            "\"außen\"",
+        ),
+        ("let e = 'außen'; try { throw 1; } catch (e) { e; }", "1"),
+        // Aus aufgerufenen Funktionen und aus Läufen der Engine.
+        (
+            "function f() { throw 'f'; } try { f(); } catch (e) { e; }",
+            "\"f\"",
+        ),
+        (
+            "function g() { return h(); } function h() { throw 'h'; } try { g(); } catch (e) { e; }",
+            "\"h\"",
+        ),
+        (
+            "var o = { get x() { throw 'Getter'; } }; try { o.x; } catch (e) { e; }",
+            "\"Getter\"",
+        ),
+        (
+            "function f() { try { throw 1; } catch (e) { return e + 1; } } f()",
+            "2",
+        ),
+        (
+            "function f() { try { return g(); } catch (e) { return 'gefangen ' + e; } } \
+             function g() { throw 'g'; } f()",
+            "\"gefangen g\"",
+        ),
+        // Was kein catch fängt, beendet das Script.
+        ("try { throw 1; } finally {}", "throw 1"),
+        ("try { null.x; } finally {}", "TypeError"),
+        ("try { throw 1; } catch (e) { throw 2; }", "throw 2"),
+        ("try { throw 1; } catch (e) { null.x; }", "TypeError"),
+    ]);
+}
+
+/// Abschnitt 14.15.3: `try` ergibt den Wert von Block oder `catch`, ohne
+/// eigenen *undefined*. Endet `finally` normal, zählt sein Wert nicht.
+#[test]
+fn try_has_a_completion_value() {
+    check(&[
+        ("1; try {} catch (e) {}", "undefined"),
+        ("1; try { 2; } catch (e) {}", "2"),
+        ("1; try { 2; throw 3; } catch (e) {}", "undefined"),
+        ("try { 2; throw 3; } catch (e) { 4; }", "4"),
+        ("1; try {} finally {}", "undefined"),
+        ("try { 1; } finally { 2; }", "1"),
+        ("try { throw 1; } catch (e) { 2; } finally { 3; }", "2"),
+        ("do { try { 1; break; } finally { 2; } } while (false)", "1"),
+        ("do { try { 1; } finally { 2; break; } } while (false)", "2"),
+        (
+            "do { try { 1; } finally { break; } } while (false)",
+            "undefined",
+        ),
+        (
+            "do { try { throw 1; } catch (e) { 2; break; } finally { 3; } } while (false)",
+            "2",
+        ),
+    ]);
+}
+
+#[test]
+fn finally_runs_on_every_way_out() {
+    check(&[
+        (
+            "var log = ''; try { log += 'a'; } finally { log += 'f'; } log",
+            "\"af\"",
+        ),
+        (
+            "var log = ''; try { try { throw 1; } finally { log += 'f'; } } catch (e) { log += e; } log",
+            "\"f1\"",
+        ),
+        (
+            "var log = ''; function f() { try { return 'r'; } finally { log += 'f'; } } f() + log",
+            "\"rf\"",
+        ),
+        (
+            "function f() { try { return 1; } finally { return 2; } } f()",
+            "2",
+        ),
+        (
+            "function f() { try { throw 1; } finally { return 2; } } f()",
+            "2",
+        ),
+        (
+            "function f() { try { return 1; } finally { throw 2; } } f()",
+            "throw 2",
+        ),
+        (
+            "function f() { var x = 1; try { return x; } finally { x = 2; } } f()",
+            "1",
+        ),
+        (
+            "var log = ''; function f() { try { try { return 'r'; } finally { log += 1; } } \
+             finally { log += 2; } } f() + log",
+            "\"r12\"",
+        ),
+        (
+            "var n = 0; for (var i = 0; i < 3; i++) { try { if (i == 1) continue; if (i == 2) break; } \
+             finally { n++; } } n",
+            "3",
+        ),
+        (
+            "var log = ''; a: { try { try { break a; } finally { log += 1; } } finally { log += 2; } \
+             log += 'x'; } log",
+            "\"12\"",
+        ),
+        (
+            "var log = ''; for (var i = 0; i < 2; i++) { try { try { continue; } finally { log += i; } } \
+             finally { log += '.'; } } log",
+            "\"0.1.\"",
+        ),
+        (
+            "do { try { throw 1; } finally { break; } } while (false); 'weiter'",
+            "\"weiter\"",
+        ),
+        (
+            "var log = ''; while (true) { try { break; } finally { log += 'f'; } } log",
+            "\"f\"",
+        ),
+        (
+            "var log = ''; switch (1) { case 1: try { break; } finally { log += 'f'; } log += 'x'; } log",
+            "\"f\"",
+        ),
+        // Mehrere Wege durch dasselbe finally.
+        (
+            "var log = ''; for (var i = 0; i < 4; i++) { try { if (i == 0) continue; \
+             if (i == 1) { log += 'b'; continue; } if (i == 3) break; } finally { log += i; } } log",
+            "\"0b123\"",
+        ),
+        (
+            "function f(x) { for (;;) { try { if (x) return 'r'; break; } finally { x = 0; } } \
+             return 'b'; } f(1) + f(0)",
+            "\"rb\"",
+        ),
+    ]);
+}
+
+/// Ein Handler beginnt im Kontext von `try`, auch wenn der Block beim
+/// Werfen einen eigenen hatte; ebenso der Weg durch `finally`.
+#[test]
+fn handlers_restore_the_context() {
+    check(&[
+        (
+            "function f() { let outer = 'o'; (() => outer); try { let inner = 'i'; (() => inner); \
+             throw 1; } catch (e) { return outer; } } f()",
+            "\"o\"",
+        ),
+        (
+            "function f() { let outer = 'o'; (() => outer); try { let inner = 'i'; (() => inner); \
+             null.x; } finally { return outer; } } f()",
+            "\"o\"",
+        ),
+        (
+            "function f() { let outer = 'o'; (() => outer); for (;;) { try { let inner = 'i'; \
+             (() => inner); break; } finally { return outer; } } } f()",
+            "\"o\"",
+        ),
+        (
+            "function f() { let outer = 'o'; (() => outer); try { g(); } catch (e) { return outer + e; } } \
+             function g() { let deep = 'd'; (() => deep); throw deep; } f()",
+            "\"od\"",
+        ),
+        (
+            "var g; try { let x = 1; g = () => x; throw 2; } catch (e) { let y = e; (() => y + g())(); }",
+            "3",
+        ),
+        (
+            "var g; try { throw 5; } catch (e) { g = () => e; } g()",
+            "5",
+        ),
+        (
+            "var g; try { throw 5; } catch (e) { { let f = e + 1; g = () => e + f; } } g()",
+            "11",
+        ),
+        (
+            "var log = ''; for (let i = 0; i < 2; i++) { try { let k = i; (() => k); \
+             if (i == 0) continue; } finally { log += (() => i)(); } } log",
+            "\"01\"",
+        ),
+    ]);
+}
+
+#[test]
+fn caught_engine_errors_are_error_objects() {
+    check(&[
+        ("try { null.x; } catch (e) { typeof e; }", "\"object\""),
+        ("try { null.x; } catch (e) { e.name; }", "\"TypeError\""),
+        (
+            "try { missing; } catch (e) { e.name; }",
+            "\"ReferenceError\"",
+        ),
+        (
+            "try { let a = a; } catch (e) { e.name; }",
+            "\"ReferenceError\"",
+        ),
+        (
+            "try { const c = 1; c = 2; } catch (e) { e.name; }",
+            "\"TypeError\"",
+        ),
+        ("try { null.x; } catch (e) { e.message; }", "\"\""),
+        (
+            "try { null.x; } catch (e) { e.name = 'anders'; e.name; }",
+            "\"anders\"",
+        ),
+        (
+            "try { try { null.x; } finally {} } catch (e) { e.name; }",
+            "\"TypeError\"",
+        ),
+        (
+            "function f() { return null.x; } try { f(); } catch (e) { e.name; }",
+            "\"TypeError\"",
+        ),
+        (
+            "var o = { get x() { return null.y; } }; try { o.x; } catch (e) { e.name; }",
+            "\"TypeError\"",
+        ),
+        ("try { null.x; } catch (e) { throw e; }", "throw Objekt"),
+        (
+            "var a, b; try { null.x; } catch (e) { a = e; } try { null.x; } catch (e) { b = e; } a === b",
+            "false",
+        ),
+    ]);
+}
+
+/// Das Fehlerobjekt entsteht im Realm des Rahmens, dessen Befehl warf.
+#[test]
+fn error_objects_belong_to_the_realm_that_threw() {
+    let (mut agent, first) = checked();
+    let second = agent.create_realm().expect("Speicher");
+    agent.scope(|agent, scope| {
+        let thrower = agent
+            .evaluate_script(scope, second, &units("(function () { null.x; })"))
+            .expect("Funktion");
+        let global = agent.global_object(scope, first);
+        let key = agent
+            .key_from_units(scope, &units("thrower"))
+            .expect("Speicher");
+        crate::operations::set(agent, scope, global, key, thrower, true).expect("Zuweisung");
+        for (source, realm) in [
+            ("try { null.x; } catch (e) { e }", first),
+            ("try { thrower(); } catch (e) { e }", second),
+        ] {
+            let error = agent
+                .evaluate_script(scope, first, &units(source))
+                .expect("Fehlerobjekt");
+            let heap = agent.heap();
+            let Kind::Object(object) = heap.get(error).kind() else {
+                panic!("{source}: kein Objekt");
+            };
+            assert_eq!(
+                heap.object_class(object),
+                Some(crate::heap::ObjectClass::Error),
+                "{source}"
+            );
+            let prototype = crate::object::get_prototype_of(agent, scope, error)
+                .expect("kein Fehler")
+                .expect("Prototyp");
+            let expected =
+                agent.intrinsic(scope, realm, crate::realm::Intrinsic::TypeErrorPrototype);
+            let heap = agent.heap();
+            assert_eq!(
+                heap.get(prototype).bits(),
+                heap.get(expected).bits(),
+                "{source}"
+            );
+        }
+    });
+}
+
+/// Anhang B.3.4: Ein `var` im Block von `catch` mit dem Namen des
+/// Parameters schreibt mit seinem Initialisierer in den Parameter.
+#[test]
+fn var_in_catch_assigns_the_parameter() {
+    check(&[
+        (
+            "function f() { try { throw 1; } catch (e) { var e = 2; } return e; } f()",
+            "undefined",
+        ),
+        ("try { throw 1; } catch (e) { var e = 2; } e", "undefined"),
+        (
+            "function f() { try { throw 1; } catch (e) { var e = 2; return e; } } f()",
+            "2",
+        ),
+        (
+            "function capturedFoo() { return foo; } foo = 'davor'; \
+             try { throw 1; } catch (foo) { var foo = 'im catch'; } capturedFoo()",
+            "\"davor\"",
+        ),
+        // var-Namen aus allen drei Teilen von try.
+        (
+            "'use strict'; function f() { a = 1; b = 2; c = 3; try { var a; } catch (e) { var b; } \
+             finally { var c; } return a + b + c; } f()",
+            "6",
+        ),
+        ("'use strict'; x = 1; try { var x; } finally {} x", "1"),
+        // Anhang B.3.2 mit einem Bezeichner als Parameter von catch.
+        (
+            "(function () { var before = f; try { throw null; } catch (f) { { function f() { return 123; } } } \
+             return (before === undefined) + typeof f + f(); })()",
+            "\"truefunction123\"",
+        ),
+        (
+            "var before = typeof g; try { throw null; } catch (g) { { function g() { return 1; } } } \
+             before + typeof g",
+            "\"undefinedfunction\"",
+        ),
+    ]);
+}
+
+/// Ausnahmen, ihre Fehlerobjekte und die Zellen für finally überstehen
+/// jede Sammlung.
+#[test]
+fn exceptions_survive_collections() {
+    let (mut agent, realm) = agent_with(Options {
+        stress: true,
+        verify: true,
+        ..Options::default()
+    });
+    let source = "var log = ''; function f(n) { try { if (n) f(n - 1); else null.x; } finally { log += n; } } \
+                  try { f(3); } catch (e) { log += e.name; } \
+                  try { try { throw 'w' + 1; } finally { log += 'f'; } } catch (e) { log += e; } log";
+    assert_eq!(run(&mut agent, realm, source), "\"0123TypeErrorfw1\"");
+}
+
+#[test]
 fn scripts_share_the_global_environment() {
     let (mut agent, realm) = checked();
     assert_eq!(
@@ -1729,6 +2071,12 @@ fn calls_run_on_a_small_stack() {
                 let deep = "function f(n) { return n === 0 ? 0 : f(n - 1) + 1; } f(100000)";
                 assert_eq!(run(agent, realm, deep), "100000");
                 assert_eq!(run(agent, realm, "function g() { return g(); } g()"), "RangeError");
+                // Der RangeError lässt sich fangen, auch aus verschachtelten
+                // Läufen, und der Abbau der Rahmen braucht keinen Stapel.
+                let caught = "function h() { return h(); } try { h(); } catch (e) { e.name }";
+                assert_eq!(run(agent, realm, caught), "\"RangeError\"");
+                let nested = "var t = {get a() { return this.a; }}; try { t.a; } catch (e) { e.name }";
+                assert_eq!(run(agent, realm, nested), "\"RangeError\"");
                 for source in [
                     "var o = {get a() { return this.a; }}; o.a",
                     "var p = {valueOf() { return +p; }}; +p",
