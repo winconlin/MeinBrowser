@@ -2127,3 +2127,314 @@ fn deepest_body(open: &str, middle: &str, close: &str) -> String {
         depth -= 1;
     }
 }
+
+/// `new` (EvaluateNew, Abschnitt 13.3.5.1.1) mit [[Construct]] (Abschnitt
+/// 10.2.2): ein neues Objekt mit dem Prototyp aus `prototype` als `this`,
+/// außer der Rumpf gibt ein Objekt zurück.
+#[test]
+fn new_constructs_objects() {
+    check(&[
+        (
+            "function C(a, b) { this.sum = a + b; } new C(1, 2).sum",
+            "3",
+        ),
+        ("function C() { this.x = 1; } typeof new C", "\"object\""),
+        ("function C() {} C.prototype.y = 2; new C().y", "2"),
+        ("function C() {} new C() instanceof C", "true"),
+        ("function C() {} new C() === new C()", "false"),
+        (
+            "var t; function C() { t = this; } var o = new C(); t === o",
+            "true",
+        ),
+        (
+            "function C() { this.n = arguments.length; } new C(1, 2, 3).n",
+            "3",
+        ),
+        (
+            "function C() { this.a = 1; return {b: 2}; } var o = new C(); typeof o.a + o.b",
+            "\"undefined2\"",
+        ),
+        ("function C() { this.a = 1; return 5; } new C().a", "1"),
+        ("function C() { this.a = 1; return null; } new C().a", "1"),
+        ("function C() { this.a = 1; return; } new C().a", "1"),
+        (
+            "function C() { return function () {}; } typeof new C()",
+            "\"function\"",
+        ),
+        (
+            "function A() { this.b = new B(); } function B() { this.v = 7; } new A().b.v",
+            "7",
+        ),
+        (
+            "var ns = {C: function () { this.k = 3; }}; new ns.C().k",
+            "3",
+        ),
+        (
+            "function C() { this.x = 1; } new C.prototype.constructor().x",
+            "1",
+        ),
+        (
+            "function C() { throw 'innen'; } try { new C(); } catch (e) { e; }",
+            "\"innen\"",
+        ),
+        // Erst der Konstruktor, dann die Argumente, dann IsConstructor.
+        (
+            "var log = ''; function C() {} new (log += 'k', C)(log += 'a'); log",
+            "\"ka\"",
+        ),
+        (
+            "var log = ''; try { new 1(log += 'a'); } catch (e) { log += e.name; } log",
+            "\"aTypeError\"",
+        ),
+        // Ein Endaufruf im Rahmen von [[Construct]] bleibt ein gewöhnlicher
+        // Aufruf, das Ergebnis wird noch geprüft.
+        (
+            "'use strict'; function g() { return 5; } function C() { this.a = 1; return g(); } new C().a",
+            "1",
+        ),
+        (
+            "'use strict'; function g() { return {z: 2}; } function C() { return g(); } new C().z",
+            "2",
+        ),
+    ]);
+}
+
+/// Nur gewöhnliche Funktionen haben [[Construct]], keine Pfeilfunktionen,
+/// Methoden oder Accessoren.
+#[test]
+fn new_needs_a_constructor() {
+    check(&[
+        ("new 1", "TypeError"),
+        ("var u; new u()", "TypeError"),
+        ("new ({})", "TypeError"),
+        ("var f = () => {}; new f()", "TypeError"),
+        ("var o = {m() {}}; new o.m()", "TypeError"),
+        (
+            "var o = {f: function () {}}; typeof new o.f()",
+            "\"object\"",
+        ),
+        (
+            "function C() {} try { new C.x(); } catch (e) { e.name; }",
+            "\"TypeError\"",
+        ),
+    ]);
+}
+
+/// Ist `prototype` kein Objekt, bekommt das neue Objekt %Object.prototype%
+/// aus dem Realm des Konstruktors (GetPrototypeFromConstructor, Abschnitt
+/// 10.1.14).
+#[test]
+fn constructed_objects_fall_back_to_the_realm_of_the_constructor() {
+    let (mut agent, first) = checked();
+    let second = agent.create_realm().expect("Speicher");
+    agent.scope(|agent, scope| {
+        let constructor = agent
+            .evaluate_script(scope, second, &units("(function () {})"))
+            .expect("Funktion");
+        let global = agent.global_object(scope, first);
+        let key = agent.key_from_units(scope, &units("C")).expect("Speicher");
+        crate::operations::set(agent, scope, global, key, constructor, true).expect("Zuweisung");
+        for (source, realm) in [
+            ("function D() {} D.prototype = null; new D()", first),
+            ("C.prototype = 1; new C()", second),
+        ] {
+            let object = agent
+                .evaluate_script(scope, first, &units(source))
+                .expect("Objekt");
+            let prototype = crate::object::get_prototype_of(agent, scope, object)
+                .expect("kein Fehler")
+                .expect("Prototyp");
+            let expected = agent.intrinsic(scope, realm, crate::realm::Intrinsic::ObjectPrototype);
+            let heap = agent.heap();
+            assert_eq!(
+                heap.get(prototype).bits(),
+                heap.get(expected).bits(),
+                "{source}"
+            );
+        }
+    });
+}
+
+/// `new.target` (Abschnitt 13.3.12.1): der Konstruktor bei [[Construct]],
+/// sonst *undefined*; Pfeilfunktionen sehen das ihrer Funktion.
+#[test]
+fn new_target_names_the_constructor() {
+    check(&[
+        ("function f() { return new.target; } f()", "undefined"),
+        (
+            "var t; function f() { t = new.target; } new f(); t === f",
+            "true",
+        ),
+        (
+            "function f() { return () => new.target; } f()()",
+            "undefined",
+        ),
+        (
+            "var t; function f() { t = (() => () => new.target)(); } new f(); t() === f",
+            "true",
+        ),
+        ("var o = {m() { return new.target; }}; o.m()", "undefined"),
+        (
+            "var o = {get x() { return (() => new.target)(); }}; o.x",
+            "undefined",
+        ),
+        (
+            "var t; function f(a = new.target) { t = a; } new f(); t === f",
+            "true",
+        ),
+        (
+            "var t; function f(a = () => new.target) { t = a; } new f(); t() === f",
+            "true",
+        ),
+        (
+            "var r; function f() { r = (function () { return new.target; })(); } new f(); r",
+            "undefined",
+        ),
+        (
+            "var t; function C() { var a = () => [this, new.target]; t = a(); } \
+             var o = new C(); t[0] === o && t[1] === C",
+            "true",
+        ),
+        (
+            "var t; function C(x) { var g = function () { return x; }; t = new.target; } \
+             new C(1); t === C",
+            "true",
+        ),
+    ]);
+}
+
+/// Endaufrufe im strikten Modus (Abschnitt 15.10) ersetzen den Rahmen, der
+/// Registerstapel wächst nicht. 150 000 Rahmen mit je mindestens acht
+/// Registern (Kopf, `this`, Funktion, Parameter und für den Aufruf
+/// Funktion, `this` und Argument) passen nicht in seine 2^20 Register.
+#[test]
+fn tail_calls_replace_the_frame() {
+    let (mut agent, realm) = checked();
+    let budget = std::rc::Rc::new(crate::agent::Budget::unlimited());
+    agent.with_execution_budget(budget, |agent| {
+        for (source, expected) in [
+            (
+                "'use strict'; function f(n) { return n === 0 ? 'ende' : f(n - 1); } f(150000)",
+                "\"ende\"",
+            ),
+            (
+                "'use strict'; function even(n) { return n === 0 || odd(n - 1); } \
+                 function odd(n) { return n !== 0 && even(n - 1); } even(150001)",
+                "false",
+            ),
+            (
+                "'use strict'; var f = n => n === 0 ? 'ende' : f(n - 1); f(150000)",
+                "\"ende\"",
+            ),
+            (
+                "'use strict'; var o = {m(n) { return n === 0 ? this === o : this.m(n - 1); }}; o.m(150000)",
+                "true",
+            ),
+            (
+                "'use strict'; function f(n) { try { if (n === 0) return 'ende'; throw n; } \
+                 catch (e) { return f(e - 1); } } f(150000)",
+                "\"ende\"",
+            ),
+            // Der unterste Rahmen eines Laufs aus der Engine.
+            (
+                "'use strict'; function f(n) { return n === 0 ? 'ende' : f(n - 1); } \
+                 var o = {get x() { return f(150000); }}; o.x",
+                "\"ende\"",
+            ),
+        ] {
+            assert_eq!(run(agent, realm, source), expected, "{source}");
+        }
+    });
+}
+
+/// Ohne strikten Modus, nach einer Rechnung und im Block von `try` bleibt
+/// derselbe Aufruf ein gewöhnlicher, und die Rekursion endet mit einem
+/// RangeError.
+#[test]
+fn calls_outside_tail_position_keep_their_frame() {
+    let (mut agent, realm) = checked();
+    let budget = std::rc::Rc::new(crate::agent::Budget::unlimited());
+    agent.with_execution_budget(budget, |agent| {
+        for (source, expected) in [
+            (
+                "function f(n) { return n === 0 ? 'ende' : f(n - 1); } f(150000)",
+                "RangeError",
+            ),
+            (
+                "'use strict'; function f(n) { return n === 0 ? 0 : 1 + f(n - 1); } f(150000)",
+                "RangeError",
+            ),
+            (
+                "'use strict'; function f(n) { try { return n === 0 ? 0 : f(n - 1); } \
+                 catch (e) { return e.name; } } f(150000)",
+                "\"RangeError\"",
+            ),
+        ] {
+            assert_eq!(run(agent, realm, source), expected, "{source}");
+        }
+    });
+}
+
+/// Ausnahmen aus Endaufrufen gehen an den Aufrufer des ersetzten Rahmens,
+/// auch wenn der neue Rahmen nicht mehr auf den Registerstapel passt.
+#[test]
+fn tail_calls_throw_to_the_caller() {
+    check(&[
+        (
+            "'use strict'; function thrower() { null.x; } function f(n) { return n === 0 ? thrower() : f(n - 1); } \
+             try { f(1000); } catch (e) { e.name }",
+            "\"TypeError\"",
+        ),
+        (
+            "'use strict'; function g() { throw 'g'; } function f() { return g(); } \
+             function h() { try { return f(); } catch (e) { return 'gefangen ' + e; } } h()",
+            "\"gefangen g\"",
+        ),
+        (
+            "'use strict'; function f() { return (0)(); } try { f(); } catch (e) { e.name }",
+            "\"TypeError\"",
+        ),
+    ]);
+    // Die Rekursion füllt den Registerstapel. Die Funktion, die den
+    // RangeError fängt, ruft in Endposition `small` auf, und `small` ruft
+    // `big`, dessen Rahmen größer ist als zwei von `f`. Der RangeError dafür
+    // geht an den Aufruf im Rahmen darunter, bis `big` passt.
+    let variables: Vec<String> = (0..40).map(|index| format!("a{index}")).collect();
+    let source = format!(
+        "'use strict'; var caught = 0; function big() {{ var {}; return 'groß'; }} \
+         function small() {{ return big(); }} \
+         function f(n) {{ try {{ return f(n + 1); }} catch (e) {{ caught++; return small(); }} }} \
+         f(0) + (caught > 1)",
+        variables.join(", ")
+    );
+    let (mut agent, realm) = checked();
+    let budget = std::rc::Rc::new(crate::agent::Budget::unlimited());
+    agent.with_execution_budget(budget, |agent| {
+        assert_eq!(run(agent, realm, &source), "\"großtrue\"");
+    });
+}
+
+/// Ein Endaufruf, dessen Funktion sich nicht übersetzen lässt, lässt keinen
+/// Rahmen zurück.
+#[test]
+fn a_failed_tail_call_leaves_no_frame() {
+    let (mut agent, realm) = checked();
+    let source = "function g() { class A {} } (function () { 'use strict'; return g(); })()";
+    assert!(run(&mut agent, realm, source).starts_with("Unsupported"));
+    assert_eq!(run(&mut agent, realm, "1 + 1"), "2");
+}
+
+/// Konstruierte Objekte, new.target und die Argumente von Endaufrufen
+/// überstehen jede Sammlung.
+#[test]
+fn new_and_tail_calls_survive_collections() {
+    let (mut agent, realm) = agent_with(Options {
+        stress: true,
+        verify: true,
+        ..Options::default()
+    });
+    let source = "'use strict'; function C(a, n) { this.s = a + n + (new.target === C); } \
+                  function f(n, acc) { return n === 0 ? acc : f(n - 1, acc + new C('x', n).s); } \
+                  f(3, '')";
+    assert_eq!(run(&mut agent, realm, source), "\"x3truex2truex1true\"");
+}

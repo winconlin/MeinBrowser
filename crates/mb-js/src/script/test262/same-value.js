@@ -1,5 +1,6 @@
-// Eigene, vorübergehende Testanpassung: Der aktuelle Compiler unterstützt
-// noch kein new. Die normalen Test262-Harness-Dateien werden vorher
+// Eigene, vorübergehende Testanpassung: Der Fehlerzweig der originalen
+// Assertions ruft über assert._toString die Funktion String auf, die es noch
+// nicht gibt. Die normalen Test262-Harness-Dateien werden vorher
 // unverändert ausgewertet; nur diese beiden Assertions werden ersetzt.
 // INTERPRETING.md erlaubt das Ersetzen von Harness-Funktionen.
 // Der originale _isSameValue-Algorithmus prüft auch NaN und +/-0. Fehler

@@ -28,6 +28,12 @@
 //! Handler mit [`Op::RestoreContext`] aus dem Register her, in das ihn
 //! [`Op::SaveContext`] zu Beginn von `try` legte.
 //!
+//! Aufrufe: Funktion, `this` und Argumente liegen in Registern
+//! hintereinander, für [`Op::Call`], [`Op::TailCall`] und [`Op::Construct`]
+//! gleich. Nach [`Op::TailCall`] folgt im Code nur noch der Weg zu
+//! [`Op::Return`]: Ersetzt der Aufruf den Rahmen, kommt der Rahmen dort nie
+//! an, sonst gibt er das Ergebnis zurück.
+//!
 //! Im Bytecode steht keine Adresse im Heap. Zahlen, Zeichenketten und die
 //! Funktionen, die der Code anlegt, liegen als [`Constant`] bei ihm; der
 //! Interpreter legt sie im Heap an, für ein Script zu Beginn des Laufs, für
@@ -261,6 +267,16 @@ ops! {
     /// aufrufbar, wirft das einen TypeError, erst nach den Argumenten
     /// (EvaluateCall, Abschnitt 13.3.6.2).
     Call [Register, Immediate],
+    /// Dasselbe in Endposition (Abschnitt 15.10): Nach der Prüfung mit
+    /// IsCallable tritt der Aufruf an die Stelle des Rahmens
+    /// (PrepareForTailCall), außer im Rahmen von [[Construct]].
+    TailCall [Register, Immediate],
+    /// `new` (EvaluateNew, Abschnitt 13.3.5.1.1): Construct mit der Funktion
+    /// im Register als Konstruktor und new.target. Das Register danach nimmt
+    /// das neue Objekt als `this` auf, dann folgen die Argumente wie bei
+    /// [`Op::Call`]. Ist der Wert kein Konstruktor, wirft das einen
+    /// TypeError, erst nach den Argumenten.
+    Construct [Register, Immediate],
 
     /// Ein neues arguments-Objekt ohne Verknüpfung
     /// (CreateUnmappedArgumentsObject, Abschnitt 10.4.4.6) aus den
@@ -352,6 +368,8 @@ pub(crate) struct ContextLayout {
     /// Der Platz mit `this` der Funktion oder des Scripts, für
     /// Pfeilfunktionen.
     pub(crate) this: Option<u32>,
+    /// Der Platz mit `new.target` der Funktion, für Pfeilfunktionen.
+    pub(crate) new_target: Option<u32>,
 }
 
 /// Eine Bindung in einem Kontext.
@@ -440,6 +458,10 @@ pub struct Code {
     /// seiner Bindung im Kontext, `None` für einen, dessen Name ein
     /// späterer Parameter wiederholt.
     pub(crate) parameter_map: Vec<Option<u32>>,
+    /// Das Register, in das ein Aufruf new.target legt, wenn der Code es
+    /// liest: den Konstruktor bei [[Construct]], sonst bleibt es
+    /// *undefined*.
+    pub(crate) new_target: Option<u32>,
     pub(crate) strict: bool,
     /// Lagen im Quelltext ab einem Befehl: Paare aus Abstand im Bytecode
     /// und Abstand im Quelltext, nach dem ersten aufsteigend.
@@ -474,6 +496,12 @@ impl Code {
     /// Das Register für alle Argumente, wenn der Code sie braucht.
     pub fn arguments_register(&self) -> Option<usize> {
         self.arguments
+            .and_then(|register| usize::try_from(register).ok())
+    }
+
+    /// Das Register für new.target, wenn der Code es liest.
+    pub fn new_target_register(&self) -> Option<usize> {
+        self.new_target
             .and_then(|register| usize::try_from(register).ok())
     }
 
@@ -686,6 +714,7 @@ impl Emitter {
             parameters: 0,
             arguments: None,
             parameter_map: Vec::new(),
+            new_target: None,
             strict,
             positions: self.positions,
             handlers: self.handlers,

@@ -28,9 +28,11 @@ mod storage;
 use crate::agent::{Abrupt, Agent, Completion, ErrorKind};
 use crate::compare::same_value;
 use crate::descriptor::PropertyDescriptor;
+use crate::function::get_function_realm;
 use crate::heap::{Heap, Local, ObjectClass, OutOfMemory, Scope};
 use crate::key::PropertyKey;
 use crate::operations::{call, create_data_property};
+use crate::realm::{Intrinsic, RealmId};
 use crate::value::{Kind, Ref, Value};
 use storage::{ACCESSOR, CONFIGURABLE, ENUMERABLE, WRITABLE, object_of};
 
@@ -123,6 +125,31 @@ pub fn ordinary_object_create<'s>(
     agent
         .heap_mut()
         .alloc_object(scope, ObjectClass::Ordinary, INLINE, shape, prototype)
+}
+
+/// OrdinaryCreateFromConstructor (Abschnitt 10.1.13) mit
+/// GetPrototypeFromConstructor (Abschnitt 10.1.14): ein gewöhnliches Objekt,
+/// dessen Prototyp der Wert von `prototype` des Konstruktors ist, wenn das
+/// ein Objekt ist, sonst das Intrinsic `fallback` aus dessen Realm. `current`
+/// ist der aktuelle Realm für GetFunctionRealm.
+pub(crate) fn ordinary_create_from_constructor<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    constructor: Local<'_>,
+    fallback: Intrinsic,
+    current: RealmId,
+) -> Completion<Local<'s>> {
+    let units: Vec<u16> = "prototype".encode_utf16().collect();
+    let key = agent.key_from_units(scope, &units)?;
+    let found = get(agent, scope, constructor, key, constructor)?;
+    let prototype = if matches!(agent.heap().get(found).kind(), Kind::Object(_)) {
+        found
+    } else {
+        let heap = agent.heap();
+        let realm = get_function_realm(heap, heap.get(constructor), current);
+        agent.intrinsic(scope, realm, fallback)
+    };
+    Ok(ordinary_object_create(agent, scope, Some(prototype))?)
 }
 
 /// Ein neues Fehlerobjekt (Abschnitt 20.5.1.1, Schritt 2): erweiterbar,

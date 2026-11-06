@@ -13,12 +13,12 @@ cargo run --locked -p testdata
 cargo test --locked -p mb-js script::test262 -- --nocapture
 ```
 
-Die Auswahl steht in `crates/mb-js/src/script/test262/runtime.txt`: 116 Dateien,
-davon 108 positive und acht mit erwartetem Laufzeitfehler. Sie ergeben 218
-Sprachvarianten und mit zwei GC-Modi 436 Ausführungen. Geprüft werden unter
+Die Auswahl steht in `crates/mb-js/src/script/test262/runtime.txt`: 164 Dateien,
+davon 156 positive und acht mit erwartetem Laufzeitfehler. Sie ergeben 301
+Sprachvarianten und mit zwei GC-Modi 602 Ausführungen. Geprüft werden unter
 anderem Exponentiation, `??`, logische Zuweisungen, Pfeilfunktionen, Closures,
-Vorgabewerte, `arguments`, Methoden, Schleifenbindungen, TDZ-Fehler und `try`
-mit `catch` und `finally`. Die
+Vorgabewerte, `arguments`, Methoden, Schleifenbindungen, TDZ-Fehler, `try`
+mit `catch` und `finally`, `new` mit [[Construct]] und `new.target`. Die
 Sammlung bleibt im bereits festgelegten Commit
 `91c70759363c46557b694792bf34a2551a7af5ba`; `tools/testdata` holt nun auch
 `harness/` und `INTERPRETING.md`. Kein externer Testcode wird ausgeliefert.
@@ -34,8 +34,11 @@ Testquelle wird ausschließlich `"use strict";` mit Zeilenumbruch vorangestellt.
 ## Harness und heutige Grenzen
 
 Die originalen Dateien `assert.js` und `sta.js` werden unverändert im Realm
-ausgewertet. Der derzeitige Compiler unterstützt noch kein `new`, und es
-gibt noch keine Fehlerkonstruktoren. Deshalb ersetzt die eigene Testdatei `same-value.js` vorübergehend nur
+ausgewertet. Ihr Fehlerzweig ruft über `assert._toString` die Funktion
+`String` auf, die es noch nicht gibt; statt eines `Test262Error` käme dann ein
+ReferenceError, und der könnte einen erwarteten ReferenceError erfüllen.
+Fehlerkonstruktoren gibt es ebenfalls noch nicht. Deshalb ersetzt die eigene
+Testdatei `same-value.js` vorübergehend nur
 `assert.sameValue` und `assert.notSameValue`. Test262s `INTERPRETING.md`
 erlaubt das Ersetzen von Harness-Funktionen ausdrücklich. Beide verwenden
 den originalen `_isSameValue`-Algorithmus einschließlich NaN und vorzeichenbehafteter
@@ -86,9 +89,9 @@ Objekte mit nicht aufzurufenden Gettern.
 
 ## Anschluss für Claude
 
-1. Sobald `try`, `new` und Fehlerobjekte vorhanden sind, die beiden
-   SameValue-Anpassungen entfernen und mit dem vollständigen originalen
-   Harness prüfen. Erst dann Tests mit `assert.throws` oder abgefangenen
+1. Sobald `String` vorhanden ist (`try`, `new` und Fehlerobjekte gibt es
+   schon), die beiden SameValue-Anpassungen entfernen und mit dem
+   vollständigen originalen Harness prüfen. Erst dann Tests mit `assert.throws` oder abgefangenen
    Assertion-Fehlern aufnehmen.
 2. Für breitere Tests die vollständige Host-API aus `INTERPRETING.md`, später
    Module und asynchrone Abschlüsse implementieren. Neue Anforderungen im
@@ -107,7 +110,15 @@ Standardbibliothek und sind deshalb nicht Teil dieser ersten Auswahl:
 | `expressions/exponentiation/exp-operator-evaluation-order.js` | `Array.prototype.push` |
 | `expressions/exponentiation/exp-operator-precedence-update-expression-semantics.js` | `Math.pow` |
 
-Sie sind konkrete Kandidaten für die nächste Erweiterung der Liste. Weitere
+Sie sind konkrete Kandidaten für die nächste Erweiterung der Liste.
+
+Die 34 Dateien mit dem Feature `tail-call-optimization` sind ebenfalls nicht
+in der Auswahl. Mit `$MAX_ITERATIONS` aus `tcoHelper.js` brauchen sie etwa
+1,5 bis 2,6 Millionen Arbeitsschritte, gemessen an den 30, die mit größerem
+Budget bestehen; das ist mehr als die 100.000 der Auswahl. Von den übrigen
+vier brauchen zwei `eval`, eine davon auch `with`, und zwei Templates mit
+Tag. Ihre Endpositionen prüfen auch eigene Tests in `compiler/tests.rs`, die
+Rekursion ohne wachsenden Registerstapel `script/tests.rs`. Weitere
 Sprachfunktionen wie Generatoren, BigInt und Destrukturierung bleiben mit
 ihren Implementierungen zu ergänzen; diese Auswahl behauptet nicht, sie
 abzudecken.
