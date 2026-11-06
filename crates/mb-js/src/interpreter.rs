@@ -303,6 +303,17 @@ fn enter_function(
         return Err(agent.throw_error(ErrorKind::TypeError));
     };
     let (code, pool) = compiled(agent, scope, shared)?;
+    let argument_count = match arguments {
+        Arguments::Registers { count, .. } => count,
+        Arguments::Locals(locals) => locals.len(),
+    };
+    // Die Zelle für alle Argumente entsteht vor dem Rahmen: Scheitert die
+    // Anforderung, bleibt kein Rahmen liegen. Die Argumente liegen in
+    // Registern oder Handles und überstehen sie.
+    let cell = match code.arguments_register() {
+        Some(_) => Some(agent.heap_mut().alloc_slots(scope, argument_count)?),
+        None => None,
+    };
     let count = HEADER.checked_add(code.register_count());
     let Some(header) = count.and_then(|count| agent.heap_mut().push_registers(count)) else {
         return Err(agent.throw_error(ErrorKind::RangeError));
@@ -335,27 +346,19 @@ fn enter_function(
             }
         }
     }
-    if let Some(register) = code.arguments_register() {
-        let count = match arguments {
-            Arguments::Registers { count, .. } => count,
-            Arguments::Locals(locals) => locals.len(),
-        };
-        // Die Argumente liegen in Registern oder Handles und überstehen die
-        // Anforderung.
-        let cell = agent.heap_mut().alloc_slots(scope, count)?;
-        let heap = agent.heap();
-        if let Kind::Internal(cell) = heap.get(cell).kind() {
-            for index in 0..count {
-                let value = match arguments {
-                    Arguments::Registers { first, .. } => heap.register(place(first, index)),
-                    Arguments::Locals(locals) => locals
-                        .get(index)
-                        .map_or(Value::UNDEFINED, |&local| heap.get(local)),
-                };
-                heap.set_slot(cell, index, value);
-            }
-            heap.set_register(place(base, register), Value::internal(cell));
+    if let (Some(register), Some(cell)) = (code.arguments_register(), cell)
+        && let Kind::Internal(cell) = heap.get(cell).kind()
+    {
+        for index in 0..argument_count {
+            let value = match arguments {
+                Arguments::Registers { first, .. } => heap.register(place(first, index)),
+                Arguments::Locals(locals) => locals
+                    .get(index)
+                    .map_or(Value::UNDEFINED, |&local| heap.get(local)),
+            };
+            heap.set_slot(cell, index, value);
         }
+        heap.set_register(place(base, register), Value::internal(cell));
     }
     Ok(Activation {
         source: Source::Shared(code),
