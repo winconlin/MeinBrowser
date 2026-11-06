@@ -139,7 +139,7 @@ fn copying_from_a_string_defines_its_units() {
     agent.scope(|agent, scope| {
         let target = ordinary_object_create(agent, scope, None).expect("Speicher");
         let source = agent.heap_mut().alloc_string(scope, &units("ab")).expect("Speicher");
-        copy_data_properties(agent, scope, target, source).expect("kopiert");
+        copy_data_properties(agent, scope, target, source, &[]).expect("kopiert");
         let keys = object::own_property_keys(agent, scope, target).expect("Schlüssel");
         assert_eq!(keys.len(), 2);
         for (index, expected) in [(0, "a"), (1, "b")] {
@@ -169,7 +169,7 @@ fn copying_from_objects_takes_enumerable_own_properties_in_order() {
             create_data_property_or_throw(agent, scope, source, key, value).expect("gesetzt");
         }
         let target = ordinary_object_create(agent, scope, None).expect("Speicher");
-        copy_data_properties(agent, scope, target, source).expect("kopiert");
+        copy_data_properties(agent, scope, target, source, &[]).expect("kopiert");
         let keys = object::own_property_keys(agent, scope, target).expect("Schlüssel");
         let heap = agent.heap();
         assert_eq!(keys.len(), 3);
@@ -180,6 +180,54 @@ fn copying_from_objects_takes_enumerable_own_properties_in_order() {
     });
 }
 
+/// Der Rest in Objekt-Mustern nimmt Schlüssel aus, auch bei Zeichenketten.
+#[test]
+fn copying_leaves_out_excluded_keys() {
+    let (mut agent, _) = checked();
+    agent.scope(|agent, scope| {
+        let source = ordinary_object_create(agent, scope, None).expect("Speicher");
+        let a = agent.key_from_units(scope, &units("a")).expect("Speicher");
+        let b = agent.key_from_units(scope, &units("b")).expect("Speicher");
+        for key in [a, PropertyKey::Index(1), b] {
+            let value = agent.heap().local(scope, Value::int32(1));
+            create_data_property_or_throw(agent, scope, source, key, value).expect("gesetzt");
+        }
+        let excluded = agent.key_from_units(scope, &units("a")).expect("Speicher");
+        let target = ordinary_object_create(agent, scope, None).expect("Speicher");
+        copy_data_properties(
+            agent,
+            scope,
+            target,
+            source,
+            &[excluded, PropertyKey::Index(1)],
+        )
+        .expect("kopiert");
+        let keys = object::own_property_keys(agent, scope, target).expect("Schlüssel");
+        assert_eq!(keys.len(), 1);
+        assert!(
+            keys.first()
+                .is_some_and(|&key| same_key(agent.heap(), key, b))
+        );
+
+        let string = agent
+            .heap_mut()
+            .alloc_string(scope, &units("xyz"))
+            .expect("Speicher");
+        let target = ordinary_object_create(agent, scope, None).expect("Speicher");
+        copy_data_properties(agent, scope, target, string, &[PropertyKey::Index(1)])
+            .expect("kopiert");
+        let keys = object::own_property_keys(agent, scope, target).expect("Schlüssel");
+        let indices: Vec<_> = keys
+            .iter()
+            .map(|key| match key {
+                PropertyKey::Index(index) => Some(*index),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(indices, [Some(0), Some(2)]);
+    });
+}
+
 #[test]
 fn copying_skips_values_without_own_properties() {
     let (mut agent, _) = checked();
@@ -187,7 +235,7 @@ fn copying_skips_values_without_own_properties() {
         let target = ordinary_object_create(agent, scope, None).expect("Speicher");
         for value in [Value::UNDEFINED, Value::NULL, Value::TRUE, Value::int32(3)] {
             let source = agent.heap().local(scope, value);
-            copy_data_properties(agent, scope, target, source).expect("kopiert");
+            copy_data_properties(agent, scope, target, source, &[]).expect("kopiert");
         }
         let keys = object::own_property_keys(agent, scope, target).expect("Schlüssel");
         assert!(keys.is_empty());

@@ -399,15 +399,10 @@ fn unsupported_constructs_name_their_place() {
         ("x = {*a() {}};", 5),
         ("x = {async a() {}};", 5),
         ("x = {1n: 1};", 5),
-        ("[...a] = b;", 0),
-        ("for ([k] of o);", 5),
-        ("for (var [k] of o);", 9),
-        ("try {} catch ([e]) {}", 14),
+        ("let {1n: a} = b;", 5),
+        ("[a = class {}] = b;", 5),
         ("for (var k in o);", 0),
-        ("for (let [k] of o);", 9),
         ("f`x`;", 0),
-        ("[a] = b;", 0),
-        ("let {a} = b;", 4),
         ("1n;", 0),
         ("/a/;", 0),
         ("async x => x;", 0),
@@ -1161,4 +1156,221 @@ fn for_of_bodies_hold_no_tail_calls() {
         let sloppy = format!("function f() {{ {body} }}");
         assert_eq!(tail_calls(&first_function(&sloppy)), 0, "{sloppy}");
     }
+}
+
+/// Die Befehle ohne Abstände und ohne Sprungziele.
+fn shape(source: &str) -> Vec<String> {
+    listing(source)
+        .iter()
+        .map(|line| {
+            line.split(' ')
+                .map(|part| if part.starts_with('@') { "@" } else { part })
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect()
+}
+
+/// Ein Array-Muster: Jedes Ziel wird vor seinem Wert aufgelöst, eine
+/// Lücke liest keinen Wert, der Rest sammelt in einer Schleife. Am Ende
+/// schließt [`Op::IteratorClose`] den Iterator, bei einer Ausnahme der
+/// Handler.
+#[test]
+fn array_patterns_close_their_iterator_on_every_way_out() {
+    assert_eq!(
+        shape("var [a, , ...b] = c;"),
+        [
+            "LdaGlobal c",
+            "GetIterator r2",
+            "ResolveGlobal a r5",
+            "IteratorElement r2",
+            "StaGlobal a r5",
+            "IteratorSkip r2",
+            "ResolveGlobal b r5",
+            "CreateArray",
+            "Star r6",
+            "IteratorNext @ r2",
+            "ArrayPush r6",
+            "JumpLoop @",
+            "Ldar r6",
+            "StaGlobal b r5",
+            "IteratorClose r2",
+            "Jump @",
+            "Star r5",
+            "IteratorCloseOnThrow r2",
+            "Ldar r5",
+            "Rethrow",
+            "Ldar r1",
+            "Return",
+            "Finally @ -> @",
+        ]
+    );
+    // Ohne Elemente gibt es nichts zu schützen.
+    assert_eq!(
+        shape("var [] = c;"),
+        [
+            "LdaGlobal c",
+            "GetIterator r2",
+            "IteratorClose r2",
+            "Ldar r1",
+            "Return"
+        ]
+    );
+}
+
+/// Eine Zuweisung wertet erst die rechte Seite aus, dann das Muster, und
+/// ergibt den Wert der rechten Seite. Die Basis einer Eigenschaft kommt
+/// vor dem Wert aus dem Iterator.
+#[test]
+fn assignment_patterns_evaluate_their_targets_first() {
+    assert_eq!(
+        shape("[x.y] = z;"),
+        [
+            "LdaGlobal z",
+            "Star r2",
+            "GetIterator r3",
+            "LdaGlobal x",
+            "Star r6",
+            "IteratorElement r3",
+            "StaNamed r6 y",
+            "IteratorClose r3",
+            "Jump @",
+            "Star r6",
+            "IteratorCloseOnThrow r3",
+            "Ldar r6",
+            "Rethrow",
+            "Ldar r2",
+            "Star r1",
+            "Ldar r1",
+            "Return",
+            "Finally @ -> @",
+        ]
+    );
+}
+
+/// Ein Objekt-Muster prüft den Wert zuerst. Mit Rest stehen die Schlüssel
+/// davor in Registern hinter dem Wert, auch berechnete nach ToPropertyKey.
+#[test]
+fn object_patterns_keep_the_keys_for_their_rest() {
+    assert_eq!(
+        shape("let {a, [k]: b = 1, ...r} = o;"),
+        [
+            "LdaGlobal o",
+            "RequireObjectCoercible",
+            "Star r2",
+            "LdaConstant a",
+            "Star r3",
+            "Ldar r2",
+            "LdaNamed a",
+            "InitGlobal a",
+            "LdaGlobal k",
+            "ToPropertyKey",
+            "Star r4",
+            "Ldar r4",
+            "LdaKeyed r2",
+            "JumpIfNotUndefined @",
+            "LdaSmi 1",
+            "InitGlobal b",
+            "CreateRestObject r2 2",
+            "InitGlobal r",
+            "Ldar r1",
+            "Return",
+        ]
+    );
+    // Ohne Rest bleiben feste Namen in den Befehlen.
+    assert_eq!(
+        shape("let {a} = o;"),
+        [
+            "LdaGlobal o",
+            "RequireObjectCoercible",
+            "Star r2",
+            "Ldar r2",
+            "LdaNamed a",
+            "InitGlobal a",
+            "Ldar r1",
+            "Return",
+        ]
+    );
+}
+
+/// Muster in Parametern: ohne Ausdrücke liegen ihre Namen wie andere
+/// Bindungen in Registern und werden aus dem Register des Arguments
+/// gebunden; mit Ausdrücken halten alle Namen die Lücke, bis ihr Parameter
+/// an der Reihe ist.
+#[test]
+fn parameters_with_patterns_bind_from_their_argument() {
+    let code = first_function("function f({a}, b) { return a + b; }");
+    assert_eq!(code.parameter_count(), 2);
+    let bound = lines(&code);
+    assert_eq!(
+        bound.get(..5),
+        Some(
+            &[
+                "Ldar r2".to_owned(),
+                "RequireObjectCoercible".to_owned(),
+                "Star r5".to_owned(),
+                "Ldar r5".to_owned(),
+                "LdaNamed a".to_owned(),
+            ][..]
+        )
+    );
+    let code = first_function("function f([a = b], b) { return a; }");
+    let checked = lines(&code);
+    assert_eq!(checked.first().map(String::as_str), Some("LdaHole"));
+    assert!(checked.iter().any(|line| line.starts_with("CheckHole")));
+}
+
+/// Die tiefsten Muster, die der Parser annimmt, übersetzen sich auf einem
+/// Stapel von 1 MiB (RS-8): in Deklarationen, Zuweisungen, `catch` und
+/// Parametern.
+#[test]
+fn deep_patterns_need_no_deep_stack() {
+    let forms = [
+        ("let ", "[", "a", "]", " = 1;"),
+        ("var ", "{a: ", "b", "}", " = 1;"),
+        ("", "[", "a", "] = 1", ";"),
+        ("(", "{a: ", "b", "}", " = 1);"),
+        ("try {} catch (", "[{a: ", "b", "}]", ") {}"),
+        ("function f(", "[", "a", "]", ") {}"),
+        ("function f(", "{a: ", "b = 1", "}", ") {}"),
+    ];
+    let thread = std::thread::Builder::new()
+        .stack_size(1 << 20)
+        .spawn(move || {
+            for (head, open, middle, close, tail) in forms {
+                let mut depth = 300;
+                let ast = loop {
+                    let text = format!(
+                        "{head}{}{middle}{}{tail}",
+                        open.repeat(depth),
+                        close.repeat(depth)
+                    );
+                    match parse_script(&units(&text)) {
+                        Ok(ast) => break ast,
+                        Err(error) if error.kind == ErrorKind::TooDeep && depth > 1 => depth -= 1,
+                        Err(error) => panic!("{open}…{close}: {error:?}"),
+                    }
+                };
+                assert!(depth > 50, "{open}…{close}: nur Tiefe {depth}");
+                assert!(
+                    compile_script(&ast).is_ok(),
+                    "{open}…{close} bei Tiefe {depth}"
+                );
+                if let Some(&Node::FunctionDeclaration(id)) =
+                    ast.body().first().map(|&item| ast.node(item))
+                {
+                    let template = FunctionTemplate {
+                        function: id,
+                        binds_name: false,
+                        outer: Rc::default(),
+                    };
+                    assert!(
+                        compile_function(&ast, &template).is_ok(),
+                        "Parameter {open}…{close} bei Tiefe {depth}"
+                    );
+                }
+            }
+        })
+        .expect("Faden");
+    assert!(thread.join().is_ok());
 }

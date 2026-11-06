@@ -97,17 +97,17 @@ Dateien, deren Metadaten der Leser ablehnt, scheitern als Ganzes, bisher
 sie kann nicht erwartet werden. Jede Datei der festen Auswahl muss auch hier
 bestehen.
 
-Mit diesem Stand bestehen 6.441 von 23.296 ausgeführten Dateien und 12.120
+Mit diesem Stand bestehen 7.868 von 23.296 ausgeführten Dateien und 14.879
 von 39.297 Varianten. Die Gründe der Fehlschläge gibt der Test mit
 `--nocapture` aus:
 
 | Varianten | Grund |
 | ---: | --- |
-| 16.014 | Der Übersetzer kann ein Konstrukt noch nicht (`Unsupported`) |
+| 12.953 | Der Übersetzer kann ein Konstrukt noch nicht (`Unsupported`) |
 | 4.743 | Flag `async` |
 | 2.469 | Eine Datei der Harness endet mit einem ReferenceError |
-| 1.986 | ReferenceError im Test |
-| 805 | TypeError im Test |
+| 2.254 | ReferenceError im Test |
+| 839 | TypeError im Test |
 | 675 | Flag `module` |
 | 453 | `Test262Error`: Eine Assertion schlug fehl |
 | 30 | Die Arbeitsschritte sind erschöpft |
@@ -192,6 +192,8 @@ Budget bestehen; das ist mehr als die 100.000 der Auswahl. Von den übrigen
 vier brauchen zwei `eval`, eine davon auch `with`, und zwei Templates mit
 Tag. Ihre Endpositionen prüfen auch eigene Tests in `compiler/tests.rs`, die
 Rekursion ohne wachsenden Registerstapel `script/tests.rs`. Weitere
-Sprachfunktionen wie Generatoren, BigInt und Destrukturierung bleiben mit
-ihren Implementierungen zu ergänzen; diese Auswahl behauptet nicht, sie
-abzudecken.
+Sprachfunktionen wie Generatoren und BigInt bleiben mit ihren
+Implementierungen zu ergänzen. Iteratoren und Destrukturierung gibt es
+schon, Dateien dazu stehen aber noch nicht in der Auswahl; sie laufen bisher
+nur im Lauf über `test/language/` ohne erzwungene Sammlungen. Diese Auswahl
+behauptet nicht, sie abzudecken.

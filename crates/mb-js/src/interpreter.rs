@@ -52,7 +52,9 @@ use crate::function::{
     Compiled, function_environment, function_parts, instantiate_closure, is_constructor,
 };
 use crate::heap::{Heap, Local, Scope};
-use crate::iterator::{get_iterator, iterator_close, iterator_close_on_throw, iterator_step_value};
+use crate::iterator::{
+    get_iterator, iterator_close, iterator_close_on_throw, iterator_step, iterator_step_value,
+};
 use crate::key::{PropertyKey, array_index};
 use crate::number;
 use crate::object::{
@@ -718,6 +720,12 @@ impl<'c> Frame<'c, '_> {
         heap.local(scope, heap.register(self.slot(operand)))
     }
 
+    /// Ob [[Done]] im Iterator Record ab dem Register gilt.
+    fn iterator_done(&self, agent: &Agent, record: i64) -> bool {
+        let done = agent.heap().register(self.slot(record.saturating_add(2)));
+        matches!(done.kind(), Kind::Boolean(true))
+    }
+
     fn set_register(&self, agent: &Agent, operand: i64, value: Local<'_>) {
         let heap = agent.heap();
         heap.set_register(self.slot(operand), heap.get(value));
@@ -833,7 +841,22 @@ impl<'c> Frame<'c, '_> {
             }
             Op::CopyDataProperties => {
                 let object = self.register(agent, scope, first);
-                copy_data_properties(agent, scope, object, self.accumulator)?;
+                copy_data_properties(agent, scope, object, self.accumulator, &[])?;
+            }
+            Op::CreateRestObject => {
+                // Die Schlüssel stammen aus ToPropertyKey oder sind Namen;
+                // noch einmal umgewandelt bleiben sie, was sie sind.
+                let source = self.register(agent, scope, first);
+                let last = first.checked_add(second).unwrap_or(first);
+                let mut excluded = Vec::new();
+                for register in first.saturating_add(1)..=last {
+                    let key = self.register(agent, scope, register);
+                    excluded.push(to_property_key(agent, scope, key)?);
+                }
+                let prototype = agent.intrinsic(scope, self.realm, Intrinsic::ObjectPrototype);
+                let object = ordinary_object_create(agent, scope, Some(prototype))?;
+                copy_data_properties(agent, scope, object, source, &excluded)?;
+                self.set_accumulator(agent, object);
             }
             Op::DefineGetter | Op::DefineSetter => {
                 // MethodDefinitionEvaluation (Abschnitt 15.4.4): Die
@@ -1336,6 +1359,7 @@ impl<'c> Frame<'c, '_> {
             | Op::DefineKeyed
             | Op::SetPrototypeLiteral
             | Op::CopyDataProperties
+            | Op::CreateRestObject
             | Op::DefineGetter
             | Op::DefineSetter
             | Op::ArrayPush
@@ -1520,17 +1544,41 @@ impl<'c> Frame<'c, '_> {
                 let heap = agent.heap();
                 heap.set_register(self.slot(first.saturating_add(2)), Value::FALSE);
             }
-            Op::IteratorNext => {
-                // Der Iterator Record steht ab dem zweiten Operanden, der
-                // erste ist der Sprung.
-                let iterator = self.register(agent, scope, second);
-                let next = self.register(agent, scope, second.saturating_add(1));
-                let done = self.slot(second.saturating_add(2));
-                match iterator_step_value(agent, scope, iterator, next) {
-                    Ok(Some(value)) => self.set_accumulator(agent, value),
+            Op::IteratorNext | Op::IteratorElement | Op::IteratorSkip => {
+                // Bei IteratorNext steht der Iterator Record ab dem zweiten
+                // Operanden, der erste ist der Sprung.
+                let record = if instruction.op == Op::IteratorNext {
+                    second
+                } else {
+                    first
+                };
+                let done = self.slot(record.saturating_add(2));
+                let step = if self.iterator_done(agent, record) {
+                    Ok(None)
+                } else {
+                    let iterator = self.register(agent, scope, record);
+                    let next = self.register(agent, scope, record.saturating_add(1));
+                    if instruction.op == Op::IteratorSkip {
+                        iterator_step(agent, scope, iterator, next)
+                    } else {
+                        iterator_step_value(agent, scope, iterator, next)
+                    }
+                };
+                match step {
+                    Ok(Some(value)) => {
+                        if instruction.op != Op::IteratorSkip {
+                            self.set_accumulator(agent, value);
+                        }
+                    }
                     Ok(None) => {
                         agent.heap().set_register(done, Value::TRUE);
-                        return Ok(jump(instruction));
+                        match instruction.op {
+                            Op::IteratorNext => return Ok(jump(instruction)),
+                            Op::IteratorElement => {
+                                self.set_accumulator_value(agent, Value::UNDEFINED);
+                            }
+                            _ => {}
+                        }
                     }
                     Err(abrupt) => {
                         agent.heap().set_register(done, Value::TRUE);
@@ -1539,15 +1587,24 @@ impl<'c> Frame<'c, '_> {
                 }
             }
             Op::IteratorClose | Op::IteratorCloseOnThrow => {
-                let iterator = self.register(agent, scope, first);
-                if instruction.op == Op::IteratorClose {
-                    iterator_close(agent, scope, iterator)?;
-                } else {
-                    iterator_close_on_throw(agent, scope, iterator)?;
+                // Ein fertiger Iterator wird nicht geschlossen.
+                if !self.iterator_done(agent, first) {
+                    let iterator = self.register(agent, scope, first);
+                    if instruction.op == Op::IteratorClose {
+                        iterator_close(agent, scope, iterator)?;
+                    } else {
+                        iterator_close_on_throw(agent, scope, iterator)?;
+                    }
                 }
             }
             Op::CreateArguments | Op::CreateMappedArguments | Op::CreateRestParameter => {
                 self.arguments_operation(agent, scope, instruction)?;
+            }
+            Op::RequireObjectCoercible => {
+                let value = agent.heap().get(self.accumulator);
+                if value.is_undefined() || value.is_null() {
+                    return Err(agent.throw_error(ErrorKind::TypeError));
+                }
             }
             Op::Throw => return Err(agent.throw_value(self.accumulator)),
             Op::Rethrow => return Err(agent.rethrow(self.accumulator)),

@@ -1,6 +1,6 @@
 //! Die abstrakten Operationen für Iteratoren (Abschnitt 7.4), mit denen
-//! `for`-`of`, die Ausbreitung in Array-Literalen und Aufrufen und die
-//! eingebauten Iteratoren arbeiten.
+//! `for`-`of`, die Ausbreitung in Array-Literalen und Aufrufen,
+//! Array-Muster und die eingebauten Iteratoren arbeiten.
 //!
 //! Ein Iterator Record (Abschnitt 7.4.1) liegt im Interpreter in drei
 //! Registern hintereinander: [[Iterator]], [[NextMethod]] und [[Done]]. Die
@@ -76,11 +76,11 @@ pub(crate) fn get_iterator<'s>(
     Ok((iterator, next))
 }
 
-/// IteratorStepValue (Abschnitt 7.4.10) mit IteratorStep, IteratorNext,
-/// IteratorComplete und IteratorValue (Abschnitte 7.4.9 und 7.4.6 bis
-/// 7.4.8): der nächste Wert oder `None`, wenn der Iterator fertig ist.
-/// Danach gilt [[Done]] bei `None` und nach jedem Fehler.
-pub(crate) fn iterator_step_value<'s>(
+/// IteratorStep (Abschnitt 7.4.9) mit IteratorNext und IteratorComplete
+/// (Abschnitte 7.4.6 und 7.4.7): das Ergebnis von `next` oder `None`, wenn
+/// der Iterator fertig ist. Danach gilt [[Done]] bei `None` und nach jedem
+/// Fehler.
+pub(crate) fn iterator_step<'s>(
     agent: &mut Agent,
     scope: &'s Scope,
     iterator: Local<'_>,
@@ -95,6 +95,21 @@ pub(crate) fn iterator_step_value<'s>(
     if to_boolean(agent.heap(), agent.heap().get(done)) {
         return Ok(None);
     }
+    Ok(Some(result))
+}
+
+/// IteratorStepValue (Abschnitt 7.4.10) mit IteratorStep und IteratorValue
+/// (Abschnitt 7.4.8): der nächste Wert oder `None`, wenn der Iterator
+/// fertig ist. Danach gilt [[Done]] bei `None` und nach jedem Fehler.
+pub(crate) fn iterator_step_value<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    iterator: Local<'_>,
+    next: Local<'_>,
+) -> Completion<Option<Local<'s>>> {
+    let Some(result) = iterator_step(agent, scope, iterator, next)? else {
+        return Ok(None);
+    };
     let key = agent.key_from_units(scope, &units("value"))?;
     Ok(Some(get(agent, scope, result, key)?))
 }

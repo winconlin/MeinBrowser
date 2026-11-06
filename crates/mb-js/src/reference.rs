@@ -190,13 +190,15 @@ pub(crate) fn delete_property(
     Ok(deleted)
 }
 
-/// CopyDataProperties (Abschnitt 7.3.25) ohne ausgenommene Schlüssel, wie
-/// es die Ausbreitung in Objektliteralen braucht.
+/// CopyDataProperties (Abschnitt 7.3.25): ohne die Schlüssel in
+/// `excluded` (excludedItems), die der Rest in Objekt-Mustern ausnimmt; die
+/// Ausbreitung in Objektliteralen nimmt keine aus.
 pub(crate) fn copy_data_properties(
     agent: &mut Agent,
     scope: &Scope,
     target: Local<'_>,
     source: Local<'_>,
+    excluded: &[PropertyKey<'_>],
 ) -> Completion<()> {
     match agent.heap().get(source).kind() {
         Kind::Object(_) => {}
@@ -211,6 +213,12 @@ pub(crate) fn copy_data_properties(
                     let Ok(key) = u32::try_from(index) else {
                         return Ok(());
                     };
+                    if excluded
+                        .iter()
+                        .any(|&item| same_key(agent.heap(), item, PropertyKey::Index(key)))
+                    {
+                        return Ok(());
+                    }
                     let unit = match agent.heap().get(source).kind() {
                         Kind::String(string) => agent.heap().string_unit(string, index),
                         _ => None,
@@ -236,6 +244,12 @@ pub(crate) fn copy_data_properties(
     }
     let keys = object::own_property_keys(agent, scope, source)?;
     for key in keys {
+        if excluded
+            .iter()
+            .any(|&item| same_key(agent.heap(), item, key))
+        {
+            continue;
+        }
         agent.scope(|agent, inner| -> Completion<()> {
             let Some(property) = object::get_own_property(agent, inner, source, key)? else {
                 return Ok(());

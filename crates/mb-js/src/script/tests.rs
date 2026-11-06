@@ -2931,3 +2931,326 @@ fn iteration_survives_collections() {
     );
     assert_eq!(run(&mut agent, realm, &source), "\"131y3x2a@ananar1\"");
 }
+
+#[test]
+fn array_patterns_bind_from_iterators() {
+    check(&[
+        ("var [a, b] = [1, 2]; a + b", "3"),
+        ("let [a, , b] = 'xyz'; a + b", "\"xz\""),
+        ("const [a, b = 5] = [1]; a + b", "6"),
+        ("var [a = 1] = [null]; a", "null"),
+        ("let [a] = [, 2]; a", "undefined"),
+        ("let [a, ...r] = [1, 2, 3]; a + r.length + r[1]", "6"),
+        ("let [...[x, y]] = 'ab'; x + y", "\"ab\""),
+        ("let [[a], {b}] = [[1], {b: 2}]; a + b", "3"),
+        ("var [a] = 1;", "TypeError"),
+        ("let [] = [];", "undefined"),
+        ("var n = 0; var [a = n++] = [1]; n", "0"),
+        ("var n = 0; var [a = n++, b = n++] = []; a + b + n", "3"),
+        // NamedEvaluation nur für Bezeichner.
+        ("let [f = function () {}] = []; f.name", "\"f\""),
+        ("var [g = () => 1] = []; g.name", "\"g\""),
+        ("var [[h] = [function () {}]] = []; h.name", "\"\""),
+        // Die TDZ gilt auch im Muster.
+        ("let [a = b, b] = [];", "ReferenceError"),
+        ("let [a, b = a] = [1]; b", "1"),
+        ("const [c] = [1]; c = 2;", "TypeError"),
+    ]);
+}
+
+#[test]
+fn array_patterns_close_their_iterators() {
+    check_iter(&[
+        ("var [a] = iter('a', 3); log + a", "\"a@anar1\""),
+        (
+            "var [a, b] = iter('a', 1); log + a + b",
+            "\"a@anan1undefined\"",
+        ),
+        ("var [...r] = iter('a', 2); log + r.length", "\"a@ananan2\""),
+        ("var [,] = iter('a', 2); log", "\"a@anar\""),
+        ("var [] = iter('a', 1); log", "\"a@ar\""),
+        ("var [[a]] = [iter('a', 2)]; log + a", "\"a@anar1\""),
+        // Ist der Iterator fertig, fragt ihn niemand mehr.
+        (
+            "var [a, b, ...r] = iter('a', 1); log + r.length",
+            "\"a@anan0\"",
+        ),
+        ("var [a, ,] = iter('a', 0); log", "\"a@an\""),
+        // Das Ziel wird vor dem Wert ausgewertet.
+        (
+            "var o = {}; [(log += 't', o).p] = iter('a', 1); log + o.p",
+            "\"a@tanar1\"",
+        ),
+        // Eine Ausnahme beim Binden schließt den Iterator, nicht aber,
+        // wenn er schon fertig ist.
+        (
+            "var o = { set p(v) { throw 'x'; } }; \
+             try { [o.p] = iter('a', 2); } catch (e) { log += e; } log",
+            "\"a@anarx\"",
+        ),
+        (
+            "try { var [a, b = (() => { throw 'd'; })()] = iter('a', 1); } \
+             catch (e) { log += e; } log",
+            "\"a@anand\"",
+        ),
+        (
+            "var it = { [Symbol.iterator]() { return this; }, \
+             next() { log += 'n'; return { done: false }; }, return() { log += 'r'; return {}; } }; \
+             try { var [a = (() => { throw 'd'; })()] = it; } catch (e) { log += e; } log",
+            "\"nrd\"",
+        ),
+        // Wirft `next`, bleibt der Iterator offen.
+        (
+            "var it = { [Symbol.iterator]() { return this; }, next() { throw 'n'; }, \
+             return() { log += 'r'; } }; \
+             try { var [a] = it; } catch (e) { log += e; } log",
+            "\"n\"",
+        ),
+        // Beim gewöhnlichen Schließen gilt, was `return` wirft, und ein
+        // Ergebnis ohne Objekt ist ein TypeError.
+        (
+            "var it = { [Symbol.iterator]() { return this; }, \
+             next() { return { done: false, value: 1 }; }, return() { throw 'r'; } }; \
+             var [a] = it;",
+            "throw \"r\"",
+        ),
+        (
+            "var it = { [Symbol.iterator]() { return this; }, \
+             next() { return { done: false, value: 1 }; }, return() { return 1; } }; \
+             var [a] = it;",
+            "TypeError",
+        ),
+        // Bei einer Ausnahme fällt weg, was `return` wirft.
+        (
+            "var it = { [Symbol.iterator]() { return this; }, \
+             next() { return { done: false }; }, return() { throw 'r'; } }; \
+             var [a = (() => { throw 'd'; })()] = it;",
+            "throw \"d\"",
+        ),
+        // Scheitert das Muster in `for`-`of`, schließt die Schleife ihren
+        // Iterator.
+        (
+            "var o = { set p(v) { throw 'x'; } }; \
+             try { for ({a: o.p} of iter('a', 2)); } catch (e) { log += e; } log",
+            "\"a@anarx\"",
+        ),
+    ]);
+}
+
+#[test]
+fn object_patterns_read_properties() {
+    check(&[
+        ("var {a, b: c} = {a: 1, b: 2}; a + c", "3"),
+        ("let {a = 5, b: {c}} = {b: {c: 2}}; a + c", "7"),
+        ("const {length} = 'abc'; length", "3"),
+        ("let {} = null;", "TypeError"),
+        ("var {a} = undefined;", "TypeError"),
+        ("let {} = 1; 'ok'", "\"ok\""),
+        ("var k = 'x'; let {[k]: v} = {x: 4}; v", "4"),
+        ("let {0: a, 1: b} = 'xy'; a + b", "\"xy\""),
+        ("var {a: {b} = {b: 3}} = {}; b", "3"),
+        // Erst der Name, dann das Ziel, dann der Wert.
+        (
+            "var log = ''; var o = {}; \
+             ({[(log += 'k', 'a')]: (log += 't', o).p} = { get a() { log += 'g'; return 1; } }); \
+             log + o.p",
+            "\"ktg1\"",
+        ),
+        // RequireObjectCoercible vor dem ersten Namen.
+        (
+            "var n = 0; try { let {[n++]: a} = null; } catch (e) {} n",
+            "0",
+        ),
+        ("let {f = function () {}} = {}; f.name", "\"f\""),
+        ("let {x: g = () => 1} = {}; g.name", "\"g\""),
+    ]);
+}
+
+#[test]
+fn object_rest_copies_the_remaining_own_properties() {
+    check(&[
+        (
+            "let {a, ...r} = {a: 1, b: 2, c: 3}; '' + r.a + r.b + r.c",
+            "\"undefined23\"",
+        ),
+        (
+            "let {...r} = {}; r.toString === Object.prototype.toString",
+            "true",
+        ),
+        (
+            "var k = 'b'; let {[k]: x, ...r} = {a: 1, b: 2}; '' + r.a + r.b + x",
+            "\"1undefined2\"",
+        ),
+        (
+            "let {...r} = {__proto__: {p: 1}, q: 2}; '' + r.p + r.q",
+            "\"undefined2\"",
+        ),
+        (
+            "let {...r} = 'ab'; r[0] + r[1] + r.length",
+            "\"abundefined\"",
+        ),
+        (
+            "let {0: a, ...r} = ['x', 'y']; '' + r[0] + r[1] + a + r.length",
+            "\"undefinedyxundefined\"",
+        ),
+        (
+            "var log = ''; let {a, ...r} = { get a() { log += 'a'; }, get b() { log += 'b'; } }; log",
+            "\"ab\"",
+        ),
+        ("var o = {}; ({...o.r} = {x: 1}); o.r.x", "1"),
+        ("let {...r} = null;", "TypeError"),
+        ("var s = {}; let {...r} = s; r === s", "false"),
+    ]);
+}
+
+#[test]
+fn assignment_patterns_assign_to_references() {
+    check(&[
+        ("var a, b; [a, b] = [1, 2]; a + b", "3"),
+        ("var a = 1, b = 2; [a, b] = [b, a]; '' + a + b", "\"21\""),
+        ("var x = [1], y; (y = [a] = x) === x", "true"),
+        ("var o = {}; [o.a, o['b']] = [1, 2]; o.a + o.b", "3"),
+        ("var a; ({a} = {a: 3}); a", "3"),
+        ("var x; ({p: x = 4} = {}); x", "4"),
+        ("var a, b; [{a}, [b]] = [{a: 1}, [2]]; a + b", "3"),
+        ("var o = {}; [...o.r] = 'ab'; o.r.length", "2"),
+        ("const c = 1; [c] = [2];", "TypeError"),
+        ("[x] = [1]; let x;", "ReferenceError"),
+        ("'use strict'; [u] = [1];", "ReferenceError"),
+        ("[w] = [1]; w", "1"),
+        // NamedEvaluation nur für einen Bezeichner ohne Klammern.
+        ("var f; [f = function () {}] = []; f.name", "\"f\""),
+        ("var o = {}; [o.g = function () {}] = []; o.g.name", "\"\""),
+        ("var h; [(h) = function () {}] = []; h.name", "\"\""),
+        ("var a, s = ''; for ([a] of ['x', 'y']) s += a; s", "\"xy\""),
+        ("var s = ''; for ({length: s} of ['ab']); s", "2"),
+    ]);
+}
+
+#[test]
+fn patterns_bind_in_every_kind_of_declaration() {
+    check(&[
+        ("function f() { var [a] = [1]; return a; } f()", "1"),
+        ("var g; { let [a] = [1]; g = () => a; } g()", "1"),
+        (
+            "function f() { let {a} = {a: 2}; return () => a; } f()()",
+            "2",
+        ),
+        (
+            "var fs = [], i = 0; for (let [a, b] of [[1, 2], [3, 4]]) fs[i++] = () => a + b; \
+             fs[0]() + fs[1]()",
+            "10",
+        ),
+        ("for (var [k, v] of [['a', 1]]); k + v", "\"a1\""),
+        ("for (let [x] of [[x]]);", "ReferenceError"),
+        ("for (const {a} of [{a: 1}]) a = 2;", "TypeError"),
+        (
+            "var fs = [], j = 0; for (let [i] = [0]; i < 2; i++) fs[j++] = () => i; \
+             fs[0]() + fs[1]()",
+            "1",
+        ),
+        ("let [ga, gb] = [1, 2]; ga + gb", "3"),
+        ("const {gc} = {gc: 3}; gc = 1;", "TypeError"),
+        (
+            "function f() { var {a} = {a: 1}; { let [a] = [2]; } return a; } f()",
+            "1",
+        ),
+        // `var` mit Muster im Block von `catch` schreibt in den Parameter
+        // (Anhang B.3.4).
+        (
+            "function f() { try { throw 1; } catch (e) { var [e] = [2]; return e; } } f()",
+            "2",
+        ),
+        (
+            "try { throw 1; } catch (e) { var [e] = [2]; } e",
+            "undefined",
+        ),
+    ]);
+}
+
+#[test]
+fn catch_parameters_can_be_patterns() {
+    check(&[
+        ("try { throw [1, 2]; } catch ([a, b]) { a + b }", "3"),
+        ("try { throw {m: 'x'}; } catch ({m}) { m }", "\"x\""),
+        ("try { throw null; } catch ({m}) {}", "TypeError"),
+        ("try { throw []; } catch ([a = b, b]) {}", "ReferenceError"),
+        (
+            "var g; try { throw [1]; } catch ([a]) { g = () => a; } g()",
+            "1",
+        ),
+        ("try { throw [1]; } catch ([a]) { let b = 2; a + b }", "3"),
+        // Die Namen eines Musters halten eine Funktion im Block davon ab,
+        // auch die var-Bindung zu setzen (Anhang B.3.4 und B.3.2).
+        (
+            "try { throw [1]; } catch ([f]) { { function f() { return 2; } } } typeof f",
+            "\"undefined\"",
+        ),
+        (
+            "function h() { try { throw [1]; } catch ([f]) { { function f() {} } } return typeof f; } h()",
+            "\"undefined\"",
+        ),
+    ]);
+}
+
+#[test]
+fn parameters_can_be_patterns() {
+    check(&[
+        ("function f([a, b]) { return a + b; } f([1, 2])", "3"),
+        (
+            "function f({a}, [b] = [2]) { return a + b; } f({a: 1})",
+            "3",
+        ),
+        ("function f({a} = {a: 4}) { return a; } f()", "4"),
+        ("function f(...[a, b]) { return a + b; } f(1, 2)", "3"),
+        ("function f(...{length}) { return length; } f(1, 2, 3)", "3"),
+        (
+            "function f({a}, ...[b]) { return a + b; } f({a: 1}, 2)",
+            "3",
+        ),
+        ("(([a, b]) => a * b)([2, 3])", "6"),
+        ("(({x}) => x)({x: 'y'})", "\"y\""),
+        // Mit Mustern ist das arguments-Objekt nicht verknüpft.
+        (
+            "function f(x, [y]) { x = 5; return arguments[0]; } f(1, [2])",
+            "1",
+        ),
+        // Mit Ausdrücken in den Parametern gilt die TDZ.
+        ("function f([a = b], b) {} f([])", "ReferenceError"),
+        ("function f(a, [b = a]) { return b; } f(3, [])", "3"),
+        ("function f([a], g = () => a) { return g(); } f([7])", "7"),
+        ("function f([a]) {} f(1)", "TypeError"),
+        ("function f({a}) {} f()", "TypeError"),
+        ("function f([a]) { return () => a; } f([5])()", "5"),
+        // Ein `var` mit dem Namen beginnt mit dem Wert des Parameters.
+        ("function f([a]) { var a; return a; } f([3])", "3"),
+        ("function f([a] = [3]) { var a; return a; } f()", "3"),
+        (
+            "function f([a]) { var a = 2; return arguments[0][0] + a; } f([1])",
+            "3",
+        ),
+        ("(function ([a], {b}, c = 1) {}).length", "2"),
+    ]);
+    check_iter(&[(
+        "function f([a]) { return a; } f(iter('a', 2)) + log",
+        "\"1a@anar\"",
+    )]);
+}
+
+/// Muster überstehen jede Sammlung.
+#[test]
+fn patterns_survive_collections() {
+    let (mut agent, realm) = agent_with(Options {
+        stress: true,
+        verify: true,
+        ..Options::default()
+    });
+    let source = format!(
+        "{ITER} var [a, , ...b] = iter('a', 4); \
+         let {{x, ...r}} = {{x: 'x', y: 'y', [a]: 'z'}}; \
+         function f({{p}}, [q] = [p + 1], ...[s]) {{ return p + q + s; }} \
+         var t; try {{ throw ['t']; }} catch ([u]) {{ t = u; }} \
+         a + b.length + b[1] + x + r.y + r[1] + f({{p: 1}}, undefined, 3) + t + log"
+    );
+    assert_eq!(run(&mut agent, realm, &source), "\"7xyz6ta@ananananan\"");
+}

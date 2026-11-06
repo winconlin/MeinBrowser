@@ -174,6 +174,17 @@ ops! {
     ArrayHole [Register],
     /// Akkumulator := ToPropertyKey(Akkumulator).
     ToPropertyKey [],
+    /// RequireObjectCoercible (Abschnitt 7.2.1) für den Akkumulator, am
+    /// Anfang eines Objekt-Musters: *undefined* und *null* werfen einen
+    /// TypeError.
+    RequireObjectCoercible [],
+    /// `...rest` in einem Objekt-Muster (RestBindingInitialization,
+    /// Abschnitt 14.3.3.2, und RestDestructuringAssignmentEvaluation,
+    /// Abschnitt 13.15.5.4): ein neues Objekt mit %Object.prototype% im
+    /// Akkumulator, darin mit CopyDataProperties (Abschnitt 7.3.25) die
+    /// Eigenschaften des Werts im Register ohne die Schlüssel in den
+    /// Registern danach, so vielen wie die Zahl.
+    CreateRestObject [Register, Immediate],
 
     /// GetValue für die Eigenschaft mit dem Namen auf dem Akkumulator.
     LdaNamed [Constant],
@@ -293,14 +304,26 @@ ops! {
     GetIterator [Register],
     /// IteratorStepValue (Abschnitt 7.4.10) für den Iterator Record ab dem
     /// Register: der nächste Wert im Akkumulator, oder ein Sprung, wenn der
-    /// Iterator fertig ist. Danach und nach einem Fehler gilt [[Done]].
+    /// Iterator fertig ist oder [[Done]] schon gilt. Danach und nach einem
+    /// Fehler gilt [[Done]].
     IteratorNext [Jump, Register],
     /// IteratorClose (Abschnitt 7.4.11) für den Iterator ab dem Register
-    /// nach `break`, `continue` zu einer äußeren Schleife oder `return`.
-    /// Der Akkumulator bleibt.
+    /// nach `break`, `continue` zu einer äußeren Schleife oder `return` und
+    /// am Ende eines Array-Musters. Gilt [[Done]], gibt es nichts zu
+    /// schließen. Der Akkumulator bleibt.
     IteratorClose [Register],
     /// Dasselbe für eine Ausnahme: Was `return` wirft, fällt weg.
     IteratorCloseOnThrow [Register],
+    /// Ein Element eines Array-Musters (IteratorBindingInitialization,
+    /// Abschnitt 8.6.3, und IteratorDestructuringAssignmentEvaluation,
+    /// Abschnitt 13.15.5.5): der nächste Wert aus dem Iterator Record ab dem
+    /// Register im Akkumulator, *undefined*, wenn [[Done]] schon gilt oder
+    /// der Iterator fertig ist. Danach und nach einem Fehler gilt [[Done]].
+    IteratorElement [Register],
+    /// Eine Lücke in einem Array-Muster: IteratorStep (Abschnitt 7.4.9),
+    /// solange [[Done]] nicht gilt, ohne den Wert zu lesen. Danach und nach
+    /// einem Fehler gilt [[Done]]. Der Akkumulator bleibt.
+    IteratorSkip [Register],
 
     /// Ein neues arguments-Objekt ohne Verknüpfung
     /// (CreateUnmappedArgumentsObject, Abschnitt 10.4.4.6) aus den
