@@ -7,7 +7,8 @@
 //! Jede interne Methode ist eine Funktion, die nach der Art des Objekts
 //! verzweigt. Bisher gibt es gewöhnliche Objekte, Funktionsobjekte, die
 //! dieselben internen Methoden haben und dazu [[Call]] (`function`),
-//! Arrays, die nur [[DefineOwnProperty]] anders umsetzen (`array`), und
+//! Arrays, die nur [[DefineOwnProperty]] anders umsetzen (`array`),
+//! Fehlerobjekte, die sich nur durch [[ErrorData]] unterscheiden, und
 //! arguments-Objekte (`arguments`). Deren verknüpfte Indizes lesen ihren
 //! Wert aus der Bindung des Parameters, schon beim Suchen einer eigenen
 //! Eigenschaft; so folgen [[GetOwnProperty]], [[Get]] und [[Set]] ihrer
@@ -124,6 +125,20 @@ pub fn ordinary_object_create<'s>(
         .alloc_object(scope, ObjectClass::Ordinary, INLINE, shape, prototype)
 }
 
+/// Ein neues Fehlerobjekt (Abschnitt 20.5.1.1, Schritt 2): erweiterbar,
+/// ohne Eigenschaften und mit [[ErrorData]]. Eine Nachricht hat es nicht,
+/// es liest die des Prototyps.
+pub(crate) fn error_create<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    prototype: Local<'_>,
+) -> Result<Local<'s>, OutOfMemory> {
+    let shape = agent.empty_shape(scope);
+    agent
+        .heap_mut()
+        .alloc_object(scope, ObjectClass::Error, INLINE, shape, Some(prototype))
+}
+
 /// [[GetPrototypeOf]] (Abschnitt 10.1.1): *null* ist `None`.
 pub fn get_prototype_of<'s>(
     agent: &mut Agent,
@@ -134,7 +149,8 @@ pub fn get_prototype_of<'s>(
         ObjectClass::Ordinary
         | ObjectClass::Array
         | ObjectClass::Function
-        | ObjectClass::Arguments => {
+        | ObjectClass::Arguments
+        | ObjectClass::Error => {
             let heap = agent.heap();
             let prototype =
                 object_of(heap, object).and_then(|object| heap.object_prototype(object));
@@ -153,7 +169,8 @@ pub fn set_prototype_of(
         ObjectClass::Ordinary
         | ObjectClass::Array
         | ObjectClass::Function
-        | ObjectClass::Arguments => {}
+        | ObjectClass::Arguments
+        | ObjectClass::Error => {}
     }
     if let Some(prototype) = prototype {
         // Der Prototyp muss ein Objekt sein.
@@ -190,7 +207,8 @@ pub fn is_extensible(agent: &mut Agent, object: Local<'_>) -> Completion<bool> {
         ObjectClass::Ordinary
         | ObjectClass::Array
         | ObjectClass::Function
-        | ObjectClass::Arguments => {
+        | ObjectClass::Arguments
+        | ObjectClass::Error => {
             let heap = agent.heap();
             Ok(object_of(heap, object).is_some_and(|object| heap.object_extensible(object)))
         }
@@ -203,7 +221,8 @@ pub fn prevent_extensions(agent: &mut Agent, object: Local<'_>) -> Completion<bo
         ObjectClass::Ordinary
         | ObjectClass::Array
         | ObjectClass::Function
-        | ObjectClass::Arguments => {
+        | ObjectClass::Arguments
+        | ObjectClass::Error => {
             let heap = agent.heap();
             if let Some(object) = object_of(heap, object) {
                 heap.prevent_object_extensions(object);
@@ -224,7 +243,8 @@ pub fn get_own_property<'s>(
         ObjectClass::Ordinary
         | ObjectClass::Array
         | ObjectClass::Function
-        | ObjectClass::Arguments => Ok(ordinary_get_own_property(agent.heap(), scope, object, key)),
+        | ObjectClass::Arguments
+        | ObjectClass::Error => Ok(ordinary_get_own_property(agent.heap(), scope, object, key)),
     }
 }
 
@@ -267,7 +287,7 @@ pub fn define_own_property(
     descriptor: &PropertyDescriptor<'_>,
 ) -> Completion<bool> {
     match class(agent, object)? {
-        ObjectClass::Ordinary | ObjectClass::Function => {
+        ObjectClass::Ordinary | ObjectClass::Function | ObjectClass::Error => {
             ordinary_define_own_property(agent, scope, object, key, descriptor)
         }
         ObjectClass::Array => array::define_own_property(agent, scope, object, key, descriptor),
@@ -738,7 +758,8 @@ pub fn own_property_keys<'s>(
         ObjectClass::Ordinary
         | ObjectClass::Array
         | ObjectClass::Function
-        | ObjectClass::Arguments => {}
+        | ObjectClass::Arguments
+        | ObjectClass::Error => {}
     }
     let heap = agent.heap();
     let Some(object) = object_of(heap, object) else {

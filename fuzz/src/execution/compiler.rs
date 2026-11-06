@@ -20,6 +20,7 @@ struct Stats {
     wide: usize,
     extra_wide: usize,
     calls: usize,
+    handlers: usize,
     functions: usize,
     unsupported_functions: usize,
     too_large_functions: usize,
@@ -33,6 +34,7 @@ impl Stats {
         self.wide += other.wide;
         self.extra_wide += other.extra_wide;
         self.calls += other.calls;
+        self.handlers += other.handlers;
     }
 }
 
@@ -171,6 +173,19 @@ fn check_code(code: &Code, source_length: usize) -> Stats {
             starts.contains(&target),
             "jump targets an instruction boundary"
         );
+    }
+    let boundary = |offset: usize| starts.contains(&offset) || offset == bytes.len();
+    for handler in code.handlers() {
+        assert!(handler.start <= handler.end, "handler range is ordered");
+        assert!(
+            boundary(handler.start) && boundary(handler.end),
+            "handler range starts and ends at instruction boundaries"
+        );
+        assert!(
+            starts.contains(&handler.target),
+            "handler targets an instruction boundary"
+        );
+        stats.handlers += 1;
     }
     assert!(code.decode(bytes.len()).is_none());
     assert!(code.decode(usize::MAX).is_none());
@@ -354,7 +369,7 @@ mod tests {
 
     #[test]
     fn syntax_and_unsupported_paths_preserve_positions() {
-        for source in ["class A{}", "try{}catch(e){}", "f(...[]);"] {
+        for source in ["class A{}", "with({}){}", "f(...[]);"] {
             let source: Vec<u16> = source.encode_utf16().collect();
             assert_eq!(check_source(&source), Outcome::Unsupported);
         }
@@ -387,10 +402,7 @@ mod tests {
 
     #[test]
     fn unsupported_deferred_bodies_preserve_positions() {
-        for source in [
-            "function f(){try {} catch(e){}}",
-            "function f([a]){return a;}",
-        ] {
+        for source in ["function f(){with ({}) {}}", "function f([a]){return a;}"] {
             let stats = checked(source);
             assert_eq!(stats.functions, 0);
             assert_eq!(stats.unsupported_functions, 1);
@@ -398,6 +410,20 @@ mod tests {
         assert!(
             checked("f();").calls > 0,
             "unknown callees can still compile"
+        );
+    }
+
+    #[test]
+    fn try_statements_have_checked_handlers() {
+        let stats = checked(
+            "try { throw 1; } catch (e) { e; } finally { 2; } \
+             function f(){ for(;;) { try { return 1; } finally { break; } } }",
+        );
+        assert_eq!(stats.functions, 1);
+        assert_eq!(stats.unsupported_functions, 0);
+        assert_eq!(
+            stats.handlers, 3,
+            "catch and finally, then the function's finally"
         );
     }
 

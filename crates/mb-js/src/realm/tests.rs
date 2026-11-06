@@ -1,7 +1,8 @@
 use super::*;
 use crate::agent::{Abrupt, Exception};
-use crate::heap::Options;
+use crate::heap::{ObjectClass, Options};
 use crate::object::get_prototype_of;
+use crate::value::Kind;
 
 fn checked() -> Agent {
     Agent::with_options(Options {
@@ -64,6 +65,56 @@ fn the_global_object_has_the_value_properties() {
                 .has_restricted_global_property(scope, realm, key)
                 .expect("kein Fehler");
             assert_eq!(restricted, !writable, "{name}");
+        }
+    });
+}
+
+/// %Error.prototype% und die Prototypen der Fehler der Engine (Abschnitte
+/// 20.5.3 und 20.5.6.3): gewöhnliche Objekte mit `name` und `message`.
+#[test]
+fn error_prototypes_have_name_and_message() {
+    let mut agent = checked();
+    let realm = agent.create_realm().expect("Speicher");
+    agent.scope(|agent, scope| {
+        let object = agent.intrinsic(scope, realm, Intrinsic::ObjectPrototype);
+        let error = agent.intrinsic(scope, realm, Intrinsic::ErrorPrototype);
+        let cases = [
+            (Intrinsic::ErrorPrototype, "Error", object),
+            (Intrinsic::RangeErrorPrototype, "RangeError", error),
+            (Intrinsic::ReferenceErrorPrototype, "ReferenceError", error),
+            (Intrinsic::SyntaxErrorPrototype, "SyntaxError", error),
+            (Intrinsic::TypeErrorPrototype, "TypeError", error),
+        ];
+        for (intrinsic, name, expected) in cases {
+            let prototype = agent.intrinsic(scope, realm, intrinsic);
+            let heap = agent.heap();
+            let Kind::Object(reference) = heap.get(prototype).kind() else {
+                panic!("{name}: kein Objekt");
+            };
+            // Kein Fehlerobjekt: ohne [[ErrorData]].
+            assert_eq!(
+                heap.object_class(reference),
+                Some(ObjectClass::Ordinary),
+                "{name}"
+            );
+            let actual = get_prototype_of(agent, scope, prototype)
+                .expect("kein Fehler")
+                .expect("Prototyp");
+            assert_eq!(bits(agent, actual), bits(agent, expected), "{name}");
+            for (property, text) in [("name", name), ("message", "")] {
+                let key = key(agent, scope, property);
+                let found = object::get_own_property(agent, scope, prototype, key)
+                    .expect("kein Fehler")
+                    .expect("Eigenschaft");
+                assert_eq!(found.writable, Some(true), "{name}.{property}");
+                assert_eq!(found.enumerable, Some(false), "{name}.{property}");
+                assert_eq!(found.configurable, Some(true), "{name}.{property}");
+                let heap = agent.heap();
+                let Kind::String(string) = heap.get(found.value.expect("Wert")).kind() else {
+                    panic!("{name}.{property}: keine Zeichenkette");
+                };
+                assert_eq!(heap.string_units(string), units(text), "{name}.{property}");
+            }
         }
     });
 }

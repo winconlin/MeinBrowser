@@ -25,8 +25,8 @@ pub use mb_base::{Budget, Cancel, Exhausted};
 use crate::function::SharedFunction;
 use crate::heap::{Heap, Local, Options, OutOfMemory, Persistent, Scope};
 use crate::key::WellKnownSymbol;
-use crate::object::shape;
-use crate::realm::Realm;
+use crate::object::{error_create, shape};
+use crate::realm::{Intrinsic, Realm, RealmId};
 use crate::value::{Kind, Value};
 
 /// So viele Bytes Rust-Stapel dürfen verschachtelte Läufe des Interpreters
@@ -80,17 +80,43 @@ pub enum ErrorKind {
     TypeError,
 }
 
+impl ErrorKind {
+    const ALL: [ErrorKind; 4] = [
+        ErrorKind::RangeError,
+        ErrorKind::ReferenceError,
+        ErrorKind::SyntaxError,
+        ErrorKind::TypeError,
+    ];
+
+    /// Die Nummer der Art in einer Zelle für [`Agent::rethrow`].
+    fn code(self) -> i32 {
+        match self {
+            ErrorKind::RangeError => 0,
+            ErrorKind::ReferenceError => 1,
+            ErrorKind::SyntaxError => 2,
+            ErrorKind::TypeError => 3,
+        }
+    }
+
+    fn from_code(code: i32) -> Option<ErrorKind> {
+        ErrorKind::ALL.into_iter().find(|kind| kind.code() == code)
+    }
+}
+
 /// Die geworfene Ausnahme.
 #[derive(Clone, Copy, Debug)]
 pub enum Exception<'s> {
-    /// Ein Fehler der Engine. Das Fehlerobjekt dazu entsteht, sobald es
-    /// Realms mit ihren Intrinsics gibt.
+    /// Ein Fehler der Engine, den kein `catch` gefangen hat. Erst ein
+    /// Handler für `catch` macht daraus ein Fehlerobjekt.
     Error(ErrorKind),
     Value(Local<'s>),
 }
 
 enum Pending {
-    Error(ErrorKind),
+    /// Ein Fehler der Engine; sobald der Interpreter ihn sieht, mit dem
+    /// Realm des Rahmens, dessen Befehl ihn warf. Dort entsteht sein
+    /// Fehlerobjekt.
+    Error(ErrorKind, Option<RealmId>),
     Value(Persistent),
 }
 
@@ -311,7 +337,7 @@ impl Agent {
     /// Wirft einen Fehler der Art `kind` (ThrowCompletion, Abschnitt
     /// 6.2.4.2) und gibt [`Abrupt::Throw`] für `Err` zurück.
     pub(crate) fn throw_error(&mut self, kind: ErrorKind) -> Abrupt {
-        self.set_exception(Pending::Error(kind));
+        self.set_exception(Pending::Error(kind, None));
         Abrupt::Throw
     }
 
@@ -332,7 +358,7 @@ impl Agent {
     /// [`Abrupt::Throw`] endete.
     pub fn take_exception<'s>(&mut self, scope: &'s Scope) -> Option<Exception<'s>> {
         match self.exception.take()? {
-            Pending::Error(kind) => Some(Exception::Error(kind)),
+            Pending::Error(kind, _) => Some(Exception::Error(kind)),
             Pending::Value(handle) => {
                 let value = self.heap.get_persistent(&handle);
                 let local = self.heap.local(scope, value);
@@ -340,6 +366,90 @@ impl Agent {
                 Some(Exception::Value(local))
             }
         }
+    }
+
+    /// Gibt einem Fehler der Engine, der noch keinen Realm hat, den Realm
+    /// `realm`: den des Rahmens, dessen Befehl ihn warf.
+    pub(crate) fn set_error_realm(&mut self, realm: RealmId) {
+        if let Some(Pending::Error(_, found @ None)) = &mut self.exception {
+            *found = Some(realm);
+        }
+    }
+
+    /// Nimmt die Ausnahme für einen Handler von `catch` heraus: den
+    /// geworfenen Wert, für einen Fehler der Engine ein neues Fehlerobjekt
+    /// in dessen Realm, ohne Realm in `realm`. Ohne Ausnahme ist es
+    /// *undefined*.
+    pub(crate) fn take_thrown_value<'s>(
+        &mut self,
+        scope: &'s Scope,
+        realm: RealmId,
+    ) -> Result<Local<'s>, OutOfMemory> {
+        if let Some(Pending::Error(kind, found)) = self.exception {
+            self.exception = None;
+            let realm = found.unwrap_or(realm);
+            let prototype = self.intrinsic(scope, realm, Intrinsic::error_prototype(kind));
+            return error_create(self, scope, prototype);
+        }
+        Ok(self.take_thrown(scope))
+    }
+
+    /// Nimmt die Ausnahme für einen Handler von `finally` heraus, der sie
+    /// danach mit [`Agent::rethrow`] weiterwirft. Ein Fehler der Engine
+    /// bleibt dabei einer: Er kommt als interne Zelle aus seiner Art und
+    /// seinem Realm, die nur der Übersetzer in einem Register hält.
+    pub(crate) fn take_thrown_for_rethrow<'s>(
+        &mut self,
+        scope: &'s Scope,
+    ) -> Result<Local<'s>, OutOfMemory> {
+        let Some(Pending::Error(kind, realm)) = self.exception else {
+            return Ok(self.take_thrown(scope));
+        };
+        let cell = self.heap.alloc_slots(scope, 2)?;
+        self.exception = None;
+        let realm = realm
+            .and_then(|realm| i32::try_from(realm.index()).ok())
+            .map_or(Value::UNDEFINED, Value::int32);
+        if let Kind::Internal(reference) = self.heap.get(cell).kind() {
+            self.heap.set_slot(reference, 0, Value::int32(kind.code()));
+            self.heap.set_slot(reference, 1, realm);
+        }
+        Ok(cell)
+    }
+
+    /// Der geworfene Wert, *undefined* ohne Ausnahme. Fehler der Engine
+    /// nehmen die Aufrufer vorher heraus.
+    fn take_thrown<'s>(&mut self, scope: &'s Scope) -> Local<'s> {
+        match self.exception.take() {
+            Some(Pending::Value(handle)) => {
+                let value = self.heap.get_persistent(&handle);
+                let local = self.heap.local(scope, value);
+                self.heap.release(handle);
+                local
+            }
+            Some(Pending::Error(..)) | None => self.heap.local(scope, Value::UNDEFINED),
+        }
+    }
+
+    /// Wirft wieder, was [`Agent::take_thrown_for_rethrow`] lieferte.
+    pub(crate) fn rethrow(&mut self, value: Local<'_>) -> Abrupt {
+        let Kind::Internal(cell) = self.heap.get(value).kind() else {
+            return self.throw_value(value);
+        };
+        let kind = self.heap.slot(cell, 0).and_then(|code| code.as_int32());
+        let realm = self
+            .heap
+            .slot(cell, 1)
+            .and_then(|index| index.as_int32())
+            .and_then(|index| usize::try_from(index).ok())
+            .map(RealmId::from_index);
+        match kind.and_then(ErrorKind::from_code) {
+            Some(kind) => self.set_exception(Pending::Error(kind, realm)),
+            // Kann nicht vorkommen: Die Zelle stammt immer aus
+            // `take_thrown_for_rethrow`.
+            None => self.set_exception(Pending::Error(ErrorKind::TypeError, realm)),
+        }
+        Abrupt::Throw
     }
 }
 

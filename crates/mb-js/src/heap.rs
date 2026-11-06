@@ -112,6 +112,7 @@ const KIND_OBJECT: u64 = 9;
 const KIND_ARRAY: u64 = 10;
 const KIND_FUNCTION: u64 = 11;
 const KIND_ARGUMENTS: u64 = 12;
+const KIND_ERROR: u64 = 13;
 
 /// Die Kennzeichen stehen in den Bits 8 bis 31 des Kopfworts.
 const FLAG_SHIFT: u32 = 8;
@@ -149,7 +150,13 @@ fn is_value_cell(kind: u64) -> bool {
 }
 
 /// Die Arten der Objektzellen.
-const OBJECT_KINDS: [u64; 4] = [KIND_OBJECT, KIND_ARRAY, KIND_FUNCTION, KIND_ARGUMENTS];
+const OBJECT_KINDS: [u64; 5] = [
+    KIND_OBJECT,
+    KIND_ARRAY,
+    KIND_FUNCTION,
+    KIND_ARGUMENTS,
+    KIND_ERROR,
+];
 
 /// Die internen Felder eines Funktionsobjekts, Werte vor den eingebetteten
 /// Plätzen.

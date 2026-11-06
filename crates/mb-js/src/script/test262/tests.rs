@@ -128,7 +128,7 @@ fn runtime_negative_requires_the_exact_error_and_phase() {
         "throw {name: 'TypeError'}",
         "assert.sameValue(1, 2)",
         "let = ;",
-        "try {} catch (e) {}",
+        "with ({}) {}",
         "while (true) {}",
     ] {
         assert_ne!(run_negative(source), wanted, "{source}");
@@ -137,7 +137,7 @@ fn runtime_negative_requires_the_exact_error_and_phase() {
         ordinary("while (true) {}"),
         Outcome::Host(Abrupt::Exhausted(crate::agent::Exhausted::Steps))
     );
-    assert_eq!(ordinary("try {} catch (e) {}"), Outcome::Unsupported);
+    assert_eq!(ordinary("with ({}) {}"), Outcome::Unsupported);
 }
 
 #[test]

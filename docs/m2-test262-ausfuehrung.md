@@ -13,11 +13,12 @@ cargo run --locked -p testdata
 cargo test --locked -p mb-js script::test262 -- --nocapture
 ```
 
-Die Auswahl steht in `crates/mb-js/src/script/test262/runtime.txt`: 103 Dateien,
-davon 95 positive und acht mit erwartetem Laufzeitfehler. Sie ergeben 195
-Sprachvarianten und mit zwei GC-Modi 390 Ausführungen. Geprüft werden unter
+Die Auswahl steht in `crates/mb-js/src/script/test262/runtime.txt`: 116 Dateien,
+davon 108 positive und acht mit erwartetem Laufzeitfehler. Sie ergeben 218
+Sprachvarianten und mit zwei GC-Modi 436 Ausführungen. Geprüft werden unter
 anderem Exponentiation, `??`, logische Zuweisungen, Pfeilfunktionen, Closures,
-Vorgabewerte, `arguments`, Methoden, Schleifenbindungen und TDZ-Fehler. Die
+Vorgabewerte, `arguments`, Methoden, Schleifenbindungen, TDZ-Fehler und `try`
+mit `catch` und `finally`. Die
 Sammlung bleibt im bereits festgelegten Commit
 `91c70759363c46557b694792bf34a2551a7af5ba`; `tools/testdata` holt nun auch
 `harness/` und `INTERPRETING.md`. Kein externer Testcode wird ausgeliefert.
@@ -33,8 +34,8 @@ Testquelle wird ausschließlich `"use strict";` mit Zeilenumbruch vorangestellt.
 ## Harness und heutige Grenzen
 
 Die originalen Dateien `assert.js` und `sta.js` werden unverändert im Realm
-ausgewertet. Der derzeitige Compiler unterstützt noch kein `try` und `new`.
-Deshalb ersetzt die eigene Testdatei `same-value.js` vorübergehend nur
+ausgewertet. Der derzeitige Compiler unterstützt noch kein `new`, und es
+gibt noch keine Fehlerkonstruktoren. Deshalb ersetzt die eigene Testdatei `same-value.js` vorübergehend nur
 `assert.sameValue` und `assert.notSameValue`. Test262s `INTERPRETING.md`
 erlaubt das Ersetzen von Harness-Funktionen ausdrücklich. Beide verwenden
 den originalen `_isSameValue`-Algorithmus einschließlich NaN und vorzeichenbehafteter
@@ -68,7 +69,8 @@ meldet ein Größenlimit des äußeren Compilers derzeit ebenfalls als
 `RangeError`; deshalb werden Parse und Übersetzen bei negativen
 Laufzeittests vorab separat geprüft. Ein Compilerlimit kann so keinen
 erwarteten Laufzeitfehler erfüllen. Die Engine
-besitzt noch keine eingebauten Fehlerobjekte: Nur ihre ausdrücklich
+legt Fehlerobjekte bisher nur für eigene Fehler an, die `catch` fängt, und
+hat noch keine Fehlerkonstruktoren: Nur ihre ausdrücklich
 gespeicherten Fehlerarten werden akzeptiert, keine Strings oder Objekte
 mit einer passenden `name`-Eigenschaft. Bei der Beobachtung werden keine
 JavaScript-Getter oder Konversionen aufgerufen.

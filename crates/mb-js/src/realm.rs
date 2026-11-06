@@ -1,9 +1,10 @@
 //! Realms (Abschnitt 9.3) und die globale Umgebung (Abschnitt 9.1.1.4).
 //!
-//! Von den Intrinsics gibt es bisher %Object.prototype%, %Function.prototype%
-//! und die Prototypen, die Literale und Zugriffe auf primitive Werte
-//! brauchen, noch ohne ihre Methoden; die übrigen kommen mit den
-//! eingebauten Objekten. Das globale
+//! Von den Intrinsics gibt es bisher %Object.prototype%, %Function.prototype%,
+//! die Prototypen, die Literale und Zugriffe auf primitive Werte brauchen,
+//! und die Prototypen der Fehler, die die Engine wirft, noch ohne ihre
+//! Methoden und Konstruktoren; die übrigen kommen mit den eingebauten
+//! Objekten. Das globale
 //! Objekt hat die Werteigenschaften aus Abschnitt 19.1, und
 //! [[GlobalThisValue]] ist immer das globale Objekt.
 //!
@@ -69,6 +70,29 @@ pub enum Intrinsic {
     StringPrototype,
     /// %Symbol.prototype% (Abschnitt 20.4.3).
     SymbolPrototype,
+    /// %Error.prototype% (Abschnitt 20.5.3) mit `name` und `message`.
+    ErrorPrototype,
+    /// %RangeError.prototype% (Abschnitt 20.5.6.3), wie die drei folgenden
+    /// mit `name` und `message` und %Error.prototype% als Prototyp.
+    RangeErrorPrototype,
+    /// %ReferenceError.prototype%
+    ReferenceErrorPrototype,
+    /// %SyntaxError.prototype%
+    SyntaxErrorPrototype,
+    /// %TypeError.prototype%
+    TypeErrorPrototype,
+}
+
+impl Intrinsic {
+    /// Der Prototyp der Fehlerobjekte der Art `kind`.
+    pub(crate) fn error_prototype(kind: ErrorKind) -> Intrinsic {
+        match kind {
+            ErrorKind::RangeError => Intrinsic::RangeErrorPrototype,
+            ErrorKind::ReferenceError => Intrinsic::ReferenceErrorPrototype,
+            ErrorKind::SyntaxError => Intrinsic::SyntaxErrorPrototype,
+            ErrorKind::TypeError => Intrinsic::TypeErrorPrototype,
+        }
+    }
 }
 
 pub(crate) struct Realm {
@@ -143,6 +167,11 @@ impl Agent {
             let descriptor = PropertyDescriptor::data(zero, false, false, false);
             define_property_or_throw(agent, scope, string, length, &descriptor)?;
             let symbol = ordinary_object_create(agent, scope, Some(prototype))?;
+            let error = error_prototype(agent, scope, prototype, "Error")?;
+            let range = error_prototype(agent, scope, error, "RangeError")?;
+            let reference = error_prototype(agent, scope, error, "ReferenceError")?;
+            let syntax = error_prototype(agent, scope, error, "SyntaxError")?;
+            let type_error = error_prototype(agent, scope, error, "TypeError")?;
             let global = ordinary_object_create(agent, scope, Some(prototype))?;
             set_default_global_bindings(agent, scope, global)?;
             let heap = agent.heap_mut();
@@ -154,6 +183,11 @@ impl Agent {
                 (Intrinsic::NumberPrototype, number),
                 (Intrinsic::StringPrototype, string),
                 (Intrinsic::SymbolPrototype, symbol),
+                (Intrinsic::ErrorPrototype, error),
+                (Intrinsic::RangeErrorPrototype, range),
+                (Intrinsic::ReferenceErrorPrototype, reference),
+                (Intrinsic::SyntaxErrorPrototype, syntax),
+                (Intrinsic::TypeErrorPrototype, type_error),
             ]
             .into_iter()
             .map(|(intrinsic, object)| (intrinsic, heap.persist(object)))
@@ -467,6 +501,29 @@ impl Agent {
         }
         Ok(true)
     }
+}
+
+/// %Error.prototype% oder ein %NativeError.prototype% (Abschnitte 20.5.3
+/// und 20.5.6.3): ein gewöhnliches Objekt, kein Fehlerobjekt, mit dem
+/// Namen in `name` und der leeren Zeichenkette in `message`. Wie alle
+/// Werteigenschaften eingebauter Objekte sind beide schreibbar und
+/// konfigurierbar, aber nicht aufzählbar (Abschnitt 18).
+fn error_prototype<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    prototype: Local<'_>,
+    name: &str,
+) -> Completion<Local<'s>> {
+    let object = ordinary_object_create(agent, scope, Some(prototype))?;
+    let name_value = agent.heap_mut().alloc_string(scope, &units(name))?;
+    let message = agent.heap_mut().alloc_string(scope, &[])?;
+    let properties = [("name", name_value), ("message", message)];
+    for (key, value) in properties {
+        let key = agent.key_from_units(scope, &units(key))?;
+        let descriptor = PropertyDescriptor::data(value, true, false, true);
+        define_property_or_throw(agent, scope, object, key, &descriptor)?;
+    }
+    Ok(object)
 }
 
 /// SetDefaultGlobalBindings (Abschnitt 9.3.3) für die Werteigenschaften aus
