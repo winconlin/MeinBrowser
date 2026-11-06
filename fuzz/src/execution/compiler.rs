@@ -170,7 +170,12 @@ fn check_code(code: &Code, source_length: usize) -> Stats {
                 );
                 stats.calls += 1;
             }
-            Op::GetIterator | Op::IteratorNext => {
+            Op::GetIterator
+            | Op::IteratorNext
+            | Op::IteratorElement
+            | Op::IteratorSkip
+            | Op::IteratorClose
+            | Op::IteratorCloseOnThrow => {
                 // The record is the iterator, its next method and [[Done]].
                 let operand = usize::from(instruction.op == Op::IteratorNext);
                 let iterator =
@@ -180,6 +185,18 @@ fn check_code(code: &Code, source_length: usize) -> Stats {
                         .checked_add(3)
                         .is_some_and(|end| end <= code.register_count()),
                     "the iterator record fits its frame"
+                );
+            }
+            Op::CreateRestObject => {
+                // The source value, then the keys the rest excludes.
+                let source = usize::try_from(instruction.operand(0)).expect("source register");
+                let keys = usize::try_from(instruction.operand(1)).expect("nonnegative key count");
+                assert!(
+                    source
+                        .checked_add(1)
+                        .and_then(|first| first.checked_add(keys))
+                        .is_some_and(|end| end <= code.register_count()),
+                    "the value and its excluded keys fit their frame"
                 );
             }
             Op::CreateClosure | Op::CreateClosureKeyed => {
@@ -403,7 +420,7 @@ mod tests {
 
     #[test]
     fn syntax_and_unsupported_paths_preserve_positions() {
-        for source in ["class A{}", "with({}){}", "[...a] = b;"] {
+        for source in ["class A{}", "with({}){}", "for (var k in o);"] {
             let source: Vec<u16> = source.encode_utf16().collect();
             assert_eq!(check_source(&source), Outcome::Unsupported);
         }
@@ -436,7 +453,10 @@ mod tests {
 
     #[test]
     fn unsupported_deferred_bodies_preserve_positions() {
-        for source in ["function f(){with ({}) {}}", "function f([a]){return a;}"] {
+        for source in [
+            "function f(){with ({}) {}}",
+            "function f(){for (var k in o);}",
+        ] {
             let stats = checked(source);
             assert_eq!(stats.functions, 0);
             assert_eq!(stats.unsupported_functions, 1);
@@ -461,6 +481,21 @@ mod tests {
         let stats = checked("'use strict'; function f(a) { return f(...a); }");
         assert_eq!(stats.functions, 1);
         assert_eq!(stats.calls, 1, "the tail call with spread");
+    }
+
+    #[test]
+    fn destructuring_keeps_records_and_rest_keys_in_frame() {
+        let stats = checked(
+            "var [a, , ...b] = c; let {d, [e]: f = 1, ...g} = h; [i.j, k = 2] = l; \
+             ({m, ...n.o} = p); for (const [q, {r}] of s); try {} catch ([t]) {} \
+             function u([v] = [], {w, ...x}, ...[y]) { return v + w + x + y; }",
+        );
+        assert_eq!(stats.functions, 1);
+        assert_eq!(stats.unsupported_functions, 0);
+        assert_eq!(
+            stats.handlers, 8,
+            "each non-empty array pattern, the for-of and the catch"
+        );
     }
 
     #[test]

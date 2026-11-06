@@ -40,11 +40,10 @@
 //! in Scripts entscheidet GlobalDeclarationInstantiation, ob es die
 //! globale Bindung gibt, und setzt dafür ein Register.
 //!
-//! Noch nicht unterstützt sind Generatoren, `async`, Klassen, Muster (in
-//! Parametern, auch in dem von `catch`, in Deklarationen, Zuweisungen und
-//! links in `for`-`of`), `for`-`in`, `for await`, `with`, `super`,
-//! `import()`, BigInt-Literale, reguläre Ausdrücke, Templates mit Tag und
-//! Funktionsdeklarationen mit Marke (Anhang B.3.1).
+//! Noch nicht unterstützt sind Generatoren, `async`, Klassen, `for`-`in`,
+//! `for await`, `with`, `super`, `import()`, BigInt-Literale, reguläre
+//! Ausdrücke, Templates mit Tag und Funktionsdeklarationen mit Marke
+//! (Anhang B.3.1).
 //!
 //! `try`: Der Block und `catch` bekommen je einen Eintrag in der
 //! Ausnahmetabelle. Mit `finally` führen alle Wege hinaus durch dessen
@@ -59,6 +58,19 @@
 //! Sprünge zu äußeren Zielen über ein Ziel wie bei `finally`, eine
 //! Ausnahme über einen Handler. Ein Aufruf mit Ausbreitung sammelt seine
 //! Argumente in einem Array ([`Op::CallSpread`]).
+//!
+//! Muster: Deklarationen, Parameter, `catch`, Zuweisungen und `for`-`of`
+//! binden mit demselben Weg den Wert im Akkumulator; was sie
+//! unterscheidet, ist, ob ein Name mit PutValue oder mit
+//! InitializeReferencedBinding seinen Wert bekommt. Ein Element wertet
+//! erst sein Ziel zur Referenz aus, dann holt es den Wert, dann den
+//! Vorgabewert. Ein Array-Muster hält seinen Iterator Record in drei
+//! Registern ([`Op::IteratorElement`], [`Op::IteratorSkip`]); bei einer
+//! Ausnahme schließt ihn ein Handler, am Ende [`Op::IteratorClose`], beides
+//! nur, solange [[Done]] nicht gilt. Ein Objekt-Muster mit Rest hält die
+//! Schlüssel davor in Registern direkt hinter dem Wert
+//! ([`Op::CreateRestObject`]). Innere Muster übersetzt der Übersetzer
+//! rekursiv; ihre Tiefe begrenzt der Parser.
 //!
 //! Abschlusswert: Scripts führen ein Register dafür (UpdateEmpty, Abschnitt
 //! 6.2.4.4). Jede Ausdrucksanweisung schreibt ihren Wert hinein. `if`,
@@ -256,12 +268,46 @@ enum Exit {
 /// Was links in `for`-`of` steht.
 #[derive(Clone, Copy, Debug)]
 enum ForTarget {
-    /// `let` oder `const` mit einem Bezeichner.
-    Lexical(Atom),
-    /// `var` mit einem Bezeichner und dessen Knoten.
-    Var(Atom, NodeId),
-    /// Ein Ausdruck als Ziel einer Zuweisung.
+    /// `let` oder `const` mit einem Bezeichner oder Muster.
+    Lexical(NodeId),
+    /// `var` mit einem Bezeichner oder Muster.
+    Var(NodeId),
+    /// Ein Ausdruck oder ein Muster als Ziel einer Zuweisung.
     Expression,
+}
+
+/// Wie die Namen in einem Muster ihren Wert bekommen.
+#[derive(Clone, Copy, Debug)]
+enum Init {
+    /// Mit PutValue über eine Referenz: in Zuweisungen
+    /// (DestructuringAssignmentEvaluation, Abschnitt 13.15.5.2) und mit
+    /// `var` (BindingInitialization mit *undefined* als Umgebung, Abschnitt
+    /// 8.6.2).
+    Put,
+    /// Mit InitializeReferencedBinding im Bereich mit der Stelle in
+    /// `scopes`; hat der den Namen nicht, ist es eine lexikalische Bindung
+    /// der globalen Umgebung.
+    Initialize(Option<usize>),
+}
+
+/// Das Ziel eines Elements in einem Muster, vor dem Wert ausgewertet.
+#[derive(Clone, Copy, Debug)]
+enum Leaf {
+    /// PutValue, mit der Stelle des Ziels im Quelltext für die TDZ.
+    Put(Reference, usize),
+    /// InitializeReferencedBinding.
+    Initialize(Atom),
+}
+
+/// Woher ein Element eines Musters seinen Wert holt.
+#[derive(Clone, Copy, Debug)]
+enum Fetch {
+    /// Aus dem Iterator Record ab dem Register.
+    Iterator(i64),
+    /// GetV mit festem Namen auf dem Wert im Register.
+    Named { object: i64, name: i64 },
+    /// GetV mit dem Schlüssel aus dem zweiten Register.
+    Keyed { object: i64, key: i64 },
 }
 
 /// Ein Ziel von `break` und `continue`.
@@ -462,7 +508,12 @@ pub fn compile_script(ast: &Ast) -> Result<Script> {
 
 /// Ein formaler Parameter mit einem Bezeichner.
 struct Formal {
-    atom: Atom,
+    /// Der Bezeichner oder das Muster.
+    target: NodeId,
+    /// Der Name, wenn das Ziel ein Bezeichner ist.
+    atom: Option<Atom>,
+    /// BoundNames des Ziels.
+    names: Vec<Atom>,
     default: Option<NodeId>,
     rest: bool,
     /// Das Ende des Parameters im Quelltext.
@@ -512,19 +563,22 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
     compiler.allocate()?;
     let callee = compiler.allocate()?;
     let formals = compiler.formals(function.parameters)?;
-    let rest = formals
-        .iter()
-        .find(|formal| formal.rest)
-        .map(|formal| formal.atom);
+    let has_rest = formals.iter().any(|formal| formal.rest);
     // Die Register, in die ein Aufruf die Argumente legt.
     let mut registers = Vec::new();
     for _ in formals.iter().filter(|formal| !formal.rest) {
         registers.push(compiler.allocate()?);
     }
     let positional = i64::try_from(registers.len()).map_err(|_| CompileError::TooLarge)?;
-    // ContainsExpression: Ohne Muster haben nur Vorgabewerte Ausdrücke.
-    let has_expressions = formals.iter().any(|formal| formal.default.is_some());
-    let parameter_names: BTreeSet<Atom> = formals.iter().map(|formal| formal.atom).collect();
+    // ContainsExpression (Abschnitt 15.1.2): Vorgabewerte, auch in Mustern,
+    // und berechnete Namen in Mustern.
+    let has_expressions = formals
+        .iter()
+        .any(|formal| formal.default.is_some() || compiler.contains_expression(formal.target));
+    let parameter_names: BTreeSet<Atom> = formals
+        .iter()
+        .flat_map(|formal| formal.names.iter().copied())
+        .collect();
     // Der Rumpf einer Pfeilfunktion mit `expression_body` ist ein Ausdruck;
     // er deklariert nichts.
     let body = ast.list(function.body);
@@ -560,7 +614,7 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
     let arguments_atom = ast.find_atom(&units("arguments"));
     let created = arguments_atom.filter(|_| needed && captures.arguments);
     let mapped = created.is_some() && !function.strict && function.simple_parameters;
-    let cell = if created.is_some() || rest.is_some() {
+    let cell = if created.is_some() || has_rest {
         Some(i64::from(compiler.allocate()?))
     } else {
         None
@@ -593,22 +647,27 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
     let mut copies = Vec::new();
     if has_expressions {
         for formal in &formals {
-            let location = compiler.locate(&mut parameters, formal.atom)?;
-            holes.push(location);
-            let binding = LocalBinding {
-                location,
-                kind: BindingKind::Mutable,
-                initialized_from: formal.end,
-                in_switch: false,
-            };
-            parameters.bindings.insert(formal.atom, binding);
+            for &atom in &formal.names {
+                let location = compiler.locate(&mut parameters, atom)?;
+                holes.push(location);
+                let binding = LocalBinding {
+                    location,
+                    kind: BindingKind::Mutable,
+                    initialized_from: formal.end,
+                    in_switch: false,
+                };
+                parameters.bindings.insert(atom, binding);
+            }
         }
     } else {
         for (formal, &register) in formals.iter().zip(&registers) {
+            let Some(atom) = formal.atom else {
+                continue;
+            };
             // Bei doppelten Namen gilt der letzte Parameter.
             let binding =
                 LocalBinding::initialized(Location::Register(register), BindingKind::Mutable);
-            parameters.bindings.insert(formal.atom, binding);
+            parameters.bindings.insert(atom, binding);
         }
         for (atom, binding) in &mut parameters.bindings {
             if let Location::Register(register) = binding.location
@@ -623,10 +682,18 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
                 copies.push((register, slot));
             }
         }
-        if let Some(atom) = rest {
-            let location = compiler.locate(&mut parameters, atom)?;
-            let binding = LocalBinding::initialized(location, BindingKind::Mutable);
-            parameters.bindings.insert(atom, binding);
+        // Der Rest-Parameter und die Namen in Mustern bekommen eigene Orte.
+        // Ohne Ausdrücke in den Parametern sieht sie niemand vor ihrer
+        // Initialisierung.
+        for formal in formals
+            .iter()
+            .filter(|formal| formal.rest || formal.atom.is_none())
+        {
+            for &atom in &formal.names {
+                let location = compiler.locate(&mut parameters, atom)?;
+                let binding = LocalBinding::initialized(location, BindingKind::Mutable);
+                parameters.bindings.insert(atom, binding);
+            }
         }
     }
     // Ein Parameter, dessen Name später wiederkommt, ist nicht verknüpft.
@@ -759,11 +826,13 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
         if formal.rest {
             if let Some(cell) = cell {
                 compiler.emit(Op::CreateRestParameter, &[cell, positional])?;
-                compiler.store_binding(parameter_scope, formal.atom)?;
+                compiler.bind_parameter(parameter_scope, formal)?;
             }
             continue;
         }
-        if !has_expressions {
+        // Ohne Ausdrücke in den Parametern liegt ein Bezeichner schon im
+        // Register seines Arguments.
+        if !has_expressions && formal.atom.is_some() {
             continue;
         }
         let Some(&register) = registers.get(index) else {
@@ -772,10 +841,14 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
         compiler.emit(Op::Ldar, &[i64::from(register)])?;
         if let Some(default) = formal.default {
             let skip = compiler.jump(Op::JumpIfNotUndefined)?;
-            compiler.named_expression(default, ast.atom(formal.atom))?;
+            // NamedEvaluation nur für einen Bezeichner.
+            match formal.atom {
+                Some(atom) => compiler.named_expression(default, ast.atom(atom))?,
+                None => compiler.expression(default)?,
+            }
             compiler.bind(skip)?;
         }
-        compiler.store_binding(parameter_scope, formal.atom)?;
+        compiler.bind_parameter(parameter_scope, formal)?;
     }
     if has_expressions {
         if separate.has_context() {
@@ -1006,11 +1079,12 @@ impl<'a> Compiler<'a> {
                     let Node::Declarator { target, .. } = *self.ast.node(declarator) else {
                         return Err(self.unsupported(declarator));
                     };
-                    let Node::BindingIdentifier(atom) = *self.ast.node(target) else {
-                        return Err(self.unsupported(target));
-                    };
+                    let mut names = Vec::new();
+                    self.bound_names(target, &mut names);
                     let end = self.ast.range(declarator).end;
-                    bindings.push((atom, kind == DeclarationKind::Const, end));
+                    for atom in names {
+                        bindings.push((atom, kind == DeclarationKind::Const, end));
+                    }
                 }
             }
             Node::Variables { .. } => {}
@@ -1039,10 +1113,11 @@ impl<'a> Compiler<'a> {
                     let Node::Declarator { target, .. } = *self.ast.node(declarator) else {
                         return Err(self.unsupported(declarator));
                     };
-                    let Node::BindingIdentifier(atom) = *self.ast.node(target) else {
-                        return Err(self.unsupported(target));
-                    };
-                    add(atom);
+                    let mut bound = Vec::new();
+                    self.bound_names(target, &mut bound);
+                    for atom in bound {
+                        add(atom);
+                    }
                 }
             }
             Node::Block(list) => {
@@ -1173,20 +1248,29 @@ impl<'a> Compiler<'a> {
                 self.hoisting_block(&items, path, excluded, found);
             }
             // Ein Bezeichner als Parameter von `catch` steht einer
-            // `var`-Deklaration im Block nicht im Weg (Anhang B.3.4). Muster
-            // dort übersetzt der Übersetzer noch nicht; mit ihnen kommen
-            // ihre Namen auf den Weg.
+            // `var`-Deklaration im Block nicht im Weg, die Namen eines
+            // Musters schon (Anhang B.3.4).
             Node::Try {
                 block,
                 handler,
                 finalizer,
             } => {
-                let handler = handler.and_then(|handler| match *self.ast.node(handler) {
-                    Node::Catch { body, .. } => Some(body),
-                    _ => None,
-                });
-                for part in std::iter::once(block).chain(handler).chain(finalizer) {
-                    self.hoisting_walk(part, path, excluded, found);
+                self.hoisting_walk(block, path, excluded, found);
+                if let Some(handler) = handler
+                    && let Node::Catch { parameter, body } = *self.ast.node(handler)
+                {
+                    let mut names = Vec::new();
+                    if let Some(parameter) = parameter
+                        && !matches!(self.ast.node(parameter), Node::BindingIdentifier(_))
+                    {
+                        self.bound_names(parameter, &mut names);
+                    }
+                    path.push(names);
+                    self.hoisting_walk(body, path, excluded, found);
+                    path.pop();
+                }
+                if let Some(finalizer) = finalizer {
+                    self.hoisting_walk(finalizer, path, excluded, found);
                 }
             }
             // Was der Übersetzer sonst nicht kann, übersetzt er gar nicht.
@@ -1226,19 +1310,16 @@ impl<'a> Compiler<'a> {
         path.pop();
     }
 
-    /// Die einfachen Namen aus LexicallyDeclaredNames der Anweisungen, mit
-    /// den Funktionen, wenn sie dort lexikalisch sind. Namen in Mustern
-    /// fehlen; die übersetzt der Übersetzer noch nicht.
+    /// Die Namen aus LexicallyDeclaredNames der Anweisungen, mit den
+    /// Funktionen, wenn sie dort lexikalisch sind.
     fn lexically_declared(&self, items: &[NodeId], functions: bool) -> Vec<Atom> {
         let mut names = Vec::new();
         for &item in items {
             match *self.ast.node(item) {
                 Node::Variables { kind, declarators } if kind != DeclarationKind::Var => {
                     for &declarator in self.ast.list(declarators) {
-                        if let Node::Declarator { target, .. } = *self.ast.node(declarator)
-                            && let Node::BindingIdentifier(atom) = *self.ast.node(target)
-                        {
-                            names.push(atom);
+                        if let Node::Declarator { target, .. } = *self.ast.node(declarator) {
+                            self.bound_names(target, &mut names);
                         }
                     }
                 }
@@ -1388,9 +1469,19 @@ impl<'a> Compiler<'a> {
         self.store_location(binding.location)
     }
 
-    /// Die formalen Parameter einer Funktion, jeder ein Bezeichner,
-    /// vielleicht mit Vorgabewert, zuletzt vielleicht der Rest-Parameter.
-    /// Muster kommen mit der Destrukturierung.
+    /// Initialisiert den Parameter `formal` im Bereich mit der Stelle
+    /// `index` in `scopes` mit dem Akkumulator. Parameter mit Mustern haben
+    /// nie doppelte Namen und darum stets eine Umgebung.
+    fn bind_parameter(&mut self, index: usize, formal: &Formal) -> Result<()> {
+        match formal.atom {
+            Some(atom) => self.store_binding(index, atom),
+            None => self.destructure(formal.target, Init::Initialize(Some(index))),
+        }
+    }
+
+    /// Die formalen Parameter einer Funktion, jeder ein Bezeichner oder
+    /// ein Muster, vielleicht mit Vorgabewert, zuletzt vielleicht der
+    /// Rest-Parameter.
     fn formals(&self, list: List) -> Result<Vec<Formal>> {
         let mut formals = Vec::new();
         for &parameter in self.ast.list(list) {
@@ -1399,18 +1490,66 @@ impl<'a> Compiler<'a> {
                 Node::Rest(target) => (target, None, true),
                 _ => (parameter, None, false),
             };
-            let Node::BindingIdentifier(atom) = *self.ast.node(target) else {
-                return Err(self.unsupported(target));
+            let atom = match *self.ast.node(target) {
+                Node::BindingIdentifier(atom) => Some(atom),
+                Node::ArrayPattern(_) | Node::ObjectPattern(_) => None,
+                _ => return Err(self.unsupported(target)),
             };
+            let mut names = Vec::new();
+            self.bound_names(target, &mut names);
             let end = self.ast.range(parameter).end;
             formals.push(Formal {
+                target,
                 atom,
+                names,
                 default,
                 rest,
                 end,
             });
         }
         Ok(formals)
+    }
+
+    /// BoundNames (Abschnitt 8.2.1) eines Bezeichners oder Bindungsmusters
+    /// in der Reihenfolge des Quelltexts, angehängt an `names`; ohne
+    /// Rekursion.
+    fn bound_names(&self, target: NodeId, names: &mut Vec<Atom>) {
+        let mut work = vec![target];
+        while let Some(node) = work.pop() {
+            match *self.ast.node(node) {
+                Node::BindingIdentifier(atom) => names.push(atom),
+                Node::ArrayPattern(list) | Node::ObjectPattern(list) => {
+                    work.extend(self.ast.list(list).iter().rev());
+                }
+                Node::PatternProperty { value, .. } => work.push(value),
+                Node::WithDefault { target, .. } | Node::Rest(target) => work.push(target),
+                _ => {}
+            }
+        }
+    }
+
+    /// ContainsExpression (Abschnitt 15.1.2) eines Bezeichners oder
+    /// Bindungsmusters: ob darin ein Vorgabewert oder ein berechneter Name
+    /// steht.
+    fn contains_expression(&self, target: NodeId) -> bool {
+        let mut work = vec![target];
+        while let Some(node) = work.pop() {
+            match *self.ast.node(node) {
+                Node::WithDefault { .. } => return true,
+                Node::PatternProperty { key, value, .. } => {
+                    if matches!(self.ast.node(key), Node::ComputedKey(_)) {
+                        return true;
+                    }
+                    work.push(value);
+                }
+                Node::ArrayPattern(list) | Node::ObjectPattern(list) => {
+                    work.extend_from_slice(self.ast.list(list));
+                }
+                Node::Rest(target) => work.push(target),
+                _ => {}
+            }
+        }
+        false
     }
 
     fn is_arguments(&self, atom: Atom) -> bool {
@@ -1618,7 +1757,24 @@ impl<'a> Compiler<'a> {
                 return Err(self.unsupported(declarator));
             };
             let Node::BindingIdentifier(atom) = *self.ast.node(target) else {
-                return Err(self.unsupported(target));
+                // Ein Muster hat stets einen Initialisierer, ohne
+                // NamedEvaluation; dann bindet es mit dessen Wert.
+                let Some(init) = init else {
+                    return Err(self.unsupported(declarator));
+                };
+                let mode = match kind {
+                    DeclarationKind::Var => Init::Put,
+                    DeclarationKind::Let | DeclarationKind::Const => {
+                        Init::Initialize(self.scopes.len().checked_sub(1))
+                    }
+                    DeclarationKind::Using | DeclarationKind::AwaitUsing => {
+                        return Err(self.unsupported(declarator));
+                    }
+                };
+                self.expression(init)?;
+                self.position(declarator)?;
+                self.destructure(target, mode)?;
+                continue;
             };
             let units = ast.atom(atom);
             match kind {
@@ -1968,9 +2124,8 @@ impl<'a> Compiler<'a> {
     }
 
     /// Was links in `for`-`of` steht. Eine Deklaration hat genau einen
-    /// Bezeichner ohne Initialisierer; Muster kommen mit der
-    /// Destrukturierung, und ein Ausdruck, der keine Referenz ergibt, scheitert
-    /// erst in [`Compiler::reference`].
+    /// Bezeichner oder ein Muster ohne Initialisierer; ein Ausdruck, der
+    /// keine Referenz ergibt, scheitert erst in [`Compiler::reference`].
     fn for_of_target(&self, left: NodeId) -> Result<ForTarget> {
         let Node::Variables { kind, declarators } = *self.ast.node(left) else {
             return Ok(ForTarget::Expression);
@@ -1981,12 +2136,9 @@ impl<'a> Compiler<'a> {
         let Node::Declarator { target, init: None } = *self.ast.node(declarator) else {
             return Err(self.unsupported(declarator));
         };
-        let Node::BindingIdentifier(atom) = *self.ast.node(target) else {
-            return Err(self.unsupported(target));
-        };
         match kind {
-            DeclarationKind::Var => Ok(ForTarget::Var(atom, target)),
-            DeclarationKind::Let | DeclarationKind::Const => Ok(ForTarget::Lexical(atom)),
+            DeclarationKind::Var => Ok(ForTarget::Var(target)),
+            DeclarationKind::Let | DeclarationKind::Const => Ok(ForTarget::Lexical(target)),
             DeclarationKind::Using | DeclarationKind::AwaitUsing => Err(self.unsupported(left)),
         }
     }
@@ -2031,16 +2183,25 @@ impl<'a> Compiler<'a> {
     fn for_of_binding(&mut self, left: NodeId, lhs: ForTarget, item: i64) -> Result<Option<u32>> {
         let position = self.ast.range(left).start;
         match lhs {
-            ForTarget::Lexical(atom) => {
+            ForTarget::Lexical(target) => {
                 self.emit(Op::Star, &[item])?;
                 let block = self.enter_block(&[left], false)?;
                 self.emit(Op::Ldar, &[item])?;
+                let Node::BindingIdentifier(atom) = *self.ast.node(target) else {
+                    let scope = self.scopes.len().checked_sub(1);
+                    self.destructure(target, Init::Initialize(scope))?;
+                    return Ok(Some(block));
+                };
                 // InitializeReferencedBinding.
                 let binding = self.lookup(atom).ok_or_else(|| self.unsupported(left))?;
                 self.store_location(binding.location)?;
                 Ok(Some(block))
             }
-            ForTarget::Var(atom, target) => {
+            ForTarget::Var(target) => {
+                let Node::BindingIdentifier(atom) = *self.ast.node(target) else {
+                    self.destructure(target, Init::Put)?;
+                    return Ok(None);
+                };
                 if let Some(binding) = self.resolve(atom, target)? {
                     self.store_local(binding, atom, position)?;
                     return Ok(None);
@@ -2053,6 +2214,13 @@ impl<'a> Compiler<'a> {
                 Ok(None)
             }
             ForTarget::Expression => {
+                if matches!(
+                    self.ast.node(left),
+                    Node::ArrayPattern(_) | Node::ObjectPattern(_)
+                ) {
+                    self.destructure(left, Init::Put)?;
+                    return Ok(None);
+                }
                 self.emit(Op::Star, &[item])?;
                 let reference = self.reference(left)?;
                 self.emit(Op::Ldar, &[item])?;
@@ -2342,7 +2510,7 @@ impl<'a> Compiler<'a> {
             return self.statement(body);
         };
         let Node::BindingIdentifier(atom) = *self.ast.node(parameter) else {
-            return Err(self.unsupported(parameter));
+            return self.catch_pattern(parameter, body);
         };
         let mark = self.next_register;
         let mut scope = BlockScope::default();
@@ -2357,6 +2525,252 @@ impl<'a> Compiler<'a> {
         self.reset_completion()?;
         self.statement(body)?;
         self.leave_block(mark)
+    }
+
+    /// `catch` mit einem Muster als Parameter: Seine Namen bleiben in der
+    /// TDZ, bis das Muster sie bindet (CatchClauseEvaluation, Schritte 2
+    /// bis 4). Die Ausnahme wartet dafür in einem Register.
+    fn catch_pattern(&mut self, parameter: NodeId, body: NodeId) -> Result<()> {
+        let mark = self.next_register;
+        let exception = i64::from(self.allocate()?);
+        self.emit(Op::Star, &[exception])?;
+        let mut names = Vec::new();
+        self.bound_names(parameter, &mut names);
+        let end = self.ast.range(parameter).end;
+        let mut scope = BlockScope::default();
+        let mut holes = Vec::new();
+        for atom in names {
+            let location = self.locate(&mut scope, atom)?;
+            holes.push(location);
+            let binding = LocalBinding {
+                location,
+                kind: BindingKind::Mutable,
+                initialized_from: end,
+                in_switch: false,
+            };
+            scope.bindings.insert(atom, binding);
+        }
+        if scope.has_context() {
+            self.emit(Op::PushContext, &[i64::from(scope.slots)])?;
+        }
+        self.set_holes(&holes)?;
+        self.scopes.push(scope);
+        self.emit(Op::Ldar, &[exception])?;
+        let index = self.scopes.len().checked_sub(1);
+        self.destructure(parameter, Init::Initialize(index))?;
+        self.reset_completion()?;
+        self.statement(body)?;
+        self.leave_block(mark)
+    }
+
+    // Muster
+
+    /// BindingInitialization (Abschnitt 8.6.2) und
+    /// DestructuringAssignmentEvaluation (Abschnitt 13.15.5.2) des Musters
+    /// `pattern` mit dem Wert im Akkumulator. Danach ist der Akkumulator
+    /// beliebig.
+    fn destructure(&mut self, pattern: NodeId, init: Init) -> Result<()> {
+        self.position(pattern)?;
+        match *self.ast.node(pattern) {
+            Node::ArrayPattern(list) => self.array_pattern(pattern, list, init),
+            Node::ObjectPattern(list) => self.object_pattern(list, init),
+            _ => Err(self.unsupported(pattern)),
+        }
+    }
+
+    /// Ein Array-Muster: GetIterator, dann die Elemente der Reihe nach.
+    /// Endet das ohne Ausnahme, schließt [`Op::IteratorClose`] den
+    /// Iterator mit einer normalen Beendigung, sonst ein Handler mit der
+    /// Ausnahme; beides nur, solange [[Done]] nicht gilt.
+    fn array_pattern(&mut self, pattern: NodeId, list: List, init: Init) -> Result<()> {
+        let iterator = self.allocate()?;
+        self.allocate()?;
+        self.allocate()?;
+        let record = i64::from(iterator);
+        self.emit(Op::GetIterator, &[record])?;
+        let start = self.emitter.offset();
+        let ast = self.ast;
+        for &element in ast.list(list) {
+            match *ast.node(element) {
+                Node::Elision => {
+                    self.position(element)?;
+                    self.emit(Op::IteratorSkip, &[record])?;
+                }
+                Node::Rest(target) => {
+                    let leaf = self.leaf(target, init)?;
+                    self.position(element)?;
+                    let array = self.allocate()?;
+                    self.emit(Op::CreateArray, &[])?;
+                    self.emit(Op::Star, &[i64::from(array)])?;
+                    let next = self.emitter.offset();
+                    let done = self.emitter.jump_with(Op::IteratorNext, &[record])?;
+                    self.emit(Op::ArrayPush, &[i64::from(array)])?;
+                    self.emitter.jump_loop(next)?;
+                    self.bind(done)?;
+                    self.emit(Op::Ldar, &[i64::from(array)])?;
+                    self.release(array);
+                    self.bind_leaf(target, leaf, init)?;
+                }
+                _ => self.pattern_element(element, init, Fetch::Iterator(record))?,
+            }
+        }
+        let end = self.emitter.offset();
+        self.position(pattern)?;
+        self.emit(Op::IteratorClose, &[record])?;
+        if end > start {
+            let after = self.jump(Op::Jump)?;
+            self.emitter.handler(start, end, HandlerKind::Finally);
+            let exception = i64::from(self.allocate()?);
+            self.emit(Op::Star, &[exception])?;
+            self.emit(Op::IteratorCloseOnThrow, &[record])?;
+            self.emit(Op::Ldar, &[exception])?;
+            self.emit(Op::Rethrow, &[])?;
+            self.bind(after)?;
+        }
+        self.release(iterator);
+        Ok(())
+    }
+
+    /// Ein Objekt-Muster: RequireObjectCoercible, dann je Eigenschaft erst
+    /// der Name, dann das Element. Mit Rest liegen die Schlüssel davor in
+    /// Registern direkt hinter dem Wert, für [`Op::CreateRestObject`].
+    fn object_pattern(&mut self, list: List, init: Init) -> Result<()> {
+        let ast = self.ast;
+        let properties = ast.list(list);
+        let rest = properties
+            .last()
+            .is_some_and(|&property| matches!(ast.node(property), Node::Rest(_)));
+        self.emit(Op::RequireObjectCoercible, &[])?;
+        let source = self.allocate()?;
+        let object = i64::from(source);
+        self.emit(Op::Star, &[object])?;
+        let mut excluded = Vec::new();
+        if rest {
+            for _ in 1..properties.len() {
+                excluded.push(self.allocate()?);
+            }
+        }
+        for (index, &property) in properties.iter().enumerate() {
+            self.position(property)?;
+            match *ast.node(property) {
+                Node::PatternProperty { key, value, .. } => {
+                    let mark = self.next_register;
+                    let fetch = match self.property_key(key)? {
+                        Some(units) => {
+                            let name = self.constant(Constant::Name(units))?;
+                            if let Some(&register) = excluded.get(index) {
+                                self.emit(Op::LdaConstant, &[name])?;
+                                self.emit(Op::Star, &[i64::from(register)])?;
+                            }
+                            Fetch::Named { object, name }
+                        }
+                        // Der Schlüssel aus ToPropertyKey im Akkumulator.
+                        None => {
+                            let register = match excluded.get(index) {
+                                Some(&register) => register,
+                                None => self.allocate()?,
+                            };
+                            let key = i64::from(register);
+                            self.emit(Op::Star, &[key])?;
+                            Fetch::Keyed { object, key }
+                        }
+                    };
+                    self.pattern_element(value, init, fetch)?;
+                    self.release(mark);
+                }
+                Node::Rest(target) => {
+                    let leaf = self.leaf(target, init)?;
+                    self.position(property)?;
+                    let count =
+                        i64::try_from(excluded.len()).map_err(|_| CompileError::TooLarge)?;
+                    self.emit(Op::CreateRestObject, &[object, count])?;
+                    self.bind_leaf(target, leaf, init)?;
+                }
+                _ => return Err(self.unsupported(property)),
+            }
+        }
+        self.release(source);
+        Ok(())
+    }
+
+    /// Ein Element eines Musters, vielleicht mit Vorgabewert: erst das
+    /// Ziel, wenn es kein Muster ist (Abschnitte 13.15.5.5 und 13.15.5.6),
+    /// dann der Wert aus `fetch`, für *undefined* der Vorgabewert, dann das
+    /// Binden. NamedEvaluation gibt es nur für einen Bezeichner ohne
+    /// Klammern (IsIdentifierRef).
+    fn pattern_element(&mut self, element: NodeId, init: Init, fetch: Fetch) -> Result<()> {
+        let (target, default) = match *self.ast.node(element) {
+            Node::WithDefault { target, default } => (target, Some(default)),
+            _ => (element, None),
+        };
+        let leaf = self.leaf(target, init)?;
+        self.position(element)?;
+        match fetch {
+            Fetch::Iterator(record) => self.emit(Op::IteratorElement, &[record])?,
+            Fetch::Named { object, name } => {
+                self.emit(Op::Ldar, &[object])?;
+                self.emit(Op::LdaNamed, &[name])?;
+            }
+            Fetch::Keyed { object, key } => {
+                self.emit(Op::Ldar, &[key])?;
+                self.emit(Op::LdaKeyed, &[object])?;
+            }
+        }
+        if let Some(default) = default {
+            let skip = self.jump(Op::JumpIfNotUndefined)?;
+            let ast = self.ast;
+            match *ast.node(target) {
+                Node::BindingIdentifier(atom) | Node::Identifier(atom) => {
+                    self.named_expression(default, ast.atom(atom))?;
+                }
+                _ => self.expression(default)?,
+            }
+            self.bind(skip)?;
+        }
+        self.bind_leaf(target, leaf, init)
+    }
+
+    /// Wertet das Ziel `target` eines Elements vor seinem Wert aus: eine
+    /// Referenz, ein Name zum Initialisieren oder `None` für ein inneres
+    /// Muster, das erst mit dem Wert bindet.
+    fn leaf(&mut self, target: NodeId, init: Init) -> Result<Option<Leaf>> {
+        match (*self.ast.node(target), init) {
+            (Node::ArrayPattern(_) | Node::ObjectPattern(_), _) => Ok(None),
+            (Node::BindingIdentifier(atom), Init::Initialize(_)) => {
+                Ok(Some(Leaf::Initialize(atom)))
+            }
+            _ => {
+                let position = self.ast.range(target).start;
+                let reference = self.reference(target)?;
+                Ok(Some(Leaf::Put(reference, position)))
+            }
+        }
+    }
+
+    /// Bindet den Akkumulator an das Ziel eines Elements.
+    fn bind_leaf(&mut self, target: NodeId, leaf: Option<Leaf>, init: Init) -> Result<()> {
+        match leaf {
+            None => self.destructure(target, init),
+            Some(Leaf::Put(reference, position)) => {
+                self.position(target)?;
+                self.put_value(reference, position)?;
+                self.release_reference(reference);
+                Ok(())
+            }
+            Some(Leaf::Initialize(atom)) => {
+                let index = match init {
+                    Init::Initialize(index) => index,
+                    Init::Put => None,
+                };
+                match index.and_then(|index| self.lookup_in(index, atom)) {
+                    Some(binding) => self.store_location(binding.location),
+                    None => {
+                        let name = self.name(atom)?;
+                        self.emit(Op::InitGlobal, &[name])
+                    }
+                }
+            }
+        }
     }
 
     // Ausdrücke
@@ -3190,7 +3604,8 @@ impl<'a> Compiler<'a> {
     /// Wertet das Ziel einer Zuweisung zur Referenz aus.
     fn reference(&mut self, target: NodeId) -> Result<Reference> {
         match *self.ast.node(self.without_parens(target)) {
-            Node::Identifier(atom) => {
+            // ResolveBinding auch für die Namen in `var`.
+            Node::Identifier(atom) | Node::BindingIdentifier(atom) => {
                 if let Some(binding) = self.resolve(atom, target)? {
                     return Ok(Reference::Local(binding, atom));
                 }
@@ -3274,6 +3689,22 @@ impl<'a> Compiler<'a> {
         value: NodeId,
     ) -> Result<()> {
         let position = self.ast.range(node).start;
+        if operator == AssignOperator::Assign
+            && matches!(
+                self.ast.node(target),
+                Node::ArrayPattern(_) | Node::ObjectPattern(_)
+            )
+        {
+            // Erst die rechte Seite, dann das Muster; das Ergebnis ist der
+            // Wert der rechten Seite.
+            self.expression(value)?;
+            let result = self.allocate()?;
+            self.emit(Op::Star, &[i64::from(result)])?;
+            self.destructure(target, Init::Put)?;
+            self.emit(Op::Ldar, &[i64::from(result)])?;
+            self.release(result);
+            return Ok(());
+        }
         let reference = self.reference(target)?;
         // NamedEvaluation nur, wenn das Ziel ein Bezeichner ohne Klammern
         // ist (IsIdentifierRef).
