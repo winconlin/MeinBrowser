@@ -2,7 +2,7 @@ use super::*;
 use crate::agent::Exception;
 use crate::heap::Options;
 use crate::number;
-use crate::value::Kind;
+use crate::value::{Kind, Value};
 
 fn units(text: &str) -> Vec<u16> {
     text.encode_utf16().collect()
@@ -1657,6 +1657,32 @@ fn arguments_survive_collections() {
                   var o = m('x', 'y', 'z'); var r = u(1, 'p', 'q'); \
                   o[0] + o[1] + o[2] + o.length + r[0] + r[1] + r.length + d('s', undefined, 3)()";
     assert_eq!(run(&mut agent, realm, source), "\"xbxz3pq2s3\"");
+}
+
+/// Passen die Argumente eines Aufrufs aus der Engine nicht mehr als Zelle in
+/// den Heap, bleibt kein Rahmen auf dem Registerstapel liegen.
+#[test]
+fn a_failed_argument_cell_leaves_no_frame() {
+    let (mut agent, realm) = agent_with(Options {
+        limit: 512 * 1024,
+        verify: true,
+        ..Options::default()
+    });
+    let source = "function f() { return arguments.length; }";
+    assert_eq!(run(&mut agent, realm, source), "undefined");
+    agent.scope(|agent, scope| {
+        let function = agent
+            .evaluate_script(scope, realm, &units("f"))
+            .expect("die Funktion");
+        let undefined = agent.heap().local(scope, Value::UNDEFINED);
+        let arguments = vec![undefined; 100_000];
+        let result = crate::operations::call(agent, scope, function, undefined, &arguments);
+        assert_eq!(result.map(|_| ()), Err(Abrupt::OutOfMemory));
+        assert_eq!(agent.heap_mut().push_registers(0), Some(0));
+        let result = crate::operations::call(agent, scope, function, undefined, &[undefined])
+            .expect("ein Aufruf");
+        assert_eq!(agent.heap().get(result).as_number(), Some(1.0));
+    });
 }
 
 /// Verschachtelte Pfeilfunktionen, jede mit einem eigenen Kontext, so tief,
