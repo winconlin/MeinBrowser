@@ -2,7 +2,9 @@
 
 Die 48.517 bisherigen Test262-Läufe in `parser/test262.rs` prüfen die Syntax.
 `script/test262.rs` führt zusätzlich eine feste Auswahl unveränderter externer
-Tests durch Parser, Compiler und Interpreter aus. Das ergänzt die M2-Arbeit
+Tests durch Parser, Compiler und Interpreter aus, und `script/test262/language.rs`
+alle Dateien unter `test/language/` gegen eine Datei der erwarteten
+Fehlschläge (siehe [unten](#ganz-language-mit-erwarteten-ergebnissen)). Das ergänzt die M2-Arbeit
 aus [Architektur, Abschnitt 10](architektur.md#10-kompatibilität-messen), ohne
 die Implementierung der Engine zu ändern.
 
@@ -61,9 +63,55 @@ den hier benötigten Teil des Test262-Formats, keinen allgemeinen YAML-Parser;
 nicht unterstützte Formen der ausgewerteten Felder werden abgelehnt.
 
 Die Auswahl ist eine Regressionstest-Grundlage für den vorhandenen
-Sprachumfang. Sie liefert keine Bestehensquote der gesamten Test262-Sammlung
-und keinen vollständigen ECMAScript-Konformitätsnachweis. Die Syntaxzahlen
-werden getrennt geführt; Syntax-Negativtests dürfen nicht in diese Auswahl.
+Sprachumfang, auch im Belastungsmodus. Die Bestehensquote für
+`test/language/` liefert der Lauf im nächsten Abschnitt; für `built-ins/` und
+`annexB/` gibt es noch keine, und keine der Zahlen ist ein vollständiger
+ECMAScript-Konformitätsnachweis. Die Syntaxzahlen werden getrennt geführt;
+Syntax-Negativtests dürfen nicht in diese Auswahl.
+
+## Ganz `language/` mit erwarteten Ergebnissen
+
+```sh
+cargo test --locked -p mb-js script::test262::language -- --nocapture
+```
+
+Der Lauf nimmt alle 23.828 Dateien unter `test/language/`, außer den 532 mit
+Vorschlägen aus `features.txt`. Jede Variante läuft wie in der Auswahl in
+einem frischen Agent mit dem Host für Test262 und denselben Quoten, aber nur
+mit normaler Garbage Collection; den Belastungsmodus prüft weiter die
+Auswahl. Die Dateien verteilen sich auf so viele Fäden, wie das System
+anbietet. Auf vier Kernen dauert der Lauf im Debug-Build knapp drei Minuten.
+
+Die Datei `crates/mb-js/src/script/test262/erwartete-fehlschlaege.txt` nennt
+jede Variante, die noch nicht besteht: eine Zeile je Datei, wenn alle ihre
+Varianten scheitern, sonst eine Zeile je Variante mit `sloppy` oder `strict`.
+Ihre Kopfzeile nennt die Zahlen. Der Test vergleicht den ganzen Text, also
+lassen ein Rückschritt, ein unerwarteter Erfolg und geänderte Zahlen ihn
+scheitern. Er nennt dann jede abweichende Variante und schreibt die neue
+Fassung nach `target/test262/erwartete-fehlschlaege.txt`. Die Datei wird
+nicht von Hand gepflegt: Wer die Abweichungen geprüft hat, übernimmt die neue
+Fassung in den PR. So zeigt jeder PR, welche Tests er besteht oder verliert.
+
+Dateien, deren Metadaten der Leser ablehnt, scheitern als Ganzes, bisher
+`async` und `module`. Eine Panik der Engine lässt den Test immer scheitern,
+sie kann nicht erwartet werden. Jede Datei der festen Auswahl muss auch hier
+bestehen.
+
+Mit diesem Stand bestehen 6.315 von 23.296 ausgeführten Dateien und 11.877
+von 39.297 Varianten. Die Gründe der Fehlschläge gibt der Test mit
+`--nocapture` aus:
+
+| Varianten | Grund |
+| ---: | --- |
+| 15.958 | Der Übersetzer kann ein Konstrukt noch nicht (`Unsupported`) |
+| 4.743 | Flag `async` |
+| 2.469 | Eine Datei der Harness endet mit einem ReferenceError |
+| 2.353 | ReferenceError im Test |
+| 713 | TypeError im Test |
+| 675 | Flag `module` |
+| 477 | `Test262Error`: Eine Assertion schlug fehl |
+| 30 | Die Arbeitsschritte sind erschöpft |
+| 2 | Eine Datei der Harness endet mit einem TypeError |
 
 ## Fehler und Ressourcen
 
@@ -112,9 +160,13 @@ aufzurufenden Gettern.
    Engine ergänzen, die sie brauchen, später Module und asynchrone
    Abschlüsse mit `print`. Neue Anforderungen im Metadatenleser ausdrücklich
    ergänzen.
-2. Neue Fälle mit Pfad in die feste Liste aufnehmen. Es gibt weder eine
-   automatische Auswahl bestandener Tests noch eine Ausnahmeliste für
-   fehlgeschlagene ausgewählte Fälle.
+2. Neue Fälle mit Pfad in die feste Liste aufnehmen, wenn sie auch im
+   Belastungsmodus laufen sollen. Für die feste Liste gibt es keine
+   Ausnahmeliste; die erwarteten Fehlschläge gelten nur für den Lauf über
+   `language/`.
+3. `annexB/language/`, das `tools/testdata` schon holt, und schrittweise
+   `built-ins/` (bisher nur `built-ins/RegExp/` geholt) in denselben Lauf mit
+   erwarteten Ergebnissen aufnehmen.
 
 Elf bei der Vorbereitung untersuchte Dateien benötigen noch fehlende
 Standardbibliothek und sind deshalb nicht Teil dieser Auswahl:
