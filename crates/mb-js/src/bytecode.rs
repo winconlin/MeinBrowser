@@ -76,6 +76,9 @@
 //! und kehrt mit dem Promise der Funktion zurück; ein Job setzt ihn fort, und
 //! der Befehl danach, [`Op::ResumeAsync`], wirft bei einer Ablehnung. Jedes
 //! [`Op::Return`] folgt auf [`Op::ResolveAsync`] oder [`Op::RejectAsync`].
+//! `for await` hält seinen Iterator in zwei Registern
+//! ([`Op::GetAsyncIterator`]) und wartet mit [`Op::Await`] auf jedes
+//! Ergebnis von `next` und `return`.
 //!
 //! Im Bytecode steht keine Adresse im Heap. Zahlen, Zeichenketten und die
 //! Funktionen, die der Code anlegt, liegen als [`Constant`] bei ihm; der
@@ -464,6 +467,27 @@ ops! {
     /// solange [[Done]] nicht gilt, ohne den Wert zu lesen. Danach und nach
     /// einem Fehler gilt [[Done]]. Der Akkumulator bleibt.
     IteratorSkip [Register],
+    /// GetIterator (Abschnitt 7.4.4) mit ~async~ für den Akkumulator, für
+    /// `for await`: Das Register nimmt den Iterator auf, das danach den Wert
+    /// von `next`. [[Done]] braucht keiner der Befehle für ihn, denn ein
+    /// Fehler von `next` oder aus seinem Ergebnis schließt ihn nicht.
+    GetAsyncIterator [Register],
+    /// Call von `next` des Iterators ab dem Register ohne Argumente, das
+    /// Ergebnis im Akkumulator für [`Op::Await`].
+    AsyncIteratorNext [Register],
+    /// Das Ergebnis eines Iterators im Akkumulator: Ist es kein Objekt, wirft
+    /// es einen TypeError. Ist der Iterator fertig (IteratorComplete,
+    /// Abschnitt 7.4.7), springt es mit dem Ergebnis im Akkumulator, sonst
+    /// kommt der Wert (IteratorValue, Abschnitt 7.4.8) in den Akkumulator.
+    IteratorResult [Jump],
+    /// AsyncIteratorClose (Abschnitt 7.4.15) für den Iterator im Register,
+    /// bis zum Await: Hat er kein `return`, springt es; sonst kommt das
+    /// Ergebnis des Aufrufs in den Akkumulator für [`Op::Await`]. Danach
+    /// prüft [`Op::ThrowIfNotObject`] es; bei einer Ausnahme fängt ein
+    /// Handler, was das Schließen wirft.
+    AsyncIteratorClose [Jump, Register],
+    /// Wirft einen TypeError, wenn der Akkumulator kein Objekt ist.
+    ThrowIfNotObject [],
 
     /// EvaluateGeneratorBody (Abschnitt 15.5.2) nach
     /// FunctionDeclarationInstantiation: ein neuer Generator für die

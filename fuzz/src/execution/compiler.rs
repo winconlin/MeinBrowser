@@ -30,6 +30,7 @@ struct Stats {
     yields: usize,
     async_functions: usize,
     awaits: usize,
+    async_iterators: usize,
     classes: usize,
     super_references: usize,
     strict_ranges: usize,
@@ -48,6 +49,7 @@ impl Stats {
         self.yields += other.yields;
         self.async_functions += other.async_functions;
         self.awaits += other.awaits;
+        self.async_iterators += other.async_iterators;
         self.classes += other.classes;
         self.super_references += other.super_references;
         self.strict_ranges += other.strict_ranges;
@@ -194,7 +196,14 @@ fn check_code(code: &Code, source_length: usize) -> Stats {
         }
         if matches!(
             instruction.op,
-            Op::BeginAsync | Op::Await | Op::ResumeAsync | Op::ResolveAsync | Op::RejectAsync
+            Op::BeginAsync
+                | Op::Await
+                | Op::ResumeAsync
+                | Op::ResolveAsync
+                | Op::RejectAsync
+                | Op::GetAsyncIterator
+                | Op::AsyncIteratorNext
+                | Op::AsyncIteratorClose
         ) {
             assert!(
                 code.async_state_register().is_some(),
@@ -269,6 +278,21 @@ fn check_code(code: &Code, source_length: usize) -> Stats {
                         .is_some_and(|end| end <= code.register_count()),
                     "the iterator record fits its frame"
                 );
+            }
+            Op::GetAsyncIterator | Op::AsyncIteratorNext | Op::AsyncIteratorClose => {
+                // The record of for await is the iterator and its next method.
+                let operand = usize::from(instruction.op == Op::AsyncIteratorClose);
+                let iterator =
+                    usize::try_from(instruction.operand(operand)).expect("iterator register");
+                assert!(
+                    iterator
+                        .checked_add(2)
+                        .is_some_and(|end| end <= code.register_count()),
+                    "the async iterator record fits its frame"
+                );
+                if instruction.op == Op::GetAsyncIterator {
+                    stats.async_iterators += 1;
+                }
             }
             Op::CreateRestObject => {
                 // The source value, then the keys the rest excludes.
@@ -702,6 +726,25 @@ mod tests {
         let stats = checked("'use strict'; async function f() { return f(); }");
         assert_eq!(stats.functions, 1);
         assert_eq!(stats.calls, 1, "a plain call, never a tail call");
+    }
+
+    #[test]
+    fn for_await_keeps_its_record_in_frame() {
+        let stats = checked(
+            "async function f(o) { for await (const x of o) { if (x) break; return x; } \
+             outer: for await (var y of o) for await (z of o) continue outer; }",
+        );
+        assert_eq!(stats.functions, 1);
+        assert_eq!(stats.unsupported_functions, 0);
+        assert_eq!(stats.async_iterators, 3);
+        assert_eq!(
+            stats.handlers, 7,
+            "the rejection, and per loop the throw and its closing"
+        );
+        assert_eq!(
+            stats.awaits, 9,
+            "each next, each close on a throw, a break, a return and a continue to the outer loop"
+        );
     }
 
     #[test]

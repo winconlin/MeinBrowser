@@ -1843,3 +1843,48 @@ fn derived_constructors_bind_this_after_super() {
         ]
     );
 }
+
+/// `for await`: Auf `next` folgen Await und [`Op::IteratorResult`], beim
+/// Schließen auf [`Op::AsyncIteratorClose`] Await und die Prüfung des
+/// Ergebnisses. Bei einer Ausnahme fängt ein eigener Handler, was das
+/// Schließen wirft; er steht vor dem äußersten der async-Funktion.
+#[test]
+fn for_await_waits_for_next_and_return() {
+    let code = first_function("async function f(o) { for await (var x of o) break; }");
+    assert_eq!(
+        function_shape(&code),
+        [
+            "BeginAsync",
+            "Ldar r2",
+            "GetAsyncIterator r5",
+            "SaveContext r7",
+            "AsyncIteratorNext r5",
+            "Await",
+            "ResumeAsync",
+            "IteratorResult @",
+            "Star r4",
+            "Jump @",
+            "JumpLoop @",
+            "RestoreContext r7",
+            "Star r9",
+            "AsyncIteratorClose @ r5",
+            "Await",
+            "ResumeAsync",
+            "Ldar r9",
+            "Rethrow",
+            "AsyncIteratorClose @ r5",
+            "Await",
+            "ResumeAsync",
+            "ThrowIfNotObject",
+            "Jump @",
+            "LdaUndefined",
+            "ResolveAsync",
+            "Return",
+            "RejectAsync",
+            "Return",
+            "Finally @ -> @",
+            "Finally @ -> @",
+            "Catch @ -> @",
+        ]
+    );
+}

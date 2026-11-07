@@ -3,11 +3,11 @@
 //! zusammen; hier steht nur, wie die Zellen im Heap liegen.
 
 use super::{
-    Heap, KIND_ARGUMENTS, KIND_ARRAY, KIND_BUILTIN, KIND_ERROR, KIND_FUNCTION, KIND_GENERATOR,
-    KIND_ITERATOR, KIND_OBJECT, KIND_PRIMITIVE, KIND_PROMISE, KIND_SHAPE, KIND_SLOTS, KIND_SPARSE,
-    KIND_SYMBOL, KIND_WEAK, Local, NONE, OBJECT_REFS, OutOfMemory, Scope, cell_words, header,
-    header_flags, header_kind, header_length, is_object, is_value_cell, object_fields, packed,
-    packed_high, packed_low, to_usize, with_flags,
+    Heap, KIND_ARGUMENTS, KIND_ARRAY, KIND_ASYNC_FROM_SYNC, KIND_BUILTIN, KIND_ERROR,
+    KIND_FUNCTION, KIND_GENERATOR, KIND_ITERATOR, KIND_OBJECT, KIND_PRIMITIVE, KIND_PROMISE,
+    KIND_SHAPE, KIND_SLOTS, KIND_SPARSE, KIND_SYMBOL, KIND_WEAK, Local, NONE, OBJECT_REFS,
+    OutOfMemory, Scope, cell_words, header, header_flags, header_kind, header_length, is_object,
+    is_value_cell, object_fields, packed, packed_high, packed_low, to_usize, with_flags,
 };
 use crate::value::{Ref, RefKind, Value};
 
@@ -91,6 +91,10 @@ pub(crate) enum ObjectClass {
     /// [`PROMISE_FIELDS`](super::PROMISE_FIELDS) internen Feldern, sonst
     /// gewöhnlich.
     Promise,
+    /// Ein Async-from-Sync Iterator (Abschnitt 27.1.5) mit
+    /// [`ASYNC_FROM_SYNC_FIELDS`](super::ASYNC_FROM_SYNC_FIELDS) internen
+    /// Feldern, sonst gewöhnlich.
+    AsyncFromSyncIterator,
 }
 
 impl ObjectClass {
@@ -106,6 +110,7 @@ impl ObjectClass {
             ObjectClass::Iterator => KIND_ITERATOR,
             ObjectClass::Generator => KIND_GENERATOR,
             ObjectClass::Promise => KIND_PROMISE,
+            ObjectClass::AsyncFromSyncIterator => KIND_ASYNC_FROM_SYNC,
         }
     }
 
@@ -121,6 +126,7 @@ impl ObjectClass {
             KIND_ITERATOR => Some(ObjectClass::Iterator),
             KIND_GENERATOR => Some(ObjectClass::Generator),
             KIND_PROMISE => Some(ObjectClass::Promise),
+            KIND_ASYNC_FROM_SYNC => Some(ObjectClass::AsyncFromSyncIterator),
             _ => None,
         }
     }
@@ -482,6 +488,25 @@ impl Heap {
         value: Value<'_>,
     ) -> bool {
         self.field_word(object, KIND_GENERATOR, index)
+            .is_some_and(|word| self.store(object.offset(), word, value.bits()))
+    }
+
+    /// Ein internes Feld eines Async-from-Sync Iterator, `None` für andere
+    /// Zellen.
+    pub(crate) fn async_from_sync_field(&self, object: Ref<'_>, index: usize) -> Option<Value<'_>> {
+        let word = self.field_word(object, KIND_ASYNC_FROM_SYNC, index)?;
+        self.word(object.offset(), word).map(Value::from_bits)
+    }
+
+    /// Schreibt ein internes Feld eines Async-from-Sync Iterator. `false`,
+    /// wenn es das Feld nicht gibt.
+    pub(crate) fn set_async_from_sync_field(
+        &self,
+        object: Ref<'_>,
+        index: usize,
+        value: Value<'_>,
+    ) -> bool {
+        self.field_word(object, KIND_ASYNC_FROM_SYNC, index)
             .is_some_and(|word| self.store(object.offset(), word, value.bits()))
     }
 

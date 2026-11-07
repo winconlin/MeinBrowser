@@ -194,7 +194,7 @@ fn reject_abrupt(
 }
 
 /// IfAbruptRejectPromise mit dem Ergebnis [[Promise]] von `capability`.
-fn if_abrupt_reject_promise<'s>(
+pub(super) fn if_abrupt_reject_promise<'s>(
     agent: &mut Agent,
     scope: &Scope,
     realm: RealmId,

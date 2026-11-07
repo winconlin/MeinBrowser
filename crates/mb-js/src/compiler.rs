@@ -40,9 +40,9 @@
 //! in Scripts entscheidet GlobalDeclarationInstantiation, ob es die
 //! globale Bindung gibt, und setzt dafür ein Register.
 //!
-//! Noch nicht unterstützt sind async-Generatoren, `for`-`in`, `for await`,
-//! `with`, `import()`, BigInt-Literale, reguläre Ausdrücke, Templates mit Tag
-//! und Funktionsdeklarationen mit Marke (Anhang B.3.1).
+//! Noch nicht unterstützt sind async-Generatoren, `for`-`in`, `with`,
+//! `import()`, BigInt-Literale, reguläre Ausdrücke, Templates mit Tag und
+//! Funktionsdeklarationen mit Marke (Anhang B.3.1).
 //!
 //! Klassen: Eine Klasse hat einen eigenen Bereich mit ihrem Namen als
 //! Konstante, die bis zum Ende der Klasse in der TDZ bleibt (classEnv). Darin
@@ -83,7 +83,9 @@
 //! ([`Op::GetIterator`], [`Op::IteratorNext`]). Verlässt ein Weg `for`-`of`
 //! vorzeitig, schließt er den Iterator: `break` direkt, `return` und
 //! Sprünge zu äußeren Zielen über ein Ziel wie bei `finally`, eine
-//! Ausnahme über einen Handler. Ein Aufruf mit Ausbreitung sammelt seine
+//! Ausnahme über einen Handler. `for await` hält nur [[Iterator]] und
+//! [[NextMethod]] ([`Op::GetAsyncIterator`]) und wartet auf die Ergebnisse
+//! von `next` und `return`. Ein Aufruf mit Ausbreitung sammelt seine
 //! Argumente in einem Array ([`Op::CallSpread`]).
 //!
 //! Muster: Deklarationen, Parameter, `catch`, Zuweisungen und `for`-`of`
@@ -2231,8 +2233,8 @@ impl<'a> Compiler<'a> {
                 left,
                 right,
                 body,
-                is_await: false,
-            } => self.for_of_loop(node, target, left, right, body),
+                is_await,
+            } => self.for_of_loop(node, target, left, right, body, is_await),
             Node::Switch {
                 discriminant,
                 cases,
@@ -2355,6 +2357,13 @@ impl<'a> Compiler<'a> {
     /// sie danach weiterführt. Eine Ausnahme beim Binden oder im Rumpf
     /// schließt ihn über einen Handler ([`Op::IteratorCloseOnThrow`]) und
     /// wird dann wieder geworfen, eine aus `next` selbst nicht.
+    ///
+    /// `for await` gibt es bisher nur in async-Funktionen. Es holt den
+    /// Iterator mit [`Op::GetAsyncIterator`] und wartet auf jedes Ergebnis
+    /// von `next`, bevor [`Op::IteratorResult`] es prüft. Geschlossen wird
+    /// mit AsyncIteratorClose (Abschnitt 7.4.15), das auf das Ergebnis von
+    /// `return` wartet; bei einer Ausnahme fängt ein zweiter Handler, was
+    /// das Schließen wirft, und es gilt die Ausnahme davor.
     fn for_of_loop(
         &mut self,
         node: NodeId,
@@ -2362,7 +2371,11 @@ impl<'a> Compiler<'a> {
         left: NodeId,
         right: NodeId,
         body: NodeId,
+        is_await: bool,
     ) -> Result<()> {
+        if is_await && self.async_state.is_none() {
+            return Err(self.unsupported(node));
+        }
         let lhs = self.for_of_target(left)?;
         let mark = self.next_register;
         if let ForTarget::Lexical(_) = lhs {
@@ -2375,8 +2388,12 @@ impl<'a> Compiler<'a> {
         self.position(right)?;
         let iterator = self.allocate()?;
         self.allocate()?;
-        self.allocate()?;
-        self.emit(Op::GetIterator, &[i64::from(iterator)])?;
+        if is_await {
+            self.emit(Op::GetAsyncIterator, &[i64::from(iterator)])?;
+        } else {
+            self.allocate()?;
+            self.emit(Op::GetIterator, &[i64::from(iterator)])?;
+        }
         let context = i64::from(self.allocate()?);
         self.emit(Op::SaveContext, &[context])?;
         let kind = self.allocate()?;
@@ -2388,9 +2405,15 @@ impl<'a> Compiler<'a> {
         self.reset_completion()?;
         let start = self.emitter.offset();
         self.position(node)?;
-        let done = self
-            .emitter
-            .jump_with(Op::IteratorNext, &[i64::from(iterator)])?;
+        let done = if is_await {
+            self.emit(Op::AsyncIteratorNext, &[i64::from(iterator)])?;
+            self.emit(Op::Await, &[])?;
+            self.emit(Op::ResumeAsync, &[])?;
+            self.jump(Op::IteratorResult)?
+        } else {
+            self.emitter
+                .jump_with(Op::IteratorNext, &[i64::from(iterator)])?
+        };
         let region = self.emitter.offset();
         // HasCallInTailPosition (Abschnitt 15.10.2.1): nie im Rumpf von
         // `for`-`of`, denn nach `return` ist der Iterator noch zu schließen.
@@ -2413,24 +2436,52 @@ impl<'a> Compiler<'a> {
         self.emitter.handler(region, end, HandlerKind::Finally);
         self.emit(Op::RestoreContext, &[context])?;
         self.emit(Op::Star, &[value])?;
-        self.emit(Op::IteratorCloseOnThrow, &[iterator])?;
+        if is_await {
+            let closing = self.emitter.offset();
+            let skip = self
+                .emitter
+                .jump_with(Op::AsyncIteratorClose, &[iterator])?;
+            self.emit(Op::Await, &[])?;
+            self.emit(Op::ResumeAsync, &[])?;
+            let closed = self.emitter.offset();
+            self.bind(skip)?;
+            self.emitter.handler(closing, closed, HandlerKind::Finally);
+        } else {
+            self.emit(Op::IteratorCloseOnThrow, &[iterator])?;
+        }
         self.emit(Op::Ldar, &[value])?;
         self.emit(Op::Rethrow, &[])?;
         let close = self.pop_target();
         let mut after = vec![done];
         if !target.breaks.is_empty() {
             self.bind_all(target.breaks)?;
-            self.emit(Op::IteratorClose, &[iterator])?;
+            self.close_iterator(iterator, is_await)?;
             after.push(self.jump(Op::Jump)?);
         }
         if !close.breaks.is_empty() {
             self.bind_all(close.breaks)?;
-            self.emit(Op::IteratorClose, &[iterator])?;
+            self.close_iterator(iterator, is_await)?;
             self.dispatch_exits(kind, value, close.exits)?;
         }
         self.bind_all(after)?;
         self.release(mark);
         Ok(())
+    }
+
+    /// Schließt den Iterator von `for`-`of` ab dem Register `iterator` für
+    /// einen Weg hinaus, der keine Ausnahme ist. Für `for await` wartet es
+    /// auf das Ergebnis von `return`, das ein Objekt sein muss.
+    fn close_iterator(&mut self, iterator: i64, is_await: bool) -> Result<()> {
+        if !is_await {
+            return self.emit(Op::IteratorClose, &[iterator]);
+        }
+        let skip = self
+            .emitter
+            .jump_with(Op::AsyncIteratorClose, &[iterator])?;
+        self.emit(Op::Await, &[])?;
+        self.emit(Op::ResumeAsync, &[])?;
+        self.emit(Op::ThrowIfNotObject, &[])?;
+        self.bind(skip)
     }
 
     /// Was links in `for`-`of` steht. Eine Deklaration hat genau einen

@@ -341,3 +341,238 @@ fn async_functions_are_neither_constructors_nor_generators() {
         "function,[object AsyncFunction],false,f0",
     )]);
 }
+
+/// `for await` (Abschnitte 14.7.5.6 und 14.7.5.7) mit eigenen
+/// async-Iteratoren: Auf jedes Ergebnis von `next` wartet die Schleife.
+#[test]
+fn for_await_waits_for_each_result() {
+    check(&[
+        (
+            "var it = { i: 0, [Symbol.asyncIterator]() { return this; },
+               next() { this.i++; return Promise.resolve({ value: this.i, done: this.i > 3 }); } };
+             async function f() { var s = 0; for await (const x of it) s += x; return s; }
+             f().then(function (v) { log += v; });",
+            "6",
+        ),
+        (
+            "var it = { [Symbol.asyncIterator]() { return { next() { return { value: 'd', done: true }; } }; } };
+             async function f() { for await (var x of it) log += 'b'; return typeof x; }
+             f().then(function (v) { log += v; });",
+            "undefined",
+        ),
+        (
+            "async function f() { var s = '';
+               for await (const [a, { b }] of [['a', { b: 'b' }]]) s += a + b;
+               outer: for await (let x of ['x', 'y']) { for await (var y of [1, 2]) { s += x + y; continue outer; } }
+               return s; }
+             f().then(function (v) { log += v; });",
+            "abx1y1",
+        ),
+        // Fehler aus `next` und aus seinem Ergebnis schließen den Iterator
+        // nicht.
+        (
+            "var it = { [Symbol.asyncIterator]() { return { next() { return 1; },
+               return() { log += 'r,'; return {}; } }; } };
+             async function f() { for await (var x of it); }
+             f().catch(function (e) { log += e.constructor.name; });",
+            "TypeError",
+        ),
+        (
+            "var it = { [Symbol.asyncIterator]() { return { next() { return Promise.reject('n'); },
+               return() { log += 'r,'; return {}; } }; } };
+             async function f() { for await (var x of it); }
+             f().catch(function (e) { log += e; });",
+            "n",
+        ),
+        (
+            "var it = { [Symbol.asyncIterator]() { return {
+               next() { return { get done() { throw 'd'; } }; }, return() { log += 'r,'; return {}; } }; } };
+             async function f() { for await (var x of it); }
+             f().catch(function (e) { log += e; });",
+            "d",
+        ),
+        // Ohne @@asyncIterator und @@iterator.
+        (
+            "async function f() { for await (var x of {}); }
+             f().catch(function (e) { log += e.constructor.name; });",
+            "TypeError",
+        ),
+    ]);
+}
+
+/// AsyncIteratorClose (Abschnitt 7.4.15): `break`, `continue` zu einer
+/// äußeren Schleife und `return` warten auf das Ergebnis von `return`, das
+/// ein Objekt sein muss. Bei einer Ausnahme fällt weg, was das Schließen
+/// wirft oder ablehnt.
+#[test]
+fn for_await_closes_its_iterator_and_waits_for_it() {
+    let iterator = |closing: &str| {
+        format!(
+            "var it = {{ [Symbol.asyncIterator]() {{ return {{
+               next() {{ return {{ value: 1, done: false }}; }},
+               return() {{ log += 'r,'; {closing} }} }}; }} }};"
+        )
+    };
+    let thenable = iterator("return { then(r) { log += 't,'; r({}); } };");
+    let cases = [
+        (
+            format!(
+                "{thenable}
+                 async function f() {{ for await (var x of it) {{ log += 'b,'; break; }} log += 'e,'; }}
+                 f();"
+            ),
+            "b,r,t,e,",
+        ),
+        (
+            format!(
+                "{thenable}
+                 async function f() {{ for await (var x of it) return 'v' + x; }}
+                 f().then(function (v) {{ log += v; }});"
+            ),
+            "r,t,v1",
+        ),
+        (
+            format!(
+                "{thenable}
+                 async function f() {{ outer: for (var i = 0; i < 2; i++) for await (var x of it) continue outer;
+                   return i; }}
+                 f().then(function (v) {{ log += v; }});"
+            ),
+            "r,t,r,t,2",
+        ),
+        (
+            format!(
+                "{}
+                 async function f() {{ for await (var x of it) break; }}
+                 f().catch(function (e) {{ log += e.constructor.name; }});",
+                iterator("return 5;")
+            ),
+            "r,TypeError",
+        ),
+        (
+            format!(
+                "{}
+                 async function f() {{ for await (var x of it) break; }}
+                 f().catch(function (e) {{ log += e; }});",
+                iterator("return Promise.reject('no');")
+            ),
+            "r,no",
+        ),
+        (
+            format!(
+                "{}
+                 async function f() {{ for await (var x of it) break; }}
+                 f().catch(function (e) {{ log += e; }});",
+                iterator("throw 'thrown';")
+            ),
+            "r,thrown",
+        ),
+    ];
+    for (source, expected) in &cases {
+        assert_eq!(logs(source).1, *expected, "{source}");
+    }
+    for closing in [
+        "throw 'ignored';",
+        "return Promise.reject('ignored');",
+        "return 5;",
+        "return { then(r) { log += 't,'; r(5); } };",
+    ] {
+        let source = format!(
+            "{}
+             async function f() {{ for await (var x of it) {{ log += 'b,'; throw 'body'; }} }}
+             f().catch(function (e) {{ log += e; }});",
+            iterator(closing)
+        );
+        let expected = if closing.contains("then") {
+            "b,r,t,body"
+        } else {
+            "b,r,body"
+        };
+        assert_eq!(logs(&source).1, expected, "{source}");
+    }
+    // Ohne `return` gibt es nichts zu schließen.
+    check(&[(
+        "var it = { [Symbol.asyncIterator]() { return { next() { return { value: 1, done: false }; } }; } };
+         async function f() { for await (var x of it) break; for await (var y of it) throw 'b'; }
+         f().catch(function (e) { log += e; });",
+        "b",
+    )]);
+}
+
+/// CreateAsyncFromSyncIterator (Abschnitt 27.1.5.1): Ohne @@asyncIterator
+/// läuft `for await` über den synchronen Iterator und wartet auf jeden Wert.
+/// Ist ein Wert ein abgelehntes Promise, schließt es den Iterator.
+#[test]
+fn for_await_wraps_sync_iterators() {
+    check(&[
+        (
+            "async function f() { var s = '';
+               for await (var x of ['a', Promise.resolve('b'), { then(r) { r('c'); } }]) s += x;
+               return s; }
+             f().then(function (v) { log += v; });",
+            "abc",
+        ),
+        (
+            "function* g() { try { yield 1; yield 2; } finally { log += 'f,'; } }
+             async function f() { for await (var x of g()) { log += x + ','; break; } return 'e'; }
+             f().then(function (v) { log += v; });",
+            "1,f,e",
+        ),
+        (
+            "var it = { [Symbol.iterator]() { return {
+               next() { return { value: Promise.reject('v'), done: false }; },
+               return() { log += 'r,'; return {}; } }; } };
+             async function f() { for await (var x of it); }
+             f().catch(function (e) { log += e; });",
+            "r,v",
+        ),
+        // Ein fertiger Iterator wird nicht geschlossen, die Ablehnung gilt
+        // trotzdem.
+        (
+            "var it = { [Symbol.iterator]() { return {
+               next() { return { value: Promise.reject('v'), done: true }; },
+               return() { log += 'r,'; return {}; } }; } };
+             async function f() { for await (var x of it); }
+             f().catch(function (e) { log += e; });",
+            "v",
+        ),
+        // `return` des synchronen Iterators muss ein Objekt liefern.
+        (
+            "var it = { [Symbol.iterator]() { return {
+               next() { return { value: 1, done: false }; }, return() { return 5; } }; } };
+             async function f() { for await (var x of it) break; }
+             f().catch(function (e) { log += e.constructor.name; });",
+            "TypeError",
+        ),
+        // Ohne `return` des synchronen Iterators gilt er als geschlossen.
+        (
+            "async function f() { for await (var x of [1, 2]) { log += x; break; } return 'e'; }
+             f().then(function (v) { log += v; });",
+            "1e",
+        ),
+        // Bei einer Ausnahme ruft es `return` auf, was dort geworfen wird,
+        // fällt weg.
+        (
+            "var it = { [Symbol.iterator]() { return {
+               next() { return { value: 1, done: false }; }, return() { log += 'r,'; throw 'x'; } }; } };
+             async function f() { for await (var x of it) throw 'b'; }
+             f().catch(function (e) { log += e; });",
+            "r,b",
+        ),
+    ]);
+}
+
+/// Für einen synchronen Iterator braucht jeder Schritt zwei Jobs: einen, der
+/// das Ergebnis aus dem Wert macht, und einen für das Await der Schleife.
+#[test]
+fn for_await_over_sync_iterators_takes_two_jobs_per_step() {
+    check(&[(
+        "async function f() { for await (var x of ['a']) log += x + ','; log += 'e,'; }
+         f();
+         Promise.resolve()
+           .then(function () { log += 'p1,'; })
+           .then(function () { log += 'p2,'; })
+           .then(function () { log += 'p3,'; });",
+        "p1,a,p2,p3,e,",
+    )]);
+}
