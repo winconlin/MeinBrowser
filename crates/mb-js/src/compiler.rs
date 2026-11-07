@@ -40,9 +40,8 @@
 //! in Scripts entscheidet GlobalDeclarationInstantiation, ob es die
 //! globale Bindung gibt, und setzt dafür ein Register.
 //!
-//! Noch nicht unterstützt sind `async`, Felder, private Namen und
-//! `static`-Blöcke in Klassen, `for`-`in`, `for await`, `with`, `import()`,
-//! BigInt-Literale, reguläre Ausdrücke, Templates mit Tag und
+//! Noch nicht unterstützt sind `async`, `for`-`in`, `for await`, `with`,
+//! `import()`, BigInt-Literale, reguläre Ausdrücke, Templates mit Tag und
 //! Funktionsdeklarationen mit Marke (Anhang B.3.1).
 //!
 //! Klassen: Eine Klasse hat einen eigenen Bereich mit ihrem Namen als
@@ -51,7 +50,17 @@
 //! und Prototyp an, dann definiert sie die Methoden der Reihe nach, jede mit
 //! ihrem Namen vor dem Funktionsobjekt. Eine Klassendeklaration bindet den
 //! Namen danach wie `let`. Der Konstruktor einer Klasse ohne `constructor`
-//! ist fester Bytecode ([`compile_default_constructor`]).
+//! ist fester Bytecode ([`compile_default_constructor`]). Alle Teile einer
+//! Klasse sind strikt; steht sie in nicht striktem Code, bilden ihre
+//! Befehle dort einen strikten Bereich ([`Emitter::strict_range`]).
+//!
+//! Felder und private Namen: Die privaten Namen einer Klasse liegen in
+//! Plätzen ihres Bereichs, innere Funktionen finden sie wie Bindungen über
+//! [`Enclosing`]. Der Initialisierer eines Feldes und ein `static`-Block
+//! sind eigene Funktionen. Jeder Konstruktor einer Klasse führt
+//! InitializeInstanceElements als Schleife im Bytecode aus, ohne
+//! Oberklasse zu Beginn, sonst nach jedem `super()`; so ruft er die
+//! Initialisierer wie jede Funktion auf.
 //!
 //! `super`: Eine Referenz mit `super` liest erst `this`, dann den Namen,
 //! dann die Basis aus [[HomeObject]] der Funktion (MakeSuperPropertyReference,
@@ -264,6 +273,8 @@ struct BlockScope {
     function: Option<u32>,
     /// Ob der Platz mit `this` die Lücke halten kann.
     derived: bool,
+    /// Die Plätze mit den privaten Namen einer Klasse.
+    privates: BTreeMap<Atom, u32>,
 }
 
 impl BlockScope {
@@ -414,6 +425,12 @@ enum Reference {
     SuperKeyed {
         base: u32,
     },
+    /// Eine private Referenz (MakePrivateReference, Abschnitt 6.2.5.9): die
+    /// Basis im Register, der private Name im Register danach.
+    Private {
+        base: u32,
+        name: u32,
+    },
 }
 
 /// Was IsAnonymousFunctionDefinition (Abschnitt 8.4.3) fand.
@@ -430,6 +447,41 @@ enum Access {
     Named(Atom),
     /// `[expression]`
     Keyed(NodeId),
+    /// `.#name`
+    Private(Atom),
+}
+
+/// Die Register einer Klasse während ihrer Elemente: der Prototyp, der
+/// Konstruktor und, wenn die Instanzen private Methoden haben, das Objekt
+/// für [[PrivateMethods]].
+#[derive(Clone, Copy)]
+struct ClassRegisters {
+    prototype: u32,
+    constructor: u32,
+    holder: Option<u32>,
+}
+
+/// Ein statisches Feld oder ein `static`-Block, ausgewertet nach den
+/// übrigen Elementen der Klasse (ClassDefinitionEvaluation, Abschnitt
+/// 15.7.14, Schritt 33).
+enum StaticElement {
+    Field {
+        node: NodeId,
+        key: FieldKey,
+        value: Option<FunctionId>,
+    },
+    Block {
+        node: NodeId,
+        function: FunctionId,
+    },
+}
+
+/// Der Name eines statischen Feldes, bis es definiert wird.
+enum FieldKey {
+    Name(Vec<u16>),
+    Private(Atom),
+    /// Ein berechneter Name nach ToPropertyKey im Register.
+    Register(u32),
 }
 
 /// Wie eine Kette aus Zugriffen und Aufrufen endet.
@@ -502,6 +554,9 @@ struct Compiler<'a> {
     /// var-Bindung setzen, in Scripts mit dem Register, das sagt, ob es die
     /// globale Bindung gibt.
     hoisted: BTreeMap<NodeId, Option<u32>>,
+    /// Ob der Übersetzer gerade eine Klasse in nicht striktem Code
+    /// übersetzt; ihre Befehle bilden einen strikten Bereich.
+    strict_class: bool,
 }
 
 /// Übersetzt ein Script (Abschnitt 16.1).
@@ -596,7 +651,11 @@ struct Formal {
 /// Objekt liest und schreibt ihre Bindungen dort.
 ///
 /// Konstruktoren von Klassen übersetzt es wie Methoden; im Konstruktor einer
-/// abgeleiteten Klasse beginnt `this` als Lücke.
+/// abgeleiteten Klasse beginnt `this` als Lücke. Der Konstruktor einer
+/// Klasse ohne Oberklasse beginnt mit InitializeInstanceElements
+/// ([[Construct]], Abschnitt 10.2.2, Schritt 6.b), noch vor den
+/// Parametern. Initialisierer von Feldern und `static`-Blöcke sind
+/// Funktionen ohne Parameter.
 pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> {
     let Some(function) = ast.function(template.function) else {
         return Err(CompileError::Unsupported(0));
@@ -612,6 +671,8 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
             | FunctionKind::Setter
             | FunctionKind::Constructor
             | FunctionKind::DerivedConstructor
+            | FunctionKind::FieldInitializer
+            | FunctionKind::StaticBlock
     ) && !function.is_async;
     let captures = ast.captures().function(template.function);
     let (true, Some(captures)) = (supported, captures) else {
@@ -838,6 +899,19 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
     if captures.arrow_super && !arrow {
         parameters.function = Some(parameters.add_slot()?);
     }
+    // Alle Bindungen haben ihren Ort; die Register der Schleife über die
+    // Felder sind danach wieder frei.
+    if function.kind == FunctionKind::Constructor {
+        let first = compiler.allocate()?;
+        for _ in 0..4 {
+            compiler.allocate()?;
+        }
+        let register = i64::from(first);
+        compiler.emit(Op::Mov, &[i64::from(callee), register])?;
+        compiler.emit(Op::Mov, &[THIS, register + 3])?;
+        emit_instance_elements(&mut compiler.emitter, register)?;
+        compiler.release(first);
+    }
     // Der Name eines Funktionsausdrucks liegt außen (funcEnv, Abschnitt
     // 15.2.5); das Objekt `arguments` und jede Bindung im Bereich der
     // Parameter verdecken ihn.
@@ -954,6 +1028,10 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
     }
     if function.expression_body {
         for &expression in body {
+            if function.kind == FunctionKind::FieldInitializer {
+                compiler.field_initializer(expression)?;
+                continue;
+            }
             compiler.tail_calls = compiler.tail_position_calls(expression);
             compiler.expression(expression)?;
         }
@@ -987,16 +1065,22 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
 /// Oberklasse mit den Argumenten und new.target auf, aber ohne
 /// %Array.prototype%[%Symbol.iterator%]: Das Array mit den Argumenten
 /// liest der Aufruf direkt. Sein Ergebnis gibt er zurück; es ist stets ein
-/// Objekt.
+/// Objekt. Beide führen davor InitializeInstanceElements aus.
 pub fn compile_default_constructor(derived: bool) -> Result<Code> {
     let mut emitter = Emitter::default();
     if !derived {
+        // Register: `this`, das Funktionsobjekt, dann die der Schleife über
+        // die Felder.
+        emitter.emit(Op::Mov, &[1, 2])?;
+        emitter.emit(Op::Mov, &[THIS, 5])?;
+        emit_instance_elements(&mut emitter, 2)?;
         emitter.emit(Op::LdaUndefined, &[])?;
         emitter.emit(Op::Return, &[])?;
-        return Ok(emitter.finish(Vec::new(), 2, true));
+        return Ok(emitter.finish(Vec::new(), 7, true));
     }
     // Register: `this`, das Funktionsobjekt, die Argumente, new.target,
     // dann new.target, Funktion, `this` und das Array für den Aufruf.
+    // Danach nimmt die Schleife über die Felder die Register ab 3.
     let (arguments, new_target, callee, array) = (2, 3, 5, 7);
     emitter.emit(Op::Ldar, &[1])?;
     emitter.emit(Op::GetSuperConstructor, &[])?;
@@ -1006,12 +1090,38 @@ pub fn compile_default_constructor(derived: bool) -> Result<Code> {
     emitter.emit(Op::CreateRestParameter, &[arguments, 0])?;
     emitter.emit(Op::Star, &[array])?;
     emitter.emit(Op::SuperCallSpread, &[callee])?;
+    emitter.emit(Op::Star, &[6])?;
+    emitter.emit(Op::Mov, &[1, 3])?;
+    emit_instance_elements(&mut emitter, 3)?;
+    emitter.emit(Op::Ldar, &[6])?;
     emitter.emit(Op::Return, &[])?;
     let mut code = emitter.finish(Vec::new(), 8, true);
     code.arguments = Some(2);
     code.new_target = Some(3);
     code.derived = true;
     Ok(code)
+}
+
+/// InitializeInstanceElements (Abschnitt 7.3.33) für den Konstruktor im
+/// Register `first` und das Objekt im Register `first + 3`: erst die
+/// privaten Methoden, dann die Felder der Reihe nach, jedes mit einem
+/// Aufruf seines Initialisierers mit dem Objekt als `this` und DefineField
+/// (Abschnitt 7.3.32). Die Register `first + 1`, `first + 2` und
+/// `first + 4` nimmt die Schleife.
+fn emit_instance_elements(emitter: &mut Emitter, first: i64) -> std::result::Result<(), TooLarge> {
+    let register = |offset: i64| first.checked_add(offset).ok_or(TooLarge);
+    let object = register(3)?;
+    emitter.emit(Op::InitializePrivateMethods, &[first, object])?;
+    emitter.emit(Op::LdaSmi, &[0])?;
+    emitter.emit(Op::Star, &[register(1)?])?;
+    let start = emitter.offset();
+    let done = emitter.jump_with(Op::NextField, &[first])?;
+    let define = emitter.jump(Op::JumpIfNullish)?;
+    emitter.emit(Op::Call, &[register(2)?, 0])?;
+    emitter.bind(define)?;
+    emitter.emit(Op::DefineField, &[object, register(4)?])?;
+    emitter.jump_loop(start)?;
+    emitter.bind(done)
 }
 
 fn units(text: &str) -> Vec<u16> {
@@ -1046,7 +1156,14 @@ impl<'a> Compiler<'a> {
             protected: 0,
             var_scope: None,
             hoisted: BTreeMap::new(),
+            strict_class: false,
         }
+    }
+
+    /// Ob der Code an der aktuellen Stelle strikt ist: im ganzen Code oder
+    /// in einer Klasse (Abschnitt 11.2.2).
+    fn is_strict(&self) -> bool {
+        self.strict || self.strict_class
     }
 
     fn finish(self) -> Code {
@@ -1715,6 +1832,39 @@ impl<'a> Compiler<'a> {
         Ok(None)
     }
 
+    /// ResolvePrivateIdentifier (Abschnitt 9.2.1.2) beim Übersetzen: der
+    /// Platz des privaten Namens im Kontext so viele Stufen außerhalb des
+    /// aktuellen, wie die erste Zahl sagt. Der Parser lässt nur Namen zu,
+    /// die eine Klasse um die Stelle deklariert.
+    fn private_location(&self, atom: Atom, node: NodeId) -> Result<(u32, u32)> {
+        let mut depth: u32 = 0;
+        for scope in self.scopes.iter().rev() {
+            if let Some(&slot) = scope.privates.get(&atom) {
+                return Ok((depth, slot));
+            }
+            if scope.has_context() {
+                depth = depth.checked_add(1).ok_or(CompileError::TooLarge)?;
+            }
+        }
+        let mut enclosing = Some(&self.outer);
+        while let Some(current) = enclosing {
+            for layout in &current.contexts {
+                if let Some(&slot) = layout.privates.get(&atom) {
+                    return Ok((depth, slot));
+                }
+                depth = depth.checked_add(1).ok_or(CompileError::TooLarge)?;
+            }
+            enclosing = current.parent.as_ref();
+        }
+        Err(self.unsupported(node))
+    }
+
+    /// Lädt den privaten Namen `atom` in den Akkumulator.
+    fn load_private_name(&mut self, atom: Atom, node: NodeId) -> Result<()> {
+        let (depth, slot) = self.private_location(atom, node)?;
+        self.emit(Op::LdaContext, &[i64::from(depth), i64::from(slot)])
+    }
+
     /// Was eine Funktion sähe, die hier entsteht: die offenen Kontexte vom
     /// innersten an und dahinter, was dieser Code vom umgebenden sieht.
     fn enclosing(&self) -> Rc<Enclosing> {
@@ -1727,6 +1877,7 @@ impl<'a> Compiler<'a> {
                 new_target: scope.new_target,
                 function: scope.function,
                 derived: scope.derived,
+                privates: scope.privates.clone(),
             };
             for (&atom, &binding) in &scope.bindings {
                 match binding.location {
@@ -3002,9 +3153,10 @@ impl<'a> Compiler<'a> {
             }
             Node::Object(list) => self.object_literal(list),
             Node::Array(list) => self.array_literal(list),
-            Node::Member { .. } | Node::ComputedMember { .. } | Node::Call { .. } => {
-                self.chain(node, ChainEnd::Value).map(|_| ())
-            }
+            Node::Member { .. }
+            | Node::ComputedMember { .. }
+            | Node::PrivateMember { .. }
+            | Node::Call { .. } => self.chain(node, ChainEnd::Value).map(|_| ()),
             Node::Chain(chain) => self.chain(chain, ChainEnd::Value).map(|_| ()),
             Node::New { callee, arguments } => self.construct(node, callee, arguments),
             Node::NewTarget => self.load_new_target(node),
@@ -3107,6 +3259,25 @@ impl<'a> Compiler<'a> {
         self.named_definition(node, ClosureName::Keyed(key))
     }
 
+    /// Der Rumpf des Initialisierers eines Feldes (EvaluateBody, Abschnitt
+    /// 10.2.1.3): Eine anonyme Funktion oder Klasse bekommt den Namen des
+    /// Feldes ([[ClassFieldInitializerName]]). Den hat das Funktionsobjekt
+    /// des Initialisierers als `name`, und Code der Sprache sieht es nie.
+    /// Endaufrufe gibt es hier nicht (IsInTailPosition, Abschnitt 15.10.1).
+    fn field_initializer(&mut self, expression: NodeId) -> Result<()> {
+        if self.anonymous_definition(expression).is_none() {
+            return self.expression(expression);
+        }
+        let key = self.allocate()?;
+        let name = self.constant(Constant::Name(units("name")))?;
+        self.emit(Op::Ldar, &[1])?;
+        self.emit(Op::LdaNamed, &[name])?;
+        self.emit(Op::Star, &[i64::from(key)])?;
+        self.keyed_expression(expression, key)?;
+        self.release(key);
+        Ok(())
+    }
+
     fn named_definition(&mut self, node: NodeId, name: ClosureName<'_>) -> Result<()> {
         match self.anonymous_definition(node) {
             Some(Anonymous::Function(function, id)) => self.closure(function, id, name),
@@ -3155,6 +3326,8 @@ impl<'a> Compiler<'a> {
                 | FunctionKind::Method
                 | FunctionKind::Getter
                 | FunctionKind::Setter
+                | FunctionKind::FieldInitializer
+                | FunctionKind::StaticBlock
         ) && !function.is_async;
         if !supported {
             return Err(self.unsupported(node));
@@ -3363,11 +3536,38 @@ impl<'a> Compiler<'a> {
     /// Name darin ist eine Konstante und bis zum Ende der Klasse in der TDZ.
     /// Das Register hinter dem für die Oberklasse hält erst den Namen, nach
     /// [`Op::CreateClass`] den Konstruktor.
+    ///
+    /// Die privaten Namen (classPrivateEnvironment) liegen in Plätzen des
+    /// Bereichs. Sie entstehen nach der Oberklasse, die sie nicht sieht;
+    /// beobachten lässt sich das nicht. Die privaten Methoden der Instanzen
+    /// kommen an das Objekt aus [`Op::CreatePrivateMethods`], die statischen
+    /// gleich an den Konstruktor, die Felder der Instanzen an [[Fields]].
+    /// Statische Felder und `static`-Blöcke laufen nach dem Binden des
+    /// Namens der Reihe nach (Schritte 29 bis 33); ihre Funktionsobjekte
+    /// entstehen erst dann, die berechneten Namen vorher.
     fn class_definition(&mut self, node: NodeId, id: ClassId, name: ClosureName<'_>) -> Result<()> {
+        if self.is_strict() {
+            return self.class_parts(node, id, name);
+        }
+        // Alle Teile einer Klasse sind strikter Code (Abschnitt 11.2.2),
+        // auch die Oberklasse und die berechneten Namen, die hier laufen;
+        // ihre Befehle bilden einen strikten Bereich.
+        let start = self.emitter.offset();
+        self.strict_class = true;
+        let result = self.class_parts(node, id, name);
+        self.strict_class = false;
+        result?;
+        self.emitter.strict_range(start, self.emitter.offset())?;
+        Ok(())
+    }
+
+    /// [`Compiler::class_definition`] in strikt übersetztem Code.
+    fn class_parts(&mut self, node: NodeId, id: ClassId, name: ClosureName<'_>) -> Result<()> {
         let ast = self.ast;
         let Some(class) = ast.class(id) else {
             return Err(self.unsupported(node));
         };
+        let elements = ast.list(class.elements);
         let mark = self.next_register;
         let mut scope = BlockScope::default();
         let mut holes = Vec::new();
@@ -3382,6 +3582,23 @@ impl<'a> Compiler<'a> {
             };
             scope.bindings.insert(atom, binding);
         }
+        // PrivateBoundIdentifiers; Getter und Setter teilen sich einen Namen.
+        let mut privates = BTreeMap::new();
+        let mut instance_private_methods = false;
+        for &element in elements {
+            let (key, method, is_static) = match *ast.node(element) {
+                Node::ClassMethod { key, is_static, .. } => (key, true, is_static),
+                Node::ClassField { key, is_static, .. } => (key, false, is_static),
+                _ => continue,
+            };
+            let Node::PrivateName(atom) = *ast.node(key) else {
+                continue;
+            };
+            instance_private_methods |= method && !is_static;
+            if let std::collections::btree_map::Entry::Vacant(entry) = privates.entry(atom) {
+                entry.insert(scope.add_slot()?);
+            }
+        }
         if scope.has_context() {
             self.emit(Op::PushContext, &[i64::from(scope.slots)])?;
         }
@@ -3394,6 +3611,17 @@ impl<'a> Compiler<'a> {
             None => self.emit(Op::LdaHole, &[])?,
         }
         self.emit(Op::Star, &[i64::from(parent)])?;
+        self.position(node)?;
+        for (&atom, &slot) in &privates {
+            let mut description = units("#");
+            description.extend_from_slice(ast.atom(atom));
+            let description = self.constant(Constant::String(description))?;
+            self.emit(Op::CreatePrivateName, &[description])?;
+            self.emit(Op::StaContext, &[0, i64::from(slot)])?;
+        }
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.privates = privates;
+        }
         match (class.name, name) {
             (Some(atom), _) => {
                 let constant = self.name(atom)?;
@@ -3421,8 +3649,24 @@ impl<'a> Compiler<'a> {
         self.position(node)?;
         self.emit(Op::CreateClass, &[function, i64::from(parent)])?;
         self.emit(Op::Star, &[i64::from(constructor)])?;
-        for &element in ast.list(class.elements) {
-            self.class_element(element, parent, constructor)?;
+        let holder = if instance_private_methods {
+            let holder = self.allocate()?;
+            self.emit(Op::CreatePrivateMethods, &[i64::from(constructor)])?;
+            self.emit(Op::Star, &[i64::from(holder)])?;
+            Some(holder)
+        } else {
+            None
+        };
+        let mut statics = Vec::new();
+        for &element in elements {
+            let class = ClassRegisters {
+                prototype: parent,
+                constructor,
+                holder,
+            };
+            if let Some(element) = self.class_element(element, class)? {
+                statics.push(element);
+            }
         }
         if let Some(atom) = class.name
             && let Some(binding) = self.lookup(atom)
@@ -3430,29 +3674,131 @@ impl<'a> Compiler<'a> {
             self.emit(Op::Ldar, &[i64::from(constructor)])?;
             self.store_location(binding.location)?;
         }
+        for element in statics {
+            self.static_element(element, constructor)?;
+        }
         self.emit(Op::Ldar, &[i64::from(constructor)])?;
         self.leave_block(mark)
     }
 
-    /// ClassElementEvaluation (Abschnitt 15.7.10) einer Methode, eines
-    /// Getters oder Setters: MethodDefinitionEvaluation wie im Objektliteral,
-    /// aber nicht aufzählbar, auf dem Prototyp im Register `prototype` oder
-    /// mit `static` auf dem Konstruktor im Register `constructor`, der dann
-    /// auch [[HomeObject]] ist.
-    fn class_element(&mut self, element: NodeId, prototype: u32, constructor: u32) -> Result<()> {
+    /// ClassElementEvaluation (Abschnitt 15.7.13) eines Elements außer dem
+    /// Konstruktor. Methoden, Getter und Setter wertet es aus wie
+    /// MethodDefinitionEvaluation im Objektliteral, aber nicht aufzählbar,
+    /// auf dem Prototyp oder mit `static` auf dem Konstruktor, der dann auch
+    /// [[HomeObject]] ist; private kommen an das Objekt für
+    /// [[PrivateMethods]] oder an den Konstruktor. Ein Feld einer Instanz
+    /// kommt mit seinem Namen und dem Funktionsobjekt seines Initialisierers
+    /// an [[Fields]] (ClassFieldDefinitionEvaluation, Abschnitt 15.7.10).
+    /// Ein statisches Feld wertet nur seinen Namen aus und gibt es wie
+    /// einen `static`-Block für später zurück.
+    fn class_element(
+        &mut self,
+        element: NodeId,
+        class: ClassRegisters,
+    ) -> Result<Option<StaticElement>> {
         self.position(element)?;
-        let Node::ClassMethod {
-            key,
-            function,
-            kind,
-            is_static,
-        } = *self.ast.node(element)
-        else {
-            return Err(self.unsupported(element));
-        };
-        let target = i64::from(if is_static { constructor } else { prototype });
+        match *self.ast.node(element) {
+            Node::ClassMethod {
+                key,
+                function,
+                kind,
+                is_static,
+            } => {
+                self.class_method(element, class, key, function, kind, is_static)?;
+                Ok(None)
+            }
+            Node::ClassField {
+                key,
+                value,
+                is_static: false,
+            } => {
+                let name = self.allocate()?;
+                let register = i64::from(name);
+                self.field_key(key)?;
+                self.emit(Op::Star, &[register])?;
+                match value {
+                    Some(initializer) => {
+                        self.closure(element, initializer, ClosureName::Keyed(name))?;
+                        self.home_object(initializer, i64::from(class.prototype))?;
+                    }
+                    None => self.emit(Op::LdaUndefined, &[])?,
+                }
+                self.position(element)?;
+                self.emit(Op::AddField, &[i64::from(class.constructor), register])?;
+                self.release(name);
+                Ok(None)
+            }
+            Node::ClassField {
+                key,
+                value,
+                is_static: true,
+            } => {
+                let key = match *self.ast.node(key) {
+                    Node::PrivateName(atom) => FieldKey::Private(atom),
+                    _ => match self.property_key(key)? {
+                        Some(units) => FieldKey::Name(units),
+                        None => {
+                            // Der Name bleibt im Register bis zum Ende der
+                            // Klasse.
+                            let register = self.allocate()?;
+                            self.emit(Op::Star, &[i64::from(register)])?;
+                            FieldKey::Register(register)
+                        }
+                    },
+                };
+                Ok(Some(StaticElement::Field {
+                    node: element,
+                    key,
+                    value,
+                }))
+            }
+            Node::StaticBlock(function) => Ok(Some(StaticElement::Block {
+                node: element,
+                function,
+            })),
+            _ => Err(self.unsupported(element)),
+        }
+    }
+
+    /// Eine Methode, ein Getter oder ein Setter einer Klasse: erst der Name,
+    /// dann das Funktionsobjekt, dann die Eigenschaft oder das private
+    /// Element.
+    fn class_method(
+        &mut self,
+        element: NodeId,
+        class: ClassRegisters,
+        key: NodeId,
+        function: FunctionId,
+        kind: MethodKind,
+        is_static: bool,
+    ) -> Result<()> {
+        let home = i64::from(if is_static {
+            class.constructor
+        } else {
+            class.prototype
+        });
         let name = self.allocate()?;
         let register = i64::from(name);
+        if let Node::PrivateName(atom) = *self.ast.node(key) {
+            self.load_private_name(atom, key)?;
+            self.emit(Op::Star, &[register])?;
+            self.closure(element, function, ClosureName::Keyed(name))?;
+            self.home_object(function, home)?;
+            let target = match (is_static, class.holder) {
+                (false, Some(holder)) => i64::from(holder),
+                (false, None) => return Err(self.unsupported(element)),
+                (true, _) => home,
+            };
+            self.position(key)?;
+            let op = match kind {
+                MethodKind::Method => Op::DefinePrivateMethod,
+                MethodKind::Get => Op::DefinePrivateGetter,
+                MethodKind::Set => Op::DefinePrivateSetter,
+            };
+            self.emit(op, &[target, register])?;
+            self.release(name);
+            return Ok(());
+        }
         match self.property_key(key)? {
             Some(units) => {
                 let constant = self.constant(Constant::Name(units.clone()))?;
@@ -3465,15 +3811,89 @@ impl<'a> Compiler<'a> {
                 self.closure(element, function, ClosureName::Keyed(name))?;
             }
         }
-        self.home_object(function, target)?;
+        self.home_object(function, home)?;
         self.position(key)?;
         let op = match kind {
             MethodKind::Method => Op::DefineMethod,
             MethodKind::Get => Op::DefineClassGetter,
             MethodKind::Set => Op::DefineClassSetter,
         };
-        self.emit(op, &[target, register])?;
+        self.emit(op, &[home, register])?;
         self.release(name);
+        Ok(())
+    }
+
+    /// Der Name eines Feldes im Akkumulator (Evaluation von
+    /// *ClassElementName*): ein privater Name, ein fester oder ein
+    /// berechneter nach ToPropertyKey.
+    fn field_key(&mut self, key: NodeId) -> Result<()> {
+        if let Node::PrivateName(atom) = *self.ast.node(key) {
+            return self.load_private_name(atom, key);
+        }
+        if let Some(units) = self.property_key(key)? {
+            let constant = self.constant(Constant::Name(units))?;
+            self.emit(Op::LdaConstant, &[constant])?;
+        }
+        Ok(())
+    }
+
+    /// Ein statisches Feld oder ein `static`-Block nach den übrigen
+    /// Elementen (ClassDefinitionEvaluation, Schritt 33): Das Feld bekommt
+    /// mit DefineField den Wert seines Initialisierers mit dem Konstruktor
+    /// als `this`, der Block wird mit ihm als `this` aufgerufen.
+    fn static_element(&mut self, element: StaticElement, constructor: u32) -> Result<()> {
+        let target = i64::from(constructor);
+        match element {
+            StaticElement::Field { node, key, value } => {
+                let mark = self.next_register;
+                let name = match key {
+                    FieldKey::Register(register) => register,
+                    FieldKey::Name(units) => {
+                        let register = self.allocate()?;
+                        let constant = self.constant(Constant::Name(units))?;
+                        self.emit(Op::LdaConstant, &[constant])?;
+                        self.emit(Op::Star, &[i64::from(register)])?;
+                        register
+                    }
+                    FieldKey::Private(atom) => {
+                        let register = self.allocate()?;
+                        self.load_private_name(atom, node)?;
+                        self.emit(Op::Star, &[i64::from(register)])?;
+                        register
+                    }
+                };
+                match value {
+                    Some(initializer) => {
+                        self.closure(node, initializer, ClosureName::Keyed(name))?;
+                        self.home_object(initializer, target)?;
+                        self.call_with_this(node, target)?;
+                    }
+                    None => self.emit(Op::LdaUndefined, &[])?,
+                }
+                self.position(node)?;
+                self.emit(Op::DefineField, &[target, i64::from(name)])?;
+                self.release(mark);
+                Ok(())
+            }
+            StaticElement::Block { node, function } => {
+                self.closure(node, function, ClosureName::Static(&[]))?;
+                self.home_object(function, target)?;
+                self.call_with_this(node, target)
+            }
+        }
+    }
+
+    /// Ruft die Funktion im Akkumulator ohne Argumente mit dem Wert im
+    /// Register `this` als `this` auf.
+    fn call_with_this(&mut self, node: NodeId, this: i64) -> Result<()> {
+        let callee = self.allocate()?;
+        let register = i64::from(callee);
+        self.allocate()?;
+        self.emit(Op::Star, &[register])?;
+        self.emit(Op::Mov, &[this, register + 1])?;
+        self.position(node)?;
+        self.emit(Op::Call, &[register, 0])?;
+        self.release(callee);
         Ok(())
     }
 
@@ -3534,7 +3954,9 @@ impl<'a> Compiler<'a> {
         let mut head = node;
         loop {
             match *self.ast.node(head) {
-                Node::Member { object, .. } | Node::ComputedMember { object, .. } => {
+                Node::Member { object, .. }
+                | Node::ComputedMember { object, .. }
+                | Node::PrivateMember { object, .. } => {
                     links.push(head);
                     head = object;
                 }
@@ -3624,7 +4046,7 @@ impl<'a> Compiler<'a> {
     fn callee_head(&mut self, head: NodeId, this: u32) -> Result<bool> {
         let inner = self.without_parens(head);
         match *self.ast.node(inner) {
-            Node::Member { .. } | Node::ComputedMember { .. } => {
+            Node::Member { .. } | Node::ComputedMember { .. } | Node::PrivateMember { .. } => {
                 self.chain(inner, ChainEnd::Callee(this))
             }
             Node::Chain(chain) => self.chain(chain, ChainEnd::Callee(this)),
@@ -3806,6 +4228,7 @@ impl<'a> Compiler<'a> {
             Node::ComputedMember {
                 property, optional, ..
             } => (Access::Keyed(property), optional),
+            Node::PrivateMember { name, optional, .. } => (Access::Private(name), optional),
             _ => return Err(self.unsupported(link)),
         };
         if optional {
@@ -3841,6 +4264,24 @@ impl<'a> Compiler<'a> {
                 if this.is_none() {
                     self.release(base);
                 }
+                Ok(())
+            }
+            // `delete` lässt der Parser für private Namen nicht zu.
+            Access::Private(_) if delete => Err(self.unsupported(link)),
+            Access::Private(atom) => {
+                let mark = self.next_register;
+                let base = match this {
+                    Some(this) => this,
+                    None => self.allocate()?,
+                };
+                self.emit(Op::Star, &[i64::from(base)])?;
+                let name = self.allocate()?;
+                self.load_private_name(atom, link)?;
+                self.emit(Op::Star, &[i64::from(name)])?;
+                self.emit(Op::Ldar, &[i64::from(base)])?;
+                self.position(link)?;
+                self.emit(Op::LdaPrivate, &[i64::from(name)])?;
+                self.release(mark);
                 Ok(())
             }
         }
@@ -3918,7 +4359,7 @@ impl<'a> Compiler<'a> {
     /// Konstante.
     fn store_local(&mut self, binding: LocalBinding, atom: Atom, position: usize) -> Result<()> {
         if binding.kind == BindingKind::FunctionName {
-            if self.strict {
+            if self.is_strict() {
                 let name = self.name(atom)?;
                 return self.emit(Op::ThrowConstAssignment, &[name]);
             }
@@ -4085,9 +4526,9 @@ impl<'a> Compiler<'a> {
     }
 
     /// `super(...)` (Abschnitt 13.3.7.1): GetNewTarget, GetSuperConstructor,
-    /// die Argumente, dann [[Construct]] ([`Op::SuperCall`]) und
-    /// BindThisValue. InitializeInstanceElements hat nichts zu tun, solange
-    /// Klassen keine Felder haben.
+    /// die Argumente, dann [[Construct]] ([`Op::SuperCall`]), BindThisValue
+    /// und InitializeInstanceElements mit dem Funktionsobjekt, für das
+    /// `super` gilt. Der Akkumulator hält danach das Ergebnis.
     fn super_call(&mut self, node: NodeId, arguments: List) -> Result<()> {
         let mark = self.next_register;
         let new_target = self.allocate()?;
@@ -4102,7 +4543,19 @@ impl<'a> Compiler<'a> {
         self.call_arguments(node, Op::SuperCall, callee, arguments)?;
         self.release(mark);
         self.position(node)?;
-        self.bind_this(node)
+        self.bind_this(node)?;
+        let first = self.allocate()?;
+        for _ in 0..4 {
+            self.allocate()?;
+        }
+        let register = i64::from(first);
+        self.emit(Op::Star, &[register + 3])?;
+        self.load_function(node)?;
+        self.emit(Op::Star, &[register])?;
+        emit_instance_elements(&mut self.emitter, register)?;
+        self.emit(Op::Ldar, &[register + 3])?;
+        self.release(first);
+        Ok(())
     }
 
     /// `new.target` (Abschnitt 13.3.12.1): GetNewTarget aus dem eigenen
@@ -4200,6 +4653,22 @@ impl<'a> Compiler<'a> {
             Node::SuperMember(_) | Node::SuperComputedMember(_) => {
                 self.super_reference(self.without_parens(target))
             }
+            Node::PrivateMember {
+                object,
+                name,
+                optional: false,
+            } => {
+                self.expression(object)?;
+                let base = self.allocate()?;
+                self.emit(Op::Star, &[i64::from(base)])?;
+                let register = self.allocate()?;
+                self.load_private_name(name, target)?;
+                self.emit(Op::Star, &[i64::from(register)])?;
+                Ok(Reference::Private {
+                    base,
+                    name: register,
+                })
+            }
             _ => Err(self.unsupported(target)),
         }
     }
@@ -4221,6 +4690,10 @@ impl<'a> Compiler<'a> {
                 self.emit(Op::LdaSuperNamed, &[i64::from(base), name])
             }
             Reference::SuperKeyed { base } => self.emit(Op::LdaSuperKeyed, &[i64::from(base)]),
+            Reference::Private { base, name } => {
+                self.emit(Op::Ldar, &[i64::from(base)])?;
+                self.emit(Op::LdaPrivate, &[i64::from(name)])
+            }
         }
     }
 
@@ -4238,6 +4711,9 @@ impl<'a> Compiler<'a> {
                 self.emit(Op::StaSuperNamed, &[i64::from(base), name])
             }
             Reference::SuperKeyed { base } => self.emit(Op::StaSuperKeyed, &[i64::from(base)]),
+            Reference::Private { base, name } => {
+                self.emit(Op::StaPrivate, &[i64::from(base), i64::from(name)])
+            }
         }
     }
 
@@ -4248,7 +4724,8 @@ impl<'a> Compiler<'a> {
             | Reference::Named { base: register, .. }
             | Reference::Keyed { base: register, .. }
             | Reference::SuperNamed { base: register, .. }
-            | Reference::SuperKeyed { base: register } => self.release(register),
+            | Reference::SuperKeyed { base: register }
+            | Reference::Private { base: register, .. } => self.release(register),
         }
     }
 
@@ -4538,6 +5015,11 @@ impl<'a> Compiler<'a> {
                             tasks.push(Task::StoreLeft);
                         }
                     }
+                    // `#x in y`: links der private Name.
+                    if let Node::PrivateName(atom) = *self.ast.node(left) {
+                        self.load_private_name(atom, left)?;
+                        continue;
+                    }
                     tasks.push(Task::Visit(left));
                 }
                 Task::StoreLeft => {
@@ -4599,7 +5081,14 @@ impl<'a> Compiler<'a> {
             BinaryOperator::BitwiseOr => (Op::BitwiseOr, false),
             BinaryOperator::BitwiseXor => (Op::BitwiseXor, false),
             BinaryOperator::BitwiseAnd => (Op::BitwiseAnd, false),
-            BinaryOperator::In => (Op::TestIn, false),
+            BinaryOperator::In => match self.ast.node(node) {
+                Node::Binary { left, .. }
+                    if matches!(self.ast.node(*left), Node::PrivateName(_)) =>
+                {
+                    (Op::TestPrivateIn, false)
+                }
+                _ => (Op::TestIn, false),
+            },
             BinaryOperator::Instanceof => (Op::TestInstanceOf, false),
             BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr | BinaryOperator::Coalesce => {
                 return Err(self.unsupported(node));

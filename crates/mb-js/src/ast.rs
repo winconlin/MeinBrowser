@@ -420,9 +420,11 @@ pub enum Node {
         kind: MethodKind,
         is_static: bool,
     },
+    /// Ein Feld; der Initialisierer ist eine eigene Funktion der Art
+    /// [`FunctionKind::FieldInitializer`].
     ClassField {
         key: NodeId,
-        value: Option<NodeId>,
+        value: Option<FunctionId>,
         is_static: bool,
     },
     StaticBlock(FunctionId),
@@ -484,6 +486,10 @@ pub enum FunctionKind {
     DerivedConstructor,
     /// Ein `static`-Block.
     StaticBlock,
+    /// Der Initialisierer eines Feldes (ClassFieldDefinitionEvaluation,
+    /// Abschnitt 15.7.10): ohne Parameter, der Rumpf ist der Ausdruck. Sein
+    /// Quelltext beginnt mit `=`.
+    FieldInitializer,
 }
 
 /// Eine Funktion.

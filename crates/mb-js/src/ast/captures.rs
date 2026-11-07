@@ -16,7 +16,9 @@
 //! Durchlauf in der Reihenfolge des Quelltexts hält die Kette der
 //! Funktionen um die aktuelle Stelle auf einem Stapel. Eine Methode beginnt
 //! dabei erst hinter ihrem Namen: Ihr Quelltext enthält ihn, ein
-//! berechneter Name läuft aber im umgebenden Code.
+//! berechneter Name läuft aber im umgebenden Code. Der Initialisierer eines
+//! Feldes beginnt mit `=` vor seinem Ausdruck; so liegt eine Funktion, die
+//! sein Wert ist, in ihm und nicht um ihn herum.
 
 use std::cmp::Reverse;
 use std::collections::BTreeSet;

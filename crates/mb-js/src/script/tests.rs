@@ -359,7 +359,7 @@ fn throw_and_early_errors() {
     assert!(syntax.starts_with("Syntax("), "{syntax}");
     let redeclared = eval("let a; var a;");
     assert!(redeclared.starts_with("Syntax("), "{redeclared}");
-    assert_eq!(eval("class A { x; }"), "Unsupported(10)");
+    assert_eq!(eval("class A { async m() {} }"), "Unsupported(10)");
 }
 
 #[test]
@@ -2419,7 +2419,8 @@ fn tail_calls_throw_to_the_caller() {
 #[test]
 fn a_failed_tail_call_leaves_no_frame() {
     let (mut agent, realm) = checked();
-    let source = "function g() { class A { x; } } (function () { 'use strict'; return g(); })()";
+    let source =
+        "function g() { class A { async m() {} } } (function () { 'use strict'; return g(); })()";
     assert!(run(&mut agent, realm, source).starts_with("Unsupported"));
     assert_eq!(run(&mut agent, realm, "1 + 1"), "2");
 }
@@ -4068,6 +4069,406 @@ fn deep_class_chains_run_on_a_small_stack() {
                     let endless = "class R extends Object { constructor() { super(); new R(); } } \
                                    try { new R(); } catch (e) { e.name }";
                     assert_eq!(run(agent, realm, endless), "\"RangeError\"");
+                },
+            );
+        })
+        .expect("Faden");
+    assert!(thread.join().is_ok());
+}
+
+/// Felder (ClassFieldDefinitionEvaluation und InitializeInstanceElements,
+/// Abschnitte 15.7.10 und 7.3.33): Die Namen entstehen mit der Klasse, die
+/// Werte mit jeder Instanz, vor dem Rumpf eines Konstruktors ohne
+/// Oberklasse und nach `super()`. DefineField legt eine eigene Eigenschaft
+/// an, ohne Setter auf dem Prototyp.
+#[test]
+fn fields_initialize_each_instance() {
+    check(&[
+        (
+            "class A { x = 1; y = this.x + 1; } var a = new A(); a.x + a.y",
+            "3",
+        ),
+        (
+            "class A { x; } var a = new A(); 'x' in a && a.x === undefined",
+            "true",
+        ),
+        (
+            "var log = ''; class A { [(log += 'k1', 'a')] = (log += 'i1'); \
+             [(log += 'k2', 'b')] = (log += 'i2'); } log += '|'; new A(); log",
+            "\"k1k2|i1i2\"",
+        ),
+        ("class A { o = {}; } new A().o !== new A().o", "true"),
+        (
+            "class A { x = 1; } var a = new A(); a.x = 5; var d = delete a.x; d + ',' + a.x",
+            "\"true,undefined\"",
+        ),
+        (
+            "class A { set x(v) { throw 1; } } class B extends A { x = 2; } new B().x",
+            "2",
+        ),
+        (
+            "class A { constructor() { this.log = 'a'; } } \
+             class B extends A { x = this.log + 'b'; } new B().x",
+            "\"ab\"",
+        ),
+        (
+            "class A { x = this.y; constructor() { this.y = 1; } } new A().x",
+            "undefined",
+        ),
+        (
+            "class A { constructor() { return { y: 1 }; } x = 1; } new A().x",
+            "undefined",
+        ),
+        ("class A {} class B extends A { x = 1; } new B().x", "1"),
+        (
+            "class A {} class B extends A { x = 1; constructor() { var f = () => super(); f(); } } \
+             new B().x",
+            "1",
+        ),
+        (
+            "class A {} class B extends A { x = 1; constructor() { super(); \
+             try { super(); } catch (e) { this.e = e.name; } } } new B().e",
+            "\"ReferenceError\"",
+        ),
+        (
+            "class A { 1 = 'a'; 'b c' = 2; } new A()[1] + new A()['b c']",
+            "\"a2\"",
+        ),
+        (
+            "class A { v = 5; f = () => this.v; } var f = new A().f; f()",
+            "5",
+        ),
+        ("class A { t = new.target; } new A().t", "undefined"),
+        (
+            "class A { get g() { return 'p'; } } class B extends A { x = super.g; } new B().x",
+            "\"p\"",
+        ),
+        (
+            "class A { x = (() => { throw 7; })(); } try { new A(); } catch (e) { e }",
+            "7",
+        ),
+        (
+            "class A { a = 1; b = 2; c = 3; d = 4; e = 5; f = 6; } var o = new A(); \
+             o.a + o.b + o.c + o.d + o.e + o.f",
+            "21",
+        ),
+    ]);
+}
+
+/// Statische Felder und `static`-Blöcke laufen nach den übrigen Elementen
+/// der Reihe nach mit der Klasse als `this`, wenn ihr Name schon gebunden
+/// ist (Abschnitt 15.7.14, Schritte 29 bis 33).
+#[test]
+fn static_fields_and_blocks_run_in_order() {
+    check(&[
+        ("class A { static x = 1; static y = A.x + 1; } A.y", "2"),
+        ("class A { static x = this; } A.x === A", "true"),
+        (
+            "var log = ''; class A { static a = log += 'a'; static { log += 'b'; } \
+             static c = log += 'c'; } log",
+            "\"abc\"",
+        ),
+        (
+            "class A { static { var v = 1; this.w = v + 1; } } A.w + typeof v",
+            "\"2undefined\"",
+        ),
+        (
+            "var log = ''; class A { static [(log += '1', 'a')] = log += '3'; \
+             [(log += '2', 'b')] = 0; } log",
+            "\"123\"",
+        ),
+        ("class A { static name = 'n'; } A.name", "\"n\""),
+        (
+            "class A { static s() { return 's'; } } class B extends A { static t = super.s(); } B.t",
+            "\"s\"",
+        ),
+        (
+            "class A { static { this.s = new.target; } } A.s",
+            "undefined",
+        ),
+        (
+            "try { class A { static { throw 3; } } } catch (e) { e } typeof A",
+            "\"undefined\"",
+        ),
+    ]);
+}
+
+/// NamedEvaluation im Initialisierer (EvaluateBody, Abschnitt 10.2.1.3):
+/// Eine anonyme Funktion oder Klasse heißt wie das Feld, mit einem
+/// privaten Namen wie dessen Beschreibung.
+#[test]
+fn field_initializers_name_anonymous_functions() {
+    check(&[
+        (
+            "class A { f = function () {}; g = () => {}; ['h' + 1] = class {}; \
+             #p = function () {}; static q = function () {}; p() { return this.#p.name; } } \
+             var a = new A(); a.f.name + a.g.name + a.h1.name + a.p() + A.q.name",
+            "\"fgh1#pq\"",
+        ),
+        (
+            "var s = Symbol('d'); class A { [s] = function () {}; } new A()[s].name",
+            "\"[d]\"",
+        ),
+        ("class A { f = (function () {}); } new A().f.name", "\"f\""),
+        ("class A { f = function g() {}; } new A().f.name", "\"g\""),
+        (
+            "class A { #m() {} get #g() { return 1; } static n(o) { return o.#m.name; } } \
+             A.n(new A())",
+            "\"#m\"",
+        ),
+    ]);
+}
+
+/// Private Namen (Abschnitte 6.2.12 und 7.3.26 bis 7.3.31): Felder,
+/// Methoden und Accessoren gehören zu den Objekten, die die Klasse
+/// angelegt hat; jedes andere Objekt und jeder andere Wert wirft einen
+/// TypeError.
+#[test]
+fn private_names_belong_to_their_objects() {
+    check(&[
+        (
+            "class A { #x = 1; getX() { return this.#x; } setX(v) { this.#x = v; } } \
+             var a = new A(); a.setX(5); a.getX()",
+            "5",
+        ),
+        (
+            "class A { #x; static get(o) { return o.#x; } } \
+             try { A.get({}); } catch (e) { e.name }",
+            "\"TypeError\"",
+        ),
+        (
+            "class A { #x; static get(o) { return o.#x; } } \
+             var r = ''; for (var v of [1, null, undefined, 's']) \
+             { try { A.get(v); } catch (e) { r += e.name === 'TypeError' ? 'T' : '?'; } } r",
+            "\"TTTT\"",
+        ),
+        (
+            "class A { #x; static set(o) { o.#x = 1; } } \
+             try { A.set({}); } catch (e) { e.name }",
+            "\"TypeError\"",
+        ),
+        (
+            "class A { #m() { return 'm'; } call() { return this.#m(); } } new A().call()",
+            "\"m\"",
+        ),
+        (
+            "class A { #m() {} set() { this.#m = 1; } } try { new A().set(); } catch (e) { e.name }",
+            "\"TypeError\"",
+        ),
+        (
+            "class A { #m() {} same(o) { return this.#m === o.#m; } } new A().same(new A())",
+            "true",
+        ),
+        (
+            "class A { #v = 1; get #x() { return this.#v; } set #x(v) { this.#v = v * 2; } \
+             t() { this.#x = 3; return this.#x; } } new A().t()",
+            "6",
+        ),
+        (
+            "class A { get #x() { return 1; } t() { this.#x = 2; } } \
+             try { new A().t(); } catch (e) { e.name }",
+            "\"TypeError\"",
+        ),
+        (
+            "class A { set #x(v) {} t() { return this.#x; } } \
+             try { new A().t(); } catch (e) { e.name }",
+            "\"TypeError\"",
+        ),
+        (
+            "class A { #x = 1; inc() { this.#x += 2; this.#x++; return this.#x; } } new A().inc()",
+            "4",
+        ),
+        (
+            "class A { #x = 0; f() { this.#x ||= 5; this.#x &&= this.#x + 1; this.#x ??= 9; \
+             return this.#x; } } new A().f()",
+            "6",
+        ),
+        (
+            "class A { #x; f() { [this.#x] = [7]; ({ a: this.#x } = { a: this.#x + 1 }); \
+             return this.#x; } } new A().f()",
+            "8",
+        ),
+        (
+            "class A { #x = 1; static f(o) { return o?.#x; } } A.f(undefined) + '' + A.f(new A())",
+            "\"undefined1\"",
+        ),
+        (
+            "class A { #m() { return this; } f() { return this.#m() === this; } } new A().f()",
+            "true",
+        ),
+        (
+            "class A { #f = function () { return this; }; g() { return this.#f() === this; } } \
+             new A().g()",
+            "true",
+        ),
+        (
+            "class A { #m() {} static has(o) { return #m in o; } } A.has(A.prototype)",
+            "false",
+        ),
+        // Die Ausbreitung im Objektliteral kopiert nur Eigenschaften.
+        (
+            "class A { #x = 1; y = 2; static has(o) { return #x in o; } } \
+             var c = { ...new A() }; A.has(c) + ',' + c.y",
+            "\"false,2\"",
+        ),
+    ]);
+}
+
+/// `#x in` (Abschnitt 13.10.1), statische private Elemente und die
+/// Bereiche privater Namen: Jede Auswertung einer Klasse hat eigene Namen,
+/// eine innere Klasse verdeckt die einer äußeren, und die Oberklasse sieht
+/// nur die äußeren.
+#[test]
+fn private_names_have_class_scopes() {
+    check(&[
+        (
+            "class A { #x; #m() {} static has(o) { return #x in o; } \
+             static hasM(o) { return #m in o; } } \
+             A.has(new A()) + ',' + A.has({}) + ',' + A.hasM(new A())",
+            "\"true,false,true\"",
+        ),
+        (
+            "class A { #x; static has(o) { return #x in o; } } \
+             try { A.has(1); } catch (e) { e.name }",
+            "\"TypeError\"",
+        ),
+        (
+            "class A { static #c = 3; static #s() { return A.#c; } static t() { return this.#s(); } } \
+             A.t()",
+            "3",
+        ),
+        (
+            "class A { static #x = 1; static g() { return this.#x; } } class B extends A {} \
+             try { B.g(); } catch (e) { e.name }",
+            "\"TypeError\"",
+        ),
+        (
+            "class A { static get #g() { return 'g'; } static set #g(v) { A.v = v; } \
+             static t() { A.#g = 1; return A.#g + A.v; } } A.t()",
+            "\"g1\"",
+        ),
+        (
+            "class O { #x = 'o'; f() { class I { #x = 'i'; g(o) { return o.#x; } } \
+             return new I().g(new I()); } h() { var self = this; \
+             class I { g() { return self.#x; } } return new I().g(); } } \
+             var o = new O(); o.f() + o.h()",
+            "\"io\"",
+        ),
+        (
+            "class O { #x = 'o'; static t(o) { var r; \
+             class I extends (r = o.#x, Object) { #x = 'i'; } return r; } } O.t(new O())",
+            "\"o\"",
+        ),
+        (
+            "function make() { return class { #x = 1; static has(o) { return #x in o; } }; } \
+             var A = make(), B = make(); A.has(new B()) + ',' + B.has(new B())",
+            "\"false,true\"",
+        ),
+        (
+            "class B { constructor(o) { return o; } } \
+             class S extends B { #x = 1; static has(o) { return #x in o; } } \
+             var o = {}; new S(o); var r = S.has(o); try { new S(o); } catch (e) { r += e.name; } r",
+            "\"trueTypeError\"",
+        ),
+        (
+            "class A { #x = 'x'; m() { return () => this.#x; } } new A().m()()",
+            "\"x\"",
+        ),
+    ]);
+}
+
+/// Felder, private Namen und die Objekte für [[Fields]] und
+/// [[PrivateMethods]] überstehen jede Sammlung.
+#[test]
+fn fields_and_private_names_survive_collections() {
+    let (mut agent, realm) = agent_with(Options {
+        stress: true,
+        verify: true,
+        ..Options::default()
+    });
+    let source = "class A { #x = 'a'; y = 'b'; static #s = 'c'; #m() { return this.#x; } \
+         get #g() { return this.y; } static z = A.#s; a1 = 1; a2 = 2; a3 = 3; a4 = 4; \
+         t() { return this.#m() + this.#g + A.z + (this.a1 + this.a4); } } \
+         class B extends A { #w = 'd'; u() { return this.t() + this.#w; } } \
+         var s = ''; for (var i = 0; i < 3; i++) s += new B().u(); s";
+    assert_eq!(run(&mut agent, realm, source), "\"abc5dabc5dabc5d\"");
+}
+
+/// Alle Teile einer Klasse sind strikter Code (Abschnitt 11.2.2), auch
+/// die Oberklasse und die berechneten Namen in nicht striktem Code; um die
+/// Klasse bleibt er nicht strikt.
+#[test]
+fn class_parts_are_strict_in_sloppy_code() {
+    check(&[
+        (
+            "try { class A extends (x = Object) {} } catch (e) { e.name + typeof x }",
+            "\"ReferenceErrorundefined\"",
+        ),
+        (
+            "try { class A { [y = 'm']() {} } } catch (e) { e.name }",
+            "\"ReferenceError\"",
+        ),
+        (
+            "try { (class { static [z = 'f'] = 1; }); } catch (e) { e.name }",
+            "\"ReferenceError\"",
+        ),
+        (
+            "var o = { get p() { return 1; } }; \
+             try { (class { [o.p = 2]() {} }); } catch (e) { e.name }",
+            "\"TypeError\"",
+        ),
+        (
+            "try { (class { [undefined = 1]() {} }); } catch (e) { e.name }",
+            "\"TypeError\"",
+        ),
+        (
+            "try { (class { [delete Object.prototype]() {} }); } catch (e) { e.name }",
+            "\"TypeError\"",
+        ),
+        (
+            "(function f() { try { (class { [f = 1]() {} }); } catch (e) { return e.name; } })()",
+            "\"TypeError\"",
+        ),
+        (
+            "function g() { try { class A extends (q = Object) {} } catch (e) { return e.name; } } g()",
+            "\"ReferenceError\"",
+        ),
+        (
+            "try { class A { [(class extends (n = Object) {}, 'm')]() {} } } catch (e) { e.name }",
+            "\"ReferenceError\"",
+        ),
+        // Vor und nach der Klasse bleibt der Code nicht strikt.
+        (
+            "a = 1; class A extends Object { [1]() {} } b = 2; var c = [class {}, d = 3]; a + b + d",
+            "6",
+        ),
+        (
+            "var o = { get p() { return 1; } }; o.p = 2; class A {} o.p = 3; \
+             delete Object.prototype",
+            "false",
+        ),
+        (
+            "(function f() { f = 1; class A {} f = 2; return typeof f; })()",
+            "\"function\"",
+        ),
+    ]);
+}
+
+/// InitializeInstanceElements ist Bytecode; auch tausend Klassen mit
+/// Feldern übereinander passen auf einen kleinen Stapel (RS-8).
+#[test]
+fn fields_in_deep_class_chains_run_on_a_small_stack() {
+    let thread = std::thread::Builder::new()
+        .stack_size(1 << 20)
+        .spawn(|| {
+            let (mut agent, realm) = checked();
+            agent.with_execution_budget(
+                std::rc::Rc::new(crate::agent::Budget::unlimited()),
+                |agent| {
+                    let deep = "var C = class { n = 0; }; \
+                                for (var i = 0; i < 1000; i++) C = class extends C { #k = this.n++; }; \
+                                new C().n";
+                    assert_eq!(run(agent, realm, deep), "1000");
                 },
             );
         })

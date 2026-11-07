@@ -45,6 +45,24 @@
 //! ([`Op::SuperCall`]). Im Konstruktor einer abgeleiteten Klasse hält
 //! `this` bis dahin die Lücke ([`Code::is_derived_constructor`]).
 //!
+//! Felder und private Elemente: Private Namen liegen in Kontexten des
+//! Klassenbereichs ([`ContextLayout::privates`]), [`Op::CreatePrivateName`]
+//! legt sie zu Beginn der Klasse an. Die Felder einer Instanz kommen mit
+//! [`Op::AddField`] an den Konstruktor, die privaten Methoden mit
+//! [`Op::CreatePrivateMethods`] an ein Objekt bei ihm.
+//! InitializeInstanceElements ist eine Schleife im Bytecode des
+//! Konstruktors: [`Op::InitializePrivateMethods`], dann je Feld
+//! [`Op::NextField`], ein [`Op::Call`] des Initialisierers und
+//! [`Op::DefineField`]. So läuft auch ein Initialisierer ohne Rekursion in
+//! Rust.
+//!
+//! Striktheit: Ob ein Befehl strikt läuft, sagt der Code
+//! ([`Code::is_strict_at`]). Strikt ist der ganze Code einer strikten
+//! Funktion oder eines strikten Scripts. Nicht strikter Code hat dazu eine
+//! Tabelle strikter Bereiche: Alle Teile einer Klasse sind strikter Code
+//! (Abschnitt 11.2.2), auch die Oberklasse und die berechneten Namen, die
+//! im Code um die Klasse laufen.
+//!
 //! Generatoren: Der Code einer Generatorfunktion legt nach
 //! FunctionDeclarationInstantiation mit [`Op::CreateGenerator`] den
 //! Generator an und kehrt mit ihm zurück. [`Op::Yield`] hält den Rahmen an;
@@ -202,6 +220,43 @@ ops! {
     /// MakeMethod (Abschnitt 10.2.7): Das Objekt im Register wird
     /// [[HomeObject]] der Funktion im Akkumulator.
     SetHomeObject [Register],
+    /// Ein neuer privater Name (Abschnitt 6.2.12) im Akkumulator, die
+    /// Zeichenkette aus der Konstante als [[Description]].
+    CreatePrivateName [Constant],
+    /// Legt für den Konstruktor einer Klasse im Register ein Objekt an,
+    /// das seine privaten Methoden und Accessoren als private Elemente
+    /// hält ([[PrivateMethods]]), und legt es in den Akkumulator.
+    CreatePrivateMethods [Register],
+    /// Eine private Methode (PrivateMethodOrAccessorAdd, Abschnitt 7.3.28):
+    /// die Funktion im Akkumulator am Objekt im ersten Register unter dem
+    /// privaten Namen im zweiten. Gibt es den Namen dort schon, wirft das
+    /// einen TypeError.
+    DefinePrivateMethod [Register, Register],
+    /// Dasselbe für einen privaten Getter; einen Setter für denselben
+    /// Namen behält er (ClassDefinitionEvaluation, Abschnitt 15.7.14,
+    /// Schritt 31.e.ii).
+    DefinePrivateGetter [Register, Register],
+    /// Dasselbe für einen privaten Setter.
+    DefinePrivateSetter [Register, Register],
+    /// Hängt an [[Fields]] des Konstruktors im ersten Register ein Feld mit
+    /// dem Namen im zweiten an, mit der Funktion im Akkumulator als
+    /// Initialisierer, ohne *undefined*.
+    AddField [Register, Register],
+    /// InitializeInstanceElements (Abschnitt 7.3.33), Schritte 1 bis 3: die
+    /// privaten Methoden und Accessoren des Konstruktors im ersten Register
+    /// am Objekt im zweiten (PrivateMethodOrAccessorAdd). Gibt es einen der
+    /// Namen dort schon, wirft das einen TypeError.
+    InitializePrivateMethods [Register, Register],
+    /// Ein Schritt durch [[Fields]] (InitializeInstanceElements, Schritt 4):
+    /// Das Register hält den Konstruktor, das danach den Index des
+    /// nächsten Feldes. Gibt es keins mehr, springt es. Sonst nimmt das
+    /// zweite Register danach den Initialisierer auf, das vierte den Namen,
+    /// der Akkumulator den Initialisierer, und der Index wächst um eins.
+    NextField [Jump, Register],
+    /// DefineField (Abschnitt 7.3.32) mit dem Akkumulator als Wert: für
+    /// einen privaten Namen im zweiten Register PrivateFieldAdd am Objekt
+    /// im ersten, sonst CreateDataPropertyOrThrow.
+    DefineField [Register, Register],
     /// Ein Element eines Array-Literals: der Akkumulator an der Stelle der
     /// Länge.
     ArrayPush [Register],
@@ -257,6 +312,14 @@ ops! {
     StaSuperNamed [Register, Constant],
     /// Dasselbe mit dem Schlüssel wie bei [`Op::LdaSuperKeyed`].
     StaSuperKeyed [Register],
+    /// GetValue für eine private Referenz (PrivateGet, Abschnitt 7.3.30)
+    /// mit dem privaten Namen im Register auf dem Akkumulator. Ist er kein
+    /// Objekt, wirft das einen TypeError.
+    LdaPrivate [Register],
+    /// PutValue mit dem Akkumulator für eine private Referenz (PrivateSet,
+    /// Abschnitt 7.3.31) mit dem privaten Namen im zweiten Register auf dem
+    /// ersten.
+    StaPrivate [Register, Register],
 
     Add [Register],
     Sub [Register],
@@ -287,6 +350,9 @@ ops! {
     TestIn [Register],
     /// `instanceof`: der Wert im Register, das Ziel im Akkumulator.
     TestInstanceOf [Register],
+    /// `#x in`: der private Name im Register, das Objekt im Akkumulator.
+    /// Ist er kein Objekt, wirft das einen TypeError.
+    TestPrivateIn [Register],
 
     /// `!`
     LogicalNot [],
@@ -526,6 +592,9 @@ pub(crate) struct ContextLayout {
     /// Ob der Platz mit `this` die Lücke halten kann: im Konstruktor einer
     /// abgeleiteten Klasse vor `super()`.
     pub(crate) derived: bool,
+    /// Die Plätze der privaten Namen einer Klasse (PrivateEnvironment
+    /// Record, Abschnitt 9.2).
+    pub(crate) privates: BTreeMap<Atom, u32>,
 }
 
 /// Eine Bindung in einem Kontext.
@@ -622,6 +691,11 @@ pub struct Code {
     /// [`Op::CreateGenerator`].
     pub(crate) generator: Option<u32>,
     pub(crate) strict: bool,
+    /// Die Bereiche strikten Codes in nicht striktem Code: Paare aus Anfang
+    /// und Ende im Bytecode, aufsteigend, nicht leer und ohne Überlappung.
+    /// Die Befehle darin laufen strikt. In striktem Code bleibt die Tabelle
+    /// leer.
+    pub(crate) strict_ranges: Vec<(u32, u32)>,
     /// Ob der Code der Konstruktor einer abgeleiteten Klasse ist: `this`
     /// beginnt als Lücke, und [[Construct]] prüft, womit er zurückkehrt
     /// (Abschnitt 10.2.2, Schritte 11 bis 15).
@@ -679,8 +753,38 @@ impl Code {
         &self.parameter_map
     }
 
+    /// Ob der ganze Code strikt ist.
     pub fn is_strict(&self) -> bool {
         self.strict
+    }
+
+    /// Ob der Befehl, der bei `offset` beginnt, strikt läuft: im ganzen
+    /// Code, wenn er strikt ist, sonst in einem seiner strikten Bereiche.
+    pub fn is_strict_at(&self, offset: usize) -> bool {
+        if self.strict {
+            return true;
+        }
+        let Ok(offset) = u32::try_from(offset) else {
+            return false;
+        };
+        let after = self
+            .strict_ranges
+            .partition_point(|&(start, _)| start <= offset);
+        after
+            .checked_sub(1)
+            .and_then(|index| self.strict_ranges.get(index))
+            .is_some_and(|&(_, end)| offset < end)
+    }
+
+    /// Die Bereiche strikten Codes in nicht striktem Code, als Anfang und
+    /// Ende im Bytecode.
+    pub fn strict_ranges(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+        self.strict_ranges.iter().map(|&(start, end)| {
+            (
+                usize::try_from(start).unwrap_or(usize::MAX),
+                usize::try_from(end).unwrap_or(usize::MAX),
+            )
+        })
     }
 
     /// Ob der Code der Konstruktor einer abgeleiteten Klasse ist.
@@ -774,6 +878,7 @@ pub struct Emitter {
     bytes: Vec<u8>,
     positions: Vec<(u32, u32)>,
     handlers: Vec<Handler>,
+    strict_ranges: Vec<(u32, u32)>,
 }
 
 impl Emitter {
@@ -881,6 +986,18 @@ impl Emitter {
         });
     }
 
+    /// Ein Bereich strikten Codes für die Befehle in `start..end`. Der
+    /// Übersetzer trägt nur äußerste Bereiche ein, der Reihe nach; ein
+    /// leerer Bereich fällt weg.
+    pub fn strict_range(&mut self, start: usize, end: usize) -> Result<(), TooLarge> {
+        let start = u32::try_from(start).map_err(|_| TooLarge)?;
+        let end = u32::try_from(end).map_err(|_| TooLarge)?;
+        if start < end {
+            self.strict_ranges.push((start, end));
+        }
+        Ok(())
+    }
+
     fn check_size(&self) -> Result<(), TooLarge> {
         if i32::try_from(self.bytes.len()).is_err() {
             return Err(TooLarge);
@@ -900,6 +1017,7 @@ impl Emitter {
             new_target: None,
             generator: None,
             strict,
+            strict_ranges: self.strict_ranges,
             derived: false,
             positions: self.positions,
             handlers: self.handlers,

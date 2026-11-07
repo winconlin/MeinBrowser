@@ -64,9 +64,9 @@ use crate::compiler::{CompileError, compile_default_constructor, compile_functio
 use crate::conversion::{to_boolean, to_number, to_numeric, to_object, to_property_key, to_string};
 use crate::descriptor::PropertyDescriptor;
 use crate::function::{
-    Compiled, Construction, Origin, construction, function_environment, function_parts,
-    home_object, instantiate_class_constructor, instantiate_closure, is_constructor, make_method,
-    shared_construction,
+    Compiled, Construction, Origin, add_field, construction, create_private_methods, field_entry,
+    function_environment, function_parts, home_object, instantiate_class_constructor,
+    instantiate_closure, is_constructor, make_method, private_methods, shared_construction,
 };
 use crate::generator::{
     Resumption, generator_create, generator_yield, save_frame, set_resumption, start_executing,
@@ -77,16 +77,17 @@ use crate::iterator::{
     create_iterator_result_object, get_iterator, iterator_close, iterator_close_on_throw,
     iterator_step, iterator_step_value,
 };
-use crate::key::{PropertyKey, array_index};
+use crate::key::{PropertyKey, array_index, is_private_name};
 use crate::number;
 use crate::object::{
-    array_create, create_mapped_arguments_object, create_unmapped_arguments_object,
+    PrivateElement, array_create, create_mapped_arguments_object, create_unmapped_arguments_object,
     define_arguments_iterator, get_prototype_of, ordinary_create_from_constructor,
-    ordinary_object_create, set_prototype_of,
+    ordinary_object_create, private_element_find, private_element_write, private_elements,
+    set_prototype_of,
 };
 use crate::operations::{
     call, create_data_property_or_throw, define_property_or_throw, get, get_method, has_property,
-    is_callable, set,
+    is_callable, private_field_add, private_get, private_method_or_accessor_add, private_set, set,
 };
 use crate::operators::{BinaryOp, apply_string_or_numeric_binary_operator, type_of};
 use crate::realm::{GlobalReference, Intrinsic, RealmId};
@@ -1001,7 +1002,7 @@ impl<'c> Frame<'c, '_> {
     ) -> Completion<()> {
         let first = instruction.operand(0);
         let second = instruction.operand(1);
-        let strict = self.code.is_strict();
+        let strict = self.code.is_strict_at(instruction.start);
         match instruction.op {
             Op::CreateObject | Op::CreateArray => {
                 let object = if instruction.op == Op::CreateObject {
@@ -1466,6 +1467,119 @@ impl<'c> Frame<'c, '_> {
         Ok(())
     }
 
+    /// Die Befehle für private Namen, private Elemente und Felder
+    /// (Abschnitte 7.3.26 bis 7.3.33 und 13.10.1). Ein Wert, der kein
+    /// Objekt ist, hat keine privaten Elemente; ToObject in GetValue und
+    /// PutValue fiele für ihn darum stets auf einen TypeError.
+    fn private_operation(
+        &self,
+        agent: &mut Agent,
+        scope: &Scope,
+        instruction: &Instruction,
+    ) -> Completion<()> {
+        let first = instruction.operand(0);
+        let second = instruction.operand(1);
+        match instruction.op {
+            Op::CreatePrivateName => {
+                let description = self.constant(agent, scope, first);
+                let name = agent.new_private_name(scope, description)?;
+                self.set_accumulator(agent, name);
+            }
+            Op::LdaPrivate => {
+                let object = self.accumulator_copy(agent, scope);
+                let name = self.register(agent, scope, first);
+                let value = private_get(agent, scope, object, name)?;
+                self.set_accumulator(agent, value);
+            }
+            Op::StaPrivate => {
+                let object = self.register(agent, scope, first);
+                let name = self.register(agent, scope, second);
+                let value = self.accumulator_copy(agent, scope);
+                private_set(agent, scope, object, name, value)?;
+            }
+            Op::TestPrivateIn => {
+                let object = self.accumulator_copy(agent, scope);
+                if !matches!(agent.heap().get(object).kind(), Kind::Object(_)) {
+                    return Err(agent.throw_error(ErrorKind::TypeError));
+                }
+                let name = self.register(agent, scope, first);
+                let found = private_element_find(agent.heap(), scope, object, name).is_some();
+                self.set_accumulator_value(agent, Value::boolean(found));
+            }
+            Op::CreatePrivateMethods => {
+                let function = self.register(agent, scope, first);
+                let methods = create_private_methods(agent, scope, function)?;
+                self.set_accumulator(agent, methods);
+            }
+            Op::DefinePrivateMethod => {
+                let object = self.register(agent, scope, first);
+                let name = self.register(agent, scope, second);
+                let method = PrivateElement::Method(self.accumulator_copy(agent, scope));
+                private_method_or_accessor_add(agent, scope, object, name, method)?;
+            }
+            Op::DefinePrivateGetter | Op::DefinePrivateSetter => {
+                // Getter und Setter desselben Namens werden ein Accessor
+                // (ClassDefinitionEvaluation, Schritt 31.e.ii); doppelte
+                // Namen lässt der Parser sonst nicht zu.
+                let object = self.register(agent, scope, first);
+                let name = self.register(agent, scope, second);
+                let function = self.accumulator_copy(agent, scope);
+                let undefined = agent.heap().local(scope, Value::UNDEFINED);
+                let (getter, setter) = match private_element_find(agent.heap(), scope, object, name)
+                {
+                    Some(PrivateElement::Accessor { getter, setter }) => (getter, setter),
+                    _ => (undefined, undefined),
+                };
+                let element = if instruction.op == Op::DefinePrivateGetter {
+                    PrivateElement::Accessor {
+                        getter: function,
+                        setter,
+                    }
+                } else {
+                    PrivateElement::Accessor {
+                        getter,
+                        setter: function,
+                    }
+                };
+                private_element_write(agent, scope, object, name, element)?;
+            }
+            Op::AddField => {
+                let function = self.register(agent, scope, first);
+                let name = self.register(agent, scope, second);
+                let initializer = self.accumulator_copy(agent, scope);
+                add_field(agent, scope, function, name, initializer)?;
+            }
+            Op::InitializePrivateMethods => {
+                let function = self.register(agent, scope, first);
+                let object = self.register(agent, scope, second);
+                let methods = {
+                    let heap = agent.heap();
+                    private_methods(heap, heap.get(function))
+                        .map(|methods| heap.local(scope, methods))
+                };
+                if let Some(methods) = methods {
+                    for (name, element) in private_elements(agent.heap(), scope, methods) {
+                        private_method_or_accessor_add(agent, scope, object, name, element)?;
+                    }
+                }
+            }
+            Op::DefineField => {
+                let object = self.register(agent, scope, first);
+                let name = self.register(agent, scope, second);
+                let value = self.accumulator_copy(agent, scope);
+                if is_private_name(agent.heap(), agent.heap().get(name)) {
+                    private_field_add(agent, scope, object, name, value)?;
+                } else {
+                    let key = to_property_key(agent, scope, name)?;
+                    create_data_property_or_throw(agent, scope, object, key, value)?;
+                }
+            }
+            // Die übrigen Befehle führt `step` aus.
+            _ => return Err(agent.throw_error(ErrorKind::RangeError)),
+        }
+        Ok(())
+    }
+
     /// Die Befehle für `super`. Das Funktionsobjekt für GetSuperBase und
     /// GetSuperConstructor stammt aus Register 1 oder dem Kontext einer
     /// Funktion; [[HomeObject]] hat es, wenn sein Code `super.x` liest.
@@ -1526,7 +1640,7 @@ impl<'c> Frame<'c, '_> {
                     let value = get_value(agent, scope, base, this, key)?;
                     self.set_accumulator(agent, value);
                 } else {
-                    let strict = self.code.is_strict();
+                    let strict = self.code.is_strict_at(instruction.start);
                     put_value(agent, scope, base, this, key, self.accumulator, strict)?;
                 }
             }
@@ -1627,7 +1741,7 @@ impl<'c> Frame<'c, '_> {
     ) -> Completion<Flow> {
         let first = instruction.operand(0);
         let second = instruction.operand(1);
-        let strict = self.code.is_strict();
+        let strict = self.code.is_strict_at(instruction.start);
         match instruction.op {
             Op::LdaUndefined => self.set_accumulator_value(agent, Value::UNDEFINED),
             Op::LdaNull => self.set_accumulator_value(agent, Value::NULL),
@@ -1863,6 +1977,43 @@ impl<'c> Frame<'c, '_> {
             | Op::TestInstanceOf => self.property(agent, scope, instruction)?,
             Op::CreateClass | Op::SetHomeObject => {
                 self.class_operation(agent, scope, instruction)?
+            }
+            Op::CreatePrivateName
+            | Op::CreatePrivateMethods
+            | Op::DefinePrivateMethod
+            | Op::DefinePrivateGetter
+            | Op::DefinePrivateSetter
+            | Op::AddField
+            | Op::InitializePrivateMethods
+            | Op::DefineField
+            | Op::LdaPrivate
+            | Op::StaPrivate
+            | Op::TestPrivateIn => self.private_operation(agent, scope, instruction)?,
+            Op::NextField => {
+                // Der Konstruktor im zweiten Operanden, dahinter der Index.
+                let function = self.register(agent, scope, second);
+                let place = |offset: i64| second.saturating_add(offset);
+                let index = agent.heap().register(self.slot(place(1)));
+                let index = index
+                    .as_int32()
+                    .and_then(|index| usize::try_from(index).ok());
+                let entry = index.and_then(|index| {
+                    let heap = agent.heap();
+                    let (name, initializer) = field_entry(heap, heap.get(function), index)?;
+                    Some((heap.local(scope, name), heap.local(scope, initializer)))
+                });
+                let next = index
+                    .and_then(|index| index.checked_add(1))
+                    .and_then(|next| i32::try_from(next).ok());
+                let (Some((name, initializer)), Some(next)) = (entry, next) else {
+                    return Ok(jump(instruction));
+                };
+                self.set_register(agent, place(2), initializer);
+                self.set_register(agent, place(4), name);
+                self.set_accumulator(agent, initializer);
+                agent
+                    .heap()
+                    .set_register(self.slot(place(1)), Value::int32(next));
             }
             Op::GetSuperBase
             | Op::GetSuperConstructor

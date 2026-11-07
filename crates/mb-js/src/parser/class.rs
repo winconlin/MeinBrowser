@@ -4,8 +4,7 @@
 use super::function::Signature;
 use super::scope::{Binding, ScopeKind};
 use super::{
-    Context, Cover, ErrorKind, FunctionState, Parser, PrivateDeclaration, PrivateScope, Result,
-    SyntaxError,
+    Cover, ErrorKind, FunctionState, Parser, PrivateDeclaration, PrivateScope, Result, SyntaxError,
 };
 use crate::ast::{
     Atom, Class, ClassId, Function, FunctionId, FunctionKind, List, MethodKind, Node, NodeId,
@@ -222,8 +221,9 @@ impl Parser<'_> {
         if let Some(atom) = private {
             self.declare_private(atom, MethodKind::Method, is_static, key_start)?;
         }
+        let assign = self.start(Goal::Div)?;
         let value = if self.eat(Punctuator::Assign, Goal::Div)? {
-            Some(self.field_initializer()?)
+            Some(self.field_initializer(assign)?)
         } else {
             None
         };
@@ -238,24 +238,36 @@ impl Parser<'_> {
         )))
     }
 
-    /// Die Initialisierung eines Feldes. Sie ist eine eigene Funktion für
-    /// `arguments` und `super`; `yield` und `await` richten sich nach der
-    /// Umgebung (*Initializer[+In, ?Yield, ?Await]*).
-    fn field_initializer(&mut self) -> Result<NodeId> {
-        let outer = self.context();
-        let context = Context {
-            strict: true,
-            yield_: outer.yield_,
-            await_: outer.await_,
-            super_property: true,
-            new_target: true,
-            no_arguments: true,
-            ..Context::default()
+    /// Die Initialisierung eines Feldes, `=` ist gelesen und stand an
+    /// `start`. Sie ist eine eigene Funktion für `this`, `arguments` und
+    /// `super` (ClassFieldDefinitionEvaluation, Abschnitt 15.7.10); `yield`
+    /// und `await` richten sich nach der Umgebung (*Initializer[+In, ?Yield,
+    /// ?Await]*). Ihr Quelltext beginnt mit `=`, so liegt eine Funktion als
+    /// Wert ganz in ihr.
+    fn field_initializer(&mut self, start: usize) -> Result<FunctionId> {
+        let signature = Signature {
+            kind: FunctionKind::FieldInitializer,
+            generator: false,
+            is_async: false,
         };
+        let context = self.function_context(signature);
         let state = std::mem::replace(&mut self.function, FunctionState::new(context));
         let result = self.assignment(true, None);
         self.function = state;
-        result
+        let value = result?;
+        let body = self.ast.add_list(&[value]);
+        Ok(self.ast.add_function(Function {
+            kind: FunctionKind::FieldInitializer,
+            generator: false,
+            is_async: false,
+            strict: true,
+            simple_parameters: true,
+            name: None,
+            parameters: List::default(),
+            body,
+            expression_body: true,
+            range: start..self.previous_end,
+        }))
     }
 
     /// *ClassStaticBlock*: `static` ist gelesen, das aktuelle Token ist

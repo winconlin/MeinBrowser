@@ -5,6 +5,11 @@
 //! diese Zahlen liefert, stehen als Zahl im Schlüssel; Objekte halten sie
 //! als Elemente getrennt von den übrigen Eigenschaften. Jede andere
 //! Zeichenkette ist im Schlüssel ein Atom.
+//!
+//! Private Namen (Abschnitt 6.2.12) sind Symbole mit einem Kennzeichen. Als
+//! Schlüssel liegen private Elemente (Abschnitt 6.2.10) in der Gestalt
+//! ihres Objekts wie Eigenschaften mit Symbolen; [[OwnPropertyKeys]] nennt
+//! sie nie, und Code der Sprache bekommt einen privaten Namen nie als Wert.
 
 #![forbid(unsafe_code)]
 
@@ -154,6 +159,29 @@ impl Agent {
             heap.set_field(cell, 0, heap.get(description));
         }
         Ok(symbol)
+    }
+
+    /// Ein neuer privater Name mit der Beschreibung `description`, einer
+    /// Zeichenkette mit `#` vorn.
+    pub(crate) fn new_private_name<'s>(
+        &mut self,
+        scope: &'s Scope,
+        description: Local<'_>,
+    ) -> Result<Local<'s>, OutOfMemory> {
+        let name = self.new_symbol(scope, Some(description))?;
+        let heap = self.heap();
+        if let Kind::Symbol(symbol) = heap.get(name).kind() {
+            heap.mark_private_symbol(symbol);
+        }
+        Ok(name)
+    }
+}
+
+/// Ob `value` ein privater Name ist.
+pub(crate) fn is_private_name(heap: &Heap, value: Value<'_>) -> bool {
+    match value.kind() {
+        Kind::Symbol(symbol) => heap.is_private_symbol(symbol),
+        _ => false,
     }
 }
 

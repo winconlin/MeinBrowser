@@ -30,6 +30,7 @@ struct Stats {
     yields: usize,
     classes: usize,
     super_references: usize,
+    strict_ranges: usize,
 }
 
 impl Stats {
@@ -45,6 +46,7 @@ impl Stats {
         self.yields += other.yields;
         self.classes += other.classes;
         self.super_references += other.super_references;
+        self.strict_ranges += other.strict_ranges;
     }
 }
 
@@ -273,7 +275,31 @@ fn check_code(code: &Code, source_length: usize) -> Stats {
                     }
                     constant => panic!("a class needs a constructor, got {constant:?}"),
                 }
+                assert!(
+                    code.is_strict_at(instruction.start),
+                    "class code runs strict, in sloppy code within a strict range"
+                );
                 stats.classes += 1;
+            }
+            Op::NextField => {
+                // The constructor, the index, the initializer, the object
+                // and the field name.
+                let first = usize::try_from(instruction.operand(1)).expect("field loop register");
+                assert!(
+                    first
+                        .checked_add(5)
+                        .is_some_and(|end| end <= code.register_count()),
+                    "the field loop fits its frame"
+                );
+            }
+            Op::CreatePrivateName => {
+                assert!(
+                    matches!(
+                        code.constant(instruction.operand(0)),
+                        Some(Constant::String(_))
+                    ),
+                    "a private name has a string description"
+                );
             }
             Op::CreateGenerator => stats.generators += 1,
             Op::Yield | Op::YieldResult => stats.yields += 1,
@@ -315,6 +341,30 @@ fn check_code(code: &Code, source_length: usize) -> Stats {
             "handler targets an instruction boundary"
         );
         stats.handlers += 1;
+    }
+    let mut previous_end = 0;
+    let mut ranges = Vec::new();
+    for (start, end) in code.strict_ranges() {
+        assert!(!code.is_strict(), "only sloppy code has strict ranges");
+        assert!(
+            previous_end <= start && start < end,
+            "strict ranges are ascending, disjoint and not empty"
+        );
+        assert!(
+            boundary(start) && boundary(end),
+            "strict ranges start and end at instruction boundaries"
+        );
+        previous_end = end;
+        ranges.push((start, end));
+        stats.strict_ranges += 1;
+    }
+    for &start in &starts {
+        let inside = ranges.iter().any(|&(from, to)| from <= start && start < to);
+        assert_eq!(
+            code.is_strict_at(start),
+            code.is_strict() || inside,
+            "strictness at an instruction follows the strict ranges"
+        );
     }
     assert!(code.decode(bytes.len()).is_none());
     assert!(code.decode(usize::MAX).is_none());
@@ -498,7 +548,7 @@ mod tests {
 
     #[test]
     fn syntax_and_unsupported_paths_preserve_positions() {
-        for source in ["class A{x;}", "with({}){}", "for (var k in o);"] {
+        for source in ["class A{async m(){}}", "with({}){}", "for (var k in o);"] {
             let source: Vec<u16> = source.encode_utf16().collect();
             assert_eq!(check_source(&source), Outcome::Unsupported);
         }
@@ -615,6 +665,44 @@ mod tests {
             stats.calls >= 3,
             "super(), the default super() and the calls"
         );
+    }
+
+    #[test]
+    fn fields_private_names_and_static_blocks_keep_their_registers_in_frame() {
+        let stats = checked(
+            "class A { x = 1; #y = () => this.#y; static z = this; static #w; ['v'] = 2; \
+             #m() { return #y in this; } get #g() { return this.#m(); } set #g(v) {} \
+             static { this.#w = A.z; } constructor() { this.#g = this.#y?.(); } } \
+             class B extends A { u = super.x; constructor() { (() => super())(); } } \
+             let C = class extends B { #t = 1; };",
+        );
+        assert_eq!(stats.classes, 3);
+        assert_eq!(stats.unsupported_functions, 0);
+        assert!(
+            stats.functions >= 12,
+            "constructors, methods, accessors, initializers, the block and the arrows"
+        );
+        assert!(
+            stats.calls >= 6,
+            "each constructor calls the field initializers, the statics run once"
+        );
+    }
+
+    #[test]
+    fn classes_in_sloppy_code_get_strict_ranges() {
+        let stats = checked(
+            "x = 1; class A extends (y = Object) { [z = 'm']() {} [w = 'f'] = 1; } \
+             var B = class { static [(class extends Object {}, 'n')] = 2; }; \
+             function f() { return class {}; } v = 2;",
+        );
+        assert_eq!(stats.classes, 4);
+        assert_eq!(
+            stats.strict_ranges, 3,
+            "one for each outermost class in sloppy code, the inner class shares it"
+        );
+        let stats = checked("'use strict'; class A extends Object { [1]() {} }");
+        assert_eq!(stats.classes, 1);
+        assert_eq!(stats.strict_ranges, 0, "strict code has no ranges");
     }
 
     #[test]

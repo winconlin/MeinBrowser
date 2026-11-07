@@ -71,6 +71,17 @@ impl Parser<'_> {
                 static_block: true,
                 ..base
             },
+            // Der Initialisierer eines Feldes ist ein Ausdruck: `yield` und
+            // `await` wie in der Umgebung, kein `return`.
+            FunctionKind::FieldInitializer => Context {
+                strict: true,
+                yield_: outer.yield_,
+                await_: outer.await_,
+                super_property: true,
+                new_target: true,
+                no_arguments: true,
+                ..Context::default()
+            },
         }
     }
 

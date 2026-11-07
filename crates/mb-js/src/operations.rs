@@ -1,5 +1,9 @@
 //! Operationen auf Objekten (Abschnitt 7.3), IsArray (Abschnitt 7.2.2) und
 //! IsCallable (Abschnitt 7.2.3).
+//!
+//! HostEnsureCanAddPrivateElement (Abschnitt 7.3.29) lehnt nur für
+//! Exoten des Hosts ab, wie `WindowProxy` und `Location` im HTML Standard;
+//! solche Objekte gibt es noch nicht, darum fehlt der Schritt.
 
 #![forbid(unsafe_code)]
 
@@ -8,7 +12,7 @@ use crate::descriptor::PropertyDescriptor;
 use crate::heap::{Heap, Local, ObjectClass, Scope};
 use crate::interpreter::call_function;
 use crate::key::PropertyKey;
-use crate::object;
+use crate::object::{self, PrivateElement, private_element_find, private_element_write};
 use crate::value::{Kind, Value};
 
 /// IsArray (Abschnitt 7.2.2). Proxys, die das Ergebnis ihres Ziels
@@ -186,4 +190,73 @@ pub fn has_own_property(
     key: PropertyKey<'_>,
 ) -> Completion<bool> {
     Ok(object::get_own_property(agent, scope, object, key)?.is_some())
+}
+
+/// PrivateFieldAdd (Abschnitt 7.3.27).
+pub(crate) fn private_field_add(
+    agent: &mut Agent,
+    scope: &Scope,
+    object: Local<'_>,
+    name: Local<'_>,
+    value: Local<'_>,
+) -> Completion<()> {
+    private_method_or_accessor_add(agent, scope, object, name, PrivateElement::Field(value))
+}
+
+/// PrivateMethodOrAccessorAdd (Abschnitt 7.3.28), mit einem Feld auch
+/// PrivateFieldAdd: Gibt es den Namen am Objekt schon, ist das ein
+/// TypeError.
+pub(crate) fn private_method_or_accessor_add(
+    agent: &mut Agent,
+    scope: &Scope,
+    object: Local<'_>,
+    name: Local<'_>,
+    element: PrivateElement<'_>,
+) -> Completion<()> {
+    if private_element_find(agent.heap(), scope, object, name).is_some() {
+        return Err(agent.throw_error(ErrorKind::TypeError));
+    }
+    private_element_write(agent, scope, object, name, element)?;
+    Ok(())
+}
+
+/// PrivateGet (Abschnitt 7.3.30).
+pub(crate) fn private_get<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    object: Local<'_>,
+    name: Local<'_>,
+) -> Completion<Local<'s>> {
+    match private_element_find(agent.heap(), scope, object, name) {
+        Some(PrivateElement::Field(value) | PrivateElement::Method(value)) => Ok(value),
+        Some(PrivateElement::Accessor { getter, .. })
+            if !agent.heap().get(getter).is_undefined() =>
+        {
+            call(agent, scope, getter, object, &[])
+        }
+        _ => Err(agent.throw_error(ErrorKind::TypeError)),
+    }
+}
+
+/// PrivateSet (Abschnitt 7.3.31).
+pub(crate) fn private_set(
+    agent: &mut Agent,
+    scope: &Scope,
+    object: Local<'_>,
+    name: Local<'_>,
+    value: Local<'_>,
+) -> Completion<()> {
+    match private_element_find(agent.heap(), scope, object, name) {
+        Some(PrivateElement::Field(_)) => {
+            private_element_write(agent, scope, object, name, PrivateElement::Field(value))?;
+            Ok(())
+        }
+        Some(PrivateElement::Accessor { setter, .. })
+            if !agent.heap().get(setter).is_undefined() =>
+        {
+            call(agent, scope, setter, object, &[value])?;
+            Ok(())
+        }
+        _ => Err(agent.throw_error(ErrorKind::TypeError)),
+    }
 }
