@@ -4,6 +4,7 @@
 
 pub mod agent;
 pub mod ast;
+mod async_function;
 pub mod builtin;
 mod builtins;
 pub mod bytecode;

@@ -70,6 +70,13 @@
 //! fortsetzt, und der Befehl danach, [`Op::ResumeGenerator`], verzweigt nach
 //! der Art der Fortsetzung.
 //!
+//! async-Funktionen: Ihr Code beginnt mit [`Op::BeginAsync`], noch vor
+//! FunctionDeclarationInstantiation, und ein äußerster Handler fängt jede
+//! Ausnahme danach für [`Op::RejectAsync`]. [`Op::Await`] hält den Rahmen an
+//! und kehrt mit dem Promise der Funktion zurück; ein Job setzt ihn fort, und
+//! der Befehl danach, [`Op::ResumeAsync`], wirft bei einer Ablehnung. Jedes
+//! [`Op::Return`] folgt auf [`Op::ResolveAsync`] oder [`Op::RejectAsync`].
+//!
 //! Im Bytecode steht keine Adresse im Heap. Zahlen, Zeichenketten und die
 //! Funktionen, die der Code anlegt, liegen als [`Constant`] bei ihm; der
 //! Interpreter legt sie im Heap an, für ein Script zu Beginn des Laufs, für
@@ -490,6 +497,31 @@ ops! {
     /// und wirft einen TypeError.
     YieldStar [Jump, Register],
 
+    /// EvaluateAsyncFunctionBody und EvaluateAsyncConciseBody (Abschnitte
+    /// 15.8.4 und 15.9.3), Schritt 1, vor FunctionDeclarationInstantiation:
+    /// NewPromiseCapability(%Promise%) und der Zustand der async-Funktion in
+    /// Register 1 im Register aus [`Code::async_state_register`].
+    BeginAsync [],
+    /// `await` (Await, Abschnitt 27.10.5.3) mit dem Akkumulator:
+    /// PromiseResolve mit %Promise%, dann PerformPromiseThen mit zwei
+    /// Funktionen, die den Rahmen fortsetzen. Dann hält der Rahmen an und
+    /// kehrt mit dem Promise der Funktion zurück. Der Zustand hält den
+    /// Rahmen, der beim Befehl danach weitergeht, mit dem Wert oder dem Grund
+    /// im Akkumulator.
+    Await [],
+    /// Nach einem Halt bei [`Op::Await`]: Wurde der Rahmen mit einem Grund
+    /// fortgesetzt, wirft es den Akkumulator; sonst bleibt er.
+    ResumeAsync [],
+    /// AsyncBlockStart (Abschnitt 27.10.5.2), Schritte 1.e und 1.f: Call von
+    /// [[Resolve]] mit dem Akkumulator, dann das Promise der Funktion in den
+    /// Akkumulator für [`Op::Return`].
+    ResolveAsync [],
+    /// Dasselbe mit [[Reject]] für eine Ausnahme aus
+    /// FunctionDeclarationInstantiation (Schritt 3 von
+    /// EvaluateAsyncFunctionBody) oder dem Rumpf (Schritt 1.g von
+    /// AsyncBlockStart).
+    RejectAsync [],
+
     /// Ein neues arguments-Objekt ohne Verknüpfung
     /// (CreateUnmappedArgumentsObject, Abschnitt 10.4.4.6) aus den
     /// Argumenten in der internen Zelle im Register.
@@ -690,6 +722,9 @@ pub struct Code {
     /// Das Register mit dem Generator im Code einer Generatorfunktion, ab
     /// [`Op::CreateGenerator`].
     pub(crate) generator: Option<u32>,
+    /// Das Register mit dem Zustand im Code einer async-Funktion, ab
+    /// [`Op::BeginAsync`].
+    pub(crate) async_state: Option<u32>,
     pub(crate) strict: bool,
     /// Die Bereiche strikten Codes in nicht striktem Code: Paare aus Anfang
     /// und Ende im Bytecode, aufsteigend, nicht leer und ohne Überlappung.
@@ -745,6 +780,12 @@ impl Code {
     /// Das Register mit dem Generator, im Code einer Generatorfunktion.
     pub fn generator_register(&self) -> Option<usize> {
         self.generator
+            .and_then(|register| usize::try_from(register).ok())
+    }
+
+    /// Das Register mit dem Zustand, im Code einer async-Funktion.
+    pub fn async_state_register(&self) -> Option<usize> {
+        self.async_state
             .and_then(|register| usize::try_from(register).ok())
     }
 
@@ -1016,6 +1057,7 @@ impl Emitter {
             parameter_map: Vec::new(),
             new_target: None,
             generator: None,
+            async_state: None,
             strict,
             strict_ranges: self.strict_ranges,
             derived: false,

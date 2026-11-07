@@ -28,6 +28,8 @@ struct Stats {
     too_large_functions: usize,
     generators: usize,
     yields: usize,
+    async_functions: usize,
+    awaits: usize,
     classes: usize,
     super_references: usize,
     strict_ranges: usize,
@@ -44,6 +46,8 @@ impl Stats {
         self.handlers += other.handlers;
         self.generators += other.generators;
         self.yields += other.yields;
+        self.async_functions += other.async_functions;
+        self.awaits += other.awaits;
         self.classes += other.classes;
         self.super_references += other.super_references;
         self.strict_ranges += other.strict_ranges;
@@ -87,6 +91,17 @@ fn check_code(code: &Code, source_length: usize) -> Stats {
         assert!(
             register < code.register_count(),
             "generator register is in frame"
+        );
+    }
+    if let Some(register) = code.async_state_register() {
+        assert!(
+            register < code.register_count(),
+            "async state register is in frame"
+        );
+        assert_eq!(
+            code.decode(0).map(|instruction| instruction.op),
+            Some(Op::BeginAsync),
+            "async code begins with its capability"
         );
     }
     let mut stats = Stats::default();
@@ -171,6 +186,33 @@ fn check_code(code: &Code, source_length: usize) -> Stats {
             assert!(
                 code.generator_register().is_none(),
                 "no tail calls in generator bodies"
+            );
+            assert!(
+                code.async_state_register().is_none(),
+                "no tail calls in async bodies"
+            );
+        }
+        if matches!(
+            instruction.op,
+            Op::BeginAsync | Op::Await | Op::ResumeAsync | Op::ResolveAsync | Op::RejectAsync
+        ) {
+            assert!(
+                code.async_state_register().is_some(),
+                "async instructions only in async code"
+            );
+        }
+        if instruction.op == Op::BeginAsync {
+            assert_eq!(offset, 0, "only async code begins with BeginAsync");
+        }
+        assert_eq!(
+            instruction.op == Op::ResumeAsync,
+            last == Some(Op::Await),
+            "every await resumes right after it"
+        );
+        if instruction.op == Op::Return && code.async_state_register().is_some() {
+            assert!(
+                matches!(last, Some(Op::ResolveAsync | Op::RejectAsync)),
+                "async code settles its promise before returning"
             );
         }
         match instruction.op {
@@ -303,6 +345,8 @@ fn check_code(code: &Code, source_length: usize) -> Stats {
             }
             Op::CreateGenerator => stats.generators += 1,
             Op::Yield | Op::YieldResult => stats.yields += 1,
+            Op::BeginAsync => stats.async_functions += 1,
+            Op::Await => stats.awaits += 1,
             Op::CreateClosure | Op::CreateClosureKeyed => {
                 assert!(matches!(
                     code.constant(instruction.operand(0)),
@@ -548,7 +592,7 @@ mod tests {
 
     #[test]
     fn syntax_and_unsupported_paths_preserve_positions() {
-        for source in ["class A{async m(){}}", "with({}){}", "for (var k in o);"] {
+        for source in ["class A{async *m(){}}", "with({}){}", "for (var k in o);"] {
             let source: Vec<u16> = source.encode_utf16().collect();
             assert_eq!(check_source(&source), Outcome::Unsupported);
         }
@@ -637,6 +681,25 @@ mod tests {
         assert_eq!(stats.generators, 3, "each generator creates its object");
         assert_eq!(stats.yields, 4, "three yields and the one of yield*");
         let stats = checked("'use strict'; function* g() { return g(); }");
+        assert_eq!(stats.functions, 1);
+        assert_eq!(stats.calls, 1, "a plain call, never a tail call");
+    }
+
+    #[test]
+    fn async_functions_keep_their_state_in_frame() {
+        let stats = checked(
+            "async function f(a = 0) { var x = await a; try { await x; } finally { await 1; } \
+             return x; } var o = { async m() { return await 2; } }; var g = async () => await 3; \
+             { async function h() {} }",
+        );
+        assert_eq!(stats.functions, 4);
+        assert_eq!(stats.unsupported_functions, 0);
+        assert_eq!(
+            stats.async_functions, 4,
+            "each async function begins with its capability"
+        );
+        assert_eq!(stats.awaits, 5);
+        let stats = checked("'use strict'; async function f() { return f(); }");
         assert_eq!(stats.functions, 1);
         assert_eq!(stats.calls, 1, "a plain call, never a tail call");
     }

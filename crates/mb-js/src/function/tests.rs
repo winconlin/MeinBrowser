@@ -189,6 +189,42 @@ fn generator_functions_have_a_generator_prototype() {
     });
 }
 
+/// async-Funktionen, async-Methoden und async-Pfeilfunktionen (Abschnitte
+/// 15.8.2, 15.8.3, 15.9.4 und 27.10.4): %AsyncFunction.prototype% als
+/// Prototyp, kein `prototype` und kein [[Construct]].
+#[test]
+fn async_functions_have_an_async_function_prototype() {
+    let (mut agent, realm) = checked();
+    agent.scope(|agent, scope| {
+        let async_function = agent.intrinsic(scope, realm, Intrinsic::AsyncFunctionPrototype);
+        for (source, name, length) in [
+            ("async function f(a, b = 1) {} f", "f", 1.0),
+            ("var e = async function () {}; e", "e", 0.0),
+            ("(async function own(a, b) {})", "own", 2.0),
+            ("({ async m(a) {} }).m", "m", 1.0),
+            ("(class { static async s() {} }).s", "s", 0.0),
+            ("var a = async (x, y) => x; a", "a", 2.0),
+            ("var b = async x => x; b", "b", 1.0),
+        ] {
+            let function = evaluate(agent, scope, realm, source);
+            assert_eq!(keys(agent, scope, function), ["length", "name"], "{source}");
+            assert_eq!(function_name(agent, scope, function), name, "{source}");
+            let (value, _) = data(agent, scope, function, "length");
+            assert_eq!(number(agent, value), Some(length), "{source}");
+            let actual = get_prototype_of(agent, scope, function).expect("kein Fehler");
+            assert_eq!(
+                actual.map(|actual| bits(agent, actual)),
+                Some(bits(agent, async_function)),
+                "{source}"
+            );
+            assert!(
+                !is_constructor(agent, agent.heap().get(function)),
+                "{source}"
+            );
+        }
+    });
+}
+
 #[test]
 fn the_length_ends_before_defaults_and_rest() {
     let (mut agent, realm) = checked();
