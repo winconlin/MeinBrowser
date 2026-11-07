@@ -12,7 +12,8 @@
 //! Ruft JavaScript eine Funktion auf, legt der Lauf einen Rahmen auf seinen
 //! eigenen Stapel, ohne Rekursion in Rust. Eine eingebaute Funktion läuft
 //! dagegen ohne Rahmen im Befehl des Aufrufs. Ruft die Engine eine Funktion
-//! auf, etwa einen Getter, beginnt ein neuer Lauf ([`call_function`]). Wie
+//! auf, etwa einen Getter, beginnt ein neuer Lauf ([`call_function`],
+//! für [[Construct]] [`construct_function`]). Wie
 //! viel vom Stapel der Maschine solche verschachtelten Läufe brauchen
 //! dürfen, begrenzt [`crate::agent::STACK_BUDGET`] (RS-8); wie viele Rahmen
 //! es gibt, begrenzt der Registerstapel.
@@ -322,6 +323,65 @@ fn call_frame<'s>(
 ) -> Completion<Local<'s>> {
     let arguments = Arguments::Locals(arguments);
     let activation = enter_function(agent, scope, function, this, arguments, None)?;
+    let header = activation.base.saturating_sub(HEADER);
+    let accumulator = agent.heap().local(scope, Value::UNDEFINED);
+    let result = run(agent, activation, accumulator);
+    agent.heap_mut().truncate_registers(header);
+    returned(agent, result, accumulator)
+}
+
+/// Construct (Abschnitt 7.3.14), wenn die Engine einen Konstruktor
+/// aufruft: [[Construct]] (Abschnitte 10.2.2 und 10.3.2) mit `new_target`
+/// als neuer Lauf wie bei [`call_function`]. Ob `constructor` einer ist,
+/// prüfte der Aufrufer. Das neue Objekt entsteht wie bei `new` vor dem
+/// Rahmen mit OrdinaryCreateFromConstructor, im aktuellen Realm `current`
+/// (Abschnitt 10.2.2, Schritt 3). Kehrt der Rahmen ohne Objekt zurück,
+/// prüft der Lauf das Ergebnis wie bei `new`.
+pub(crate) fn construct_function<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    current: RealmId,
+    constructor: Local<'_>,
+    arguments: &[Local<'_>],
+    new_target: Local<'_>,
+) -> Completion<Local<'s>> {
+    agent.with_default_execution_budget(|agent| {
+        agent.enter_interpreter()?;
+        let result = if builtin_parts(agent.heap(), agent.heap().get(constructor)).is_some() {
+            // `this` bleibt uninitialisiert.
+            let this = agent.heap().local(scope, Value::UNDEFINED);
+            call_builtin(agent, scope, constructor, this, arguments, Some(new_target))
+        } else {
+            construct_frame(agent, scope, current, constructor, arguments, new_target)
+        };
+        agent.leave_interpreter();
+        result
+    })
+}
+
+fn construct_frame<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    current: RealmId,
+    constructor: Local<'_>,
+    arguments: &[Local<'_>],
+    new_target: Local<'_>,
+) -> Completion<Local<'s>> {
+    let this = if construction(agent, agent.heap().get(constructor)) == Construction::Derived {
+        agent.heap().local(scope, Value::HOLE)
+    } else {
+        ordinary_create_from_constructor(
+            agent,
+            scope,
+            new_target,
+            Intrinsic::ObjectPrototype,
+            current,
+        )?
+    };
+    let arguments = Arguments::Locals(arguments);
+    let mut activation =
+        enter_function(agent, scope, constructor, this, arguments, Some(new_target))?;
+    activation.construct = true;
     let header = activation.base.saturating_sub(HEADER);
     let accumulator = agent.heap().local(scope, Value::UNDEFINED);
     let result = run(agent, activation, accumulator);

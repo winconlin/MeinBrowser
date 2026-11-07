@@ -1,6 +1,9 @@
 //! Operationen auf Objekten (Abschnitt 7.3), IsArray (Abschnitt 7.2.2) und
 //! IsCallable (Abschnitt 7.2.3).
 //!
+//! Call und Construct aus Rust-Code beginnen je einen neuen Lauf des
+//! Interpreters.
+//!
 //! HostEnsureCanAddPrivateElement (Abschnitt 7.3.29) lehnt nur für
 //! Exoten des Hosts ab, wie `WindowProxy` und `Location` im HTML Standard;
 //! solche Objekte gibt es noch nicht, darum fehlt der Schritt.
@@ -9,10 +12,15 @@
 
 use crate::agent::{Agent, Completion, ErrorKind};
 use crate::descriptor::PropertyDescriptor;
+use crate::function::is_constructor;
 use crate::heap::{Heap, Local, ObjectClass, Scope};
-use crate::interpreter::call_function;
-use crate::key::PropertyKey;
-use crate::object::{self, PrivateElement, private_element_find, private_element_write};
+use crate::interpreter::{call_function, construct_function};
+use crate::key::{PropertyKey, WellKnownSymbol};
+use crate::object::{
+    self, PrivateElement, array_create, private_element_find, private_element_write,
+};
+use crate::realm::{Intrinsic, RealmId};
+use crate::reference::{get_value, to_object_base};
 use crate::value::{Kind, Value};
 
 /// IsArray (Abschnitt 7.2.2). Proxys, die das Ergebnis ihres Ziels
@@ -37,7 +45,8 @@ pub fn is_callable(heap: &Heap, value: Value<'_>) -> bool {
                 | ObjectClass::Error
                 | ObjectClass::Primitive
                 | ObjectClass::Iterator
-                | ObjectClass::Generator,
+                | ObjectClass::Generator
+                | ObjectClass::Promise,
             )
             | None => false,
         },
@@ -57,6 +66,90 @@ pub fn call<'s>(
         return Err(agent.throw_error(ErrorKind::TypeError));
     }
     call_function(agent, scope, function, this, arguments)
+}
+
+/// Construct (Abschnitt 7.3.14) aus Rust-Code; ohne `new_target` gilt
+/// `constructor` selbst. `current` ist der aktuelle Realm. Die
+/// Spezifikation setzt voraus, dass `constructor` ein Konstruktor ist;
+/// sonst wirft das einen TypeError.
+pub(crate) fn construct<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    current: RealmId,
+    constructor: Local<'_>,
+    arguments: &[Local<'_>],
+    new_target: Option<Local<'_>>,
+) -> Completion<Local<'s>> {
+    if !is_constructor(agent, agent.heap().get(constructor)) {
+        return Err(agent.throw_error(ErrorKind::TypeError));
+    }
+    let new_target = new_target.unwrap_or(constructor);
+    construct_function(agent, scope, current, constructor, arguments, new_target)
+}
+
+/// Invoke (Abschnitt 7.3.20) mit GetV (Abschnitt 7.3.3): Ein primitiver
+/// Wert liest über den Prototyp seines Wrappers aus `realm`, dem
+/// aktuellen Realm.
+pub(crate) fn invoke<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    realm: RealmId,
+    value: Local<'_>,
+    key: PropertyKey<'_>,
+    arguments: &[Local<'_>],
+) -> Completion<Local<'s>> {
+    let base = to_object_base(agent, scope, realm, value)?;
+    let function = get_value(agent, scope, base, value, key)?;
+    call(agent, scope, function, value, arguments)
+}
+
+/// SpeciesConstructor (Abschnitt 7.3.22) für das Objekt `object`.
+pub(crate) fn species_constructor<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    object: Local<'_>,
+    default: Local<'s>,
+) -> Completion<Local<'s>> {
+    let units: Vec<u16> = "constructor".encode_utf16().collect();
+    let key = agent.key_from_units(scope, &units)?;
+    let constructor = get(agent, scope, object, key)?;
+    let value = agent.heap().get(constructor);
+    if value.is_undefined() {
+        return Ok(default);
+    }
+    if !matches!(value.kind(), Kind::Object(_)) {
+        return Err(agent.throw_error(ErrorKind::TypeError));
+    }
+    let symbol = agent.well_known_symbol(scope, WellKnownSymbol::Species);
+    let species = get(agent, scope, constructor, PropertyKey::Symbol(symbol))?;
+    let value = agent.heap().get(species);
+    if value.is_undefined() || value.is_null() {
+        return Ok(default);
+    }
+    if is_constructor(agent, value) {
+        return Ok(species);
+    }
+    Err(agent.throw_error(ErrorKind::TypeError))
+}
+
+/// CreateArrayFromList (Abschnitt 7.3.17) mit %Array.prototype% aus
+/// `realm`, dem aktuellen Realm.
+pub(crate) fn create_array_from_list<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    realm: RealmId,
+    elements: &[Local<'_>],
+) -> Completion<Local<'s>> {
+    let prototype = agent.intrinsic(scope, realm, Intrinsic::ArrayPrototype);
+    let array = array_create(agent, scope, 0, Some(prototype))?;
+    for (index, &element) in elements.iter().enumerate() {
+        // Mehr Elemente als Indizes bis 2³² − 2 kann kein Array halten.
+        let Some(index) = u32::try_from(index).ok().filter(|&index| index < u32::MAX) else {
+            return Err(agent.throw_error(ErrorKind::RangeError));
+        };
+        create_data_property_or_throw(agent, scope, array, PropertyKey::Index(index), element)?;
+    }
+    Ok(array)
 }
 
 /// Get (Abschnitt 7.3.2).

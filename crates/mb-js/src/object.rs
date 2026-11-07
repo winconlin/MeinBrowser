@@ -205,7 +205,8 @@ pub fn get_prototype_of<'s>(
         | ObjectClass::Builtin
         | ObjectClass::Primitive
         | ObjectClass::Iterator
-        | ObjectClass::Generator => {
+        | ObjectClass::Generator
+        | ObjectClass::Promise => {
             let heap = agent.heap();
             let prototype =
                 object_of(heap, object).and_then(|object| heap.object_prototype(object));
@@ -229,7 +230,8 @@ pub fn set_prototype_of(
         | ObjectClass::Builtin
         | ObjectClass::Primitive
         | ObjectClass::Iterator
-        | ObjectClass::Generator => {}
+        | ObjectClass::Generator
+        | ObjectClass::Promise => {}
     }
     if let Some(prototype) = prototype {
         // Der Prototyp muss ein Objekt sein.
@@ -271,7 +273,8 @@ pub fn is_extensible(agent: &mut Agent, object: Local<'_>) -> Completion<bool> {
         | ObjectClass::Builtin
         | ObjectClass::Primitive
         | ObjectClass::Iterator
-        | ObjectClass::Generator => {
+        | ObjectClass::Generator
+        | ObjectClass::Promise => {
             let heap = agent.heap();
             Ok(object_of(heap, object).is_some_and(|object| heap.object_extensible(object)))
         }
@@ -289,7 +292,8 @@ pub fn prevent_extensions(agent: &mut Agent, object: Local<'_>) -> Completion<bo
         | ObjectClass::Builtin
         | ObjectClass::Primitive
         | ObjectClass::Iterator
-        | ObjectClass::Generator => {
+        | ObjectClass::Generator
+        | ObjectClass::Promise => {
             let heap = agent.heap();
             if let Some(object) = object_of(heap, object) {
                 heap.prevent_object_extensions(object);
@@ -315,7 +319,8 @@ pub fn get_own_property<'s>(
         | ObjectClass::Builtin
         | ObjectClass::Primitive
         | ObjectClass::Iterator
-        | ObjectClass::Generator => Ok(ordinary_get_own_property(agent.heap(), scope, object, key)),
+        | ObjectClass::Generator
+        | ObjectClass::Promise => Ok(ordinary_get_own_property(agent.heap(), scope, object, key)),
     }
 }
 
@@ -364,7 +369,8 @@ pub fn define_own_property(
         | ObjectClass::Builtin
         | ObjectClass::Primitive
         | ObjectClass::Iterator
-        | ObjectClass::Generator => {
+        | ObjectClass::Generator
+        | ObjectClass::Promise => {
             ordinary_define_own_property(agent, scope, object, key, descriptor)
         }
         ObjectClass::Array => array::define_own_property(agent, scope, object, key, descriptor),
@@ -840,7 +846,8 @@ pub fn own_property_keys<'s>(
         | ObjectClass::Builtin
         | ObjectClass::Primitive
         | ObjectClass::Iterator
-        | ObjectClass::Generator => {}
+        | ObjectClass::Generator
+        | ObjectClass::Promise => {}
     }
     let heap = agent.heap();
     let Some(object) = object_of(heap, object) else {

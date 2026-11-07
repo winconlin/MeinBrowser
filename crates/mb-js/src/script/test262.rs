@@ -1,5 +1,8 @@
 //! Erste feste Test262-Auswahl für die Ausführung, nicht nur die Syntax.
-//! Die Harness läuft unverändert, mit dem Host aus `host`. Grenzen stehen in
+//! Die Harness läuft unverändert, mit dem Host aus `host`. Nach jedem Script
+//! leert der Läufer die Warteschlange der Jobs wie ein Browser; ein Test mit
+//! dem Flag `async` besteht, wenn er danach mit `print` sein Ende gemeldet
+//! hat ([`async_outcome`]). Grenzen stehen in
 //! `docs/m2-test262-ausfuehrung.md`.
 
 use std::collections::BTreeSet;
@@ -38,6 +41,10 @@ enum Outcome {
     Error(ErrorKind),
     Test262Error,
     ThrownValue,
+    /// Ein Test mit `async` meldete einen Fehlschlag.
+    AsyncFailure,
+    /// Ein Test mit `async` meldete weder Erfolg noch Fehlschlag.
+    AsyncIncomplete,
     Unsupported,
     CompileLimit,
     Host(Abrupt),
@@ -108,18 +115,31 @@ fn own_data<'s>(
     get_own_property(agent, scope, object, key).ok()??.value
 }
 
+/// Ordnet die Ausnahme ein, die nach [`Abrupt::Throw`] aussteht.
+fn thrown(agent: &mut Agent, scope: &Scope) -> Outcome {
+    match agent.take_exception(scope) {
+        Some(Exception::Error(kind)) => Outcome::Error(kind),
+        Some(Exception::Value(value)) => classify(agent, scope, value),
+        None => panic!("Throw ohne Ausnahme"),
+    }
+}
+
+/// Ein Script und danach alle Jobs, die es und die Jobs selbst anstoßen,
+/// mit derselben Quote. Wirft ein Job, zählt das wie eine Ausnahme des
+/// Scripts.
 fn evaluate(agent: &mut Agent, realm: RealmId, source: &str, budget: &Rc<Budget>) -> Outcome {
     let source: Vec<u16> = source.encode_utf16().collect();
     let outcome = agent.scope(|agent, scope| {
         match agent.evaluate_script_within(scope, realm, &source, Rc::clone(budget)) {
-            Ok(_) => Outcome::Normal,
+            Ok(_) => match agent.with_execution_budget(Rc::clone(budget), Agent::run_jobs) {
+                Ok(()) => Outcome::Normal,
+                Err(Abrupt::Throw) => thrown(agent, scope),
+                Err(Abrupt::Unsupported(_)) => Outcome::Unsupported,
+                Err(abrupt) => Outcome::Host(abrupt),
+            },
             Err(ScriptError::Syntax(_)) => Outcome::Syntax,
             Err(ScriptError::Unsupported(_)) => Outcome::Unsupported,
-            Err(ScriptError::Abrupt(Abrupt::Throw)) => match agent.take_exception(scope) {
-                Some(Exception::Error(kind)) => Outcome::Error(kind),
-                Some(Exception::Value(value)) => classify(agent, scope, value),
-                None => panic!("Throw ohne Ausnahme"),
-            },
+            Err(ScriptError::Abrupt(Abrupt::Throw)) => thrown(agent, scope),
             Err(ScriptError::Abrupt(abrupt)) => Outcome::Host(abrupt),
         }
     });
@@ -129,6 +149,24 @@ fn evaluate(agent: &mut Agent, realm: RealmId, source: &str, budget: &Rc<Budget>
     });
     agent.heap().verify().expect("gültiger Heap nach Script");
     outcome
+}
+
+/// Das Ergebnis eines Tests mit `async`, der normal endete, nach den
+/// Ausgaben von `print` (INTERPRETING.md, Flag `async`): Er besteht, wenn er
+/// `Test262:AsyncTestComplete` ausgab und nie etwas mit
+/// `Test262:AsyncTestFailure:` am Anfang. Ohne beides ist er nicht fertig
+/// geworden; länger zu warten hilft nicht, denn die Warteschlange ist leer
+/// und Zeitgeber gibt es nicht.
+fn async_outcome(printed: &[Vec<u16>]) -> Outcome {
+    let failure: Vec<u16> = "Test262:AsyncTestFailure:".encode_utf16().collect();
+    let complete: Vec<u16> = "Test262:AsyncTestComplete".encode_utf16().collect();
+    if printed.iter().any(|line| line.starts_with(&failure)) {
+        Outcome::AsyncFailure
+    } else if printed.contains(&complete) {
+        Outcome::Normal
+    } else {
+        Outcome::AsyncIncomplete
+    }
 }
 
 fn expected(negative: Option<Negative>) -> Outcome {
@@ -156,7 +194,8 @@ fn run(
         verify: true,
     })
     .map_err(|error| format!("Agent: {error:?}"))?;
-    agent.set_host(Rc::new(Test262Host::default()));
+    let host = Rc::new(Test262Host::default());
+    agent.set_host(Rc::<Test262Host>::clone(&host));
     let realm = agent
         .create_realm()
         .map_err(|error| format!("Realm: {error:?}"))?;
@@ -194,6 +233,9 @@ fn run(
     let result = evaluate(&mut agent, realm, &text, &budget);
     agent.heap_mut().collect();
     agent.heap().verify().expect("gültiger Heap nach Sammeln");
+    if metadata.is_async() && result == Outcome::Normal {
+        return Ok(async_outcome(&host.printed()));
+    }
     Ok(result)
 }
 
@@ -203,6 +245,7 @@ fn harness(metadata: &Metadata) -> Vec<(String, String)> {
     }
     let mut files: Vec<_> = ["assert.js", "sta.js"]
         .into_iter()
+        .chain(metadata.is_async().then_some("doneprintHandle.js"))
         .map(|name| {
             (
                 name.to_owned(),

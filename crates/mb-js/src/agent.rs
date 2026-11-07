@@ -1,9 +1,14 @@
 //! Der Agent (Abschnitt 9.6): Heap mit dem Registerstapel, Atome, die
 //! Wurzel aller Gestalten, die bekannten Symbole, die Realms, die
 //! gemeinsamen Daten der Funktionen, die Einträge der eingebauten
-//! Funktionen, der Host und die Ausnahme, die gerade geworfen wird.
-//! Warteschlange der Jobs und Symbolregister kommen mit den Schritten, die
-//! sie brauchen.
+//! Funktionen, der Host, die Ausnahme, die gerade geworfen wird, und die
+//! Warteschlange der Jobs. Das Symbolregister kommt mit `Symbol.for`.
+//!
+//! Jobs (Abschnitt 9.5) gibt es bisher nur für Promises. HostEnqueuePromiseJob
+//! (Abschnitt 9.5.5) hängt sie hinten an die Warteschlange; der Host lässt
+//! sie mit [`Agent::run_jobs`] laufen, wenn kein Script läuft, und sie
+//! laufen in der Reihenfolge, in der sie kamen. Jeder Job ist eine interne
+//! Zelle in einem dauerhaften Handle, also eine Wurzel, bis er läuft.
 //!
 //! Atome sind die Zeichenketten, die als Eigenschaftsschlüssel dienen. Zu
 //! jedem Inhalt gibt es höchstens eines, also vergleicht man Schlüssel über
@@ -18,7 +23,7 @@
 
 #![forbid(unsafe_code)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::rc::Rc;
 
 pub use mb_base::{Budget, Cancel, Exhausted};
@@ -29,6 +34,7 @@ use crate::heap::{Heap, Local, Options, OutOfMemory, Persistent, Scope};
 use crate::host::Host;
 use crate::key::WellKnownSymbol;
 use crate::object::{error_create, shape};
+use crate::promise::run_job;
 use crate::realm::{Intrinsic, Realm, RealmId};
 use crate::value::{Kind, Value};
 
@@ -123,6 +129,13 @@ enum Pending {
     Value(Persistent),
 }
 
+/// Ein Job in der Warteschlange: seine Zelle und sein Realm, *null* als
+/// `None` (Abschnitt 9.5).
+struct Job {
+    cell: Persistent,
+    realm: Option<RealmId>,
+}
+
 pub struct Agent {
     heap: Heap,
     /// Die Atome nach ihren Codeeinheiten.
@@ -148,6 +161,8 @@ pub struct Agent {
     /// Alle aktiven Hostquoten. Verschachtelte Aufrufe belasten sie
     /// gemeinsam; eine zusätzliche Quote ersetzt keine äußere.
     execution_budgets: Vec<Rc<Budget>>,
+    /// Die Warteschlange der Jobs.
+    jobs: VecDeque<Job>,
 }
 
 impl Agent {
@@ -174,6 +189,7 @@ impl Agent {
             runs: 0,
             stack_start: 0,
             execution_budgets: Vec::new(),
+            jobs: VecDeque::new(),
         };
         agent.scope(|agent, scope| -> Result<(), OutOfMemory> {
             for symbol in WellKnownSymbol::ALL {
@@ -329,6 +345,51 @@ impl Agent {
         let handle = self.heap.persist(string);
         self.atoms.insert(units, handle);
         string
+    }
+
+    // Jobs
+
+    /// HostEnqueuePromiseJob (Abschnitt 9.5.5): Der Job in der internen
+    /// Zelle `cell` kommt hinten in die Warteschlange.
+    pub(crate) fn enqueue_promise_job(&mut self, cell: Local<'_>, realm: Option<RealmId>) {
+        let cell = self.heap.persist(cell);
+        self.jobs.push_back(Job { cell, realm });
+    }
+
+    /// Ob Jobs warten.
+    pub fn has_pending_jobs(&self) -> bool {
+        !self.jobs.is_empty()
+    }
+
+    /// Führt die wartenden Jobs aus, auch die, die dabei dazukommen, bis
+    /// die Warteschlange leer ist. Jeder Job kostet einen Arbeitsschritt;
+    /// ohne Quote des Hosts teilen sich alle die Standardquote eines
+    /// äußersten Aufrufs. Endet ein Job abrupt, kommt das zurück, und die
+    /// übrigen warten weiter; bei [`Abrupt::Throw`] hält der Agent die
+    /// Ausnahme wie nach einem Script.
+    ///
+    /// Jobs laufen nur, wenn kein Script und kein anderer Job läuft
+    /// (Abschnitt 9.5); ruft eine Funktion des Hosts dies aus JavaScript
+    /// auf, geschieht nichts.
+    pub fn run_jobs(&mut self) -> Completion<()> {
+        if self.runs > 0 {
+            return Ok(());
+        }
+        self.with_default_execution_budget(|agent| {
+            while !agent.jobs.is_empty() {
+                agent.spend_execution_steps(1)?;
+                let Some(job) = agent.jobs.pop_front() else {
+                    break;
+                };
+                agent.scope(|agent, scope| {
+                    let heap = agent.heap();
+                    let cell = heap.local(scope, heap.get_persistent(&job.cell));
+                    agent.heap_mut().release(job.cell);
+                    run_job(agent, scope, cell, job.realm)
+                })?;
+            }
+            Ok(())
+        })
     }
 
     // Läufe des Interpreters

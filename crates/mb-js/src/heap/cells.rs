@@ -4,10 +4,10 @@
 
 use super::{
     Heap, KIND_ARGUMENTS, KIND_ARRAY, KIND_BUILTIN, KIND_ERROR, KIND_FUNCTION, KIND_GENERATOR,
-    KIND_ITERATOR, KIND_OBJECT, KIND_PRIMITIVE, KIND_SHAPE, KIND_SLOTS, KIND_SPARSE, KIND_SYMBOL,
-    KIND_WEAK, Local, NONE, OBJECT_REFS, OutOfMemory, Scope, cell_words, header, header_flags,
-    header_kind, header_length, is_object, is_value_cell, object_fields, packed, packed_high,
-    packed_low, to_usize, with_flags,
+    KIND_ITERATOR, KIND_OBJECT, KIND_PRIMITIVE, KIND_PROMISE, KIND_SHAPE, KIND_SLOTS, KIND_SPARSE,
+    KIND_SYMBOL, KIND_WEAK, Local, NONE, OBJECT_REFS, OutOfMemory, Scope, cell_words, header,
+    header_flags, header_kind, header_length, is_object, is_value_cell, object_fields, packed,
+    packed_high, packed_low, to_usize, with_flags,
 };
 use crate::value::{Ref, RefKind, Value};
 
@@ -87,6 +87,10 @@ pub(crate) enum ObjectClass {
     /// [`GENERATOR_FIELDS`](super::GENERATOR_FIELDS) internen Feldern,
     /// sonst gewöhnlich.
     Generator,
+    /// Ein Promise (Abschnitt 27.5.6) mit
+    /// [`PROMISE_FIELDS`](super::PROMISE_FIELDS) internen Feldern, sonst
+    /// gewöhnlich.
+    Promise,
 }
 
 impl ObjectClass {
@@ -101,6 +105,7 @@ impl ObjectClass {
             ObjectClass::Primitive => KIND_PRIMITIVE,
             ObjectClass::Iterator => KIND_ITERATOR,
             ObjectClass::Generator => KIND_GENERATOR,
+            ObjectClass::Promise => KIND_PROMISE,
         }
     }
 
@@ -115,6 +120,7 @@ impl ObjectClass {
             KIND_PRIMITIVE => Some(ObjectClass::Primitive),
             KIND_ITERATOR => Some(ObjectClass::Iterator),
             KIND_GENERATOR => Some(ObjectClass::Generator),
+            KIND_PROMISE => Some(ObjectClass::Promise),
             _ => None,
         }
     }
@@ -476,6 +482,24 @@ impl Heap {
         value: Value<'_>,
     ) -> bool {
         self.field_word(object, KIND_GENERATOR, index)
+            .is_some_and(|word| self.store(object.offset(), word, value.bits()))
+    }
+
+    /// Ein internes Feld eines Promise, `None` für andere Zellen.
+    pub(crate) fn promise_field(&self, object: Ref<'_>, index: usize) -> Option<Value<'_>> {
+        let word = self.field_word(object, KIND_PROMISE, index)?;
+        self.word(object.offset(), word).map(Value::from_bits)
+    }
+
+    /// Schreibt ein internes Feld eines Promise. `false`, wenn es das Feld
+    /// nicht gibt.
+    pub(crate) fn set_promise_field(
+        &self,
+        object: Ref<'_>,
+        index: usize,
+        value: Value<'_>,
+    ) -> bool {
+        self.field_word(object, KIND_PROMISE, index)
             .is_some_and(|word| self.store(object.offset(), word, value.bits()))
     }
 }

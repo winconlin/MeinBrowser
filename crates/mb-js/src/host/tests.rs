@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use super::*;
@@ -139,4 +139,96 @@ fn without_hooks_the_global_object_stays_as_it_is() {
         let realm = agent.create_realm().expect("Realm");
         assert_eq!(run(&mut agent, realm, "typeof count"), "undefined");
     }
+}
+
+/// Ein Host, der festhält, wie HostPromiseRejectionTracker gerufen wird.
+#[derive(Default)]
+struct Tracker {
+    operations: RefCell<Vec<RejectionOperation>>,
+}
+
+impl Host for Tracker {
+    fn promise_rejection_tracker(
+        &self,
+        _: &mut Agent,
+        _: &Scope,
+        _: Local<'_>,
+        operation: RejectionOperation,
+    ) {
+        self.operations.borrow_mut().push(operation);
+    }
+}
+
+#[test]
+fn the_rejection_tracker_hears_unhandled_rejections_and_late_handlers() {
+    let mut agent = agent();
+    let tracker = Rc::new(Tracker::default());
+    agent.set_host(Rc::clone(&tracker) as Rc<dyn Host>);
+    let realm = agent.create_realm().expect("Realm");
+    let source = "var p = Promise.reject(1);
+        p.then(undefined, function () {});
+        var q = new Promise(function (resolve, reject) { reject(2); });
+        q.catch(function () {});
+        var r = Promise.reject(3);
+        r.then();
+        r.then();
+        Promise.resolve(4);
+        new Promise(function (resolve, reject) { reject(5); reject(6); });
+        var later;
+        var s = new Promise(function (resolve, reject) { later = reject; });
+        s.then(undefined, function () {});
+        later(7);
+        'ok'";
+    assert_eq!(run(&mut agent, realm, source), "ok");
+    use RejectionOperation::{Handle, Reject};
+    let expected = [Reject, Handle, Reject, Handle, Reject, Handle, Reject];
+    assert_eq!(*tracker.operations.borrow(), expected);
+    // In den Jobs werden die beiden Promises aus `r.then()` abgelehnt,
+    // und niemand behandelt sie; die übrigen aus `then` und `catch` werden
+    // erfüllt.
+    assert_eq!(agent.run_jobs(), Ok(()));
+    assert_eq!(
+        *tracker.operations.borrow(),
+        [
+            Reject, Handle, Reject, Handle, Reject, Handle, Reject, Reject, Reject
+        ]
+    );
+}
+
+static DRAIN: Builtin = Builtin {
+    name: "drain",
+    length: 0,
+    constructor: false,
+    behaviour: drain,
+};
+
+/// Ruft Agent::run_jobs aus JavaScript und meldet, ob danach noch Jobs
+/// warten.
+fn drain<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    _: &BuiltinCall<'_, '_>,
+) -> Completion<Local<'s>> {
+    agent.run_jobs()?;
+    let pending = agent.has_pending_jobs();
+    Ok(agent.heap().local(scope, Value::boolean(pending)))
+}
+
+#[test]
+fn jobs_never_run_inside_a_script() {
+    let mut agent = agent();
+    let realm = agent.create_realm().expect("Realm");
+    agent.scope(|agent, scope| {
+        let global = agent.global_object(scope, realm);
+        define_builtin_function(agent, scope, realm, global, &DRAIN).expect("Funktion");
+    });
+    let source = "var log = '';
+        Promise.resolve().then(function () { log += 'job,'; });
+        var pending = drain();
+        log += 'script,' + pending;";
+    assert_eq!(run(&mut agent, realm, source), "script,true");
+    assert!(agent.has_pending_jobs());
+    assert_eq!(agent.run_jobs(), Ok(()));
+    assert!(!agent.has_pending_jobs());
+    assert_eq!(run(&mut agent, realm, "log"), "script,truejob,");
 }

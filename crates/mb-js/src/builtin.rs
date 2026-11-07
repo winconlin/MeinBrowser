@@ -1,8 +1,13 @@
 //! Eingebaute Funktionsobjekte (Abschnitt 10.3).
 //!
 //! Eine eingebaute Funktion ist ein Objekt der Art [`ObjectClass::Builtin`]
-//! mit zwei internen Feldern vor seinen Eigenschaften: der Nummer ihres
-//! Eintrags im Agent und der Nummer ihres Realms ([[Realm]]). Ein Eintrag
+//! mit drei internen Feldern vor seinen Eigenschaften: der Nummer ihres
+//! Eintrags im Agent, der Nummer ihres Realms ([[Realm]]) und dem, was sie
+//! einfängt. Legt die Spezifikation eine Funktion mit CreateBuiltinFunction
+//! aus einem Abstract Closure an, etwa die Funktionen `resolve` und
+//! `reject` eines Promise, ist das ein Eintrag ohne Namen, und die Werte,
+//! die das Closure einfängt, kommen in das dritte Feld
+//! ([`create_builtin_closure`]); sonst ist es *undefined*. Ein Eintrag
 //! ([`Builtin`]) nennt Name, `length`, ob es [[Construct]] gibt, und die
 //! Rust-Funktion mit dem Verhalten. Die Einträge stehen in festen Tabellen
 //! der Engine und des Hosts; der Agent nummeriert sie, sobald das erste
@@ -37,6 +42,8 @@ use crate::value::{Kind, Value};
 const BEHAVIOUR: usize = 0;
 /// Das interne Feld mit der Nummer des Realms.
 const REALM: usize = 1;
+/// Das interne Feld mit dem, was die Funktion einfängt.
+const CAPTURES: usize = 2;
 
 /// Das Verhalten einer eingebauten Funktion. Das Ergebnis liegt im Bereich
 /// `scope`; für [[Construct]] ist es immer ein Objekt.
@@ -76,6 +83,19 @@ impl BuiltinCall<'_, '_> {
             .arguments
             .get(index)
             .map_or(Value::UNDEFINED, |&argument| heap.get(argument));
+        heap.local(scope, value)
+    }
+
+    /// Was die Funktion einfängt ([`create_builtin_closure`]), sonst
+    /// *undefined*.
+    pub(crate) fn captures<'s>(&self, agent: &Agent, scope: &'s Scope) -> Local<'s> {
+        let heap = agent.heap();
+        let value = match heap.get(self.function).kind() {
+            Kind::Object(object) => heap
+                .builtin_field(object, CAPTURES)
+                .unwrap_or(Value::UNDEFINED),
+            _ => Value::UNDEFINED,
+        };
         heap.local(scope, value)
     }
 }
@@ -128,6 +148,26 @@ pub fn create_builtin_function<'s>(
 ) -> Completion<Local<'s>> {
     let prototype = agent.intrinsic(scope, realm, Intrinsic::FunctionPrototype);
     builtin_function_with_prototype(agent, scope, realm, builtin, prototype)
+}
+
+/// CreateBuiltinFunction (Abschnitt 10.3.4) für ein Abstract Closure, das
+/// `captures` einfängt, sonst wie [`create_builtin_function`]. Meist ist
+/// `captures` eine interne Zelle, die mehrere solche Funktionen teilen
+/// können, wie den Record aus CreateResolvingFunctions (Abschnitt
+/// 27.5.1.3).
+pub(crate) fn create_builtin_closure<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    realm: RealmId,
+    builtin: &'static Builtin,
+    captures: Local<'_>,
+) -> Completion<Local<'s>> {
+    let function = create_builtin_function(agent, scope, realm, builtin)?;
+    let heap = agent.heap();
+    if let Kind::Object(object) = heap.get(function).kind() {
+        heap.set_builtin_field(object, CAPTURES, heap.get(captures));
+    }
+    Ok(function)
 }
 
 /// CreateBuiltinFunction mit dem Prototyp `prototype`.

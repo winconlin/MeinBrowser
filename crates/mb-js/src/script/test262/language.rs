@@ -1,16 +1,19 @@
-//! Test262 über alle Dateien in `test/language/` mit einer Datei der
-//! erwarteten Ergebnisse, `erwartete-fehlschlaege.txt`. Sie nennt jede
-//! Variante, die noch nicht besteht; jede andere muss bestehen. Weicht ein
-//! Lauf ab, durch einen Rückschritt oder einen unerwarteten Erfolg, scheitert
-//! der Test und schreibt die neue Datei nach
-//! `target/test262/erwartete-fehlschlaege.txt`, zum Prüfen und Übernehmen.
+//! Test262 über ganze Verzeichnisse mit je einer Datei der erwarteten
+//! Ergebnisse: alle Dateien in `test/language/` mit
+//! `erwartete-fehlschlaege.txt` und die Teile von `test/built-ins/`, die es
+//! schon ganz gibt, mit `erwartete-fehlschlaege-built-ins.txt`
+//! ([`BUILT_INS`]). Eine solche Datei nennt jede Variante, die noch nicht
+//! besteht; jede andere muss bestehen. Weicht ein Lauf ab, durch einen
+//! Rückschritt oder einen unerwarteten Erfolg, scheitert der Test und
+//! schreibt die neue Datei unter ihrem Namen nach `target/test262/`, zum
+//! Prüfen und Übernehmen.
 //!
 //! Jede Variante läuft wie in der festen Auswahl ([`super::run`]) in einem
 //! frischen Agent mit dem Host für Test262, aber nur ohne erzwungene
 //! Sammlungen; den Belastungsmodus prüft die feste Auswahl. Vorschläge aus
 //! `features.txt` laufen nicht. Metadaten, die der Leser ablehnt, etwa
-//! `module` und `async`, lassen die ganze Datei scheitern. Eine Panik der
-//! Engine darf nie erwartet werden.
+//! `module`, lassen die ganze Datei scheitern. Eine Panik der Engine darf
+//! nie erwartet werden.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -22,8 +25,39 @@ use super::metadata::{Metadata, Mode};
 use super::{Outcome, expected, proposals, run, selection};
 
 const SOURCE: &str = "test262";
-const DIRECTORY: &str = "test/language";
-const EXPECTED: &str = include_str!("erwartete-fehlschlaege.txt");
+
+/// Ein Lauf über ein Verzeichnis von Test262 mit seiner Datei der
+/// erwarteten Fehlschläge.
+struct Suite {
+    /// Das Verzeichnis, zu dem die Pfade der Datei relativ sind.
+    directory: &'static str,
+    /// Die Teile darin, die laufen; leer für alle.
+    parts: &'static [&'static str],
+    /// Ob die feste Auswahl ([`selection`]) darin liegt und auch hier
+    /// bestehen muss.
+    selection: bool,
+    /// Der Name der Datei der erwarteten Fehlschläge.
+    file: &'static str,
+    /// Ihr Inhalt.
+    expected: &'static str,
+}
+
+const LANGUAGE: Suite = Suite {
+    directory: "test/language",
+    parts: &[],
+    selection: true,
+    file: "erwartete-fehlschlaege.txt",
+    expected: include_str!("erwartete-fehlschlaege.txt"),
+};
+
+/// Die eingebauten Objekte, die es schon mit allen Eigenschaften gibt.
+const BUILT_INS: Suite = Suite {
+    directory: "test/built-ins",
+    parts: &["Promise"],
+    selection: false,
+    file: "erwartete-fehlschlaege-built-ins.txt",
+    expected: include_str!("erwartete-fehlschlaege-built-ins.txt"),
+};
 
 /// Eine Variante einer Datei: ein Modus, oder die ganze Datei, wenn sie
 /// sich nicht ausführen lässt.
@@ -109,6 +143,7 @@ fn harness_for(
     }
     ["assert.js", "sta.js"]
         .into_iter()
+        .chain(metadata.is_async().then_some("doneprintHandle.js"))
         .map(str::to_owned)
         .chain(metadata.includes.iter().cloned())
         .map(|name| match files.get(&name) {
@@ -189,13 +224,14 @@ fn check_file(
 /// Die Datei der erwarteten Fehlschläge zu diesen Ergebnissen: eine Zeile
 /// je Datei, deren Varianten alle scheitern, sonst eine je gescheiterter
 /// Variante.
-fn render(results: &[(String, FileResult)], summary: &str) -> String {
-    let mut text = String::from(
-        "# Erwartete Fehlschläge der Test262-Dateien unter test/language/, Pfade\n\
+fn render(suite: &Suite, results: &[(String, FileResult)], summary: &str) -> String {
+    let mut text = format!(
+        "# Erwartete Fehlschläge der Test262-Dateien unter {}/, Pfade\n\
          # relativ dazu. Ohne Modus scheitern alle Varianten der Datei, sonst\n\
          # nur der genannte. Erzeugt von script/test262/language.rs; bei einer\n\
          # Abweichung schreibt der Test die neue Fassung nach\n\
-         # target/test262/erwartete-fehlschlaege.txt.\n",
+         # target/test262/{}.\n",
+        suite.directory, suite.file
     );
     let _ = writeln!(text, "# {summary}");
     for (path, result) in results {
@@ -253,9 +289,27 @@ fn failing(
 
 #[test]
 fn test262_language() {
+    check_suite(&LANGUAGE);
+}
+
+#[test]
+fn test262_built_ins() {
+    check_suite(&BUILT_INS);
+}
+
+fn check_suite(suite: &Suite) {
     let root = testdata::root().join(SOURCE);
-    let base = root.join(DIRECTORY);
-    let files = test_files(&base);
+    let base = root.join(suite.directory);
+    let mut files = if suite.parts.is_empty() {
+        test_files(&base)
+    } else {
+        suite
+            .parts
+            .iter()
+            .flat_map(|part| test_files(&base.join(part)))
+            .collect()
+    };
+    files.sort();
     let proposals = proposals();
     let harness = harness_files();
     let next = AtomicUsize::new(0);
@@ -337,7 +391,7 @@ fn test262_language() {
          Dateien und {passed_variants} von {variant_count} Varianten",
         files.len()
     );
-    println!("Test262 language/: {summary}");
+    println!("Test262 {}/: {summary}", suite.directory);
     let mut ranked: Vec<_> = reasons.iter().collect();
     ranked.sort_by(|left, right| right.1.cmp(left.1).then(left.0.cmp(right.0)));
     for (reason, count) in ranked {
@@ -349,7 +403,7 @@ fn test262_language() {
         panics.join("\n")
     );
     // Die feste Auswahl besteht auch hier.
-    for file in selection() {
+    for file in selection().into_iter().filter(|_| suite.selection) {
         let path = file.strip_prefix("test/language/").unwrap_or(file);
         assert!(
             variants.contains_key(path)
@@ -358,8 +412,8 @@ fn test262_language() {
         );
     }
 
-    let rendered = render(&results, &summary);
-    if rendered == EXPECTED {
+    let rendered = render(suite, &results, &summary);
+    if rendered == suite.expected {
         return;
     }
     let out = testdata::root()
@@ -367,8 +421,8 @@ fn test262_language() {
         .map(|target| target.join("test262"))
         .unwrap_or_default();
     let written = std::fs::create_dir_all(&out)
-        .and_then(|()| std::fs::write(out.join("erwartete-fehlschlaege.txt"), &rendered));
-    let expected_set = failing(EXPECTED, &variants);
+        .and_then(|()| std::fs::write(out.join(suite.file), &rendered));
+    let expected_set = failing(suite.expected, &variants);
     let mut report = String::new();
     match expected_set {
         Ok(expected_set) => {
@@ -380,19 +434,18 @@ fn test262_language() {
             }
         }
         Err(error) => {
-            let _ = writeln!(report, "erwartete-fehlschlaege.txt: {error}");
+            let _ = writeln!(report, "{}: {error}", suite.file);
         }
     }
     if report.is_empty() {
         report.push_str("nur die Zahlen im Kopf weichen ab\n");
     }
     panic!(
-        "Test262 language/ weicht von erwartete-fehlschlaege.txt ab ({}):\n{report}",
+        "Test262 {}/ weicht von {} ab ({}):\n{report}",
+        suite.directory,
+        suite.file,
         match written {
-            Ok(()) => format!(
-                "neue Fassung in {}",
-                out.join("erwartete-fehlschlaege.txt").display()
-            ),
+            Ok(()) => format!("neue Fassung in {}", out.join(suite.file).display()),
             Err(error) => format!("neue Fassung nicht geschrieben: {error}"),
         }
     );
@@ -425,7 +478,7 @@ fn expected_failures_round_trip_through_the_file() {
         ),
         ("e.js".to_owned(), FileResult::Skipped),
     ];
-    let text = render(&results, "Zahlen");
+    let text = render(&LANGUAGE, &results, "Zahlen");
     let entries: Vec<&str> = text.lines().filter(|line| !line.starts_with('#')).collect();
     assert_eq!(entries, ["a.js", "b.js strict", "d.js"]);
     assert!(text.contains("# Zahlen\n"));

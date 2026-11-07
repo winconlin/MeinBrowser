@@ -98,7 +98,7 @@ Die Vorlagen sind keine vollständige ECMAScript-Implementierung und erfassen ni
 
 ## Beliebige Quellen unter Quote ausführen
 
-`bounded.rs` wertet jede UTF-8-/UTF-16-Fassung in einem frischen Agent/Realm mit 512 Schritten und 1 MiB logischem Heapbudget aus, normal und mit Stress-GC. Der Harness prüft den tatsächlich übergebenen Budgetzustand bei Host-Abbrüchen, entnimmt Ausnahmen genau einmal und prüft nach GC den Heap. Primitive Werte und Fehler werden semantisch verglichen; Objekte, Symbole und BigInts bleiben passive Typklassen. Falls ein Modus OOM liefert, wird wegen unterschiedlicher GC-/Cachekosten keine Ergebnisgleichheit verlangt; beide Ausführungen bleiben auf gültige Heaps geprüft. Die Beobachtung führt keine Getter aus. Parser/Compiler und einzelne native Operationen benötigen weiterhin die äußeren Zeit-/RSS-Limits.
+`bounded.rs` wertet jede UTF-8-/UTF-16-Fassung in einem frischen Agent/Realm mit 512 Schritten und 1 MiB logischem Heapbudget aus, normal und mit Stress-GC. Der Harness prüft den tatsächlich übergebenen Budgetzustand bei Host-Abbrüchen, entnimmt Ausnahmen genau einmal und prüft nach GC den Heap. Primitive Werte und Fehler werden semantisch verglichen; Objekte, Symbole und BigInts bleiben passive Typklassen. Falls ein Modus OOM liefert, wird wegen unterschiedlicher GC-/Cachekosten keine Ergebnisgleichheit verlangt; beide Ausführungen bleiben auf gültige Heaps geprüft. Die Beobachtung führt keine Getter aus. Jobs aus Promises leert `bounded.rs` nicht: Sie bleiben in der Warteschlange, bis der Agent verworfen wird, und ihr Code läuft im Fuzzing nicht. Parser/Compiler und einzelne native Operationen benötigen weiterhin die äußeren Zeit-/RSS-Limits.
 
 ## Lokal prüfen
 

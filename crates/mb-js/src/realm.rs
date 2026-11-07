@@ -2,9 +2,9 @@
 //!
 //! Von den Intrinsics gibt es bisher die aus [`Intrinsic`]: die Prototypen,
 //! die Literale und Zugriffe auf primitive Werte brauchen, was die Harness
-//! von Test262 braucht, und die Iteratoren für `for`-`of` und die
-//! Ausbreitung (siehe `builtins`); die übrigen kommen mit den eingebauten
-//! Objekten. Das globale Objekt hat die Werteigenschaften
+//! von Test262 braucht, die Iteratoren für `for`-`of` und die
+//! Ausbreitung und die Promises (siehe `builtins`); die übrigen kommen mit
+//! den eingebauten Objekten. Das globale Objekt hat die Werteigenschaften
 //! aus Abschnitt 19.1, die Konstruktoren aus Abschnitt 19.3, die es schon
 //! gibt, und die Eigenschaften des Hosts. [[GlobalThisValue]] ist immer das
 //! globale Objekt.
@@ -87,6 +87,9 @@ pub enum Intrinsic {
     /// %GeneratorPrototype% (Abschnitt 27.8.1) mit `next`, `return` und
     /// `throw`.
     GeneratorPrototype,
+    /// %Promise.prototype% (Abschnitt 27.5.5) mit `catch`, `finally` und
+    /// `then`.
+    PromisePrototype,
     /// %Array.prototype.values% (Abschnitt 23.1.3.38), auch @@iterator von
     /// Arrays und arguments-Objekten.
     ArrayPrototypeValues,
@@ -106,6 +109,9 @@ pub enum Intrinsic {
     TypeErrorPrototype,
     /// %URIError.prototype%
     URIErrorPrototype,
+    /// %AggregateError.prototype% (Abschnitt 20.5.7.3), auch mit `name`
+    /// und `message` und %Error.prototype% als Prototyp.
+    AggregateErrorPrototype,
     /// %Object% (Abschnitt 20.1.1).
     Object,
     /// %String% (Abschnitt 22.1.1).
@@ -128,6 +134,11 @@ pub enum Intrinsic {
     TypeError,
     /// %URIError%
     URIError,
+    /// %AggregateError% (Abschnitt 20.5.7.1), auch mit %Error% als
+    /// Prototyp.
+    AggregateError,
+    /// %Promise% (Abschnitt 27.5.3).
+    Promise,
 }
 
 impl Intrinsic {
@@ -619,9 +630,11 @@ fn set_default_global_bindings(
         define_property_or_throw(agent, scope, global, key, &descriptor)?;
     }
     let constructors = [
+        ("AggregateError", Intrinsic::AggregateError),
         ("Error", Intrinsic::Error),
         ("EvalError", Intrinsic::EvalError),
         ("Object", Intrinsic::Object),
+        ("Promise", Intrinsic::Promise),
         ("RangeError", Intrinsic::RangeError),
         ("ReferenceError", Intrinsic::ReferenceError),
         ("String", Intrinsic::String),
