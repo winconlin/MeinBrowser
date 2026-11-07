@@ -169,7 +169,7 @@ const OBJECT_KINDS: [u64; 9] = [
 
 /// Die internen Felder eines Funktionsobjekts, Werte vor den eingebetteten
 /// Plätzen.
-pub(crate) const FUNCTION_FIELDS: usize = 3;
+pub(crate) const FUNCTION_FIELDS: usize = 4;
 /// Das interne Feld eines arguments-Objekts: [[ParameterMap]].
 pub(crate) const ARGUMENTS_FIELDS: usize = 1;
 /// Die internen Felder einer eingebauten Funktion.

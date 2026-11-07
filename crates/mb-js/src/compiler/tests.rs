@@ -395,12 +395,12 @@ fn instructions_know_their_place_in_the_source() {
 fn unsupported_constructs_name_their_place() {
     let cases = [
         ("async function f() {}", 0),
-        ("class A {}", 0),
+        ("class A { x; }", 10),
         ("x = {async *a() {}};", 5),
         ("x = {async a() {}};", 5),
         ("x = {1n: 1};", 5),
         ("let {1n: a} = b;", 5),
-        ("[a = class {}] = b;", 5),
+        ("[a = class { x; }] = b;", 13),
         ("for (var k in o);", 0),
         ("f`x`;", 0),
         ("1n;", 0),
@@ -1478,4 +1478,119 @@ fn generators_hold_no_tail_calls() {
     let code = compile_function(&ast, &first_template(&script.code)).expect("übersetzbar");
     assert_eq!(tail_calls(&code), 0);
     assert!(code.generator_register().is_some());
+}
+
+/// Eine Klasse: ihr Name als Konstante im eigenen Bereich, Oberklasse und
+/// Name in zwei Registern für [`Op::CreateClass`], dann die Methoden mit
+/// dem Namen vor dem Funktionsobjekt. Eine Methode mit `super.x` bekommt
+/// [[HomeObject]].
+#[test]
+fn classes_create_their_constructor_then_their_methods() {
+    assert_eq!(
+        listing("class A { m() { return super.x; } }"),
+        [
+            "LdaHole",
+            "Star r2",
+            "LdaHole",
+            "Star r3",
+            "LdaConstant A",
+            "Star r4",
+            "CreateClass default r3",
+            "Star r4",
+            "LdaConstant m",
+            "Star r5",
+            "CreateClosure fn0 m",
+            "SetHomeObject r3",
+            "DefineMethod r3 r5",
+            "Ldar r4",
+            "Star r2",
+            "Ldar r4",
+            "InitGlobal A",
+            "Ldar r1",
+            "Return"
+        ]
+    );
+    // Die Referenz: erst `this`, dann GetSuperBase mit dem Funktionsobjekt.
+    let ast = parse_script(&units("class A { m() { return super.x; } }")).expect("gültig");
+    let script = compile_script(&ast).expect("übersetzbar");
+    let method = compile_function(&ast, &first_template(&script.code)).expect("übersetzbar");
+    assert_eq!(
+        lines(&method),
+        [
+            "Ldar r0",
+            "Star r3",
+            "Ldar r1",
+            "GetSuperBase",
+            "Star r2",
+            "LdaSuperNamed r2 x",
+            "Return",
+            "LdaUndefined",
+            "Return"
+        ]
+    );
+}
+
+/// Im Konstruktor einer abgeleiteten Klasse: new.target und
+/// GetSuperConstructor vor den Argumenten, nach `super()` BindThisValue, und
+/// jedes `this` prüft die Lücke.
+#[test]
+fn derived_constructors_bind_this_after_super() {
+    let source = "class B extends A { constructor() { super(1); this.x; } }";
+    let ast = parse_script(&units(source)).expect("gültig");
+    let script = compile_script(&ast).expect("übersetzbar");
+    let code = compile_function(&ast, &first_template(&script.code)).expect("übersetzbar");
+    assert!(code.is_derived_constructor());
+    assert!(code.is_strict());
+    assert_eq!(code.new_target_register(), Some(2));
+    assert_eq!(
+        lines(&code),
+        [
+            "Ldar r2",
+            "Star r3",
+            "Ldar r1",
+            "GetSuperConstructor",
+            "Star r4",
+            "LdaSmi 1",
+            "Star r6",
+            "SuperCall r4 1",
+            "Star r3",
+            "Ldar r0",
+            "ThrowIfNotHole",
+            "Ldar r3",
+            "Star r0",
+            "CheckHole r0 this",
+            "Ldar r0",
+            "LdaNamed x",
+            "LdaUndefined",
+            "Return"
+        ]
+    );
+    // Der Standardkonstruktor reicht die Argumente als Array weiter.
+    let derived = compile_default_constructor(true).expect("übersetzbar");
+    assert!(derived.is_derived_constructor() && derived.is_strict());
+    assert_eq!(
+        (
+            derived.register_count(),
+            derived.arguments_register(),
+            derived.new_target_register()
+        ),
+        (8, Some(2), Some(3))
+    );
+    assert_eq!(
+        lines(&derived),
+        [
+            "Ldar r1",
+            "GetSuperConstructor",
+            "Star r5",
+            "Ldar r3",
+            "Star r4",
+            "CreateRestParameter r2 0",
+            "Star r7",
+            "SuperCallSpread r5",
+            "Return"
+        ]
+    );
+    let base = compile_default_constructor(false).expect("übersetzbar");
+    assert!(!base.is_derived_constructor());
+    assert_eq!(lines(&base), ["LdaUndefined", "Return"]);
 }

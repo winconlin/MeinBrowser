@@ -1,10 +1,11 @@
 //! ECMAScript-Funktionsobjekte (Abschnitt 10.2).
 //!
 //! Ein Funktionsobjekt ist ein Objekt der Art [`ObjectClass::Function`] mit
-//! drei internen Feldern vor seinen Eigenschaften: der Nummer seiner
-//! gemeinsamen Daten im Agent, der Nummer seines Realms ([[Realm]]) und dem
+//! vier internen Feldern vor seinen Eigenschaften: der Nummer seiner
+//! gemeinsamen Daten im Agent, der Nummer seines Realms ([[Realm]]), dem
 //! Kontext, in dem es entstand ([[Environment]]; *undefined* für Funktionen,
-//! die nur die globale Umgebung sehen).
+//! die nur die globale Umgebung sehen), und dem Objekt, dessen Prototyp
+//! `super` liest ([[HomeObject]]; *undefined* ohne).
 //! Die gemeinsamen Daten ([`SharedFunction`]) gehören zu der Stelle im
 //! Quelltext, an der die Funktionsobjekte entstehen: der Syntaxbaum, die
 //! Funktion darin und, sobald sie das erste Mal aufgerufen wurde, ihr
@@ -13,12 +14,19 @@
 //! Funktionsobjekt gewöhnlich um, [[Call]] und [[Construct]] stehen im
 //! Interpreter.
 //!
-//! [[ThisMode]], [[Strict]], [[FormalParameters]], [[ECMAScriptCode]] und
-//! ob es [[Construct]] gibt, folgen aus der Funktion im Syntaxbaum; jeder
-//! Konstruktor ist bisher einer der Art ~base~. Generatorfunktionen haben
-//! %GeneratorFunction.prototype% als Prototyp und ein `prototype` aus
-//! %GeneratorPrototype%, aber kein [[Construct]]. Es fehlen noch
-//! [[HomeObject]] und alles für Klassen.
+//! [[ThisMode]], [[Strict]], [[FormalParameters]], [[ECMAScriptCode]],
+//! [[ConstructorKind]], [[IsClassConstructor]] und ob es [[Construct]]
+//! gibt, folgen aus der Funktion im Syntaxbaum ([`Construction`]).
+//! Generatorfunktionen haben %GeneratorFunction.prototype% als Prototyp und
+//! ein `prototype` aus %GeneratorPrototype%, aber kein [[Construct]].
+//!
+//! Klassen: Der Konstruktor einer Klasse ohne `constructor` ist in der
+//! Spezifikation eine eingebaute Funktion (ClassDefinitionEvaluation,
+//! Abschnitt 15.7.14, Schritt 14.a). Hier hat er gemeinsame Daten mit
+//! festem Bytecode ([`Origin::DefaultConstructor`]), damit `super()` wie
+//! jeder Aufruf ohne Rekursion in Rust läuft. Beobachten lässt sich das
+//! nicht: Beide haben `length` 0 und den Namen der Klasse, und keiner hat
+//! `prototype` außer dem aus MakeConstructor.
 
 #![forbid(unsafe_code)]
 
@@ -42,14 +50,48 @@ const SHARED: usize = 0;
 const REALM: usize = 1;
 /// Das interne Feld mit dem Kontext.
 const ENVIRONMENT: usize = 2;
+/// Das interne Feld mit [[HomeObject]].
+const HOME: usize = 3;
 
 /// Die gemeinsamen Daten der Funktionsobjekte einer Stelle im Quelltext.
 pub(crate) struct SharedFunction {
     /// Der Syntaxbaum des Scripts, aus dem die Funktion stammt.
     pub(crate) unit: Rc<Ast>,
-    pub(crate) template: FunctionTemplate,
+    pub(crate) origin: Origin,
     /// Bytecode und Konstanten nach dem ersten Aufruf.
     pub(crate) compiled: Option<Compiled>,
+}
+
+/// Woraus der Code einer Funktion entsteht.
+pub(crate) enum Origin {
+    /// Aus einer Funktion im Syntaxbaum.
+    Function(FunctionTemplate),
+    /// Der Konstruktor einer Klasse ohne `constructor`, mit `derived` für
+    /// eine abgeleitete Klasse.
+    DefaultConstructor { derived: bool },
+}
+
+/// Ob ein Funktionsobjekt [[Construct]] hat und von welcher Art.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Construction {
+    /// Kein [[Construct]].
+    None,
+    /// Eine gewöhnliche Funktion aus einer Deklaration oder einem Ausdruck,
+    /// [[ConstructorKind]] ~base~.
+    Function,
+    /// Der Konstruktor einer Klasse ohne `extends` (MakeClassConstructor,
+    /// Abschnitt 10.2.6): [[Call]] wirft einen TypeError.
+    Base,
+    /// Der Konstruktor einer abgeleiteten Klasse, [[ConstructorKind]]
+    /// ~derived~.
+    Derived,
+}
+
+impl Construction {
+    /// Ob [[IsClassConstructor]] gilt.
+    pub(crate) fn is_class(self) -> bool {
+        matches!(self, Construction::Base | Construction::Derived)
+    }
 }
 
 /// Eine übersetzte Funktion.
@@ -71,10 +113,24 @@ impl Agent {
         unit: Rc<Ast>,
         template: FunctionTemplate,
     ) -> Result<i32, OutOfMemory> {
+        self.add_shared(unit, Origin::Function(template))
+    }
+
+    /// Dasselbe für den Konstruktor einer Klasse ohne `constructor` im
+    /// Syntaxbaum `unit`.
+    pub(crate) fn add_default_constructor(
+        &mut self,
+        unit: Rc<Ast>,
+        derived: bool,
+    ) -> Result<i32, OutOfMemory> {
+        self.add_shared(unit, Origin::DefaultConstructor { derived })
+    }
+
+    fn add_shared(&mut self, unit: Rc<Ast>, origin: Origin) -> Result<i32, OutOfMemory> {
         let index = i32::try_from(self.functions.len()).map_err(|_| OutOfMemory)?;
         self.functions.push(SharedFunction {
             unit,
-            template,
+            origin,
             compiled: None,
         });
         Ok(index)
@@ -114,22 +170,67 @@ pub(crate) fn get_function_realm(heap: &Heap, value: Value<'_>, current: RealmId
         .map_or(current, |(_, realm)| realm)
 }
 
+/// [[HomeObject]] des Funktionsobjekts `value`, `None` ohne und für andere
+/// Werte.
+pub(crate) fn home_object<'h>(heap: &'h Heap, value: Value<'_>) -> Option<Value<'h>> {
+    let Kind::Object(object) = value.kind() else {
+        return None;
+    };
+    heap.function_field(object, HOME)
+        .filter(|home| !home.is_undefined())
+}
+
+/// MakeMethod (Abschnitt 10.2.7): `home` wird [[HomeObject]] des
+/// Funktionsobjekts `function`. Für andere Werte geschieht nichts.
+pub(crate) fn make_method(heap: &Heap, function: Value<'_>, home: Value<'_>) {
+    if let Kind::Object(object) = function.kind() {
+        heap.set_function_field(object, HOME, home);
+    }
+}
+
 /// IsConstructor (Abschnitt 7.2.4): Funktionsobjekte, die MakeConstructor
 /// bekamen, und eingebaute Funktionen, deren Eintrag [[Construct]] nennt.
 pub(crate) fn is_constructor(agent: &Agent, value: Value<'_>) -> bool {
     if let Some(builtin) = builtin_entry(agent, value) {
         return builtin.constructor;
     }
-    function_parts(agent.heap(), value)
-        .and_then(|(shared, _)| agent.functions.get(shared))
-        .and_then(|entry| entry.unit.function(entry.template.function))
-        .is_some_and(constructs)
+    construction(agent, value) != Construction::None
+}
+
+/// Ob und wie das Funktionsobjekt `value` [[Construct]] hat;
+/// [`Construction::None`] für andere Werte.
+pub(crate) fn construction(agent: &Agent, value: Value<'_>) -> Construction {
+    function_parts(agent.heap(), value).map_or(Construction::None, |(shared, _)| {
+        shared_construction(agent, shared)
+    })
+}
+
+/// Dasselbe für die gemeinsamen Daten `shared`.
+pub(crate) fn shared_construction(agent: &Agent, shared: usize) -> Construction {
+    let Some(entry) = agent.functions.get(shared) else {
+        return Construction::None;
+    };
+    let template = match &entry.origin {
+        Origin::Function(template) => template,
+        Origin::DefaultConstructor { derived: true } => return Construction::Derived,
+        Origin::DefaultConstructor { derived: false } => return Construction::Base,
+    };
+    match entry.unit.function(template.function) {
+        Some(function) if function.kind == FunctionKind::Constructor => Construction::Base,
+        Some(function) if function.kind == FunctionKind::DerivedConstructor => {
+            Construction::Derived
+        }
+        Some(function) if constructs(function) => Construction::Function,
+        _ => Construction::None,
+    }
 }
 
 /// Ob Funktionsobjekte der Funktion MakeConstructor bekommen: gewöhnliche
 /// Funktionen aus Deklarationen und Ausdrücken, keine Generatoren und keine
 /// mit `async` (Abschnitte 15.2.4 und 15.2.5). Pfeilfunktionen (Abschnitt
-/// 15.3.4), Methoden, Getter und Setter (Abschnitt 15.4) nicht.
+/// 15.3.4), Methoden, Getter und Setter (Abschnitt 15.4) nicht. Die
+/// Konstruktoren von Klassen entstehen nur mit
+/// [`instantiate_class_constructor`].
 fn constructs(function: &Function) -> bool {
     function.kind == FunctionKind::Normal && !function.generator && !function.is_async
 }
@@ -155,7 +256,8 @@ pub(crate) fn instantiate_function<'s>(
 /// Das sind InstantiateOrdinaryFunctionObject und
 /// InstantiateOrdinaryFunctionExpression (Abschnitte 15.2.4 und 15.2.5)
 /// sowie die Schritte aus DefineMethod und MethodDefinitionEvaluation
-/// (Abschnitte 15.4.4 und 15.4.5) ohne MakeMethod. Pfeilfunktionen
+/// (Abschnitte 15.4.4 und 15.4.5) ohne MakeMethod; das setzt danach
+/// [`make_method`], wenn der Code `super` liest. Pfeilfunktionen
 /// (Abschnitt 15.3.4) haben wie Methoden kein `prototype`.
 ///
 /// Generatoren und Generator-Methoden (InstantiateGeneratorFunctionObject
@@ -172,44 +274,30 @@ pub(crate) fn instantiate_closure<'s>(
     name: PropertyKey<'_>,
     environment: Local<'_>,
 ) -> Completion<Local<'s>> {
-    let found = usize::try_from(shared)
-        .ok()
-        .and_then(|index| agent.functions.get(index))
-        .and_then(|entry| {
-            let function = entry.unit.function(entry.template.function)?;
-            Some((
-                function.kind,
-                function.generator,
-                constructs(function),
-                expected_argument_count(&entry.unit, function),
-            ))
-        });
+    let found = shared_entry(agent, shared).and_then(|entry| {
+        let Origin::Function(template) = &entry.origin else {
+            return None;
+        };
+        let function = entry.unit.function(template.function)?;
+        Some((
+            function.kind,
+            function.generator,
+            constructs(function),
+            expected_argument_count(&entry.unit, function),
+        ))
+    });
     // Die Nummer stammt aus den Konstanten des Codes, der die Funktion
-    // anlegt; es gibt sie immer.
+    // anlegt; es gibt sie immer, und sie gehört zu einer Funktion.
     let Some((kind, generator, constructor, length)) = found else {
         return Err(agent.throw_error(ErrorKind::TypeError));
     };
-    let realm_number = i32::try_from(realm.index()).map_err(|_| OutOfMemory)?;
     let intrinsic = if generator {
         Intrinsic::GeneratorFunctionPrototype
     } else {
         Intrinsic::FunctionPrototype
     };
     let prototype = agent.intrinsic(scope, realm, intrinsic);
-    let shape = agent.empty_shape(scope);
-    let function = agent.heap_mut().alloc_object(
-        scope,
-        ObjectClass::Function,
-        INLINE,
-        shape,
-        Some(prototype),
-    )?;
-    let heap = agent.heap();
-    if let Kind::Object(object) = heap.get(function).kind() {
-        heap.set_function_field(object, SHARED, Value::int32(shared));
-        heap.set_function_field(object, REALM, Value::int32(realm_number));
-        heap.set_function_field(object, ENVIRONMENT, heap.get(environment));
-    }
+    let function = allocate_function(agent, scope, realm, shared, environment, prototype)?;
     set_function_length(agent, scope, function, length)?;
     let prefix = match kind {
         FunctionKind::Getter => Some("get"),
@@ -226,6 +314,88 @@ pub(crate) fn instantiate_closure<'s>(
         let key = agent.key_from_units(scope, &units("prototype"))?;
         let descriptor = PropertyDescriptor::data(prototype, true, false, false);
         define_property_or_throw(agent, scope, function, key, &descriptor)?;
+    }
+    Ok(function)
+}
+
+/// Der Konstruktor einer Klasse für die gemeinsamen Daten `shared` im Realm
+/// `realm` mit dem Namen `name` (className), dem Kontext `environment`, dem
+/// Prototyp `parent` (ctorParent) und `prototype` (proto) als
+/// [[HomeObject]] und als `prototype` (ClassDefinitionEvaluation,
+/// Abschnitt 15.7.14, Schritte 14 bis 18): DefineMethod mit MakeMethod und
+/// MakeClassConstructor, SetFunctionName, MakeConstructor ohne
+/// Schreibrecht und DefineMethodProperty für `constructor` auf dem
+/// Prototyp. Ohne `constructor` in der Klasse ist `length` 0 wie bei
+/// CreateBuiltinFunction.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn instantiate_class_constructor<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    realm: RealmId,
+    shared: i32,
+    name: PropertyKey<'_>,
+    environment: Local<'_>,
+    parent: Local<'_>,
+    prototype: Local<'_>,
+) -> Completion<Local<'s>> {
+    let found = shared_entry(agent, shared).and_then(|entry| match &entry.origin {
+        Origin::Function(template) => {
+            let function = entry.unit.function(template.function)?;
+            Some(expected_argument_count(&entry.unit, function))
+        }
+        Origin::DefaultConstructor { .. } => Some(0),
+    });
+    let class =
+        usize::try_from(shared).is_ok_and(|index| shared_construction(agent, index).is_class());
+    // Die Konstante stammt aus einer Klasse; es gibt sie immer.
+    let (Some(length), true) = (found, class) else {
+        return Err(agent.throw_error(ErrorKind::TypeError));
+    };
+    let function = allocate_function(agent, scope, realm, shared, environment, parent)?;
+    let heap = agent.heap();
+    make_method(heap, heap.get(function), heap.get(prototype));
+    set_function_length(agent, scope, function, length)?;
+    set_function_name(agent, scope, function, name, None)?;
+    let key = agent.key_from_units(scope, &units("prototype"))?;
+    let descriptor = PropertyDescriptor::data(prototype, false, false, false);
+    define_property_or_throw(agent, scope, function, key, &descriptor)?;
+    let key = agent.key_from_units(scope, &units("constructor"))?;
+    let descriptor = PropertyDescriptor::data(function, true, false, true);
+    define_property_or_throw(agent, scope, prototype, key, &descriptor)?;
+    Ok(function)
+}
+
+/// Die gemeinsamen Daten mit der Nummer `shared`.
+fn shared_entry(agent: &Agent, shared: i32) -> Option<&SharedFunction> {
+    usize::try_from(shared)
+        .ok()
+        .and_then(|index| agent.functions.get(index))
+}
+
+/// Ein neues Funktionsobjekt mit `prototype` als [[Prototype]], noch ohne
+/// Eigenschaften und ohne [[HomeObject]].
+fn allocate_function<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    realm: RealmId,
+    shared: i32,
+    environment: Local<'_>,
+    prototype: Local<'_>,
+) -> Completion<Local<'s>> {
+    let realm_number = i32::try_from(realm.index()).map_err(|_| OutOfMemory)?;
+    let shape = agent.empty_shape(scope);
+    let function = agent.heap_mut().alloc_object(
+        scope,
+        ObjectClass::Function,
+        INLINE,
+        shape,
+        Some(prototype),
+    )?;
+    let heap = agent.heap();
+    if let Kind::Object(object) = heap.get(function).kind() {
+        heap.set_function_field(object, SHARED, Value::int32(shared));
+        heap.set_function_field(object, REALM, Value::int32(realm_number));
+        heap.set_function_field(object, ENVIRONMENT, heap.get(environment));
     }
     Ok(function)
 }

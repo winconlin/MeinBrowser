@@ -312,3 +312,115 @@ fn function_objects_survive_collections() {
         assert!(function_parts(agent.heap(), agent.heap().get(function)).is_some());
     });
 }
+
+/// Klassen (ClassDefinitionEvaluation, Abschnitt 15.7.14): `length`,
+/// `name`, ein festes `prototype` und dann die statischen Methoden; auf dem
+/// Prototyp `constructor` und die Methoden, nicht aufzählbar.
+#[test]
+fn classes_have_a_fixed_prototype_and_hidden_methods() {
+    let (mut agent, realm) = checked();
+    agent.scope(|agent, scope| {
+        let class = evaluate(
+            agent,
+            scope,
+            realm,
+            "class A { constructor(a, b) {} m() {} get g() {} set g(v) {} static s() {} } A",
+        );
+        assert_eq!(
+            keys(agent, scope, class),
+            ["length", "name", "prototype", "s"]
+        );
+        let (length, flags) = data(agent, scope, class, "length");
+        assert_eq!((number(agent, length), flags), (Some(2.0), FIXED));
+        let (name, flags) = data(agent, scope, class, "name");
+        assert_eq!((text(agent, name), flags), ("A".to_owned(), FIXED));
+        let (prototype, flags) = data(agent, scope, class, "prototype");
+        assert_eq!(flags, [Some(false), Some(false), Some(false)]);
+        assert_eq!(keys(agent, scope, prototype), ["constructor", "m", "g"]);
+        let (constructor, flags) = data(agent, scope, prototype, "constructor");
+        assert_eq!(bits(agent, constructor), bits(agent, class));
+        assert_eq!(flags, [Some(true), Some(false), Some(true)]);
+        for (object, property) in [(prototype, "m"), (class, "s")] {
+            let (method, flags) = data(agent, scope, object, property);
+            assert_eq!(flags, [Some(true), Some(false), Some(true)], "{property}");
+            assert_eq!(keys(agent, scope, method), ["length", "name"], "{property}");
+            assert_eq!(function_name(agent, scope, method), property);
+            assert!(
+                !is_constructor(agent, agent.heap().get(method)),
+                "{property}"
+            );
+        }
+        let descriptor = own(agent, scope, prototype, "g");
+        assert_eq!(
+            (descriptor.enumerable, descriptor.configurable),
+            (Some(false), Some(true))
+        );
+        let getter = descriptor.get.expect("Getter");
+        let setter = descriptor.set.expect("Setter");
+        assert_eq!(function_name(agent, scope, getter), "get g");
+        assert_eq!(function_name(agent, scope, setter), "set g");
+
+        let function_prototype = agent.intrinsic(scope, realm, Intrinsic::FunctionPrototype);
+        let object_prototype = agent.intrinsic(scope, realm, Intrinsic::ObjectPrototype);
+        for (object, expected) in [(class, function_prototype), (prototype, object_prototype)] {
+            let actual = get_prototype_of(agent, scope, object).expect("kein Fehler");
+            assert_eq!(
+                actual.map(|actual| bits(agent, actual)),
+                Some(bits(agent, expected))
+            );
+        }
+        let value = agent.heap().get(class);
+        assert!(is_constructor(agent, value));
+        assert_eq!(construction(agent, value), Construction::Base);
+    });
+}
+
+/// Eine abgeleitete Klasse erbt vom Konstruktor und vom Prototyp der
+/// Oberklasse, mit *null* nur vom Prototyp nichts. Ohne `constructor` hat
+/// sie `length` 0.
+#[test]
+fn derived_classes_inherit_from_their_superclass() {
+    let (mut agent, realm) = checked();
+    agent.scope(|agent, scope| {
+        let base = evaluate(agent, scope, realm, "class A {} A");
+        assert_eq!(
+            construction(agent, agent.heap().get(base)),
+            Construction::Base
+        );
+        let derived = evaluate(agent, scope, realm, "class B extends A {} B");
+        assert_eq!(
+            construction(agent, agent.heap().get(derived)),
+            Construction::Derived
+        );
+        assert_eq!(keys(agent, scope, derived), ["length", "name", "prototype"]);
+        let (length, _) = data(agent, scope, derived, "length");
+        assert_eq!(number(agent, length), Some(0.0));
+        assert_eq!(function_name(agent, scope, derived), "B");
+        let actual = get_prototype_of(agent, scope, derived).expect("kein Fehler");
+        assert_eq!(
+            actual.map(|actual| bits(agent, actual)),
+            Some(bits(agent, base))
+        );
+        let (prototype, _) = data(agent, scope, derived, "prototype");
+        let (parent, _) = data(agent, scope, base, "prototype");
+        let actual = get_prototype_of(agent, scope, prototype).expect("kein Fehler");
+        assert_eq!(
+            actual.map(|actual| bits(agent, actual)),
+            Some(bits(agent, parent))
+        );
+
+        let null = evaluate(agent, scope, realm, "(class extends null {})");
+        assert_eq!(function_name(agent, scope, null), "");
+        let function_prototype = agent.intrinsic(scope, realm, Intrinsic::FunctionPrototype);
+        let actual = get_prototype_of(agent, scope, null).expect("kein Fehler");
+        assert_eq!(
+            actual.map(|actual| bits(agent, actual)),
+            Some(bits(agent, function_prototype))
+        );
+        let (prototype, _) = data(agent, scope, null, "prototype");
+        let actual = get_prototype_of(agent, scope, prototype).expect("kein Fehler");
+        assert!(actual.is_none());
+        let named = evaluate(agent, scope, realm, "var C = class {}; C");
+        assert_eq!(function_name(agent, scope, named), "C");
+    });
+}

@@ -19,7 +19,14 @@
 //!
 //! `new` legt das neue Objekt vor dem Rahmen an und gibt es der Funktion
 //! als `this` in Register 0, das der Code nie überschreibt. Gibt der Rahmen
-//! von [[Construct]] kein Objekt zurück, gilt dieses. Ein Aufruf in
+//! von [[Construct]] kein Objekt zurück, gilt dieses. Nur der Konstruktor
+//! einer abgeleiteten Klasse bekommt stattdessen die Lücke, bis `super()`
+//! das Ergebnis des Konstruktors der Oberklasse bindet; kehrt er ohne
+//! Objekt zurück, prüft der Lauf nach dem Abbau seines Rahmens, ob `this`
+//! gebunden ist (Abschnitt 10.2.2, Schritte 11 bis 15), und wirft sonst im
+//! Aufrufer. `super()` läuft wie `new` ohne Rekursion in Rust, auch durch
+//! den Standardkonstruktor einer Klasse. Ein Klassenkonstruktor ohne `new`
+//! wirft den TypeError im Realm der Funktion. Ein Aufruf in
 //! Endposition ([`Op::TailCall`]) nimmt die Argumente in Handles, baut den
 //! Rahmen ab und legt den neuen an dieselbe Stelle; der Stapel wächst also
 //! nicht. Nur im Rahmen von [[Construct]] bleibt er ein gewöhnlicher Aufruf,
@@ -53,11 +60,13 @@ use crate::ast::Ast;
 use crate::builtin::{builtin_parts, call_builtin};
 use crate::bytecode::{Code, Constant, HandlerKind, Instruction, Op};
 use crate::compare::{is_less_than, is_loosely_equal, is_strictly_equal};
-use crate::compiler::{CompileError, compile_function};
+use crate::compiler::{CompileError, compile_default_constructor, compile_function};
 use crate::conversion::{to_boolean, to_number, to_numeric, to_object, to_property_key, to_string};
 use crate::descriptor::PropertyDescriptor;
 use crate::function::{
-    Compiled, function_environment, function_parts, instantiate_closure, is_constructor,
+    Compiled, Construction, Origin, construction, function_environment, function_parts,
+    home_object, instantiate_class_constructor, instantiate_closure, is_constructor, make_method,
+    shared_construction,
 };
 use crate::generator::{
     Resumption, generator_create, generator_yield, save_frame, set_resumption, start_executing,
@@ -72,8 +81,8 @@ use crate::key::{PropertyKey, array_index};
 use crate::number;
 use crate::object::{
     array_create, create_mapped_arguments_object, create_unmapped_arguments_object,
-    define_arguments_iterator, ordinary_create_from_constructor, ordinary_object_create,
-    set_prototype_of,
+    define_arguments_iterator, get_prototype_of, ordinary_create_from_constructor,
+    ordinary_object_create, set_prototype_of,
 };
 use crate::operations::{
     call, create_data_property_or_throw, define_property_or_throw, get, get_method, has_property,
@@ -105,12 +114,12 @@ enum Flow {
     Yield,
     /// Ruft die Funktion im Platz `callee` des Registerstapels auf, `this`
     /// liegt dahinter und dann `count` Argumente, mit `spread` stattdessen
-    /// ein Array mit den Argumenten. Mit `construct` ist es [[Construct]]
-    /// mit der Funktion als new.target.
+    /// ein Array mit den Argumenten. Mit `new_target` ist es [[Construct]]
+    /// mit dem Wert in diesem Platz als new.target.
     Call {
         callee: usize,
         count: usize,
-        construct: bool,
+        new_target: Option<usize>,
         spread: bool,
     },
     /// Derselbe Aufruf ohne `construct` an der Stelle des Rahmens.
@@ -436,7 +445,7 @@ fn run(
             } if top.construct => Flow::Call {
                 callee,
                 count,
-                construct: false,
+                new_target: None,
                 spread,
             },
             flow => flow,
@@ -445,20 +454,29 @@ fn run(
             Flow::Next => top.offset = instruction.end,
             Flow::Jump(target) => top.offset = target,
             Flow::Return => {
-                if top.construct {
-                    // [[Construct]] (Abschnitt 10.2.2), Schritte 10 und 11:
-                    // Ohne Objekt als Ergebnis gilt das neue Objekt.
-                    let heap = agent.heap();
-                    if !matches!(heap.get(accumulator).kind(), Kind::Object(_)) {
-                        heap.set(accumulator, heap.register(top.base));
-                    }
-                }
+                let failure = if top.construct {
+                    construct_result(agent.heap(), top, accumulator)
+                } else {
+                    None
+                };
                 let header = top.base.saturating_sub(HEADER);
                 stack.pop();
                 if stack.is_empty() {
-                    return Ok(Ending::Returned);
+                    return match failure {
+                        Some(kind) => Err(agent.throw_error(kind)),
+                        None => Ok(Ending::Returned),
+                    };
                 }
                 agent.heap_mut().truncate_registers(header);
+                // Der Fehler entsteht nach dem Abbau im Aufrufer, an dessen
+                // Aufruf.
+                if let Some(kind) = failure {
+                    agent.throw_error(kind);
+                    let offset = stack
+                        .last()
+                        .map_or(0, |caller| caller.offset.saturating_sub(1));
+                    catch(agent, &mut stack, accumulator, offset)?;
+                }
             }
             Flow::Yield => {
                 // Kann nur im untersten Rahmen vorkommen: Der Rumpf eines
@@ -471,16 +489,17 @@ fn run(
             Flow::Call {
                 callee,
                 count,
-                construct,
+                new_target,
                 spread,
             } => {
                 top.offset = instruction.end;
+                let construct = new_target.is_some();
                 let next = agent.scope(|agent, inner| {
                     let heap = agent.heap();
                     let function = heap.local(inner, heap.register(callee));
                     let this = heap.local(inner, heap.register(place(callee, 1)));
                     let first = place(callee, 2);
-                    let new_target = construct.then_some(function);
+                    let new_target = new_target.map(|slot| heap.local(inner, heap.register(slot)));
                     if spread {
                         let array = heap.local(inner, heap.register(first));
                         let list = spread_list(agent, inner, array)?;
@@ -551,6 +570,33 @@ fn run(
             }
         }
     }
+}
+
+/// [[Construct]] (Abschnitt 10.2.2), Schritte 11 bis 15, nachdem der Rahmen
+/// `top` mit dem Akkumulator zurückkehrte: Ein Objekt gilt. Sonst gilt bei
+/// der Art ~base~ das neue Objekt aus Register 0. Bei ~derived~ ist ein
+/// anderes Ergebnis als *undefined* ein TypeError, sonst gilt die Bindung
+/// von `this` aus Register 0, solange sie fehlt, ein ReferenceError. Den
+/// Fehler wirft der Aufrufer.
+fn construct_result(
+    heap: &Heap,
+    top: &Activation<'_>,
+    accumulator: Local<'_>,
+) -> Option<ErrorKind> {
+    let result = heap.get(accumulator);
+    if matches!(result.kind(), Kind::Object(_)) {
+        return None;
+    }
+    let derived = top.source.code().is_derived_constructor();
+    if derived && !result.is_undefined() {
+        return Some(ErrorKind::TypeError);
+    }
+    let this = heap.register(top.base);
+    if derived && this.is_hole() {
+        return Some(ErrorKind::ReferenceError);
+    }
+    heap.set(accumulator, this);
+    None
 }
 
 /// Sucht für die Ausnahme, die der Befehl bei `offset` im obersten Rahmen
@@ -632,7 +678,9 @@ fn spread_list<'s>(
 /// außerdem als interne Zelle.
 ///
 /// Liest der Code new.target, bekommt er `new_target` in dessen Register,
-/// ohne bleibt es *undefined* wie für [[Call]].
+/// ohne bleibt es *undefined* wie für [[Call]]. Ohne `new_target` wirft ein
+/// Klassenkonstruktor einen TypeError aus seinem Realm ([[Call]], Abschnitt
+/// 10.2.1, Schritt 2), bevor er übersetzt wird.
 fn enter_function(
     agent: &mut Agent,
     scope: &Scope,
@@ -644,6 +692,11 @@ fn enter_function(
     let Some((shared, realm)) = function_parts(agent.heap(), agent.heap().get(function)) else {
         return Err(agent.throw_error(ErrorKind::TypeError));
     };
+    if new_target.is_none() && shared_construction(agent, shared).is_class() {
+        let error = agent.throw_error(ErrorKind::TypeError);
+        agent.set_error_realm(realm);
+        return Err(error);
+    }
     let (code, pool) = compiled(agent, scope, shared)?;
     // OrdinaryCallBindThis: Im nicht strikten Modus wird *undefined* und
     // *null* zum globalen Objekt, ein primitiver Wert zu seinem Wrapper aus
@@ -736,7 +789,11 @@ fn compiled<'s>(
         return Ok((Rc::clone(&compiled.code), pool));
     }
     let unit = Rc::clone(&entry.unit);
-    let code = match compile_function(&unit, &entry.template) {
+    let result = match &entry.origin {
+        Origin::Function(template) => compile_function(&unit, template),
+        Origin::DefaultConstructor { derived } => compile_default_constructor(*derived),
+    };
+    let code = match result {
         Ok(code) => Rc::new(code),
         Err(CompileError::Unsupported(position)) => return Err(Abrupt::Unsupported(position)),
         Err(CompileError::TooLarge) => return Err(agent.throw_error(ErrorKind::RangeError)),
@@ -753,9 +810,9 @@ fn compiled<'s>(
 }
 
 /// Legt die Konstanten im Heap an: Zahlen als Werte, Zeichenketten als
-/// neue Zeichenketten, Namen als Atome und Funktionen als neue gemeinsame
-/// Daten mit ihrer Nummer als Wert. Funktionen braucht es den Syntaxbaum
-/// `unit`, aus dem der Code stammt.
+/// neue Zeichenketten, Namen als Atome und Funktionen und
+/// Standardkonstruktoren als neue gemeinsame Daten mit ihrer Nummer als
+/// Wert. Für sie braucht es den Syntaxbaum `unit`, aus dem der Code stammt.
 fn constant_pool<'s>(
     agent: &mut Agent,
     scope: &'s Scope,
@@ -776,6 +833,13 @@ fn constant_pool<'s>(
                         return Err(agent.throw_error(ErrorKind::TypeError));
                     };
                     let shared = agent.add_shared_function(Rc::clone(unit), template.clone())?;
+                    agent.heap().local(inner, Value::int32(shared))
+                }
+                Constant::DefaultConstructor(derived) => {
+                    let Some(unit) = unit else {
+                        return Err(agent.throw_error(ErrorKind::TypeError));
+                    };
+                    let shared = agent.add_default_constructor(Rc::clone(unit), *derived)?;
                     agent.heap().local(inner, Value::int32(shared))
                 }
             };
@@ -989,23 +1053,34 @@ impl<'c> Frame<'c, '_> {
                 copy_data_properties(agent, scope, object, source, &excluded)?;
                 self.set_accumulator(agent, object);
             }
-            Op::DefineGetter | Op::DefineSetter => {
+            Op::DefineGetter | Op::DefineSetter | Op::DefineClassGetter | Op::DefineClassSetter => {
                 // MethodDefinitionEvaluation (Abschnitt 15.4.5): Die
                 // Beschreibung hat nur [[Get]] oder [[Set]], ein vorhandener
-                // Accessor behält das andere.
+                // Accessor behält das andere. In Klassen sind sie nicht
+                // aufzählbar.
                 let object = self.register(agent, scope, first);
                 let key = self.register(agent, scope, second);
                 let key = to_property_key(agent, scope, key)?;
+                let enumerable = matches!(instruction.op, Op::DefineGetter | Op::DefineSetter);
                 let mut descriptor = PropertyDescriptor {
-                    enumerable: Some(true),
+                    enumerable: Some(enumerable),
                     configurable: Some(true),
                     ..PropertyDescriptor::default()
                 };
-                if instruction.op == Op::DefineGetter {
+                if matches!(instruction.op, Op::DefineGetter | Op::DefineClassGetter) {
                     descriptor.get = Some(self.accumulator);
                 } else {
                     descriptor.set = Some(self.accumulator);
                 }
+                define_property_or_throw(agent, scope, object, key, &descriptor)?;
+            }
+            Op::DefineMethod => {
+                // DefineMethodProperty (Abschnitt 10.2.8) mit *false* für
+                // [[Enumerable]].
+                let object = self.register(agent, scope, first);
+                let key = self.register(agent, scope, second);
+                let key = to_property_key(agent, scope, key)?;
+                let descriptor = PropertyDescriptor::data(self.accumulator, true, false, true);
                 define_property_or_throw(agent, scope, object, key, &descriptor)?;
             }
             Op::ArrayPush | Op::ArrayHole => {
@@ -1343,6 +1418,202 @@ impl<'c> Frame<'c, '_> {
         Ok(jump(instruction))
     }
 
+    /// Die Befehle für Klassen und [[HomeObject]].
+    fn class_operation(
+        &self,
+        agent: &mut Agent,
+        scope: &Scope,
+        instruction: &Instruction,
+    ) -> Completion<()> {
+        let first = instruction.operand(0);
+        let second = instruction.operand(1);
+        match instruction.op {
+            Op::CreateClass => {
+                // Die Konstante ist die Nummer der gemeinsamen Daten.
+                let shared = self.constant(agent, scope, first);
+                let shared = agent.heap().get(shared).as_int32().unwrap_or(-1);
+                let superclass = self.register(agent, scope, second);
+                let name = self.register(agent, scope, second.saturating_add(1));
+                let name = to_property_key(agent, scope, name)?;
+                let (prototype_parent, parent) =
+                    class_parents(agent, scope, self.realm, superclass)?;
+                let prototype = ordinary_object_create(agent, scope, prototype_parent)?;
+                let environment = {
+                    let heap = agent.heap();
+                    heap.local(scope, heap.register(self.context_slot()))
+                };
+                let function = instantiate_class_constructor(
+                    agent,
+                    scope,
+                    self.realm,
+                    shared,
+                    name,
+                    environment,
+                    parent,
+                    prototype,
+                )?;
+                self.set_register(agent, second, prototype);
+                self.set_accumulator(agent, function);
+            }
+            Op::SetHomeObject => {
+                let home = self.register(agent, scope, first);
+                let heap = agent.heap();
+                make_method(heap, heap.get(self.accumulator), heap.get(home));
+            }
+            // Die übrigen Befehle führt `step` aus.
+            _ => return Err(agent.throw_error(ErrorKind::RangeError)),
+        }
+        Ok(())
+    }
+
+    /// Die Befehle für `super`. Das Funktionsobjekt für GetSuperBase und
+    /// GetSuperConstructor stammt aus Register 1 oder dem Kontext einer
+    /// Funktion; [[HomeObject]] hat es, wenn sein Code `super.x` liest.
+    fn super_operation(
+        &self,
+        agent: &mut Agent,
+        scope: &Scope,
+        instruction: &Instruction,
+    ) -> Completion<()> {
+        let first = instruction.operand(0);
+        let second = instruction.operand(1);
+        match instruction.op {
+            Op::GetSuperBase => {
+                let home = {
+                    let heap = agent.heap();
+                    home_object(heap, heap.get(self.accumulator))
+                        .map(|home| heap.local(scope, home))
+                };
+                let base = match home {
+                    Some(home) => get_prototype_of(agent, scope, home)?,
+                    None => {
+                        self.set_accumulator_value(agent, Value::UNDEFINED);
+                        return Ok(());
+                    }
+                };
+                match base {
+                    Some(base) => self.set_accumulator(agent, base),
+                    None => self.set_accumulator_value(agent, Value::NULL),
+                }
+            }
+            Op::GetSuperConstructor => {
+                let function = self.accumulator_copy(agent, scope);
+                match get_prototype_of(agent, scope, function)? {
+                    Some(parent) => self.set_accumulator(agent, parent),
+                    None => self.set_accumulator_value(agent, Value::NULL),
+                }
+            }
+            Op::LdaSuperNamed | Op::LdaSuperKeyed | Op::StaSuperNamed | Op::StaSuperKeyed => {
+                // GetValue und PutValue (Abschnitte 6.2.5.5 und 6.2.5.6) für
+                // eine Referenz mit `super`: ToObject der Basis, dann
+                // ToPropertyKey, dann [[Get]] oder [[Set]] mit `this` als
+                // Empfänger.
+                let base = self.register(agent, scope, first);
+                let this = self.register(agent, scope, first.saturating_add(1));
+                let base = to_object_base(agent, scope, self.realm, base)?;
+                let key = match instruction.op {
+                    Op::LdaSuperNamed | Op::StaSuperNamed => self.name(agent, scope, second).1,
+                    _ => {
+                        let register = first.saturating_add(2);
+                        let key = self.register(agent, scope, register);
+                        let key = to_property_key(agent, scope, key)?;
+                        let stored = key_value(agent, scope, key);
+                        self.set_register(agent, register, stored);
+                        key
+                    }
+                };
+                if matches!(instruction.op, Op::LdaSuperNamed | Op::LdaSuperKeyed) {
+                    let value = get_value(agent, scope, base, this, key)?;
+                    self.set_accumulator(agent, value);
+                } else {
+                    let strict = self.code.is_strict();
+                    put_value(agent, scope, base, this, key, self.accumulator, strict)?;
+                }
+            }
+            // Die übrigen Befehle führt `step` aus.
+            _ => return Err(agent.throw_error(ErrorKind::RangeError)),
+        }
+        Ok(())
+    }
+
+    /// `new` und `super()` (EvaluateNew, Abschnitt 13.3.5.1.1, und
+    /// SuperCall, Abschnitt 13.3.7.1): IsConstructor erst nach den
+    /// Argumenten, dann [[Construct]] mit new.target, bei `new` der
+    /// Konstruktor selbst, bei `super()` der Wert im Register davor. Eine
+    /// eingebaute Funktion legt ihr Objekt selbst an. Für eine Funktion
+    /// entsteht es vor dem Rahmen mit OrdinaryCreateFromConstructor aus
+    /// new.target; der Konstruktor einer abgeleiteten Klasse bekommt die
+    /// Lücke (Abschnitt 10.2.2, Schritte 3 bis 5).
+    fn construct(
+        &self,
+        agent: &mut Agent,
+        scope: &Scope,
+        instruction: &Instruction,
+    ) -> Completion<Flow> {
+        let first = instruction.operand(0);
+        let spread = matches!(instruction.op, Op::ConstructSpread | Op::SuperCallSpread);
+        let constructor = self.register(agent, scope, first);
+        if !is_constructor(agent, agent.heap().get(constructor)) {
+            return Err(agent.throw_error(ErrorKind::TypeError));
+        }
+        let target = if matches!(instruction.op, Op::SuperCall | Op::SuperCallSpread) {
+            // Kann nicht fehlen: Der Übersetzer legt new.target davor.
+            let Some(target) = first.checked_sub(1) else {
+                return Err(agent.throw_error(ErrorKind::RangeError));
+            };
+            target
+        } else {
+            first
+        };
+        let new_target = self.register(agent, scope, target);
+        let count = if spread {
+            0
+        } else {
+            usize::try_from(instruction.operand(1)).unwrap_or(0)
+        };
+        if builtin_parts(agent.heap(), agent.heap().get(constructor)).is_some() {
+            // [[Construct]] einer eingebauten Funktion (Abschnitt 10.3.2):
+            // `this` bleibt uninitialisiert.
+            let arguments = if spread {
+                let array = self.register(agent, scope, first.saturating_add(2));
+                spread_list(agent, scope, array)?
+            } else {
+                self.call_operands(agent, scope, first, count).1
+            };
+            let this = agent.heap().local(scope, Value::UNDEFINED);
+            let result = call_builtin(
+                agent,
+                scope,
+                constructor,
+                this,
+                &arguments,
+                Some(new_target),
+            )?;
+            self.set_accumulator(agent, result);
+            return Ok(Flow::Next);
+        }
+        let this = if construction(agent, agent.heap().get(constructor)) == Construction::Derived {
+            agent.heap().local(scope, Value::HOLE)
+        } else {
+            ordinary_create_from_constructor(
+                agent,
+                scope,
+                new_target,
+                Intrinsic::ObjectPrototype,
+                self.realm,
+            )?
+        };
+        let callee = self.slot(first);
+        let heap = agent.heap();
+        heap.set_register(place(callee, 1), heap.get(this));
+        Ok(Flow::Call {
+            callee,
+            count,
+            new_target: Some(self.slot(target)),
+            spread,
+        })
+    }
+
     fn global_reference(&self, agent: &Agent, operand: i64) -> GlobalReference {
         let value = agent.heap().register(self.slot(operand));
         GlobalReference::from_number(value.as_number().unwrap_or(0.0))
@@ -1391,6 +1662,12 @@ impl<'c> Frame<'c, '_> {
                     return Err(agent.throw_error(ErrorKind::ReferenceError));
                 }
             }
+            Op::ThrowIfNotHole => {
+                if !agent.heap().get(self.accumulator).is_hole() {
+                    return Err(agent.throw_error(ErrorKind::ReferenceError));
+                }
+            }
+            Op::ThrowReferenceError => return Err(agent.throw_error(ErrorKind::ReferenceError)),
             Op::PushContext
             | Op::PopContext
             | Op::CloneContext
@@ -1569,6 +1846,9 @@ impl<'c> Frame<'c, '_> {
             | Op::CreateRestObject
             | Op::DefineGetter
             | Op::DefineSetter
+            | Op::DefineClassGetter
+            | Op::DefineClassSetter
+            | Op::DefineMethod
             | Op::ArrayPush
             | Op::ArrayHole
             | Op::ToPropertyKey
@@ -1581,6 +1861,15 @@ impl<'c> Frame<'c, '_> {
             | Op::DeleteKeyed
             | Op::TestIn
             | Op::TestInstanceOf => self.property(agent, scope, instruction)?,
+            Op::CreateClass | Op::SetHomeObject => {
+                self.class_operation(agent, scope, instruction)?
+            }
+            Op::GetSuperBase
+            | Op::GetSuperConstructor
+            | Op::LdaSuperNamed
+            | Op::LdaSuperKeyed
+            | Op::StaSuperNamed
+            | Op::StaSuperKeyed => self.super_operation(agent, scope, instruction)?,
             Op::CreateClosure | Op::CreateClosureKeyed => {
                 let shared = self.constant(agent, scope, first);
                 // Die Konstante ist die Nummer der gemeinsamen Daten.
@@ -1621,7 +1910,7 @@ impl<'c> Frame<'c, '_> {
                     Flow::Call {
                         callee,
                         count,
-                        construct: false,
+                        new_target: None,
                         spread: false,
                     }
                 } else {
@@ -1650,7 +1939,7 @@ impl<'c> Frame<'c, '_> {
                     Flow::Call {
                         callee,
                         count: 0,
-                        construct: false,
+                        new_target: None,
                         spread: true,
                     }
                 } else {
@@ -1661,87 +1950,8 @@ impl<'c> Frame<'c, '_> {
                     }
                 });
             }
-            Op::Construct => {
-                // EvaluateNew (Abschnitt 13.3.5.1.1): IsConstructor erst nach
-                // den Argumenten. Dann [[Construct]] (Abschnitt 10.2.2) mit
-                // dem Konstruktor als new.target: Das neue Objekt entsteht
-                // vor dem Rahmen.
-                let constructor = self.register(agent, scope, first);
-                if !is_constructor(agent, agent.heap().get(constructor)) {
-                    return Err(agent.throw_error(ErrorKind::TypeError));
-                }
-                let count = usize::try_from(second).unwrap_or(0);
-                if builtin_parts(agent.heap(), agent.heap().get(constructor)).is_some() {
-                    // [[Construct]] einer eingebauten Funktion (Abschnitt
-                    // 10.3.2): Sie legt ihr Objekt selbst an, `this` bleibt
-                    // uninitialisiert.
-                    let (_, arguments) = self.call_operands(agent, scope, first, count);
-                    let this = agent.heap().local(scope, Value::UNDEFINED);
-                    let result = call_builtin(
-                        agent,
-                        scope,
-                        constructor,
-                        this,
-                        &arguments,
-                        Some(constructor),
-                    )?;
-                    self.set_accumulator(agent, result);
-                    return Ok(Flow::Next);
-                }
-                let this = ordinary_create_from_constructor(
-                    agent,
-                    scope,
-                    constructor,
-                    Intrinsic::ObjectPrototype,
-                    self.realm,
-                )?;
-                let callee = self.slot(first);
-                let heap = agent.heap();
-                heap.set_register(place(callee, 1), heap.get(this));
-                return Ok(Flow::Call {
-                    callee,
-                    count,
-                    construct: true,
-                    spread: false,
-                });
-            }
-            Op::ConstructSpread => {
-                // Wie Construct, die Argumente aus dem Array.
-                let constructor = self.register(agent, scope, first);
-                if !is_constructor(agent, agent.heap().get(constructor)) {
-                    return Err(agent.throw_error(ErrorKind::TypeError));
-                }
-                if builtin_parts(agent.heap(), agent.heap().get(constructor)).is_some() {
-                    let array = self.register(agent, scope, first.saturating_add(2));
-                    let arguments = spread_list(agent, scope, array)?;
-                    let this = agent.heap().local(scope, Value::UNDEFINED);
-                    let result = call_builtin(
-                        agent,
-                        scope,
-                        constructor,
-                        this,
-                        &arguments,
-                        Some(constructor),
-                    )?;
-                    self.set_accumulator(agent, result);
-                    return Ok(Flow::Next);
-                }
-                let this = ordinary_create_from_constructor(
-                    agent,
-                    scope,
-                    constructor,
-                    Intrinsic::ObjectPrototype,
-                    self.realm,
-                )?;
-                let callee = self.slot(first);
-                let heap = agent.heap();
-                heap.set_register(place(callee, 1), heap.get(this));
-                return Ok(Flow::Call {
-                    callee,
-                    count: 0,
-                    construct: true,
-                    spread: true,
-                });
+            Op::Construct | Op::ConstructSpread | Op::SuperCall | Op::SuperCallSpread => {
+                return self.construct(agent, scope, instruction);
             }
             Op::GetIterator => {
                 let value = self.accumulator_copy(agent, scope);
@@ -1874,6 +2084,42 @@ impl<'c> Frame<'c, '_> {
         }
         Ok(Flow::Next)
     }
+}
+
+/// Die Prototypen von Prototyp und Konstruktor einer Klasse (protoParent
+/// und ctorParent, ClassDefinitionEvaluation, Abschnitt 15.7.14, Schritte 7
+/// und 8): ohne Oberklasse, als Lücke übergeben, %Object.prototype% und
+/// %Function.prototype%, mit *null* `None` und %Function.prototype%, sonst
+/// ihr `prototype` und sie selbst. Ist sie kein Konstruktor oder ihr
+/// `prototype` weder ein Objekt noch *null*, ist das ein TypeError.
+fn class_parents<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    realm: RealmId,
+    superclass: Local<'_>,
+) -> Completion<(Option<Local<'s>>, Local<'s>)> {
+    let value = agent.heap().get(superclass);
+    if value.is_hole() {
+        let object = agent.intrinsic(scope, realm, Intrinsic::ObjectPrototype);
+        let function = agent.intrinsic(scope, realm, Intrinsic::FunctionPrototype);
+        return Ok((Some(object), function));
+    }
+    if value.is_null() {
+        let function = agent.intrinsic(scope, realm, Intrinsic::FunctionPrototype);
+        return Ok((None, function));
+    }
+    if !is_constructor(agent, value) {
+        return Err(agent.throw_error(ErrorKind::TypeError));
+    }
+    let key = named_key(agent, scope, "prototype")?;
+    let prototype = get(agent, scope, superclass, key)?;
+    let prototype = match agent.heap().get(prototype).kind() {
+        Kind::Object(_) => Some(prototype),
+        Kind::Null => None,
+        _ => return Err(agent.throw_error(ErrorKind::TypeError)),
+    };
+    let heap = agent.heap();
+    Ok((prototype, heap.local(scope, heap.get(superclass))))
 }
 
 fn jump(instruction: &Instruction) -> Flow {

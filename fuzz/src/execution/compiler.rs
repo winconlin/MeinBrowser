@@ -9,7 +9,9 @@ use std::rc::Rc;
 
 use mb_js::ast::{Ast, Node};
 use mb_js::bytecode::{Code, Constant, FunctionTemplate, Op, Operand};
-use mb_js::compiler::{CompileError, compile_function, compile_script};
+use mb_js::compiler::{
+    CompileError, compile_default_constructor, compile_function, compile_script,
+};
 use mb_js::parser::parse_script;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -26,6 +28,8 @@ struct Stats {
     too_large_functions: usize,
     generators: usize,
     yields: usize,
+    classes: usize,
+    super_references: usize,
 }
 
 impl Stats {
@@ -39,6 +43,8 @@ impl Stats {
         self.handlers += other.handlers;
         self.generators += other.generators;
         self.yields += other.yields;
+        self.classes += other.classes;
+        self.super_references += other.super_references;
     }
 }
 
@@ -166,11 +172,14 @@ fn check_code(code: &Code, source_length: usize) -> Stats {
             );
         }
         match instruction.op {
-            Op::Call | Op::TailCall | Op::Construct => {
+            Op::Call | Op::TailCall | Op::Construct | Op::SuperCall => {
                 if instruction.op == Op::TailCall {
                     assert!(code.is_strict(), "tail calls only in strict code");
                 }
                 let callee = usize::try_from(instruction.operand(0)).expect("callee register");
+                if instruction.op == Op::SuperCall {
+                    assert!(callee >= 1, "new.target precedes the callee");
+                }
                 let arguments =
                     usize::try_from(instruction.operand(1)).expect("nonnegative argument count");
                 assert!(
@@ -182,11 +191,14 @@ fn check_code(code: &Code, source_length: usize) -> Stats {
                 );
                 stats.calls += 1;
             }
-            Op::CallSpread | Op::TailCallSpread | Op::ConstructSpread => {
+            Op::CallSpread | Op::TailCallSpread | Op::ConstructSpread | Op::SuperCallSpread => {
                 if instruction.op == Op::TailCallSpread {
                     assert!(code.is_strict(), "tail calls only in strict code");
                 }
                 let callee = usize::try_from(instruction.operand(0)).expect("callee register");
+                if instruction.op == Op::SuperCallSpread {
+                    assert!(callee >= 1, "new.target precedes the callee");
+                }
                 assert!(
                     callee
                         .checked_add(3)
@@ -225,6 +237,43 @@ fn check_code(code: &Code, source_length: usize) -> Stats {
                         .is_some_and(|end| end <= code.register_count()),
                     "the value and its excluded keys fit their frame"
                 );
+            }
+            Op::LdaSuperNamed | Op::StaSuperNamed | Op::LdaSuperKeyed | Op::StaSuperKeyed => {
+                // The base, `this` and, for computed names, the key.
+                let base = usize::try_from(instruction.operand(0)).expect("base register");
+                let length = if matches!(instruction.op, Op::LdaSuperKeyed | Op::StaSuperKeyed) {
+                    3
+                } else {
+                    2
+                };
+                assert!(
+                    base.checked_add(length)
+                        .is_some_and(|end| end <= code.register_count()),
+                    "the super reference fits its frame"
+                );
+                stats.super_references += 1;
+            }
+            Op::CreateClass => {
+                // The superclass or the hole, then the class name.
+                let parent = usize::try_from(instruction.operand(1)).expect("parent register");
+                assert!(
+                    parent
+                        .checked_add(2)
+                        .is_some_and(|end| end <= code.register_count()),
+                    "the superclass and the name fit their frame"
+                );
+                match code.constant(instruction.operand(0)) {
+                    Some(Constant::Function(_)) => {}
+                    Some(Constant::DefaultConstructor(derived)) => {
+                        let default = compile_default_constructor(*derived)
+                            .expect("the default constructor compiles");
+                        assert_eq!(default.is_derived_constructor(), *derived);
+                        assert!(default.is_strict(), "class code is strict");
+                        stats.include(check_code(&default, source_length));
+                    }
+                    constant => panic!("a class needs a constructor, got {constant:?}"),
+                }
+                stats.classes += 1;
             }
             Op::CreateGenerator => stats.generators += 1,
             Op::Yield | Op::YieldResult => stats.yields += 1,
@@ -449,7 +498,7 @@ mod tests {
 
     #[test]
     fn syntax_and_unsupported_paths_preserve_positions() {
-        for source in ["class A{}", "with({}){}", "for (var k in o);"] {
+        for source in ["class A{x;}", "with({}){}", "for (var k in o);"] {
             let source: Vec<u16> = source.encode_utf16().collect();
             assert_eq!(check_source(&source), Outcome::Unsupported);
         }
@@ -540,6 +589,32 @@ mod tests {
         let stats = checked("'use strict'; function* g() { return g(); }");
         assert_eq!(stats.functions, 1);
         assert_eq!(stats.calls, 1, "a plain call, never a tail call");
+    }
+
+    #[test]
+    fn classes_and_super_keep_their_registers_in_frame() {
+        let stats = checked(
+            "class A { constructor(a) { this.a = a; } m() { return 1; } static s() {} \
+             get g() { return 1; } set g(v) {} [Symbol.iterator]() {} } \
+             class B extends A { constructor(...r) { super(...r); super.m(); super['m'] = 1; } \
+             m() { return () => super.m() + 1; } } \
+             let C = class extends B {}, D = class {}; \
+             var o = { m() { return super.x; }, get n() { delete super.y; } };",
+        );
+        assert_eq!(stats.classes, 4);
+        assert_eq!(stats.unsupported_functions, 0);
+        assert!(
+            stats.functions >= 9,
+            "constructors, methods, accessors and the arrow"
+        );
+        assert_eq!(
+            stats.super_references, 4,
+            "delete only evaluates its reference"
+        );
+        assert!(
+            stats.calls >= 3,
+            "super(), the default super() and the calls"
+        );
     }
 
     #[test]

@@ -40,9 +40,28 @@
 //! in Scripts entscheidet GlobalDeclarationInstantiation, ob es die
 //! globale Bindung gibt, und setzt dafür ein Register.
 //!
-//! Noch nicht unterstützt sind `async`, Klassen, `for`-`in`, `for await`,
-//! `with`, `super`, `import()`, BigInt-Literale, reguläre Ausdrücke,
-//! Templates mit Tag und Funktionsdeklarationen mit Marke (Anhang B.3.1).
+//! Noch nicht unterstützt sind `async`, Felder, private Namen und
+//! `static`-Blöcke in Klassen, `for`-`in`, `for await`, `with`, `import()`,
+//! BigInt-Literale, reguläre Ausdrücke, Templates mit Tag und
+//! Funktionsdeklarationen mit Marke (Anhang B.3.1).
+//!
+//! Klassen: Eine Klasse hat einen eigenen Bereich mit ihrem Namen als
+//! Konstante, die bis zum Ende der Klasse in der TDZ bleibt (classEnv). Darin
+//! wertet sie die Oberklasse aus, dann legt [`Op::CreateClass`] Konstruktor
+//! und Prototyp an, dann definiert sie die Methoden der Reihe nach, jede mit
+//! ihrem Namen vor dem Funktionsobjekt. Eine Klassendeklaration bindet den
+//! Namen danach wie `let`. Der Konstruktor einer Klasse ohne `constructor`
+//! ist fester Bytecode ([`compile_default_constructor`]).
+//!
+//! `super`: Eine Referenz mit `super` liest erst `this`, dann den Namen,
+//! dann die Basis aus [[HomeObject]] der Funktion (MakeSuperPropertyReference,
+//! Abschnitt 13.3.7.3). Im Konstruktor einer abgeleiteten Klasse hält
+//! `this` bis `super()` die Lücke; jedes Lesen prüft sie, und `super()`
+//! bindet sein Ergebnis nur, wenn sie noch da ist (BindThisValue). Liest eine
+//! Pfeilfunktion darin `this`, liegt es im Kontext, und der Konstruktor legt
+//! es vor jedem `return` zurück in Register 0, wo [[Construct]] es prüft.
+//! Pfeilfunktionen lesen das Funktionsobjekt für `super` aus einem Platz im
+//! Kontext der Funktion, die sie umgibt.
 //!
 //! `try`: Der Block und `catch` bekommen je einen Eintrag in der
 //! Ausnahmetabelle. Mit `finally` führen alle Wege hinaus durch dessen
@@ -121,8 +140,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 use crate::ast::{
-    AssignOperator, Ast, Atom, BinaryOperator, DeclarationKind, FunctionCaptures, FunctionId,
-    FunctionKind, List, Node, NodeId, PropertyKind, UnaryOperator, UpdateOperator,
+    AssignOperator, Ast, Atom, BinaryOperator, ClassId, DeclarationKind, FunctionCaptures,
+    FunctionId, FunctionKind, List, MethodKind, Node, NodeId, PropertyKind, UnaryOperator,
+    UpdateOperator,
 };
 use crate::bytecode::{
     BindingKind, Code, Constant, ContextBinding, ContextLayout, Emitter, Enclosing,
@@ -240,6 +260,10 @@ struct BlockScope {
     this: Option<u32>,
     /// Der Platz mit `new.target`.
     new_target: Option<u32>,
+    /// Der Platz mit dem Funktionsobjekt, für `super` in Pfeilfunktionen.
+    function: Option<u32>,
+    /// Ob der Platz mit `this` die Lücke halten kann.
+    derived: bool,
 }
 
 impl BlockScope {
@@ -380,6 +404,23 @@ enum Reference {
         base: u32,
         key: u32,
     },
+    /// Eine Eigenschaft mit `super` und festem Namen: die Basis aus
+    /// GetSuperBase im Register, `this` im Register danach.
+    SuperNamed {
+        base: u32,
+        name: i64,
+    },
+    /// Dasselbe mit berechnetem Namen im dritten Register ab der Basis.
+    SuperKeyed {
+        base: u32,
+    },
+}
+
+/// Was IsAnonymousFunctionDefinition (Abschnitt 8.4.3) fand.
+#[derive(Clone, Copy)]
+enum Anonymous {
+    Function(NodeId, FunctionId),
+    Class(NodeId, ClassId),
 }
 
 /// Was ein Glied einer Kette von Zugriffen liest.
@@ -448,6 +489,8 @@ struct Compiler<'a> {
     new_target: Option<u32>,
     /// Das Register mit dem Generator, in Generatorfunktionen.
     generator: Option<u32>,
+    /// Ob der Code der Konstruktor einer abgeleiteten Klasse ist.
+    derived: bool,
     /// Die Aufrufe in Endposition im Ausdruck, der gerade übersetzt wird.
     tail_calls: BTreeSet<NodeId>,
     /// Wie viele Bereiche um die aktuelle Stelle eine Ausnahme fangen oder
@@ -551,6 +594,9 @@ struct Formal {
 /// Pfeilfunktion darin den Bezeichner `arguments` enthält; sonst sieht es
 /// niemand. Ist es verknüpft, liegen die Parameter im Kontext, denn das
 /// Objekt liest und schreibt ihre Bindungen dort.
+///
+/// Konstruktoren von Klassen übersetzt es wie Methoden; im Konstruktor einer
+/// abgeleiteten Klasse beginnt `this` als Lücke.
 pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> {
     let Some(function) = ast.function(template.function) else {
         return Err(CompileError::Unsupported(0));
@@ -564,6 +610,8 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
             | FunctionKind::Method
             | FunctionKind::Getter
             | FunctionKind::Setter
+            | FunctionKind::Constructor
+            | FunctionKind::DerivedConstructor
     ) && !function.is_async;
     let captures = ast.captures().function(template.function);
     let (true, Some(captures)) = (supported, captures) else {
@@ -571,6 +619,7 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
     };
     let mut compiler = Compiler::new(ast, function.strict, Rc::clone(&template.outer), captures);
     compiler.lexical_this = arrow;
+    compiler.derived = function.kind == FunctionKind::DerivedConstructor;
     compiler.allocate()?;
     let callee = compiler.allocate()?;
     let formals = compiler.formals(function.parameters)?;
@@ -781,9 +830,13 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
     }
     if captures.this && !arrow {
         parameters.this = Some(parameters.add_slot()?);
+        parameters.derived = compiler.derived;
     }
     if captures.arrow_new_target && !arrow {
         parameters.new_target = Some(parameters.add_slot()?);
+    }
+    if captures.arrow_super && !arrow {
+        parameters.function = Some(parameters.add_slot()?);
     }
     // Der Name eines Funktionsausdrucks liegt außen (funcEnv, Abschnitt
     // 15.2.5); das Objekt `arguments` und jede Bindung im Bereich der
@@ -819,6 +872,10 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
         }
         if let (Some(slot), Some(register)) = (parameters.new_target, compiler.new_target) {
             compiler.emit(Op::Ldar, &[i64::from(register)])?;
+            compiler.emit(Op::StaContext, &[0, i64::from(slot)])?;
+        }
+        if let Some(slot) = parameters.function {
+            compiler.emit(Op::Ldar, &[i64::from(callee)])?;
             compiler.emit(Op::StaContext, &[0, i64::from(slot)])?;
         }
     }
@@ -907,16 +964,53 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
             compiler.top_level_item(item)?;
         }
         compiler.emit(Op::LdaUndefined, &[])?;
-        compiler.emit(Op::Return, &[])?;
+        compiler.emit_return()?;
     }
     let new_target = compiler.new_target;
     let generator = compiler.generator;
+    let derived = compiler.derived;
     let mut code = compiler.finish();
     code.parameters = u32::try_from(registers.len()).map_err(|_| CompileError::TooLarge)?;
     code.arguments = cell.and_then(|cell| u32::try_from(cell).ok());
     code.parameter_map = parameter_map;
     code.new_target = new_target;
     code.generator = generator;
+    code.derived = derived;
+    Ok(code)
+}
+
+/// Der Code des Konstruktors einer Klasse ohne `constructor`
+/// (ClassDefinitionEvaluation, Abschnitt 15.7.14, Schritt 14.a), mit
+/// `derived` für eine abgeleitete Klasse. Ohne Oberklasse gibt er das neue
+/// Objekt zurück wie `constructor() {}`. Sonst ruft er wie
+/// `constructor(...args) { super(...args); }` den Konstruktor der
+/// Oberklasse mit den Argumenten und new.target auf, aber ohne
+/// %Array.prototype%[%Symbol.iterator%]: Das Array mit den Argumenten
+/// liest der Aufruf direkt. Sein Ergebnis gibt er zurück; es ist stets ein
+/// Objekt.
+pub fn compile_default_constructor(derived: bool) -> Result<Code> {
+    let mut emitter = Emitter::default();
+    if !derived {
+        emitter.emit(Op::LdaUndefined, &[])?;
+        emitter.emit(Op::Return, &[])?;
+        return Ok(emitter.finish(Vec::new(), 2, true));
+    }
+    // Register: `this`, das Funktionsobjekt, die Argumente, new.target,
+    // dann new.target, Funktion, `this` und das Array für den Aufruf.
+    let (arguments, new_target, callee, array) = (2, 3, 5, 7);
+    emitter.emit(Op::Ldar, &[1])?;
+    emitter.emit(Op::GetSuperConstructor, &[])?;
+    emitter.emit(Op::Star, &[callee])?;
+    emitter.emit(Op::Ldar, &[new_target])?;
+    emitter.emit(Op::Star, &[callee - 1])?;
+    emitter.emit(Op::CreateRestParameter, &[arguments, 0])?;
+    emitter.emit(Op::Star, &[array])?;
+    emitter.emit(Op::SuperCallSpread, &[callee])?;
+    emitter.emit(Op::Return, &[])?;
+    let mut code = emitter.finish(Vec::new(), 8, true);
+    code.arguments = Some(2);
+    code.new_target = Some(3);
+    code.derived = true;
     Ok(code)
 }
 
@@ -947,6 +1041,7 @@ impl<'a> Compiler<'a> {
             lexical_this: false,
             new_target: None,
             generator: None,
+            derived: false,
             tail_calls: BTreeSet::new(),
             protected: 0,
             var_scope: None,
@@ -1002,13 +1097,13 @@ impl<'a> Compiler<'a> {
     }
 
     /// Eine Konstante. Gleiche Zahlen, Zeichenketten und Namen teilen sich
-    /// eine, jede Funktion bekommt eine eigene.
+    /// eine, jede Funktion und jeder Standardkonstruktor bekommt eine eigene.
     fn constant(&mut self, constant: Constant) -> Result<i64> {
         let key = match &constant {
             Constant::Number(number) => Some(ConstantKey::Number(number.to_bits())),
             Constant::String(units) => Some(ConstantKey::String(units.clone())),
             Constant::Name(units) => Some(ConstantKey::Name(units.clone())),
-            Constant::Function(_) => None,
+            Constant::Function(_) | Constant::DefaultConstructor(_) => None,
         };
         if let Some(&index) = key.as_ref().and_then(|key| self.constant_index.get(key)) {
             return Ok(index);
@@ -1111,9 +1206,14 @@ impl<'a> Compiler<'a> {
                 }
             }
             Node::Variables { .. } => {}
-            Node::FunctionDeclaration(_) | Node::ClassDeclaration(_) => {
-                return Err(self.unsupported(item));
+            // Wie `let` (Abschnitt 15.7.15).
+            Node::ClassDeclaration(id) => {
+                let Some(name) = self.ast.class(id).and_then(|class| class.name) else {
+                    return Err(self.unsupported(item));
+                };
+                bindings.push((name, false, self.ast.range(item).end));
             }
+            Node::FunctionDeclaration(_) => return Err(self.unsupported(item)),
             _ => {}
         }
         Ok(bindings)
@@ -1625,6 +1725,8 @@ impl<'a> Compiler<'a> {
                 bindings: BTreeMap::new(),
                 this: scope.this,
                 new_target: scope.new_target,
+                function: scope.function,
+                derived: scope.derived,
             };
             for (&atom, &binding) in &scope.bindings {
                 match binding.location {
@@ -1684,6 +1786,7 @@ impl<'a> Compiler<'a> {
                 self.leave_block(mark)
             }
             Node::FunctionDeclaration(_) => self.block_function_evaluation(node),
+            Node::ClassDeclaration(id) => self.class_declaration(node, id),
             Node::Empty | Node::Debugger => Ok(()),
             Node::If {
                 test,
@@ -2354,7 +2457,7 @@ impl<'a> Compiler<'a> {
             .filter(|&index| index >= floor);
         let index = match (finally, exit) {
             (Some(index), _) | (None, Exit::Jump { target: index, .. }) => index,
-            (None, Exit::Return) => return self.emit(Op::Return, &[]),
+            (None, Exit::Return) => return self.emit_return(),
         };
         // Kann nicht fehlen: Die Stellen stammen aus `targets`.
         let Some(target) = self.targets.get(index) else {
@@ -2906,6 +3009,14 @@ impl<'a> Compiler<'a> {
             Node::New { callee, arguments } => self.construct(node, callee, arguments),
             Node::NewTarget => self.load_new_target(node),
             Node::Function(id) => self.closure(node, id, ClosureName::Static(&[])),
+            Node::Class(id) => self.class_definition(node, id, ClosureName::Static(&[])),
+            Node::SuperMember(_) | Node::SuperComputedMember(_) => {
+                let reference = self.super_reference(node)?;
+                self.get_value(reference, self.ast.range(node).start)?;
+                self.release_reference(reference);
+                Ok(())
+            }
+            Node::SuperCall(arguments) => self.super_call(node, arguments),
             Node::Yield { argument, delegate } => self.yield_expression(node, argument, delegate),
             _ => Err(self.unsupported(node)),
         }
@@ -2964,9 +3075,9 @@ impl<'a> Compiler<'a> {
         self.bind(next)
     }
 
-    /// IsAnonymousFunctionDefinition (Abschnitt 8.4.3) für die Funktionen,
-    /// die es schon gibt; Klammern zählen nicht.
-    fn anonymous_function(&self, node: NodeId) -> Option<(NodeId, FunctionId)> {
+    /// IsAnonymousFunctionDefinition (Abschnitt 8.4.3) für die Funktionen
+    /// und Klassen, die es schon gibt; Klammern zählen nicht.
+    fn anonymous_definition(&self, node: NodeId) -> Option<Anonymous> {
         let inner = self.without_parens(node);
         match *self.ast.node(inner) {
             Node::Function(id)
@@ -2975,26 +3086,31 @@ impl<'a> Compiler<'a> {
                     .function(id)
                     .is_some_and(|function| function.name.is_none()) =>
             {
-                Some((inner, id))
+                Some(Anonymous::Function(inner, id))
+            }
+            Node::Class(id) if self.ast.class(id).is_some_and(|class| class.name.is_none()) => {
+                Some(Anonymous::Class(inner, id))
             }
             _ => None,
         }
     }
 
-    /// NamedEvaluation (Abschnitt 8.4.5): Eine anonyme Funktion, auch in
-    /// Klammern, bekommt den Namen `name`; alles andere wird gewöhnlich
-    /// ausgewertet.
+    /// NamedEvaluation (Abschnitt 8.4.5): Eine anonyme Funktion oder Klasse,
+    /// auch in Klammern, bekommt den Namen `name`; alles andere wird
+    /// gewöhnlich ausgewertet.
     fn named_expression(&mut self, node: NodeId, name: &[u16]) -> Result<()> {
-        match self.anonymous_function(node) {
-            Some((function, id)) => self.closure(function, id, ClosureName::Static(name)),
-            None => self.expression(node),
-        }
+        self.named_definition(node, ClosureName::Static(name))
     }
 
     /// Dasselbe mit dem Schlüssel im Register als Namen.
     fn keyed_expression(&mut self, node: NodeId, key: u32) -> Result<()> {
-        match self.anonymous_function(node) {
-            Some((function, id)) => self.closure(function, id, ClosureName::Keyed(key)),
+        self.named_definition(node, ClosureName::Keyed(key))
+    }
+
+    fn named_definition(&mut self, node: NodeId, name: ClosureName<'_>) -> Result<()> {
+        match self.anonymous_definition(node) {
+            Some(Anonymous::Function(function, id)) => self.closure(function, id, name),
+            Some(Anonymous::Class(class, id)) => self.class_definition(class, id, name),
             None => self.expression(node),
         }
     }
@@ -3175,6 +3291,7 @@ impl<'a> Compiler<'a> {
         match self.property_key(key)? {
             Some(units) if kind == PropertyKind::Method => {
                 self.closure(value, id, ClosureName::Static(&units))?;
+                self.home_object(id, object)?;
                 self.position(key)?;
                 let constant = self.constant(Constant::Name(units))?;
                 self.emit(Op::DefineNamed, &[object, constant])?;
@@ -3192,6 +3309,7 @@ impl<'a> Compiler<'a> {
                 self.closure(value, id, ClosureName::Keyed(name))?;
             }
         }
+        self.home_object(id, object)?;
         self.position(key)?;
         let op = match kind {
             PropertyKind::Get => Op::DefineGetter,
@@ -3199,6 +3317,162 @@ impl<'a> Compiler<'a> {
             _ => Op::DefineKeyed,
         };
         self.emit(op, &[object, register])?;
+        self.release(name);
+        Ok(())
+    }
+
+    /// MakeMethod (Abschnitt 10.2.7) für das Funktionsobjekt der Funktion
+    /// `id` im Akkumulator mit dem Objekt im Register `object`. Nur wer
+    /// `super.x` liest, liest auch [[HomeObject]]; sonst fehlt der Befehl.
+    fn home_object(&mut self, id: FunctionId, object: i64) -> Result<()> {
+        let reads = self
+            .ast
+            .captures()
+            .function(id)
+            .is_some_and(|captures| captures.super_property);
+        if reads {
+            self.emit(Op::SetHomeObject, &[object])?;
+        }
+        Ok(())
+    }
+
+    /// BindingClassDeclarationEvaluation (Abschnitt 15.7.15): die Klasse,
+    /// dann InitializeBoundName im umgebenden Bereich wie bei `let`.
+    fn class_declaration(&mut self, node: NodeId, id: ClassId) -> Result<()> {
+        let Some(name) = self.ast.class(id).and_then(|class| class.name) else {
+            return Err(self.unsupported(node));
+        };
+        self.class_definition(node, id, ClosureName::Static(&[]))?;
+        match self
+            .scopes
+            .last()
+            .and_then(|scope| scope.bindings.get(&name).copied())
+        {
+            Some(binding) => self.store_location(binding.location),
+            None => {
+                let name = self.name(name)?;
+                self.emit(Op::InitGlobal, &[name])
+            }
+        }
+    }
+
+    /// ClassDefinitionEvaluation (Abschnitt 15.7.14) mit dem Konstruktor im
+    /// Akkumulator. Eine Klasse mit Namen heißt wie er und bindet ihn in
+    /// ihrem Bereich, eine ohne heißt `name` (className). Der Bereich
+    /// (classEnv) umfasst die Oberklasse und die berechneten Namen; der
+    /// Name darin ist eine Konstante und bis zum Ende der Klasse in der TDZ.
+    /// Das Register hinter dem für die Oberklasse hält erst den Namen, nach
+    /// [`Op::CreateClass`] den Konstruktor.
+    fn class_definition(&mut self, node: NodeId, id: ClassId, name: ClosureName<'_>) -> Result<()> {
+        let ast = self.ast;
+        let Some(class) = ast.class(id) else {
+            return Err(self.unsupported(node));
+        };
+        let mark = self.next_register;
+        let mut scope = BlockScope::default();
+        let mut holes = Vec::new();
+        if let Some(atom) = class.name {
+            let location = self.locate(&mut scope, atom)?;
+            holes.push(location);
+            let binding = LocalBinding {
+                location,
+                kind: BindingKind::Const,
+                initialized_from: class.range.end,
+                in_switch: false,
+            };
+            scope.bindings.insert(atom, binding);
+        }
+        if scope.has_context() {
+            self.emit(Op::PushContext, &[i64::from(scope.slots)])?;
+        }
+        self.set_holes(&holes)?;
+        self.scopes.push(scope);
+        let parent = self.allocate()?;
+        let constructor = self.allocate()?;
+        match class.heritage {
+            Some(heritage) => self.expression(heritage)?,
+            None => self.emit(Op::LdaHole, &[])?,
+        }
+        self.emit(Op::Star, &[i64::from(parent)])?;
+        match (class.name, name) {
+            (Some(atom), _) => {
+                let constant = self.name(atom)?;
+                self.emit(Op::LdaConstant, &[constant])?;
+                self.emit(Op::Star, &[i64::from(constructor)])?;
+            }
+            (None, ClosureName::Static(units)) => {
+                let constant = self.constant(Constant::Name(units.to_vec()))?;
+                self.emit(Op::LdaConstant, &[constant])?;
+                self.emit(Op::Star, &[i64::from(constructor)])?;
+            }
+            (None, ClosureName::Keyed(register)) => {
+                self.emit(Op::Mov, &[i64::from(register), i64::from(constructor)])?;
+            }
+        }
+        let function = match class.constructor {
+            Some(function) => Constant::Function(FunctionTemplate {
+                function,
+                binds_name: false,
+                outer: self.enclosing(),
+            }),
+            None => Constant::DefaultConstructor(class.heritage.is_some()),
+        };
+        let function = self.constant(function)?;
+        self.position(node)?;
+        self.emit(Op::CreateClass, &[function, i64::from(parent)])?;
+        self.emit(Op::Star, &[i64::from(constructor)])?;
+        for &element in ast.list(class.elements) {
+            self.class_element(element, parent, constructor)?;
+        }
+        if let Some(atom) = class.name
+            && let Some(binding) = self.lookup(atom)
+        {
+            self.emit(Op::Ldar, &[i64::from(constructor)])?;
+            self.store_location(binding.location)?;
+        }
+        self.emit(Op::Ldar, &[i64::from(constructor)])?;
+        self.leave_block(mark)
+    }
+
+    /// ClassElementEvaluation (Abschnitt 15.7.10) einer Methode, eines
+    /// Getters oder Setters: MethodDefinitionEvaluation wie im Objektliteral,
+    /// aber nicht aufzählbar, auf dem Prototyp im Register `prototype` oder
+    /// mit `static` auf dem Konstruktor im Register `constructor`, der dann
+    /// auch [[HomeObject]] ist.
+    fn class_element(&mut self, element: NodeId, prototype: u32, constructor: u32) -> Result<()> {
+        self.position(element)?;
+        let Node::ClassMethod {
+            key,
+            function,
+            kind,
+            is_static,
+        } = *self.ast.node(element)
+        else {
+            return Err(self.unsupported(element));
+        };
+        let target = i64::from(if is_static { constructor } else { prototype });
+        let name = self.allocate()?;
+        let register = i64::from(name);
+        match self.property_key(key)? {
+            Some(units) => {
+                let constant = self.constant(Constant::Name(units.clone()))?;
+                self.emit(Op::LdaConstant, &[constant])?;
+                self.emit(Op::Star, &[register])?;
+                self.closure(element, function, ClosureName::Static(&units))?;
+            }
+            None => {
+                self.emit(Op::Star, &[register])?;
+                self.closure(element, function, ClosureName::Keyed(name))?;
+            }
+        }
+        self.home_object(function, target)?;
+        self.position(key)?;
+        let op = match kind {
+            MethodKind::Method => Op::DefineMethod,
+            MethodKind::Get => Op::DefineClassGetter,
+            MethodKind::Set => Op::DefineClassSetter,
+        };
+        self.emit(op, &[target, register])?;
         self.release(name);
         Ok(())
     }
@@ -3354,6 +3628,19 @@ impl<'a> Compiler<'a> {
                 self.chain(inner, ChainEnd::Callee(this))
             }
             Node::Chain(chain) => self.chain(chain, ChainEnd::Callee(this)),
+            // `super.m()` ruft mit dem `this` der Referenz auf.
+            Node::SuperMember(_) | Node::SuperComputedMember(_) => {
+                let reference = self.super_reference(inner)?;
+                self.get_value(reference, self.ast.range(inner).start)?;
+                if let Reference::SuperNamed { base, .. } | Reference::SuperKeyed { base } =
+                    reference
+                {
+                    let actual = base.checked_add(1).ok_or(CompileError::TooLarge)?;
+                    self.emit(Op::Mov, &[i64::from(actual), i64::from(this)])?;
+                }
+                self.release_reference(reference);
+                Ok(true)
+            }
             _ => {
                 self.expression(head)?;
                 Ok(false)
@@ -3436,6 +3723,7 @@ impl<'a> Compiler<'a> {
         let op = match op {
             Op::TailCall => Op::TailCallSpread,
             Op::Construct => Op::ConstructSpread,
+            Op::SuperCall => Op::SuperCallSpread,
             _ => Op::CallSpread,
         };
         let array = self.allocate()?;
@@ -3665,12 +3953,156 @@ impl<'a> Compiler<'a> {
     }
 
     /// `this` (Abschnitt 13.2.1): in Pfeilfunktionen aus dem Kontext der
-    /// Funktion oder des Scripts, das sie umgibt.
+    /// Funktion oder des Scripts, das sie umgibt. Im Konstruktor einer
+    /// abgeleiteten Klasse und in Pfeilfunktionen darin wirft die Lücke den
+    /// ReferenceError aus GetThisBinding (Abschnitt 9.1.1.3.3).
     fn load_this(&mut self, node: NodeId) -> Result<()> {
-        if !self.lexical_this {
+        if self.lexical_this {
+            let (depth, slot, derived) = self.find_lexical(node, |layout| layout.this)?;
+            self.emit(Op::LdaContext, &[i64::from(depth), i64::from(slot)])?;
+            if derived {
+                let name = self.constant(Constant::Name(units("this")))?;
+                self.emit(Op::ThrowIfHole, &[name])?;
+            }
+            return Ok(());
+        }
+        if !self.derived {
             return self.emit(Op::Ldar, &[THIS]);
         }
-        self.load_lexical(node, |layout| layout.this)
+        let name = self.constant(Constant::Name(units("this")))?;
+        match self.own_this() {
+            Some((depth, slot)) => {
+                self.emit(Op::LdaContext, &[i64::from(depth), i64::from(slot)])?;
+                self.emit(Op::ThrowIfHole, &[name])
+            }
+            None => {
+                self.emit(Op::CheckHole, &[THIS, name])?;
+                self.emit(Op::Ldar, &[THIS])
+            }
+        }
+    }
+
+    /// Der Platz im Kontext mit dem eigenen `this`, wenn Pfeilfunktionen es
+    /// lesen: wie viele Stufen außerhalb des aktuellen und welcher.
+    fn own_this(&self) -> Option<(u32, u32)> {
+        let mut depth: u32 = 0;
+        for scope in self.scopes.iter().rev() {
+            if let Some(slot) = scope.this {
+                return Some((depth, slot));
+            }
+            if scope.has_context() {
+                depth = depth.saturating_add(1);
+            }
+        }
+        None
+    }
+
+    /// BindThisValue (Abschnitt 9.1.1.3.1) mit dem Ergebnis von `super()` im
+    /// Akkumulator: ein ReferenceError, wenn `this` schon gebunden ist. Der
+    /// Akkumulator behält das Ergebnis.
+    fn bind_this(&mut self, node: NodeId) -> Result<()> {
+        let place = if self.lexical_this {
+            let (depth, slot, _) = self.find_lexical(node, |layout| layout.this)?;
+            Some((depth, slot))
+        } else {
+            self.own_this()
+        };
+        let result = self.allocate()?;
+        self.emit(Op::Star, &[i64::from(result)])?;
+        match place {
+            Some((depth, slot)) => {
+                self.emit(Op::LdaContext, &[i64::from(depth), i64::from(slot)])?;
+            }
+            None => self.emit(Op::Ldar, &[THIS])?,
+        }
+        self.emit(Op::ThrowIfNotHole, &[])?;
+        self.emit(Op::Ldar, &[i64::from(result)])?;
+        match place {
+            Some((depth, slot)) => {
+                self.emit(Op::StaContext, &[i64::from(depth), i64::from(slot)])?;
+            }
+            None => self.emit(Op::Star, &[THIS])?,
+        }
+        self.release(result);
+        Ok(())
+    }
+
+    /// Beendet den Rahmen mit dem Akkumulator. Im Konstruktor einer
+    /// abgeleiteten Klasse, dessen `this` im Kontext liegt, kommt es vorher
+    /// zurück in Register 0; dort prüft [[Construct]] die Bindung.
+    fn emit_return(&mut self) -> Result<()> {
+        if self.derived
+            && let Some((depth, slot)) = self.own_this()
+        {
+            let value = self.allocate()?;
+            self.emit(Op::Star, &[i64::from(value)])?;
+            self.emit(Op::LdaContext, &[i64::from(depth), i64::from(slot)])?;
+            self.emit(Op::Star, &[THIS])?;
+            self.emit(Op::Ldar, &[i64::from(value)])?;
+            self.release(value);
+        }
+        self.emit(Op::Return, &[])
+    }
+
+    /// Das Funktionsobjekt, für das `super` gilt (GetThisEnvironment und
+    /// [[FunctionObject]]): Register 1, in Pfeilfunktionen aus dem Kontext
+    /// der Funktion um sie.
+    fn load_function(&mut self, node: NodeId) -> Result<()> {
+        if !self.lexical_this {
+            return self.emit(Op::Ldar, &[1]);
+        }
+        let (depth, slot, _) = self.find_lexical(node, |layout| layout.function)?;
+        self.emit(Op::LdaContext, &[i64::from(depth), i64::from(slot)])
+    }
+
+    /// Eine Referenz mit `super` (Abschnitt 13.3.7.1): erst GetThisBinding,
+    /// dann der berechnete Name ohne ToPropertyKey, dann GetSuperBase
+    /// (MakeSuperPropertyReference, Abschnitt 13.3.7.3). Basis, `this` und
+    /// Name liegen in Registern hintereinander.
+    fn super_reference(&mut self, node: NodeId) -> Result<Reference> {
+        let base = self.allocate()?;
+        let this = self.allocate()?;
+        self.load_this(node)?;
+        self.emit(Op::Star, &[i64::from(this)])?;
+        let reference = match *self.ast.node(node) {
+            Node::SuperMember(atom) => {
+                let name = self.name(atom)?;
+                Reference::SuperNamed { base, name }
+            }
+            Node::SuperComputedMember(expression) => {
+                let key = self.allocate()?;
+                self.expression(expression)?;
+                self.emit(Op::Star, &[i64::from(key)])?;
+                Reference::SuperKeyed { base }
+            }
+            _ => return Err(self.unsupported(node)),
+        };
+        self.position(node)?;
+        self.load_function(node)?;
+        self.emit(Op::GetSuperBase, &[])?;
+        self.emit(Op::Star, &[i64::from(base)])?;
+        Ok(reference)
+    }
+
+    /// `super(...)` (Abschnitt 13.3.7.1): GetNewTarget, GetSuperConstructor,
+    /// die Argumente, dann [[Construct]] ([`Op::SuperCall`]) und
+    /// BindThisValue. InitializeInstanceElements hat nichts zu tun, solange
+    /// Klassen keine Felder haben.
+    fn super_call(&mut self, node: NodeId, arguments: List) -> Result<()> {
+        let mark = self.next_register;
+        let new_target = self.allocate()?;
+        let callee = self.allocate()?;
+        self.allocate()?;
+        self.load_new_target(node)?;
+        self.emit(Op::Star, &[i64::from(new_target)])?;
+        self.load_function(node)?;
+        self.position(node)?;
+        self.emit(Op::GetSuperConstructor, &[])?;
+        self.emit(Op::Star, &[i64::from(callee)])?;
+        self.call_arguments(node, Op::SuperCall, callee, arguments)?;
+        self.release(mark);
+        self.position(node)?;
+        self.bind_this(node)
     }
 
     /// `new.target` (Abschnitt 13.3.12.1): GetNewTarget aus dem eigenen
@@ -3692,23 +4124,29 @@ impl<'a> Compiler<'a> {
         node: NodeId,
         slot: impl Fn(&ContextLayout) -> Option<u32>,
     ) -> Result<()> {
+        let (depth, slot, _) = self.find_lexical(node, slot)?;
+        self.emit(Op::LdaContext, &[i64::from(depth), i64::from(slot)])
+    }
+
+    /// Der innerste Platz, den `slot` in den Kontexten um den Code nennt:
+    /// Tiefe, Platz und ob sein Kontext `this` als Lücke halten kann.
+    fn find_lexical(
+        &self,
+        node: NodeId,
+        slot: impl Fn(&ContextLayout) -> Option<u32>,
+    ) -> Result<(u32, u32, bool)> {
         let mut depth = self.open_contexts();
         let mut enclosing = Some(&self.outer);
-        let mut found = None;
-        'search: while let Some(current) = enclosing {
+        while let Some(current) = enclosing {
             for layout in &current.contexts {
                 if let Some(slot) = slot(layout) {
-                    found = Some((depth, slot));
-                    break 'search;
+                    return Ok((depth, slot, layout.derived));
                 }
                 depth = depth.checked_add(1).ok_or(CompileError::TooLarge)?;
             }
             enclosing = current.parent.as_ref();
         }
-        let Some((depth, slot)) = found else {
-            return Err(self.unsupported(node));
-        };
-        self.emit(Op::LdaContext, &[i64::from(depth), i64::from(slot)])
+        Err(self.unsupported(node))
     }
 
     /// Ein Bezeichner als Ausdruck: ResolveBinding und GetValue.
@@ -3759,6 +4197,9 @@ impl<'a> Compiler<'a> {
                 self.emit(Op::Star, &[i64::from(key)])?;
                 Ok(Reference::Keyed { base, key })
             }
+            Node::SuperMember(_) | Node::SuperComputedMember(_) => {
+                self.super_reference(self.without_parens(target))
+            }
             _ => Err(self.unsupported(target)),
         }
     }
@@ -3776,6 +4217,10 @@ impl<'a> Compiler<'a> {
             Reference::Keyed { base, key } => {
                 self.emit(Op::LdaKeyedRef, &[i64::from(base), i64::from(key)])
             }
+            Reference::SuperNamed { base, name } => {
+                self.emit(Op::LdaSuperNamed, &[i64::from(base), name])
+            }
+            Reference::SuperKeyed { base } => self.emit(Op::LdaSuperKeyed, &[i64::from(base)]),
         }
     }
 
@@ -3789,6 +4234,10 @@ impl<'a> Compiler<'a> {
             Reference::Keyed { base, key } => {
                 self.emit(Op::StaKeyed, &[i64::from(base), i64::from(key)])
             }
+            Reference::SuperNamed { base, name } => {
+                self.emit(Op::StaSuperNamed, &[i64::from(base), name])
+            }
+            Reference::SuperKeyed { base } => self.emit(Op::StaSuperKeyed, &[i64::from(base)]),
         }
     }
 
@@ -3797,7 +4246,9 @@ impl<'a> Compiler<'a> {
             Reference::Local(..) => {}
             Reference::Global { register, .. }
             | Reference::Named { base: register, .. }
-            | Reference::Keyed { base: register, .. } => self.release(register),
+            | Reference::Keyed { base: register, .. }
+            | Reference::SuperNamed { base: register, .. }
+            | Reference::SuperKeyed { base: register } => self.release(register),
         }
     }
 
@@ -3994,9 +4445,15 @@ impl<'a> Compiler<'a> {
             Node::Member { .. } | Node::ComputedMember { .. } => {
                 return self.chain(target, ChainEnd::Delete).map(|_| ());
             }
-            Node::PrivateMember { .. } | Node::SuperMember(_) | Node::SuperComputedMember(_) => {
-                return Err(self.unsupported(inner));
+            // Schritt 4.b: erst die Referenz, dann der ReferenceError.
+            Node::SuperMember(_) | Node::SuperComputedMember(_) => {
+                let reference = self.super_reference(target)?;
+                self.position(target)?;
+                self.emit(Op::ThrowReferenceError, &[])?;
+                self.release_reference(reference);
+                return Ok(());
             }
+            Node::PrivateMember { .. } => return Err(self.unsupported(inner)),
             _ => {}
         }
         self.expression(argument)?;
