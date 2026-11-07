@@ -117,6 +117,7 @@ const KIND_ERROR: u64 = 13;
 const KIND_BUILTIN: u64 = 14;
 const KIND_PRIMITIVE: u64 = 15;
 const KIND_ITERATOR: u64 = 16;
+const KIND_GENERATOR: u64 = 17;
 
 /// Die Kennzeichen stehen in den Bits 8 bis 31 des Kopfworts.
 const FLAG_SHIFT: u32 = 8;
@@ -154,7 +155,7 @@ fn is_value_cell(kind: u64) -> bool {
 }
 
 /// Die Arten der Objektzellen.
-const OBJECT_KINDS: [u64; 8] = [
+const OBJECT_KINDS: [u64; 9] = [
     KIND_OBJECT,
     KIND_ARRAY,
     KIND_FUNCTION,
@@ -163,6 +164,7 @@ const OBJECT_KINDS: [u64; 8] = [
     KIND_BUILTIN,
     KIND_PRIMITIVE,
     KIND_ITERATOR,
+    KIND_GENERATOR,
 ];
 
 /// Die internen Felder eines Funktionsobjekts, Werte vor den eingebetteten
@@ -176,6 +178,8 @@ pub(crate) const BUILTIN_FIELDS: usize = 2;
 pub(crate) const PRIMITIVE_FIELDS: usize = 1;
 /// Die internen Felder eines Iterators für Arrays oder Zeichenketten.
 pub(crate) const ITERATOR_FIELDS: usize = 3;
+/// Die internen Felder eines Generators.
+pub(crate) const GENERATOR_FIELDS: usize = 5;
 
 fn is_object(kind: u64) -> bool {
     OBJECT_KINDS.contains(&kind)
@@ -190,6 +194,7 @@ fn object_fields(kind: u64) -> usize {
         KIND_BUILTIN => BUILTIN_FIELDS,
         KIND_PRIMITIVE => PRIMITIVE_FIELDS,
         KIND_ITERATOR => ITERATOR_FIELDS,
+        KIND_GENERATOR => GENERATOR_FIELDS,
         _ => 0,
     }
 }

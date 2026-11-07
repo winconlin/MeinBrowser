@@ -15,7 +15,9 @@
 //!
 //! [[ThisMode]], [[Strict]], [[FormalParameters]], [[ECMAScriptCode]] und
 //! ob es [[Construct]] gibt, folgen aus der Funktion im Syntaxbaum; jeder
-//! Konstruktor ist bisher einer der Art ~base~. Es fehlen noch
+//! Konstruktor ist bisher einer der Art ~base~. Generatorfunktionen haben
+//! %GeneratorFunction.prototype% als Prototyp und ein `prototype` aus
+//! %GeneratorPrototype%, aber kein [[Construct]]. Es fehlen noch
 //! [[HomeObject]] und alles für Klassen.
 
 #![forbid(unsafe_code)]
@@ -153,8 +155,15 @@ pub(crate) fn instantiate_function<'s>(
 /// Das sind InstantiateOrdinaryFunctionObject und
 /// InstantiateOrdinaryFunctionExpression (Abschnitte 15.2.4 und 15.2.5)
 /// sowie die Schritte aus DefineMethod und MethodDefinitionEvaluation
-/// (Abschnitte 15.4.2 und 15.4.4) ohne MakeMethod. Pfeilfunktionen
+/// (Abschnitte 15.4.4 und 15.4.5) ohne MakeMethod. Pfeilfunktionen
 /// (Abschnitt 15.3.4) haben wie Methoden kein `prototype`.
+///
+/// Generatoren und Generator-Methoden (InstantiateGeneratorFunctionObject
+/// und InstantiateGeneratorFunctionExpression, Abschnitte 15.5.3 und
+/// 15.5.4, und MethodDefinitionEvaluation) haben stattdessen
+/// %GeneratorFunction.prototype% als Prototyp und ein neues Objekt aus
+/// %GeneratorPrototype% als `prototype`, beschreibbar, aber weder aufzählbar
+/// noch konfigurierbar und ohne `constructor`.
 pub(crate) fn instantiate_closure<'s>(
     agent: &mut Agent,
     scope: &'s Scope,
@@ -170,17 +179,23 @@ pub(crate) fn instantiate_closure<'s>(
             let function = entry.unit.function(entry.template.function)?;
             Some((
                 function.kind,
+                function.generator,
                 constructs(function),
                 expected_argument_count(&entry.unit, function),
             ))
         });
     // Die Nummer stammt aus den Konstanten des Codes, der die Funktion
     // anlegt; es gibt sie immer.
-    let Some((kind, constructor, length)) = found else {
+    let Some((kind, generator, constructor, length)) = found else {
         return Err(agent.throw_error(ErrorKind::TypeError));
     };
     let realm_number = i32::try_from(realm.index()).map_err(|_| OutOfMemory)?;
-    let prototype = agent.intrinsic(scope, realm, Intrinsic::FunctionPrototype);
+    let intrinsic = if generator {
+        Intrinsic::GeneratorFunctionPrototype
+    } else {
+        Intrinsic::FunctionPrototype
+    };
+    let prototype = agent.intrinsic(scope, realm, intrinsic);
     let shape = agent.empty_shape(scope);
     let function = agent.heap_mut().alloc_object(
         scope,
@@ -204,6 +219,13 @@ pub(crate) fn instantiate_closure<'s>(
     set_function_name(agent, scope, function, name, prefix)?;
     if constructor {
         make_constructor(agent, scope, realm, function)?;
+    }
+    if generator {
+        let generator_prototype = agent.intrinsic(scope, realm, Intrinsic::GeneratorPrototype);
+        let prototype = ordinary_object_create(agent, scope, Some(generator_prototype))?;
+        let key = agent.key_from_units(scope, &units("prototype"))?;
+        let descriptor = PropertyDescriptor::data(prototype, true, false, false);
+        define_property_or_throw(agent, scope, function, key, &descriptor)?;
     }
     Ok(function)
 }

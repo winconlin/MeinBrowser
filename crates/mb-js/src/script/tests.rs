@@ -3254,3 +3254,350 @@ fn patterns_survive_collections() {
     );
     assert_eq!(run(&mut agent, realm, &source), "\"7xyz6ta@ananananan\"");
 }
+
+#[test]
+fn generators_yield_their_values() {
+    check(&[
+        (
+            "function* g() { yield 1; yield 2; return 3; } var it = g(); \
+             var a = it.next(), b = it.next(), c = it.next(), d = it.next(); \
+             '' + a.value + a.done + b.value + b.done + c.value + c.done + d.value + d.done",
+            "\"1false2false3trueundefinedtrue\"",
+        ),
+        // Der Wert von `next` ist der Wert von `yield`; der erste fällt weg.
+        (
+            "function* g() { var x = yield 1; var y = yield x + 1; return x + y; } \
+             var it = g(); it.next('weg'); var a = it.next(10).value; it.next(5).value + a",
+            "26",
+        ),
+        ("function* g() { yield; } g().next().value", "undefined"),
+        (
+            "function* g() { return 1 + (yield 2) * 3; } var it = g(); it.next(); it.next(4).value",
+            "13",
+        ),
+        // Der Rumpf läuft erst mit `next`, die Parameter schon beim Aufruf
+        // (EvaluateGeneratorBody, Abschnitt 15.5.2).
+        (
+            "var log = ''; function* g() { log += 'b'; yield; } var it = g(); log += 'a'; it.next(); log",
+            "\"ab\"",
+        ),
+        (
+            "var log = ''; function* g(a = log += 'p') { log += 'b'; } var it = g(); log += 'c'; \
+             it.next(); log",
+            "\"pcb\"",
+        ),
+        (
+            "function* g() { yield this.x; yield arguments.length; } var o = {x: 7, g}; \
+             var it = o.g(1, 2); '' + it.next().value + it.next().value",
+            "\"72\"",
+        ),
+        (
+            "function* g() { let x = 1; var f = () => x; yield f; x = 2; yield f; } \
+             var it = g(); var f = it.next().value; var a = f(); it.next(); a + f()",
+            "3",
+        ),
+        (
+            "function* g() { for (let i = 0; i < 3; i++) yield () => i; } \
+             var s = ''; for (var f of g()) s += f(); s",
+            "\"012\"",
+        ),
+        (
+            "var g = function* h() { yield h === g; }; g().next().value",
+            "true",
+        ),
+        (
+            "var o = { *m() { yield 1; } }; o.m().next().value + o.m.name",
+            "\"1m\"",
+        ),
+        (
+            "var o = { *['c' + 1]() { yield 2; } }; o.c1().next().value",
+            "2",
+        ),
+        // In Blöcken sind Generatoren lexikalisch, auch ohne strikten Modus
+        // (Anhang B.3.2 gilt nur für gewöhnliche Funktionen).
+        (
+            "{ function* g() { yield 5; } var r = g().next().value; } r + typeof g",
+            "\"5undefined\"",
+        ),
+        (
+            "var r = g().next().value; function* g() { yield 'h'; } r",
+            "\"h\"",
+        ),
+        (
+            "function* g() { yield 1; yield 2; yield 3; } var [a, ...b] = g(); \
+             a + b.length + [...g()].length",
+            "6",
+        ),
+        (
+            "function* g() { yield 'a'; yield 'b'; } function f(x, y) { return x + y; } f(...g())",
+            "\"ab\"",
+        ),
+        ("function* g() {} g() instanceof g", "true"),
+        (
+            "function* g() {} var p = {}; g.prototype = p; g() instanceof g",
+            "true",
+        ),
+        // Ohne Objekt als `prototype` gilt %GeneratorPrototype%.
+        (
+            "function* g() { yield 1; } g.prototype = 1; g().next().value",
+            "1",
+        ),
+        (
+            "function* g() {} try { new g(); } catch (e) { e.name }",
+            "\"TypeError\"",
+        ),
+        (
+            "var o = { *m() {} }; try { new o.m(); } catch (e) { e.name }",
+            "\"TypeError\"",
+        ),
+        ("function* g() {} typeof g.prototype.next", "\"function\""),
+        // Im Generator ist `yield` ein Operator, sonst ein Bezeichner.
+        ("var yield = 4; function f() { return yield; } f()", "4"),
+    ]);
+}
+
+#[test]
+fn generators_complete_with_return_and_throw() {
+    check(&[
+        // Vor dem ersten `next` beenden `return` und `throw` den Generator,
+        // ohne dass sein Rumpf läuft (GeneratorResumeAbrupt, Abschnitt
+        // 27.8.3.4).
+        (
+            "var log = ''; function* g() { log += 'b'; } var it = g(); var r = it.return(5); \
+             log + r.value + r.done + it.next().done",
+            "\"5truetrue\"",
+        ),
+        (
+            "var log = ''; function* g() { log += 'b'; yield 1; } var it = g(); \
+             try { it.throw(7); } catch (e) { log += e; } log + it.next().done",
+            "\"7true\"",
+        ),
+        (
+            "var log = ''; function* g() { try { yield 1; log += 'x'; } finally { log += 'f'; } } \
+             var it = g(); it.next(); var r = it.return(9); log + r.value + r.done + it.next().done",
+            "\"f9truetrue\"",
+        ),
+        // `finally` kann noch einmal anhalten; danach gilt der Wert von
+        // `return`.
+        (
+            "function* g() { try { yield 1; } finally { yield 2; } } var it = g(); it.next(); \
+             var a = it.return(9); var b = it.next(); '' + a.value + a.done + b.value + b.done",
+            "\"2false9true\"",
+        ),
+        // `return` in `finally` ersetzt das von `return()`.
+        (
+            "function* g() { try { yield 1; } finally { return 'f'; } } var it = g(); it.next(); \
+             it.return(9).value",
+            "\"f\"",
+        ),
+        (
+            "function* g() { try { yield 1; } catch (e) { yield 'c' + e; } } var it = g(); \
+             it.next(); it.throw('x').value",
+            "\"cx\"",
+        ),
+        (
+            "function* g() { yield 1; yield 2; } var it = g(); it.next(); \
+             try { it.throw('e'); } catch (e) {} it.next().done",
+            "true",
+        ),
+        (
+            "function* g() { throw 'boom'; } var it = g(); var r; \
+             try { it.next(); } catch (e) { r = e; } r + it.next().done",
+            "\"boomtrue\"",
+        ),
+        (
+            "function* g() {} var it = g(); it.next(); var r = it.return(4); '' + r.value + r.done",
+            "\"4true\"",
+        ),
+        (
+            "function* g() {} var it = g(); it.next(); try { it.throw(3); } catch (e) { e }",
+            "3",
+        ),
+        // Ein laufender Generator lässt sich nicht fortsetzen
+        // (GeneratorValidate, Abschnitt 27.8.3.2); der TypeError beendet ihn.
+        (
+            "var it; function* g() { it.next(); } it = g(); \
+             try { it.next(); } catch (e) { e.name + it.next().done }",
+            "\"TypeErrortrue\"",
+        ),
+        (
+            "var it; function* g() { try { it.next(); } catch (e) { yield e.name; } } it = g(); \
+             it.next().value",
+            "\"TypeError\"",
+        ),
+    ]);
+    check_iter(&[
+        // `return` schließt die Iteratoren von `for`-`of` um das `yield`.
+        (
+            "function* g() { for (var x of iter('a', 3)) yield x; } var it = g(); it.next(); \
+             it.return(); log",
+            "\"a@anar\"",
+        ),
+        (
+            "function* g() { for (var x of iter('a', 3)) yield x; } var it = g(); it.next(); \
+             try { it.throw(1); } catch (e) {} log",
+            "\"a@anar\"",
+        ),
+        // `break` in `for`-`of` über einen Generator ruft dessen `return`.
+        (
+            "function* g() { try { yield 1; yield 2; } finally { log += 'f'; } } \
+             for (var x of g()) { log += x; break; } log",
+            "\"1f\"",
+        ),
+        // Auch ein Array-Muster schließt seinen Iterator, wenn aus einem
+        // `yield` darin `return` oder `throw` kommt.
+        (
+            "function* g() { var x = {}; [x[yield 'k']] = iter('a', 3); } var it = g(); \
+             it.next(); var r = it.return(5); log + r.value + r.done",
+            "\"a@ar5true\"",
+        ),
+        (
+            "function* g() { var x = {}; [x[yield 'k']] = iter('a', 3); } var it = g(); \
+             it.next(); try { it.throw(5); } catch (e) { log += e; } log",
+            "\"a@ar5\"",
+        ),
+        (
+            "var src = {[Symbol.iterator]() { return this; }, next() { return {done: false}; }, \
+             return() { log += 'r'; return {}; }}; \
+             function* g() { var [a = yield 1] = src; } var it = g(); it.next(); it.return(2); log",
+            "\"r\"",
+        ),
+        // Mit `finally` danach geht es von dort weiter.
+        (
+            "function* g() { try { var [a = yield 1] = iter('a', 0); } finally { log += 'f'; } } \
+             var it = g(); it.next(); it.return(); log",
+            "\"a@anf\"",
+        ),
+    ]);
+}
+
+#[test]
+fn yield_star_delegates_to_inner_iterators() {
+    check(&[
+        (
+            "function* inner() { yield 1; yield 2; return 'r'; } \
+             function* outer() { var v = yield* inner(); yield v; } \
+             var s = ''; for (var x of outer()) s += x; s",
+            "\"12r\"",
+        ),
+        (
+            "function* g() { yield* [1, 2]; yield* 'ab'; } var s = ''; for (var x of g()) s += x; s",
+            "\"12ab\"",
+        ),
+        (
+            "function* inner() { var a = yield 1; return a; } \
+             function* outer() { var r = yield* inner(); return r * 2; } \
+             var it = outer(); it.next(); it.next(21).value",
+            "42",
+        ),
+        (
+            "function* inner() { try { yield 1; } catch (e) { yield 'c' + e; } } \
+             function* outer() { yield* inner(); } var it = outer(); it.next(); it.throw('x').value",
+            "\"cx\"",
+        ),
+        (
+            "var log = ''; function* inner() { try { yield 1; } finally { log += 'f'; } } \
+             function* outer() { try { yield* inner(); } finally { log += 'o'; } } \
+             var it = outer(); it.next(); var r = it.return(5); log + r.value + r.done",
+            "\"fo5true\"",
+        ),
+        // Das Ergebnis des inneren Iterators kommt unverändert heraus
+        // (GeneratorYield mit innerResult).
+        (
+            "var res = {done: false, value: 7}; \
+             var it = {[Symbol.iterator]() { return this; }, next() { return res; }}; \
+             function* g() { yield* it; } g().next() === res",
+            "true",
+        ),
+        // `next` wird einmal gelesen und mit dem übergebenen Wert gerufen.
+        (
+            "var reads = 0, seen = ''; var inner = {[Symbol.iterator]() { return this; }, \
+             get next() { reads++; var n = 0; \
+             return function (v) { seen += v; n++; return {done: n > 2, value: n}; }; }}; \
+             function* g() { return yield* inner; } var it = g(); \
+             it.next('a'); it.next('b'); var r = it.next('c'); seen + r.value + r.done + reads",
+            "\"undefinedbc3true1\"",
+        ),
+        // Ohne `throw` wird der innere Iterator geschlossen, dann folgt ein
+        // TypeError.
+        (
+            "var log = ''; var it = {[Symbol.iterator]() { return this; }, \
+             next() { return {done: false, value: 1}; }, return() { log += 'r'; return {}; }}; \
+             function* g() { yield* it; } var gen = g(); gen.next(); \
+             try { gen.throw('x'); } catch (e) { log += e.name; } log + gen.next().done",
+            "\"rTypeErrortrue\"",
+        ),
+        // Ohne `return` geht `return` weiter hinaus.
+        (
+            "var log = ''; var it = {[Symbol.iterator]() { return this; }, \
+             next() { return {done: false, value: 1}; }}; \
+             function* g() { try { yield* it; } finally { log += 'f'; } } var gen = g(); \
+             gen.next(); var r = gen.return(3); log + r.value + r.done",
+            "\"f3true\"",
+        ),
+        // Ein `return`, das nicht fertig ist, hält wieder an.
+        (
+            "var it = {[Symbol.iterator]() { return this; }, \
+             next() { return {done: false, value: 'n'}; }, \
+             return(v) { return {done: v > 1, value: 'r' + v}; }}; \
+             function* g() { yield* it; } var gen = g(); gen.next(); \
+             var a = gen.return(1), b = gen.return(2); '' + a.value + a.done + b.value + b.done",
+            "\"r1falser2true\"",
+        ),
+        (
+            "var it = {[Symbol.iterator]() { return this; }, next() { return 1; }}; \
+             function* g() { yield* it; } try { g().next(); } catch (e) { e.name }",
+            "\"TypeError\"",
+        ),
+        (
+            "function* g() { yield* 1; } try { g().next(); } catch (e) { e.name }",
+            "\"TypeError\"",
+        ),
+        // Eine Ausnahme aus `next` schließt den inneren Iterator nicht.
+        (
+            "var log = ''; var it = {[Symbol.iterator]() { return this; }, \
+             next() { throw 'n'; }, return() { log += 'r'; return {}; }}; \
+             function* g() { yield* it; } try { g().next(); } catch (e) { log += e; } log",
+            "\"n\"",
+        ),
+    ]);
+}
+
+#[test]
+fn generators_survive_collections() {
+    let (mut agent, realm) = agent_with(Options {
+        stress: true,
+        verify: true,
+        ..Options::default()
+    });
+    let source = "function* inner(a) { let b = a + 'i'; var f = () => b; yield f(); return 'r'; } \
+         function* outer() { var s = ''; try { s += yield* inner('x'); s += yield [1, 2].length; } \
+         finally { yield s; } } \
+         var s = ''; for (var x of outer()) s += x; \
+         var it = outer(); it.next(); s + it.return('z').value + it.next().value + it.next().done";
+    assert_eq!(run(&mut agent, realm, source), "\"xi2rundefinedztrue\"");
+}
+
+/// Jedes `next` ist ein neuer Lauf; ein `yield*` auf einen Generator
+/// schachtelt einen weiteren. Zu tief endet das mit einem RangeError (RS-8).
+#[test]
+fn nested_generators_run_on_a_small_stack() {
+    let thread = std::thread::Builder::new()
+        .stack_size(1 << 20)
+        .spawn(|| {
+            let (mut agent, realm) = checked();
+            agent.with_execution_budget(
+                std::rc::Rc::new(crate::agent::Budget::unlimited()),
+                |agent| {
+                    let deep = "function* r(n) { if (n > 0) yield* r(n - 1); else yield 'tief'; } \
+                                r(10).next().value";
+                    assert_eq!(run(agent, realm, deep), "\"tief\"");
+                    assert_eq!(run(agent, realm, "r(100000).next()"), "RangeError");
+                    let caught = "try { r(100000).next(); } catch (e) { e.name }";
+                    assert_eq!(run(agent, realm, caught), "\"RangeError\"");
+                },
+            );
+        })
+        .expect("Faden");
+    assert!(thread.join().is_ok());
+}
