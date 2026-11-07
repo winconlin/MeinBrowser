@@ -35,6 +35,16 @@
 //! [`Op::Return`]: Ersetzt der Aufruf den Rahmen, kommt der Rahmen dort nie
 //! an, sonst gibt er das Ergebnis zurück.
 //!
+//! Klassen: [`Op::CreateClass`] legt Konstruktor und Prototyp an, danach
+//! definieren [`Op::DefineMethod`], [`Op::DefineClassGetter`] und
+//! [`Op::DefineClassSetter`] die Methoden. Wer `super.x` liest, bekommt
+//! mit [`Op::SetHomeObject`] sein [[HomeObject]]; die Referenz hält die
+//! Basis aus [`Op::GetSuperBase`], `this` und bei berechneten Namen den
+//! Namen in drei Registern hintereinander ([`Op::LdaSuperNamed`]).
+//! `super()` legt new.target in das Register vor die Funktion
+//! ([`Op::SuperCall`]). Im Konstruktor einer abgeleiteten Klasse hält
+//! `this` bis dahin die Lücke ([`Code::is_derived_constructor`]).
+//!
 //! Generatoren: Der Code einer Generatorfunktion legt nach
 //! FunctionDeclarationInstantiation mit [`Op::CreateGenerator`] den
 //! Generator an und kehrt mit ihm zurück. [`Op::Yield`] hält den Rahmen an;
@@ -118,6 +128,12 @@ ops! {
     /// Wirft den ReferenceError der TDZ, wenn der Akkumulator die Lücke
     /// hält.
     ThrowIfHole [Constant],
+    /// Wirft den ReferenceError aus BindThisValue (Abschnitt 9.1.1.3.1),
+    /// wenn der Akkumulator nicht die Lücke hält: `this` ist schon gebunden.
+    ThrowIfNotHole [],
+    /// Wirft einen ReferenceError, für `delete` mit `super` (Abschnitt
+    /// 13.5.1.2, Schritt 4.b).
+    ThrowReferenceError [],
 
     /// Ein neuer Kontext mit so vielen Plätzen für Bindungen, wie die Zahl
     /// sagt, alle *undefined*, im aktuellen. Er wird der aktuelle.
@@ -174,6 +190,18 @@ ops! {
     DefineGetter [Register, Register],
     /// Dasselbe für einen Setter.
     DefineSetter [Register, Register],
+    /// Eine Methode einer Klasse (DefineMethodProperty, Abschnitt 10.2.8):
+    /// DefinePropertyOrThrow für das Objekt im ersten Register mit dem
+    /// Schlüssel im zweiten und der Funktion im Akkumulator, beschreibbar,
+    /// konfigurierbar und nicht aufzählbar.
+    DefineMethod [Register, Register],
+    /// [`Op::DefineGetter`] für eine Klasse: nicht aufzählbar.
+    DefineClassGetter [Register, Register],
+    /// [`Op::DefineSetter`] für eine Klasse: nicht aufzählbar.
+    DefineClassSetter [Register, Register],
+    /// MakeMethod (Abschnitt 10.2.7): Das Objekt im Register wird
+    /// [[HomeObject]] der Funktion im Akkumulator.
+    SetHomeObject [Register],
     /// Ein Element eines Array-Literals: der Akkumulator an der Stelle der
     /// Länge.
     ArrayPush [Register],
@@ -213,6 +241,22 @@ ops! {
     /// `delete` für die Eigenschaft mit dem Schlüssel im Akkumulator auf dem
     /// Register.
     DeleteKeyed [Register],
+    /// GetSuperBase (Abschnitt 9.1.1.3.5) für das Funktionsobjekt im
+    /// Akkumulator: [[GetPrototypeOf]] seines [[HomeObject]], *undefined*
+    /// ohne.
+    GetSuperBase [],
+    /// GetValue für eine Referenz mit `super` und dem Namen: die Basis im
+    /// Register, `this` im Register danach. ToObject der Basis wirft für
+    /// *null* einen TypeError, [[Get]] bekommt `this` als Empfänger.
+    LdaSuperNamed [Register, Constant],
+    /// Dasselbe mit dem Schlüssel im dritten Register ab dem Register.
+    /// Danach hält es den Schlüssel nach ToPropertyKey.
+    LdaSuperKeyed [Register],
+    /// PutValue mit dem Akkumulator für eine Referenz mit `super` und dem
+    /// Namen, Basis und `this` wie bei [`Op::LdaSuperNamed`].
+    StaSuperNamed [Register, Constant],
+    /// Dasselbe mit dem Schlüssel wie bei [`Op::LdaSuperKeyed`].
+    StaSuperKeyed [Register],
 
     Add [Register],
     Sub [Register],
@@ -280,6 +324,13 @@ ops! {
     CreateClosure [Constant, Constant],
     /// Dasselbe mit dem Schlüssel im Register als Namen.
     CreateClosureKeyed [Constant, Register],
+    /// ClassDefinitionEvaluation (Abschnitt 15.7.14), Schritte 7 bis 18: Das
+    /// Register hält die Oberklasse, ohne `extends` die Lücke, das danach
+    /// den Namen (className). Aus der Konstante, einer Funktion oder
+    /// [`Constant::DefaultConstructor`], entsteht der Konstruktor im
+    /// Akkumulator mit dem aktuellen Kontext als [[Environment]], der
+    /// Prototyp kommt in das Register.
+    CreateClass [Constant, Register],
     /// Ruft die Funktion im Register auf (Call, Abschnitt 7.3.13): `this`
     /// steht im Register danach, dann folgen so viele Argumente, wie die
     /// Zahl sagt. Das Ergebnis kommt in den Akkumulator. Ist der Wert nicht
@@ -304,6 +355,15 @@ ops! {
     TailCallSpread [Register],
     /// [`Op::Construct`] mit den Argumenten aus dem Array.
     ConstructSpread [Register],
+    /// GetSuperConstructor (Abschnitt 13.3.7.2) für das Funktionsobjekt im
+    /// Akkumulator: sein [[GetPrototypeOf]].
+    GetSuperConstructor [],
+    /// `super(...)` (Abschnitt 13.3.7.1): wie [`Op::Construct`], aber mit
+    /// new.target aus dem Register vor der Funktion. Das Ergebnis im
+    /// Akkumulator bindet danach der Code als `this`.
+    SuperCall [Register, Immediate],
+    /// [`Op::SuperCall`] mit den Argumenten aus dem Array.
+    SuperCallSpread [Register],
 
     /// GetIterator (Abschnitt 7.4.4) für den Akkumulator: Das Register nimmt
     /// den Iterator auf, die beiden danach den Wert von `next` und
@@ -416,6 +476,10 @@ pub enum Constant {
     /// Eine Funktion aus dem Quelltext, aus der [`Op::CreateClosure`]
     /// Funktionsobjekte macht.
     Function(FunctionTemplate),
+    /// Der Konstruktor einer Klasse ohne `constructor` für
+    /// [`Op::CreateClass`], mit `true` für eine abgeleitete Klasse
+    /// (ClassDefinitionEvaluation, Abschnitt 15.7.14, Schritt 14.a).
+    DefaultConstructor(bool),
 }
 
 /// Eine Stelle im Quelltext, an der Funktionsobjekte entstehen. Übersetzt
@@ -456,6 +520,12 @@ pub(crate) struct ContextLayout {
     pub(crate) this: Option<u32>,
     /// Der Platz mit `new.target` der Funktion, für Pfeilfunktionen.
     pub(crate) new_target: Option<u32>,
+    /// Der Platz mit dem Funktionsobjekt der Funktion, für `super` in
+    /// Pfeilfunktionen.
+    pub(crate) function: Option<u32>,
+    /// Ob der Platz mit `this` die Lücke halten kann: im Konstruktor einer
+    /// abgeleiteten Klasse vor `super()`.
+    pub(crate) derived: bool,
 }
 
 /// Eine Bindung in einem Kontext.
@@ -552,6 +622,10 @@ pub struct Code {
     /// [`Op::CreateGenerator`].
     pub(crate) generator: Option<u32>,
     pub(crate) strict: bool,
+    /// Ob der Code der Konstruktor einer abgeleiteten Klasse ist: `this`
+    /// beginnt als Lücke, und [[Construct]] prüft, womit er zurückkehrt
+    /// (Abschnitt 10.2.2, Schritte 11 bis 15).
+    pub(crate) derived: bool,
     /// Lagen im Quelltext ab einem Befehl: Paare aus Abstand im Bytecode
     /// und Abstand im Quelltext, nach dem ersten aufsteigend.
     pub(crate) positions: Vec<(u32, u32)>,
@@ -607,6 +681,11 @@ impl Code {
 
     pub fn is_strict(&self) -> bool {
         self.strict
+    }
+
+    /// Ob der Code der Konstruktor einer abgeleiteten Klasse ist.
+    pub fn is_derived_constructor(&self) -> bool {
+        self.derived
     }
 
     pub fn handlers(&self) -> &[Handler] {
@@ -821,6 +900,7 @@ impl Emitter {
             new_target: None,
             generator: None,
             strict,
+            derived: false,
             positions: self.positions,
             handlers: self.handlers,
         }
@@ -901,6 +981,12 @@ impl fmt::Display for Code {
                         }
                         Some(Constant::Function(template)) => {
                             write!(formatter, " fn{}", template.function.index())?;
+                        }
+                        Some(Constant::DefaultConstructor(false)) => {
+                            formatter.write_str(" default")?
+                        }
+                        Some(Constant::DefaultConstructor(true)) => {
+                            formatter.write_str(" default-derived")?;
                         }
                         None => write!(formatter, " c{value}?")?,
                     },

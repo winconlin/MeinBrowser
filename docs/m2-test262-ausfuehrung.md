@@ -97,19 +97,19 @@ Dateien, deren Metadaten der Leser ablehnt, scheitern als Ganzes, bisher
 sie kann nicht erwartet werden. Jede Datei der festen Auswahl muss auch hier
 bestehen.
 
-Mit diesem Stand bestehen 8.790 von 23.296 ausgeführten Dateien und 16.695
+Mit diesem Stand bestehen 10.627 von 23.296 ausgeführten Dateien und 20.367
 von 39.297 Varianten. Die Gründe der Fehlschläge gibt der Test mit
 `--nocapture` aus:
 
 | Varianten | Grund |
 | ---: | --- |
-| 10.757 | Der Übersetzer kann ein Konstrukt noch nicht (`Unsupported`) |
+| 6.219 | Der Übersetzer kann ein Konstrukt noch nicht (`Unsupported`) |
 | 4.743 | Flag `async` |
+| 2.899 | ReferenceError im Test |
 | 2.469 | Eine Datei der Harness endet mit einem ReferenceError |
-| 2.419 | ReferenceError im Test |
-| 997 | TypeError im Test |
+| 1.371 | TypeError im Test |
 | 675 | Flag `module` |
-| 510 | `Test262Error`: Eine Assertion schlug fehl |
+| 522 | `Test262Error`: Eine Assertion schlug fehl |
 | 30 | Die Arbeitsschritte sind erschöpft |
 | 2 | Eine Datei der Harness endet mit einem TypeError |
 
@@ -193,7 +193,7 @@ vier brauchen zwei `eval`, eine davon auch `with`, und zwei Templates mit
 Tag. Ihre Endpositionen prüfen auch eigene Tests in `compiler/tests.rs`, die
 Rekursion ohne wachsenden Registerstapel `script/tests.rs`. Weitere
 Sprachfunktionen wie BigInt bleiben mit ihren Implementierungen zu
-ergänzen. Iteratoren, Destrukturierung und Generatoren gibt es schon,
-Dateien dazu stehen aber noch nicht in der Auswahl; sie laufen bisher nur im
-Lauf über `test/language/` ohne erzwungene Sammlungen. Diese Auswahl
-behauptet nicht, sie abzudecken.
+ergänzen. Iteratoren, Destrukturierung, Generatoren und Klassen ohne Felder
+gibt es schon, Dateien dazu stehen aber noch nicht in der Auswahl; sie
+laufen bisher nur im Lauf über `test/language/` ohne erzwungene Sammlungen.
+Diese Auswahl behauptet nicht, sie abzudecken.

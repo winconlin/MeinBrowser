@@ -1,9 +1,9 @@
 //! Was innere Funktionen sehen: für jede Funktion und für das Script die
 //! Namen, auf die tiefer verschachtelte Funktionen zugreifen, und ob
-//! Pfeilfunktionen darin `this` oder `new.target` lesen. Bindungen mit
-//! diesen Namen legt der Übersetzer in Kontexte statt in Register. Außerdem
-//! steht für jede Funktion, ob ihr Code oder der ihrer Pfeilfunktionen den
-//! Namen `arguments` oder `new.target` enthält.
+//! Pfeilfunktionen darin `this`, `new.target` oder `super` lesen. Bindungen
+//! mit diesen Namen legt der Übersetzer in Kontexte statt in Register.
+//! Außerdem steht für jede Funktion, ob ihr Code oder der ihrer
+//! Pfeilfunktionen den Namen `arguments`, `new.target` oder `super` enthält.
 //!
 //! Gezählt wird nach Namen, nicht nach Bindungen: Greift eine innere
 //! Funktion auf `x` zu, liegen alle Bindungen namens `x` der umgebenden
@@ -47,6 +47,13 @@ pub(crate) struct FunctionCaptures {
     pub(crate) new_target: bool,
     /// Ob Pfeilfunktionen darin, auch ineinander, `new.target` lesen.
     pub(crate) arrow_new_target: bool,
+    /// Ob der Code der Funktion oder ihrer Pfeilfunktionen, auch
+    /// ineinander, `super.x` oder `super[x]` enthält; dann braucht das
+    /// Funktionsobjekt [[HomeObject]].
+    pub(crate) super_property: bool,
+    /// Ob Pfeilfunktionen darin, auch ineinander, `super` nennen; dann
+    /// lesen sie das Funktionsobjekt aus einem Platz im Kontext.
+    pub(crate) arrow_super: bool,
 }
 
 impl Captures {
@@ -65,6 +72,10 @@ enum Use {
     Name(Atom),
     This,
     NewTarget,
+    /// `super.x` oder `super[x]`.
+    SuperProperty,
+    /// `super(...)`.
+    SuperCall,
 }
 
 /// Eine Funktion auf dem Stapel um die aktuelle Stelle.
@@ -86,6 +97,10 @@ impl Ast {
                 Node::Identifier(atom) => uses.push((to_usize(start), Use::Name(atom))),
                 Node::This => uses.push((to_usize(start), Use::This)),
                 Node::NewTarget => uses.push((to_usize(start), Use::NewTarget)),
+                Node::SuperMember(_) | Node::SuperComputedMember(_) => {
+                    uses.push((to_usize(start), Use::SuperProperty));
+                }
+                Node::SuperCall(_) => uses.push((to_usize(start), Use::SuperCall)),
                 _ => {}
             }
         }
@@ -144,6 +159,8 @@ impl Ast {
                 }
                 Use::This => captures.add_this(&stack),
                 Use::NewTarget => captures.add_new_target(&stack),
+                Use::SuperProperty => captures.add_super(&stack, false),
+                Use::SuperCall => captures.add_super(&stack, true),
             }
         }
         captures
@@ -214,6 +231,35 @@ impl Captures {
         {
             captures.new_target = true;
             captures.arrow_new_target |= arrow;
+        }
+    }
+
+    /// `super` in der innersten Funktion auf `stack`, mit `call` für
+    /// `super(...)`: Es gehört ihr oder, wenn sie eine Pfeilfunktion ist, der
+    /// nächsten Funktion außen, die keine ist. Eine Referenz braucht deren
+    /// [[HomeObject]], ein Aufruf ihr new.target. Eine Pfeilfunktion liest
+    /// dazu das Funktionsobjekt und `this` aus deren Kontext, ein Aufruf
+    /// auch new.target, und bindet dort `this`. Außerhalb aller Funktionen
+    /// lässt der Parser es nicht zu.
+    fn add_super(&mut self, stack: &[Open], call: bool) {
+        let arrow = stack.last().is_some_and(|open| open.arrow);
+        let Some(captures) = stack
+            .iter()
+            .rev()
+            .find(|open| !open.arrow)
+            .and_then(|open| self.functions.get_mut(open.index))
+        else {
+            return;
+        };
+        if call {
+            captures.new_target = true;
+        } else {
+            captures.super_property = true;
+        }
+        if arrow {
+            captures.this = true;
+            captures.arrow_super = true;
+            captures.arrow_new_target |= call;
         }
     }
 }

@@ -359,7 +359,7 @@ fn throw_and_early_errors() {
     assert!(syntax.starts_with("Syntax("), "{syntax}");
     let redeclared = eval("let a; var a;");
     assert!(redeclared.starts_with("Syntax("), "{redeclared}");
-    assert_eq!(eval("class A {}"), "Unsupported(0)");
+    assert_eq!(eval("class A { x; }"), "Unsupported(10)");
 }
 
 #[test]
@@ -2419,7 +2419,7 @@ fn tail_calls_throw_to_the_caller() {
 #[test]
 fn a_failed_tail_call_leaves_no_frame() {
     let (mut agent, realm) = checked();
-    let source = "function g() { class A {} } (function () { 'use strict'; return g(); })()";
+    let source = "function g() { class A { x; } } (function () { 'use strict'; return g(); })()";
     assert!(run(&mut agent, realm, source).starts_with("Unsupported"));
     assert_eq!(run(&mut agent, realm, "1 + 1"), "2");
 }
@@ -3600,4 +3600,530 @@ fn nested_generators_run_on_a_small_stack() {
         })
         .expect("Faden");
     assert!(thread.join().is_ok());
+}
+
+#[test]
+fn classes_construct_objects_with_methods() {
+    check(&[
+        (
+            "class A { constructor(x) { this.x = x; } get() { return this.x; } } new A(3).get()",
+            "3",
+        ),
+        ("class A { static s() { return 'st'; } } A.s()", "\"st\""),
+        (
+            "class A { static s() { return this; } } A.s() === A",
+            "true",
+        ),
+        (
+            "class A { get g() { return 1; } set g(v) { this.v = v; } } \
+             var a = new A(); a.g = 5; a.g + a.v",
+            "6",
+        ),
+        ("class A { static get g() { return 'sg'; } } A.g", "\"sg\""),
+        ("class A {} typeof A", "\"function\""),
+        ("class A {} new A() instanceof A", "true"),
+        (
+            "class A { constructor() { return 1; } } typeof new A()",
+            "\"object\"",
+        ),
+        (
+            "class A { constructor() { return { y: 2 }; } } new A().y",
+            "2",
+        ),
+        (
+            "class A { m() { return 1; } m() { return 2; } } new A().m()",
+            "2",
+        ),
+        (
+            "class A { *g() { yield 1; yield 2; } } var s = 0; for (var v of new A().g()) s += v; s",
+            "3",
+        ),
+        (
+            "class A { static *g() { yield 'a'; } } A.g().next().value",
+            "\"a\"",
+        ),
+        ("class A { ['x' + 'y']() { return 1; } } new A().xy()", "1"),
+        // Klassen sind strikt.
+        (
+            "class A { m() { return this; } } var m = new A().m; m()",
+            "undefined",
+        ),
+        (
+            "class A { m() { return typeof this; } } A.prototype.m.call(1)",
+            "\"number\"",
+        ),
+        (
+            "class A { m() { undeclared = 1; } } try { new A().m(); } catch (e) { e.name }",
+            "\"ReferenceError\"",
+        ),
+        // Eine Klassendeklaration hat keinen Wert, ein Klassenausdruck schon.
+        ("1; class A {}", "1"),
+        ("(class {})", "Objekt"),
+        // Ein Endaufruf im Konstruktor: [[Construct]] prüft trotzdem das
+        // Ergebnis.
+        (
+            "function g() { return 5; } class A { constructor() { return g(); } } typeof new A()",
+            "\"object\"",
+        ),
+        (
+            "function f() { return { t: 1 }; } class A { constructor() { return f(); } } new A().t",
+            "1",
+        ),
+    ]);
+}
+
+/// [[Call]] einer Klasse wirft (Abschnitt 10.2.1, Schritt 2), bevor ihr
+/// Rumpf läuft. Methoden haben kein [[Construct]].
+#[test]
+fn class_constructors_need_new() {
+    check(&[
+        ("class A {} A()", "TypeError"),
+        (
+            "class A { constructor() { throw 1; } } try { A(); } catch (e) { e === 1 ? 'Rumpf' : e.name }",
+            "\"TypeError\"",
+        ),
+        (
+            "class A {} try { A.call({}); } catch (e) { e.name }",
+            "\"TypeError\"",
+        ),
+        (
+            "class B extends Object {} try { B(); } catch (e) { e.name }",
+            "\"TypeError\"",
+        ),
+        (
+            "class A { m() {} } try { new (new A().m)(); } catch (e) { e.name }",
+            "\"TypeError\"",
+        ),
+        (
+            "class A { static m() {} } try { new A.m(); } catch (e) { e.name }",
+            "\"TypeError\"",
+        ),
+    ]);
+}
+
+/// NamedEvaluation (Abschnitt 8.4.5) für anonyme Klassen; eine statische
+/// Methode `name` ersetzt den Namen, weil die Elemente danach kommen.
+#[test]
+fn classes_get_their_names() {
+    check(&[
+        ("class A {} A.name", "\"A\""),
+        ("var C = class {}; C.name", "\"C\""),
+        ("var C = class D {}; C.name", "\"D\""),
+        ("var C = (class {}); C.name", "\"C\""),
+        ("let C; C = class {}; C.name", "\"C\""),
+        ("var o = { k: class {} }; o.k.name", "\"k\""),
+        ("var o = { ['c' + 1]: class {} }; o.c1.name", "\"c1\""),
+        (
+            "var s = Symbol('d'); var o = { [s]: class {} }; o[s].name",
+            "\"[d]\"",
+        ),
+        ("(class {}).name", "\"\""),
+        (
+            "class A { static name() { return 'n'; } } typeof A.name",
+            "\"function\"",
+        ),
+        ("let f = class { static m() {} }; f.m.name", "\"m\""),
+        (
+            "var A = class { constructor(a, b, c = 1, ...d) {} }; A.length",
+            "2",
+        ),
+        (
+            "class A {} class B extends A {} B.length + B.name",
+            "\"0B\"",
+        ),
+    ]);
+}
+
+/// Die Bindungen einer Klasse (Abschnitte 15.7.14 und 15.7.15): außen wie
+/// `let`, innen eine Konstante, beide bis zum Ende der Klasse in der TDZ.
+#[test]
+fn class_bindings_have_a_tdz() {
+    check(&[
+        ("new C(); class C {}", "ReferenceError"),
+        ("typeof C; class C {}", "ReferenceError"),
+        ("class C extends C {}", "ReferenceError"),
+        ("class C { [C]() {} }", "ReferenceError"),
+        (
+            "var f = function () { return C; }; try { f(); } catch (e) { e.name } class C {}",
+            "\"ReferenceError\"",
+        ),
+        (
+            "switch (1) { case 0: class C {} case 1: try { C; } catch (e) { e.name } }",
+            "\"ReferenceError\"",
+        ),
+        (
+            "class C { m() { C = 1; } } try { new C().m(); } catch (e) { e.name }",
+            "\"TypeError\"",
+        ),
+        ("class C {} C = 1; C", "1"),
+        ("{ class C {} } typeof C", "\"undefined\""),
+        (
+            "var C = class D { m() { return D; } }; var D = 1; new C().m() === C",
+            "true",
+        ),
+        // Erst die Oberklasse, dann die berechneten Namen in ihrer
+        // Reihenfolge.
+        (
+            "var log = ''; class A extends (log += 'h', Object) { [(log += 'a', 'x')]() {} \
+             static [(log += 'b', 'y')]() {} } log",
+            "\"hab\"",
+        ),
+        (
+            "try { class A { static ['prototype']() {} } } catch (e) { e.name }",
+            "\"TypeError\"",
+        ),
+    ]);
+}
+
+/// ClassDefinitionEvaluation, Schritte 8 (Oberklasse): *null*, ein
+/// Konstruktor mit einem Objekt oder *null* als `prototype` oder sonst ein
+/// TypeError.
+#[test]
+fn classes_extend_constructors_and_null() {
+    check(&[
+        (
+            "class A { m() { return 'a'; } } class B extends A {} new B().m()",
+            "\"a\"",
+        ),
+        (
+            "function F() { this.f = 1; } F.prototype.g = function () { return 2; }; \
+             class B extends F {} var b = new B(); b.f + b.g()",
+            "3",
+        ),
+        (
+            "class A {} class B extends A {} var b = new B(); (b instanceof A) + ',' + (b instanceof B)",
+            "\"true,true\"",
+        ),
+        (
+            "class A { static s() { return 's'; } } class B extends A {} B.s()",
+            "\"s\"",
+        ),
+        (
+            "class B extends null {} try { new B(); } catch (e) { e.name }",
+            "\"TypeError\"",
+        ),
+        (
+            "class B extends null { constructor() { return { n: 1 }; } } new B().n",
+            "1",
+        ),
+        (
+            "try { class B extends 1 {} } catch (e) { e.name }",
+            "\"TypeError\"",
+        ),
+        (
+            "try { class B extends (() => {}) {} } catch (e) { e.name }",
+            "\"TypeError\"",
+        ),
+        (
+            "function F() {} F.prototype = 1; try { class B extends F {} } catch (e) { e.name }",
+            "\"TypeError\"",
+        ),
+        (
+            "function F() {} F.prototype = null; class B extends F {} typeof B.prototype.toString",
+            "\"undefined\"",
+        ),
+        // Eingebaute Konstruktoren als Oberklasse legen das Objekt mit dem
+        // Prototyp von new.target an.
+        (
+            "class E extends Error {} var e = new E('m'); e.message + (e instanceof Error) + (e instanceof E)",
+            "\"mtruetrue\"",
+        ),
+        (
+            "class O extends Object { constructor() { super(); this.a = 1; } } \
+             var o = new O(); '' + o.a + (o instanceof O)",
+            "\"1true\"",
+        ),
+    ]);
+}
+
+/// Der Konstruktor einer abgeleiteten Klasse: `this` erst nach `super()`
+/// (Abschnitte 13.3.7.1 und 9.1.1.3.1) und die Prüfung des Ergebnisses in
+/// [[Construct]] (Abschnitt 10.2.2).
+#[test]
+fn derived_constructors_bind_this_with_super() {
+    check(&[
+        (
+            "class A { constructor(a, b) { this.s = a + b; } } class B extends A {} new B(1, 2).s",
+            "3",
+        ),
+        (
+            "class A { constructor(...r) { this.n = r.length; } } \
+             class B extends A { constructor() { super(...[1, 2], 3); } } new B().n",
+            "3",
+        ),
+        (
+            "class A {} class B extends A { constructor() { super(); return 1; } } \
+             try { new B(); } catch (e) { e.name }",
+            "\"TypeError\"",
+        ),
+        (
+            "class B extends Object { constructor() { super(); return null; } } \
+             try { new B(); } catch (e) { e.name }",
+            "\"TypeError\"",
+        ),
+        (
+            "class B extends Object { constructor() { super(); return { r: 1 }; } } new B().r",
+            "1",
+        ),
+        (
+            "class B extends Object { constructor() { super(); return undefined; } } new B() instanceof B",
+            "true",
+        ),
+        (
+            "class B extends Object { constructor() {} } try { new B(); } catch (e) { e.name }",
+            "\"ReferenceError\"",
+        ),
+        (
+            "class B extends Object { constructor() { return { o: 1 }; } } new B().o",
+            "1",
+        ),
+        (
+            "var log = ''; class A { constructor() { log += 'A'; } } \
+             class B extends A { constructor() { super(); try { super(); } catch (e) { log += e.name; } } } \
+             new B(); log",
+            "\"AAReferenceError\"",
+        ),
+        (
+            "class B extends Object { constructor() { this.x = 1; super(); } } \
+             try { new B(); } catch (e) { e.name }",
+            "\"ReferenceError\"",
+        ),
+        // Erst die Argumente, dann die Prüfung auf einen Konstruktor.
+        (
+            "var log = ''; class B extends null { constructor() { \
+             try { super(log += 'a'); } catch (e) { log += e.name; } return {}; } } new B(); log",
+            "\"aTypeError\"",
+        ),
+        (
+            "var t; class A { constructor() { t = new.target; } } class B extends A {} new B(); t === B",
+            "true",
+        ),
+        (
+            "class A { constructor() { this.n = new.target.name; } } \
+             class B extends A { constructor() { super(); } } new B().n",
+            "\"B\"",
+        ),
+        // Pfeilfunktionen teilen `this` mit dem Konstruktor.
+        (
+            "class A { constructor() { this.a = 1; } } \
+             class B extends A { constructor() { var f = () => super(); f(); this.b = 2; } } \
+             var b = new B(); b.a + b.b",
+            "3",
+        ),
+        (
+            "class B extends Object { constructor() { var f = () => () => super(); f()(); } } \
+             new B() instanceof B",
+            "true",
+        ),
+        (
+            "var r; class B extends Object { constructor() { var f = () => this; \
+             try { f(); } catch (e) { r = e.name; } super(); } } new B(); r",
+            "\"ReferenceError\"",
+        ),
+        (
+            "class B extends Object { constructor() { var f = () => this; super(); this.v = f() === this; } } \
+             new B().v",
+            "true",
+        ),
+        (
+            "class A {} class B extends A { constructor() { try { return; } finally { super(); } } } \
+             new B() instanceof B",
+            "true",
+        ),
+        (
+            "class B extends Object { constructor() { var f = () => super(); \
+             try { return; } finally { f(); } } } new B() instanceof B",
+            "true",
+        ),
+        (
+            "function f() { return 1; } class B extends Object { constructor() { super(); return f(); } } \
+             try { new B(); } catch (e) { e.name }",
+            "\"TypeError\"",
+        ),
+    ]);
+}
+
+/// `super.x` (Abschnitte 13.3.7.1 und 13.3.7.3): die Basis ist der
+/// Prototyp von [[HomeObject]], `this` bleibt der Empfänger.
+#[test]
+fn super_properties_read_from_the_home_objects_prototype() {
+    check(&[
+        (
+            "class A { m() { return 'A' + this.v; } } \
+             class B extends A { m() { return super.m() + 'B'; } } var b = new B(); b.v = 1; b.m()",
+            "\"A1B\"",
+        ),
+        (
+            "class A { m() { return this; } } class B extends A { m() { return super.m(); } } \
+             var b = new B(); b.m() === b",
+            "true",
+        ),
+        (
+            "class A { static s() { return 'a'; } } class B extends A { static s() { return super.s() + 'b'; } } B.s()",
+            "\"ab\"",
+        ),
+        (
+            "class A { m() { return 'k'; } } class B extends A { m() { return super['m'](); } } new B().m()",
+            "\"k\"",
+        ),
+        (
+            "class A { set x(v) { this._x = v; } } class B extends A { m() { super.x = 5; return this._x; } } \
+             new B().m()",
+            "5",
+        ),
+        (
+            "class A {} A.prototype.p = 1; class B extends A { m() { super.p = 2; return '' + this.p + A.prototype.p; } } \
+             new B().m()",
+            "\"21\"",
+        ),
+        (
+            "class A { m() { return 'am'; } } \
+             class B extends A { constructor() { super(); var f = () => super.m(); this.r = f(); } } new B().r",
+            "\"am\"",
+        ),
+        // Erst GetThisBinding, dann der Name; ToPropertyKey erst nach dem
+        // Wert der Zuweisung.
+        (
+            "var log = ''; class B extends Object { constructor() { \
+             try { super[(log += 'k', 'x')]; } catch (e) { log += e.name; } super(); } } new B(); log",
+            "\"ReferenceError\"",
+        ),
+        (
+            "var log = ''; var key = { toString() { log += 'k'; return 'x'; } }; \
+             class A {} class B extends A { m() { super[(log += 'v', key)] = (log += 'v', 1); return log + this.x; } } \
+             new B().m()",
+            "\"vvk1\"",
+        ),
+        (
+            "class A { m() { delete super.x; } } try { new A().m(); } catch (e) { e.name }",
+            "\"ReferenceError\"",
+        ),
+        (
+            "var log = ''; class A { m() { try { delete super[(log += 'k', 'x')]; } \
+             catch (e) { log += e.name; } return log; } } new A().m()",
+            "\"kReferenceError\"",
+        ),
+        // In Objektliteralen.
+        (
+            "var proto = { m() { return 'p'; } }; var o = { __proto__: proto, m() { return super.m() + 'o'; } }; o.m()",
+            "\"po\"",
+        ),
+        (
+            "var o = { __proto__: null, m() { return super.x; } }; try { o.m(); } catch (e) { e.name }",
+            "\"TypeError\"",
+        ),
+        (
+            "var o = { __proto__: { v: 1 }, m() { return (() => super.v)(); } }; o.m()",
+            "1",
+        ),
+        (
+            "var o = { __proto__: { v: 2 }, *g() { yield super.v; } }; o.g().next().value",
+            "2",
+        ),
+        (
+            "var o = { __proto__: { p: 3 }, get g() { return super.p; } }; o.g",
+            "3",
+        ),
+        (
+            "var o = { __proto__: { get g() { return this.v; } }, v: 7, m() { return super.g; } }; o.m()",
+            "7",
+        ),
+        (
+            "var o = { __proto__: { w: 'p' }, m() { return super.w; } }; var other = { m: o.m, w: 'o' }; other.m()",
+            "\"p\"",
+        ),
+    ]);
+}
+
+#[test]
+fn classes_survive_collections() {
+    let (mut agent, realm) = agent_with(Options {
+        stress: true,
+        verify: true,
+        ..Options::default()
+    });
+    let source = "class A { constructor(v) { this.v = v; } get g() { return this.v; } static s() { return 's'; } } \
+         class B extends A { constructor() { var f = () => super('b'); f(); } m() { return super.g + B.s(); } } \
+         var o = { __proto__: new B(), m() { return super.m(); } }; \
+         var s = ''; for (var i = 0; i < 3; i++) s += new B().m(); s + o.m()";
+    assert_eq!(run(&mut agent, realm, source), "\"bsbsbsbs\"");
+}
+
+/// Der Standardkonstruktor ist Bytecode; `super()` schachtelt darum keine
+/// Läufe, und tausend Ebenen passen auf einen kleinen Stapel (RS-8).
+#[test]
+fn deep_class_chains_run_on_a_small_stack() {
+    let thread = std::thread::Builder::new()
+        .stack_size(1 << 20)
+        .spawn(|| {
+            let (mut agent, realm) = checked();
+            agent.with_execution_budget(
+                std::rc::Rc::new(crate::agent::Budget::unlimited()),
+                |agent| {
+                    let deep = "var C = class { constructor() { this.d = 0; } }; \
+                                var D = C; for (var i = 0; i < 1000; i++) D = class extends D {}; \
+                                for (var i = 0; i < 1000; i++) C = class extends C { constructor() { super(); this.d++; } }; \
+                                '' + new C().d + (new D() instanceof D)";
+                    assert_eq!(run(agent, realm, deep), "\"1000true\"");
+                    let endless = "class R extends Object { constructor() { super(); new R(); } } \
+                                   try { new R(); } catch (e) { e.name }";
+                    assert_eq!(run(agent, realm, endless), "\"RangeError\"");
+                },
+            );
+        })
+        .expect("Faden");
+    assert!(thread.join().is_ok());
+}
+
+/// Der TypeError von [[Call]] einer Klasse gehört zu ihrem Realm, die
+/// Fehler der Prüfung nach [[Construct]] entstehen im Aufrufer.
+#[test]
+fn class_errors_belong_to_the_right_realm() {
+    let (mut agent, first) = checked();
+    let second = agent.create_realm().expect("Speicher");
+    agent.scope(|agent, scope| {
+        for (name, class, source, realm, prototype) in [
+            (
+                "A",
+                "(class {})",
+                "try { A(); } catch (e) { e }",
+                second,
+                crate::realm::Intrinsic::TypeErrorPrototype,
+            ),
+            (
+                "R",
+                "(class extends Object { constructor() { super(); return 1; } })",
+                "try { new R(); } catch (e) { e }",
+                first,
+                crate::realm::Intrinsic::TypeErrorPrototype,
+            ),
+            (
+                "N",
+                "(class extends Object { constructor() {} })",
+                "try { new N(); } catch (e) { e }",
+                first,
+                crate::realm::Intrinsic::ReferenceErrorPrototype,
+            ),
+        ] {
+            let value = agent
+                .evaluate_script(scope, second, &units(class))
+                .expect("Klasse");
+            let global = agent.global_object(scope, first);
+            let key = agent.key_from_units(scope, &units(name)).expect("Speicher");
+            crate::operations::set(agent, scope, global, key, value, true).expect("Zuweisung");
+            let error = agent
+                .evaluate_script(scope, first, &units(source))
+                .expect("Fehlerobjekt");
+            let actual = crate::object::get_prototype_of(agent, scope, error)
+                .expect("kein Fehler")
+                .expect("Prototyp");
+            let expected = agent.intrinsic(scope, realm, prototype);
+            let heap = agent.heap();
+            assert_eq!(
+                heap.get(actual).bits(),
+                heap.get(expected).bits(),
+                "{source}"
+            );
+        }
+    });
 }
