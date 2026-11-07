@@ -25,6 +25,8 @@
 //! gibt, folgen aus der Funktion im Syntaxbaum ([`Construction`]).
 //! Generatorfunktionen haben %GeneratorFunction.prototype% als Prototyp und
 //! ein `prototype` aus %GeneratorPrototype%, aber kein [[Construct]].
+//! async-Funktionen haben %AsyncFunction.prototype% als Prototyp, weder
+//! `prototype` noch [[Construct]] (Abschnitt 27.10.4).
 //!
 //! Klassen: Der Konstruktor einer Klasse ohne `constructor` ist in der
 //! Spezifikation eine eingebaute Funktion (ClassDefinitionEvaluation,
@@ -397,7 +399,12 @@ pub(crate) fn instantiate_function<'s>(
 /// 15.5.4, und MethodDefinitionEvaluation) haben stattdessen
 /// %GeneratorFunction.prototype% als Prototyp und ein neues Objekt aus
 /// %GeneratorPrototype% als `prototype`, beschreibbar, aber weder aufzählbar
-/// noch konfigurierbar und ohne `constructor`.
+/// noch konfigurierbar und ohne `constructor`. async-Funktionen, async-Methoden
+/// und async-Pfeilfunktionen (InstantiateAsyncFunctionObject,
+/// InstantiateAsyncFunctionExpression und
+/// InstantiateAsyncArrowFunctionExpression, Abschnitte 15.8.2, 15.8.3 und
+/// 15.9.4) haben %AsyncFunction.prototype% als Prototyp und kein
+/// `prototype`.
 pub(crate) fn instantiate_closure<'s>(
     agent: &mut Agent,
     scope: &'s Scope,
@@ -414,19 +421,23 @@ pub(crate) fn instantiate_closure<'s>(
         Some((
             function.kind,
             function.generator,
+            function.is_async,
             constructs(function),
             expected_argument_count(&entry.unit, function),
         ))
     });
     // Die Nummer stammt aus den Konstanten des Codes, der die Funktion
     // anlegt; es gibt sie immer, und sie gehört zu einer Funktion.
-    let Some((kind, generator, constructor, length)) = found else {
+    let Some((kind, generator, is_async, constructor, length)) = found else {
         return Err(agent.throw_error(ErrorKind::TypeError));
     };
-    let intrinsic = if generator {
-        Intrinsic::GeneratorFunctionPrototype
-    } else {
-        Intrinsic::FunctionPrototype
+    let intrinsic = match (generator, is_async) {
+        (false, false) => Intrinsic::FunctionPrototype,
+        (true, false) => Intrinsic::GeneratorFunctionPrototype,
+        (false, true) => Intrinsic::AsyncFunctionPrototype,
+        // Kann nicht vorkommen: Der Übersetzer legt async-Generatoren noch
+        // nicht an.
+        (true, true) => return Err(agent.throw_error(ErrorKind::TypeError)),
     };
     let prototype = agent.intrinsic(scope, realm, intrinsic);
     let function = allocate_function(agent, scope, realm, shared, environment, prototype)?;

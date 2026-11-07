@@ -394,18 +394,18 @@ fn instructions_know_their_place_in_the_source() {
 #[test]
 fn unsupported_constructs_name_their_place() {
     let cases = [
-        ("async function f() {}", 0),
-        ("class A { async m() {} }", 10),
+        ("async function* f() {}", 0),
+        ("class A { async *m() {} }", 10),
         ("x = {async *a() {}};", 5),
-        ("x = {async a() {}};", 5),
+        ("x = {async *['a']() {}};", 5),
         ("x = {1n: 1};", 5),
         ("let {1n: a} = b;", 5),
-        ("[a = class { async m() {} }] = b;", 13),
+        ("[a = class { async *m() {} }] = b;", 13),
         ("for (var k in o);", 0),
         ("f`x`;", 0),
         ("1n;", 0),
         ("/a/;", 0),
-        ("async x => x;", 0),
+        ("(async function* () {});", 1),
         ("with (a) {}", 0),
         ("l: function g() {}", 3),
     ];
@@ -1478,6 +1478,72 @@ fn generators_hold_no_tail_calls() {
     let code = compile_function(&ast, &first_template(&script.code)).expect("übersetzbar");
     assert_eq!(tail_calls(&code), 0);
     assert!(code.generator_register().is_some());
+}
+
+/// Eine async-Funktion beginnt mit [`Op::BeginAsync`], noch vor den
+/// Parametern. Nach `await` geht es mit [`Op::ResumeAsync`] weiter, vor jedem
+/// `return` steht [`Op::ResolveAsync`], und ein Handler um den ganzen Code
+/// führt zu [`Op::RejectAsync`].
+#[test]
+fn async_functions_begin_with_their_capability_and_reject_from_one_handler() {
+    let code = first_function("async function f(a) { var x = await a; return x; }");
+    assert_eq!(code.async_state_register(), Some(3));
+    assert_eq!(code.generator_register(), None);
+    assert_eq!(
+        function_shape(&code),
+        [
+            "BeginAsync",
+            "Ldar r2",
+            "Await",
+            "ResumeAsync",
+            "Star r4",
+            "Ldar r4",
+            "ResolveAsync",
+            "Return",
+            "LdaUndefined",
+            "ResolveAsync",
+            "Return",
+            "RejectAsync",
+            "Return",
+            "Catch @ -> @"
+        ]
+    );
+    let handler = code.handlers().last().copied().expect("Handler");
+    assert_eq!(handler.start, 1, "hinter BeginAsync");
+    assert_eq!(
+        code.decode(handler.target)
+            .map(|instruction| instruction.op),
+        Some(Op::RejectAsync)
+    );
+    // Die Parameter liegen im Bereich des Handlers.
+    let code = first_function("async function f(a = g()) {}");
+    let shape = function_shape(&code);
+    assert_eq!(shape.first().map(String::as_str), Some("BeginAsync"));
+    assert!(
+        shape.iter().any(|line| line.starts_with("Call ")),
+        "{shape:?}"
+    );
+    assert_eq!(
+        first_function("function f() {}").async_state_register(),
+        None
+    );
+}
+
+/// IsInTailPosition (Abschnitt 15.10.1): In async-Funktionen steht kein
+/// Aufruf in Endposition, auch nicht im strikten Modus und nicht im Rumpf
+/// einer async-Pfeilfunktion ohne Block.
+#[test]
+fn async_functions_hold_no_tail_calls() {
+    for body in ["return g();", "return a ? g() : h();", "return g(...a);"] {
+        let strict = format!("async function f() {{ 'use strict'; {body} }}");
+        assert_eq!(tail_calls(&first_function(&strict)), 0, "{strict}");
+    }
+    let arrow = "'use strict'; var f = async () => g();";
+    let ast = parse_script(&units(arrow)).expect("gültig");
+    let script = compile_script(&ast).expect("übersetzbar");
+    let code = compile_function(&ast, &first_template(&script.code)).expect("übersetzbar");
+    assert_eq!(tail_calls(&code), 0);
+    assert!(code.async_state_register().is_some());
 }
 
 /// Eine Klasse: ihr Name als Konstante im eigenen Bereich, Oberklasse und

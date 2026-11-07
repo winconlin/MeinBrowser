@@ -885,6 +885,36 @@ fn generator_prototypes_link_functions_and_iterators() {
     ]);
 }
 
+/// %AsyncFunction.prototype% (Abschnitt 27.10.3): ein gewöhnliches Objekt
+/// mit %Function.prototype% als Prototyp, bisher nur mit @@toStringTag.
+#[test]
+fn the_async_function_prototype_tags_async_functions() {
+    const FIXED: [Option<bool>; 3] = [Some(false), Some(false), Some(true)];
+    let (mut agent, realm) = agent_with(false);
+    agent.scope(|agent, scope| {
+        let function = agent.intrinsic(scope, realm, Intrinsic::FunctionPrototype);
+        let async_function = agent.intrinsic(scope, realm, Intrinsic::AsyncFunctionPrototype);
+        let parent = prototype_of(agent, scope, async_function);
+        assert!(same(agent, parent, function));
+        assert!(!is_callable(agent.heap(), agent.heap().get(async_function)));
+        assert_eq!(keys(agent, scope, async_function), ["Symbol"]);
+        let (value, attributes) =
+            symbol_data(agent, scope, async_function, WellKnownSymbol::ToStringTag);
+        assert_eq!(describe(agent, value), "\"AsyncFunction\"");
+        assert_eq!(attributes, FIXED);
+    });
+    check(&[
+        (
+            "Object.prototype.toString.call(async function () {})",
+            "\"[object AsyncFunction]\"",
+        ),
+        (
+            "Object.prototype.toString.call(async () => {})",
+            "\"[object AsyncFunction]\"",
+        ),
+    ]);
+}
+
 #[test]
 fn array_and_string_prototypes_return_iterators() {
     let (mut agent, realm) = agent_with(false);

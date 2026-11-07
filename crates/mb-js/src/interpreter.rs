@@ -49,8 +49,15 @@
 //! Kopie seines Kopfs und seiner Register hält. `next` setzt ihn in einem
 //! neuen Lauf fort ([`resume_frame`]), dessen unterster Rahmen er ist; bei
 //! `yield` kommt der Rahmen zurück in den Generator, und der Lauf endet
-//! ([`Ending::Suspended`]). Andere Rahmen halten nie an: Ein Generator
+//! ([`Ending::Suspended`]). Andere Rahmen halten nie so an: Ein Generator
 //! hält nur in seinem eigenen Rumpf an, und der läuft nur so.
+//!
+//! async-Funktionen: Ihr Rumpf beginnt im Rahmen des Aufrufs. Bei `await`
+//! kommt der Rahmen in den Zustand der Funktion und endet wie mit `return`,
+//! mit ihrem Promise im Akkumulator, an jeder Stelle des Stapels; der
+//! Aufrufer geht weiter. Eine der beiden Funktionen, die Await an das
+//! Promise hängt, setzt ihn in einem neuen Lauf fort ([`resume_async`]),
+//! dessen unterster Rahmen er ist.
 
 #![forbid(unsafe_code)]
 
@@ -58,6 +65,9 @@ use std::rc::Rc;
 
 use crate::agent::{Abrupt, Agent, Completion, ErrorKind};
 use crate::ast::Ast;
+use crate::async_function::{
+    async_start, await_value, frame_cell, promise, settle, start_running, suspend, take_throw,
+};
 use crate::builtin::{builtin_parts, call_builtin};
 use crate::bytecode::{Code, Constant, HandlerKind, Instruction, Op};
 use crate::compare::{is_less_than, is_loosely_equal, is_strictly_equal};
@@ -423,6 +433,63 @@ fn resume_suspended<'s>(
     let Some((function, frame, offset)) = suspended_parts(agent, scope, generator) else {
         return Err(agent.throw_error(ErrorKind::TypeError));
     };
+    let started = |heap: &Heap| start_executing(heap, heap.get(generator), resumption);
+    resume_saved(agent, scope, function, frame, offset, value, started)
+}
+
+/// Setzt den bei `await` angehaltenen Rahmen der async-Funktion mit dem
+/// Zustand `state` fort (RunSuspendedContext in Await, Abschnitt
+/// 27.10.5.3, Schritte 3.a und 5.a): ein neuer Lauf mit dem Rahmen aus dem
+/// Zustand und `value` im Akkumulator; [`Op::ResumeAsync`] wirft ihn bei
+/// [`Resumption::Throw`]. Der Lauf endet, wenn der Rahmen wieder anhält
+/// oder fertig ist.
+pub(crate) fn resume_async(
+    agent: &mut Agent,
+    scope: &Scope,
+    state: Local<'_>,
+    resumption: Resumption,
+    value: Local<'_>,
+) -> Completion<()> {
+    agent.with_default_execution_budget(|agent| {
+        agent.enter_interpreter()?;
+        let result = resume_awaiting(agent, scope, state, resumption, value);
+        agent.leave_interpreter();
+        result
+    })
+}
+
+fn resume_awaiting(
+    agent: &mut Agent,
+    scope: &Scope,
+    state: Local<'_>,
+    resumption: Resumption,
+    value: Local<'_>,
+) -> Completion<()> {
+    // Kann nicht fehlen: Von den beiden Funktionen eines `await` läuft nur
+    // eine und nur einmal, und dann hält der Rahmen dort an.
+    let Some((function, frame, offset)) =
+        crate::async_function::suspended_parts(agent, scope, state)
+    else {
+        return Err(agent.throw_error(ErrorKind::TypeError));
+    };
+    let started = |heap: &Heap| start_running(heap, heap.get(state), resumption);
+    resume_saved(agent, scope, function, frame, offset, value, started)?;
+    Ok(())
+}
+
+/// Legt den Rahmen aus der Zelle `frame` für das Funktionsobjekt
+/// `function` wieder auf den Registerstapel und führt ihn ab dem Befehl bei
+/// `offset` aus, mit `value` im Akkumulator. `started` erfährt, wenn der
+/// Rahmen steht.
+fn resume_saved<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    function: Local<'_>,
+    frame: Local<'_>,
+    offset: usize,
+    value: Local<'_>,
+    started: impl FnOnce(&Heap),
+) -> Completion<(Ending, Local<'s>)> {
     let Some((shared, realm)) = function_parts(agent.heap(), agent.heap().get(function)) else {
         return Err(agent.throw_error(ErrorKind::TypeError));
     };
@@ -431,8 +498,8 @@ fn resume_suspended<'s>(
         Kind::Internal(cell) => agent.heap().slot_count(cell),
         _ => 0,
     };
-    // Kann nicht abweichen: [`Op::CreateGenerator`] legte die Zelle für
-    // diesen Code an.
+    // Kann nicht abweichen: [`Op::CreateGenerator`] oder [`Op::Await`]
+    // legte die Zelle für diesen Code an.
     if HEADER.checked_add(code.register_count()) != Some(length) {
         return Err(agent.throw_error(ErrorKind::RangeError));
     }
@@ -446,7 +513,7 @@ fn resume_suspended<'s>(
             heap.set_register(place(header, index), saved);
         }
     }
-    start_executing(heap, heap.get(generator), resumption);
+    started(heap);
     let accumulator = heap.local(scope, heap.get(value));
     let activation = Activation {
         source: Source::Shared(code),
@@ -462,8 +529,9 @@ fn resume_suspended<'s>(
 
 /// Führt Befehle aus, bis `activation` zurückkehrt oder als Rahmen eines
 /// Generators anhält. Der Rückgabewert oder das Ergebnis von `yield` steht
-/// dann im Akkumulator. Die Register der Rahmen räumt bei einer abrupten
-/// Rückkehr der Aufrufer ab.
+/// dann im Akkumulator. Hält ein Rahmen bei `await` an, kehrt er dabei
+/// zurück. Die Register der Rahmen räumt bei einer abrupten Rückkehr der
+/// Aufrufer ab.
 fn run(
     agent: &mut Agent,
     activation: Activation<'_>,
@@ -1403,6 +1471,97 @@ impl<'c> Frame<'c, '_> {
         Ok(())
     }
 
+    /// Der Zustand aus seinem Register, im Code einer async-Funktion.
+    fn async_state<'s>(&self, agent: &mut Agent, scope: &'s Scope) -> Completion<Local<'s>> {
+        // Kann nicht fehlen: Nur der Code einer async-Funktion hat die
+        // Befehle dafür.
+        let Some(register) = self.code.async_state_register() else {
+            return Err(agent.throw_error(ErrorKind::RangeError));
+        };
+        let heap = agent.heap();
+        Ok(heap.local(scope, heap.register(place(self.base, register))))
+    }
+
+    /// Die Befehle für async-Funktionen.
+    fn async_operation(
+        &self,
+        agent: &mut Agent,
+        scope: &Scope,
+        instruction: &Instruction,
+    ) -> Completion<Flow> {
+        if instruction.op == Op::BeginAsync {
+            // Register 1 hält das Funktionsobjekt.
+            let function = self.register(agent, scope, 1);
+            let Some(register) = self.code.async_state_register() else {
+                return Err(agent.throw_error(ErrorKind::RangeError));
+            };
+            let state = async_start(agent, scope, self.realm, function)?;
+            let heap = agent.heap();
+            heap.set_register(place(self.base, register), heap.get(state));
+            return Ok(Flow::Next);
+        }
+        let state = self.async_state(agent, scope)?;
+        match instruction.op {
+            Op::Await => return self.await_operation(agent, scope, instruction, state),
+            Op::ResumeAsync => {
+                let heap = agent.heap();
+                if take_throw(heap, heap.get(state)) {
+                    return Err(agent.throw_value(self.accumulator));
+                }
+            }
+            Op::ResolveAsync | Op::RejectAsync => {
+                let value = self.accumulator_copy(agent, scope);
+                let reject = instruction.op == Op::RejectAsync;
+                let result = settle(agent, scope, state, value, reject)?;
+                self.set_accumulator(agent, result);
+            }
+            // Die übrigen Befehle führt `step` aus.
+            _ => return Err(agent.throw_error(ErrorKind::RangeError)),
+        }
+        Ok(Flow::Next)
+    }
+
+    /// `await` (Abschnitt 27.10.5.3): Await mit dem Akkumulator, dann hält
+    /// der Rahmen an und kehrt wie bei `return` mit dem Promise der Funktion
+    /// zum Aufrufer zurück (RunCallerContext).
+    fn await_operation(
+        &self,
+        agent: &mut Agent,
+        scope: &Scope,
+        instruction: &Instruction,
+        state: Local<'_>,
+    ) -> Completion<Flow> {
+        let value = self.accumulator_copy(agent, scope);
+        let header = self.base.checked_sub(HEADER);
+        let length = HEADER.checked_add(self.code.register_count());
+        // Kann nicht fehlen: Jeder Rahmen hat seinen Kopf.
+        let (Some(header), Some(length)) = (header, length) else {
+            return Err(agent.throw_error(ErrorKind::RangeError));
+        };
+        // Die Zelle entsteht vor PerformPromiseThen; danach scheitert
+        // nichts mehr, und die beiden Funktionen finden den Rahmen.
+        let frame = frame_cell(agent, scope, state, length)?;
+        await_value(agent, scope, self.realm, state, value)?;
+        let suspended = {
+            let heap = agent.heap();
+            if let Kind::Internal(cell) = heap.get(frame).kind() {
+                for index in 0..length {
+                    heap.set_slot(cell, index, heap.register(header.saturating_add(index)));
+                }
+            }
+            suspend(heap, heap.get(state), instruction.end)
+        };
+        // Kann nicht scheitern: Der Übersetzer schreibt höchstens `i32::MAX`
+        // Bytes.
+        if suspended.is_none() {
+            return Err(agent.throw_error(ErrorKind::RangeError));
+        }
+        let heap = agent.heap();
+        let result = heap.local(scope, promise(heap, heap.get(state)));
+        self.set_accumulator(agent, result);
+        Ok(Flow::Return)
+    }
+
     /// Der Generator aus seinem Register, im Code einer Generatorfunktion.
     fn generator<'s>(&self, agent: &mut Agent, scope: &'s Scope) -> Completion<Local<'s>> {
         // Kann nicht fehlen: Nur der Code einer Generatorfunktion hat die
@@ -2287,6 +2446,9 @@ impl<'c> Frame<'c, '_> {
                 }
             }
             Op::YieldStar => return self.delegate(agent, scope, instruction),
+            Op::BeginAsync | Op::Await | Op::ResumeAsync | Op::ResolveAsync | Op::RejectAsync => {
+                return self.async_operation(agent, scope, instruction);
+            }
             Op::Throw => return Err(agent.throw_value(self.accumulator)),
             Op::Rethrow => return Err(agent.rethrow(self.accumulator)),
             Op::Return => return Ok(Flow::Return),

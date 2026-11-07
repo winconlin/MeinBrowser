@@ -40,9 +40,9 @@
 //! in Scripts entscheidet GlobalDeclarationInstantiation, ob es die
 //! globale Bindung gibt, und setzt dafür ein Register.
 //!
-//! Noch nicht unterstützt sind `async`, `for`-`in`, `for await`, `with`,
-//! `import()`, BigInt-Literale, reguläre Ausdrücke, Templates mit Tag und
-//! Funktionsdeklarationen mit Marke (Anhang B.3.1).
+//! Noch nicht unterstützt sind async-Generatoren, `for`-`in`, `for await`,
+//! `with`, `import()`, BigInt-Literale, reguläre Ausdrücke, Templates mit Tag
+//! und Funktionsdeklarationen mit Marke (Anhang B.3.1).
 //!
 //! Klassen: Eine Klasse hat einen eigenen Bereich mit ihrem Namen als
 //! Konstante, die bis zum Ende der Klasse in der TDZ bleibt (classEnv). Darin
@@ -109,6 +109,14 @@
 //! hält den Iterator Record in drei Registern und wiederholt
 //! [`Op::YieldStar`] und [`Op::YieldResult`], bis der innere Iterator
 //! fertig ist. Aufrufe in Generatoren stehen nie in Endposition.
+//!
+//! async-Funktionen: Ihr Code beginnt mit [`Op::BeginAsync`], noch vor
+//! FunctionDeclarationInstantiation. Ein Handler um alles danach lehnt das
+//! Promise mit jeder Ausnahme ab, auch aus den Parametern
+//! ([`Op::RejectAsync`]); jedes `return` und das Ende des Rumpfs lösen es
+//! auf ([`Op::ResolveAsync`]). `await` ist [`Op::Await`], gefolgt von
+//! [`Op::ResumeAsync`]. Aufrufe in async-Funktionen stehen nie in
+//! Endposition.
 //!
 //! Abschlusswert: Scripts führen ein Register dafür (UpdateEmpty, Abschnitt
 //! 6.2.4.4). Jede Ausdrucksanweisung schreibt ihren Wert hinein. `if`,
@@ -541,6 +549,8 @@ struct Compiler<'a> {
     new_target: Option<u32>,
     /// Das Register mit dem Generator, in Generatorfunktionen.
     generator: Option<u32>,
+    /// Das Register mit dem Zustand, in async-Funktionen.
+    async_state: Option<u32>,
     /// Ob der Code der Konstruktor einer abgeleiteten Klasse ist.
     derived: bool,
     /// Die Aufrufe in Endposition im Ausdruck, der gerade übersetzt wird.
@@ -673,7 +683,7 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
             | FunctionKind::DerivedConstructor
             | FunctionKind::FieldInitializer
             | FunctionKind::StaticBlock
-    ) && !function.is_async;
+    ) && !(function.is_async && function.generator);
     let captures = ast.captures().function(template.function);
     let (true, Some(captures)) = (supported, captures) else {
         return Err(CompileError::Unsupported(position));
@@ -745,6 +755,9 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
     }
     if function.generator {
         compiler.generator = Some(compiler.allocate()?);
+    }
+    if function.is_async {
+        compiler.async_state = Some(compiler.allocate()?);
     }
     // Anhang B.3.2.1: Zu parameterNames gehört dann auch `arguments`
     // (test262 block-decl-func-skip-arguments).
@@ -899,6 +912,17 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
     if captures.arrow_super && !arrow {
         parameters.function = Some(parameters.add_slot()?);
     }
+    // EvaluateAsyncFunctionBody und EvaluateAsyncConciseBody (Abschnitte
+    // 15.8.4 und 15.9.3): Die Capability entsteht vor
+    // FunctionDeclarationInstantiation, und jede Ausnahme danach, aus den
+    // Parametern wie aus dem Rumpf, lehnt ihr Promise ab.
+    let async_body = match compiler.async_state {
+        Some(_) => {
+            compiler.emit(Op::BeginAsync, &[])?;
+            Some(compiler.emitter.offset())
+        }
+        None => None,
+    };
     // Alle Bindungen haben ihren Ort; die Register der Schleife über die
     // Felder sind danach wieder frei.
     if function.kind == FunctionKind::Constructor {
@@ -1036,7 +1060,7 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
             compiler.expression(expression)?;
         }
         compiler.tail_calls.clear();
-        compiler.emit(Op::Return, &[])?;
+        compiler.emit_return()?;
     } else {
         for &item in body {
             compiler.top_level_item(item)?;
@@ -1044,8 +1068,15 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
         compiler.emit(Op::LdaUndefined, &[])?;
         compiler.emit_return()?;
     }
+    if let Some(start) = async_body {
+        let end = compiler.emitter.offset();
+        compiler.emitter.handler(start, end, HandlerKind::Catch);
+        compiler.emit(Op::RejectAsync, &[])?;
+        compiler.emit(Op::Return, &[])?;
+    }
     let new_target = compiler.new_target;
     let generator = compiler.generator;
+    let async_state = compiler.async_state;
     let derived = compiler.derived;
     let mut code = compiler.finish();
     code.parameters = u32::try_from(registers.len()).map_err(|_| CompileError::TooLarge)?;
@@ -1053,6 +1084,7 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
     code.parameter_map = parameter_map;
     code.new_target = new_target;
     code.generator = generator;
+    code.async_state = async_state;
     code.derived = derived;
     Ok(code)
 }
@@ -1151,6 +1183,7 @@ impl<'a> Compiler<'a> {
             lexical_this: false,
             new_target: None,
             generator: None,
+            async_state: None,
             derived: false,
             tail_calls: BTreeSet::new(),
             protected: 0,
@@ -1278,7 +1311,7 @@ impl<'a> Compiler<'a> {
                 .ast
                 .function(id)
                 .ok_or_else(|| self.unsupported(item))?;
-            if function.is_async {
+            if function.is_async && function.generator {
                 return Err(self.unsupported(item));
             }
             let Some(name) = function.name else {
@@ -1664,7 +1697,7 @@ impl<'a> Compiler<'a> {
     fn block_function(&self, node: NodeId, id: FunctionId) -> Result<Atom> {
         self.ast
             .function(id)
-            .filter(|function| !function.is_async)
+            .filter(|function| !(function.is_async && function.generator))
             .and_then(|function| function.name)
             .ok_or_else(|| self.unsupported(node))
     }
@@ -3170,6 +3203,7 @@ impl<'a> Compiler<'a> {
             }
             Node::SuperCall(arguments) => self.super_call(node, arguments),
             Node::Yield { argument, delegate } => self.yield_expression(node, argument, delegate),
+            Node::Await(argument) => self.await_expression(node, argument),
             _ => Err(self.unsupported(node)),
         }
     }
@@ -3215,6 +3249,19 @@ impl<'a> Compiler<'a> {
         self.bind(done)?;
         self.release(record);
         self.resumption()
+    }
+
+    /// `await` (Abschnitt 15.8.5). Der Parser lässt es nur im Rumpf einer
+    /// async-Funktion zu, nicht in ihren Parametern und nicht in inneren
+    /// Funktionen; auf oberster Ebene eines Moduls kommt es mit den Modulen.
+    fn await_expression(&mut self, node: NodeId, argument: NodeId) -> Result<()> {
+        if self.async_state.is_none() {
+            return Err(self.unsupported(node));
+        }
+        self.expression(argument)?;
+        self.position(node)?;
+        self.emit(Op::Await, &[])?;
+        self.emit(Op::ResumeAsync, &[])
     }
 
     /// Der Weg nach einem Halt: Mit `next` geht es hinter dem Weg von
@@ -3328,7 +3375,7 @@ impl<'a> Compiler<'a> {
                 | FunctionKind::Setter
                 | FunctionKind::FieldInitializer
                 | FunctionKind::StaticBlock
-        ) && !function.is_async;
+        ) && !(function.is_async && function.generator);
         if !supported {
             return Err(self.unsupported(node));
         }
@@ -4174,8 +4221,12 @@ impl<'a> Compiler<'a> {
     fn tail_position_calls(&self, node: NodeId) -> BTreeSet<NodeId> {
         let mut calls = BTreeSet::new();
         // IsInTailPosition (Abschnitt 15.10.1): nie im Rumpf eines
-        // Generators.
-        if !self.strict || self.protected > 0 || self.generator.is_some() {
+        // Generators oder einer async-Funktion.
+        if !self.strict
+            || self.protected > 0
+            || self.generator.is_some()
+            || self.async_state.is_some()
+        {
             return calls;
         }
         let mut pending = vec![node];
@@ -4470,7 +4521,9 @@ impl<'a> Compiler<'a> {
 
     /// Beendet den Rahmen mit dem Akkumulator. Im Konstruktor einer
     /// abgeleiteten Klasse, dessen `this` im Kontext liegt, kommt es vorher
-    /// zurück in Register 0; dort prüft [[Construct]] die Bindung.
+    /// zurück in Register 0; dort prüft [[Construct]] die Bindung. In einer
+    /// async-Funktion löst der Akkumulator vorher das Promise auf, mit dem
+    /// der Rahmen dann zurückkehrt.
     fn emit_return(&mut self) -> Result<()> {
         if self.derived
             && let Some((depth, slot)) = self.own_this()
@@ -4481,6 +4534,11 @@ impl<'a> Compiler<'a> {
             self.emit(Op::Star, &[THIS])?;
             self.emit(Op::Ldar, &[i64::from(value)])?;
             self.release(value);
+        }
+        // AsyncBlockStart (Abschnitt 27.10.5.2): Ein `return` und das Ende
+        // des Rumpfs lösen das Promise auf.
+        if self.async_state.is_some() {
+            self.emit(Op::ResolveAsync, &[])?;
         }
         self.emit(Op::Return, &[])
     }
