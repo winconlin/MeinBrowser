@@ -56,6 +56,13 @@
 //! [`Op::DefineField`]. So läuft auch ein Initialisierer ohne Rekursion in
 //! Rust.
 //!
+//! Striktheit: Ob ein Befehl strikt läuft, sagt der Code
+//! ([`Code::is_strict_at`]). Strikt ist der ganze Code einer strikten
+//! Funktion oder eines strikten Scripts. Nicht strikter Code hat dazu eine
+//! Tabelle strikter Bereiche: Alle Teile einer Klasse sind strikter Code
+//! (Abschnitt 11.2.2), auch die Oberklasse und die berechneten Namen, die
+//! im Code um die Klasse laufen.
+//!
 //! Generatoren: Der Code einer Generatorfunktion legt nach
 //! FunctionDeclarationInstantiation mit [`Op::CreateGenerator`] den
 //! Generator an und kehrt mit ihm zurück. [`Op::Yield`] hält den Rahmen an;
@@ -684,6 +691,11 @@ pub struct Code {
     /// [`Op::CreateGenerator`].
     pub(crate) generator: Option<u32>,
     pub(crate) strict: bool,
+    /// Die Bereiche strikten Codes in nicht striktem Code: Paare aus Anfang
+    /// und Ende im Bytecode, aufsteigend, nicht leer und ohne Überlappung.
+    /// Die Befehle darin laufen strikt. In striktem Code bleibt die Tabelle
+    /// leer.
+    pub(crate) strict_ranges: Vec<(u32, u32)>,
     /// Ob der Code der Konstruktor einer abgeleiteten Klasse ist: `this`
     /// beginnt als Lücke, und [[Construct]] prüft, womit er zurückkehrt
     /// (Abschnitt 10.2.2, Schritte 11 bis 15).
@@ -741,8 +753,38 @@ impl Code {
         &self.parameter_map
     }
 
+    /// Ob der ganze Code strikt ist.
     pub fn is_strict(&self) -> bool {
         self.strict
+    }
+
+    /// Ob der Befehl, der bei `offset` beginnt, strikt läuft: im ganzen
+    /// Code, wenn er strikt ist, sonst in einem seiner strikten Bereiche.
+    pub fn is_strict_at(&self, offset: usize) -> bool {
+        if self.strict {
+            return true;
+        }
+        let Ok(offset) = u32::try_from(offset) else {
+            return false;
+        };
+        let after = self
+            .strict_ranges
+            .partition_point(|&(start, _)| start <= offset);
+        after
+            .checked_sub(1)
+            .and_then(|index| self.strict_ranges.get(index))
+            .is_some_and(|&(_, end)| offset < end)
+    }
+
+    /// Die Bereiche strikten Codes in nicht striktem Code, als Anfang und
+    /// Ende im Bytecode.
+    pub fn strict_ranges(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+        self.strict_ranges.iter().map(|&(start, end)| {
+            (
+                usize::try_from(start).unwrap_or(usize::MAX),
+                usize::try_from(end).unwrap_or(usize::MAX),
+            )
+        })
     }
 
     /// Ob der Code der Konstruktor einer abgeleiteten Klasse ist.
@@ -836,6 +878,7 @@ pub struct Emitter {
     bytes: Vec<u8>,
     positions: Vec<(u32, u32)>,
     handlers: Vec<Handler>,
+    strict_ranges: Vec<(u32, u32)>,
 }
 
 impl Emitter {
@@ -943,6 +986,18 @@ impl Emitter {
         });
     }
 
+    /// Ein Bereich strikten Codes für die Befehle in `start..end`. Der
+    /// Übersetzer trägt nur äußerste Bereiche ein, der Reihe nach; ein
+    /// leerer Bereich fällt weg.
+    pub fn strict_range(&mut self, start: usize, end: usize) -> Result<(), TooLarge> {
+        let start = u32::try_from(start).map_err(|_| TooLarge)?;
+        let end = u32::try_from(end).map_err(|_| TooLarge)?;
+        if start < end {
+            self.strict_ranges.push((start, end));
+        }
+        Ok(())
+    }
+
     fn check_size(&self) -> Result<(), TooLarge> {
         if i32::try_from(self.bytes.len()).is_err() {
             return Err(TooLarge);
@@ -962,6 +1017,7 @@ impl Emitter {
             new_target: None,
             generator: None,
             strict,
+            strict_ranges: self.strict_ranges,
             derived: false,
             positions: self.positions,
             handlers: self.handlers,

@@ -4394,6 +4394,66 @@ fn fields_and_private_names_survive_collections() {
     assert_eq!(run(&mut agent, realm, source), "\"abc5dabc5dabc5d\"");
 }
 
+/// Alle Teile einer Klasse sind strikter Code (Abschnitt 11.2.2), auch
+/// die Oberklasse und die berechneten Namen in nicht striktem Code; um die
+/// Klasse bleibt er nicht strikt.
+#[test]
+fn class_parts_are_strict_in_sloppy_code() {
+    check(&[
+        (
+            "try { class A extends (x = Object) {} } catch (e) { e.name + typeof x }",
+            "\"ReferenceErrorundefined\"",
+        ),
+        (
+            "try { class A { [y = 'm']() {} } } catch (e) { e.name }",
+            "\"ReferenceError\"",
+        ),
+        (
+            "try { (class { static [z = 'f'] = 1; }); } catch (e) { e.name }",
+            "\"ReferenceError\"",
+        ),
+        (
+            "var o = { get p() { return 1; } }; \
+             try { (class { [o.p = 2]() {} }); } catch (e) { e.name }",
+            "\"TypeError\"",
+        ),
+        (
+            "try { (class { [undefined = 1]() {} }); } catch (e) { e.name }",
+            "\"TypeError\"",
+        ),
+        (
+            "try { (class { [delete Object.prototype]() {} }); } catch (e) { e.name }",
+            "\"TypeError\"",
+        ),
+        (
+            "(function f() { try { (class { [f = 1]() {} }); } catch (e) { return e.name; } })()",
+            "\"TypeError\"",
+        ),
+        (
+            "function g() { try { class A extends (q = Object) {} } catch (e) { return e.name; } } g()",
+            "\"ReferenceError\"",
+        ),
+        (
+            "try { class A { [(class extends (n = Object) {}, 'm')]() {} } } catch (e) { e.name }",
+            "\"ReferenceError\"",
+        ),
+        // Vor und nach der Klasse bleibt der Code nicht strikt.
+        (
+            "a = 1; class A extends Object { [1]() {} } b = 2; var c = [class {}, d = 3]; a + b + d",
+            "6",
+        ),
+        (
+            "var o = { get p() { return 1; } }; o.p = 2; class A {} o.p = 3; \
+             delete Object.prototype",
+            "false",
+        ),
+        (
+            "(function f() { f = 1; class A {} f = 2; return typeof f; })()",
+            "\"function\"",
+        ),
+    ]);
+}
+
 /// InitializeInstanceElements ist Bytecode; auch tausend Klassen mit
 /// Feldern übereinander passen auf einen kleinen Stapel (RS-8).
 #[test]

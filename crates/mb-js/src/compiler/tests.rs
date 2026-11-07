@@ -1631,6 +1631,48 @@ fn fields_and_private_names_live_in_the_class_scope() {
     );
 }
 
+/// Eine Klasse in nicht striktem Code ist ein strikter Bereich von ihrem
+/// ersten Befehl bis zum Konstruktor im Akkumulator, ohne die Bindung
+/// ihres Namens außen; eine innere Klasse liegt im Bereich der äußeren.
+/// Strikter Code hat keine Bereiche.
+#[test]
+fn classes_in_sloppy_code_are_strict_ranges() {
+    let script =
+        compile("x = 1; class A extends B { [(class {}, 'm')]() {} } y = 2;").expect("übersetzbar");
+    let code = &script.code;
+    assert!(!code.is_strict());
+    let ranges: Vec<(usize, usize)> = code.strict_ranges().collect();
+    assert_eq!(ranges.len(), 1);
+    let &(start, end) = ranges.first().expect("ein Bereich");
+    let op = |offset: usize| code.decode(offset).map(|instruction| instruction.op);
+    // Die Lücke für den Namen im Bereich der Klasse.
+    assert_eq!(op(start), Some(Op::LdaHole));
+    assert_eq!(op(end), Some(Op::InitGlobal));
+    let mut offset = 0;
+    let mut last = None;
+    while offset < end {
+        let instruction = code.decode(offset).expect("Befehl");
+        assert_eq!(code.is_strict_at(offset), offset >= start, "@{offset}");
+        last = Some(instruction.op);
+        offset = instruction.end;
+    }
+    assert_eq!(offset, end, "der Bereich endet an einem Befehl");
+    // Der Konstruktor im Akkumulator.
+    assert_eq!(last, Some(Op::Ldar));
+    assert!(!code.is_strict_at(end));
+
+    let strict = compile("'use strict'; class A extends B {}").expect("übersetzbar");
+    assert!(strict.code.is_strict());
+    assert_eq!(strict.code.strict_ranges().count(), 0);
+
+    let ast = parse_script(&units("var f = function () { return class {}; };")).expect("gültig");
+    let script = compile_script(&ast).expect("übersetzbar");
+    assert_eq!(script.code.strict_ranges().count(), 0);
+    let function = compile_function(&ast, &first_template(&script.code)).expect("übersetzbar");
+    assert!(!function.is_strict());
+    assert_eq!(function.strict_ranges().count(), 1);
+}
+
 /// Im Konstruktor einer abgeleiteten Klasse: new.target und
 /// GetSuperConstructor vor den Argumenten, nach `super()` BindThisValue und
 /// InitializeInstanceElements, und jedes `this` prüft die Lücke.

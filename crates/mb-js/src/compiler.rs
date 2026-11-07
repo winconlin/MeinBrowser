@@ -50,7 +50,9 @@
 //! und Prototyp an, dann definiert sie die Methoden der Reihe nach, jede mit
 //! ihrem Namen vor dem Funktionsobjekt. Eine Klassendeklaration bindet den
 //! Namen danach wie `let`. Der Konstruktor einer Klasse ohne `constructor`
-//! ist fester Bytecode ([`compile_default_constructor`]).
+//! ist fester Bytecode ([`compile_default_constructor`]). Alle Teile einer
+//! Klasse sind strikt; steht sie in nicht striktem Code, bilden ihre
+//! Befehle dort einen strikten Bereich ([`Emitter::strict_range`]).
 //!
 //! Felder und private Namen: Die privaten Namen einer Klasse liegen in
 //! Plätzen ihres Bereichs, innere Funktionen finden sie wie Bindungen über
@@ -552,6 +554,9 @@ struct Compiler<'a> {
     /// var-Bindung setzen, in Scripts mit dem Register, das sagt, ob es die
     /// globale Bindung gibt.
     hoisted: BTreeMap<NodeId, Option<u32>>,
+    /// Ob der Übersetzer gerade eine Klasse in nicht striktem Code
+    /// übersetzt; ihre Befehle bilden einen strikten Bereich.
+    strict_class: bool,
 }
 
 /// Übersetzt ein Script (Abschnitt 16.1).
@@ -1151,7 +1156,14 @@ impl<'a> Compiler<'a> {
             protected: 0,
             var_scope: None,
             hoisted: BTreeMap::new(),
+            strict_class: false,
         }
+    }
+
+    /// Ob der Code an der aktuellen Stelle strikt ist: im ganzen Code oder
+    /// in einer Klasse (Abschnitt 11.2.2).
+    fn is_strict(&self) -> bool {
+        self.strict || self.strict_class
     }
 
     fn finish(self) -> Code {
@@ -3534,6 +3546,23 @@ impl<'a> Compiler<'a> {
     /// Namens der Reihe nach (Schritte 29 bis 33); ihre Funktionsobjekte
     /// entstehen erst dann, die berechneten Namen vorher.
     fn class_definition(&mut self, node: NodeId, id: ClassId, name: ClosureName<'_>) -> Result<()> {
+        if self.is_strict() {
+            return self.class_parts(node, id, name);
+        }
+        // Alle Teile einer Klasse sind strikter Code (Abschnitt 11.2.2),
+        // auch die Oberklasse und die berechneten Namen, die hier laufen;
+        // ihre Befehle bilden einen strikten Bereich.
+        let start = self.emitter.offset();
+        self.strict_class = true;
+        let result = self.class_parts(node, id, name);
+        self.strict_class = false;
+        result?;
+        self.emitter.strict_range(start, self.emitter.offset())?;
+        Ok(())
+    }
+
+    /// [`Compiler::class_definition`] in strikt übersetztem Code.
+    fn class_parts(&mut self, node: NodeId, id: ClassId, name: ClosureName<'_>) -> Result<()> {
         let ast = self.ast;
         let Some(class) = ast.class(id) else {
             return Err(self.unsupported(node));
@@ -4330,7 +4359,7 @@ impl<'a> Compiler<'a> {
     /// Konstante.
     fn store_local(&mut self, binding: LocalBinding, atom: Atom, position: usize) -> Result<()> {
         if binding.kind == BindingKind::FunctionName {
-            if self.strict {
+            if self.is_strict() {
                 let name = self.name(atom)?;
                 return self.emit(Op::ThrowConstAssignment, &[name]);
             }

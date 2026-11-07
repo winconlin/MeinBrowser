@@ -1002,7 +1002,7 @@ impl<'c> Frame<'c, '_> {
     ) -> Completion<()> {
         let first = instruction.operand(0);
         let second = instruction.operand(1);
-        let strict = self.code.is_strict();
+        let strict = self.code.is_strict_at(instruction.start);
         match instruction.op {
             Op::CreateObject | Op::CreateArray => {
                 let object = if instruction.op == Op::CreateObject {
@@ -1640,7 +1640,7 @@ impl<'c> Frame<'c, '_> {
                     let value = get_value(agent, scope, base, this, key)?;
                     self.set_accumulator(agent, value);
                 } else {
-                    let strict = self.code.is_strict();
+                    let strict = self.code.is_strict_at(instruction.start);
                     put_value(agent, scope, base, this, key, self.accumulator, strict)?;
                 }
             }
@@ -1741,7 +1741,7 @@ impl<'c> Frame<'c, '_> {
     ) -> Completion<Flow> {
         let first = instruction.operand(0);
         let second = instruction.operand(1);
-        let strict = self.code.is_strict();
+        let strict = self.code.is_strict_at(instruction.start);
         match instruction.op {
             Op::LdaUndefined => self.set_accumulator_value(agent, Value::UNDEFINED),
             Op::LdaNull => self.set_accumulator_value(agent, Value::NULL),
