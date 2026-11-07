@@ -24,6 +24,7 @@ pub mod object;
 pub mod operations;
 pub mod operators;
 pub mod parser;
+mod promise;
 pub mod realm;
 pub mod reference;
 pub mod regexp;

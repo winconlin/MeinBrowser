@@ -64,7 +64,7 @@ fn list_and_negative_fields_are_read_in_both_orders() {
 #[test]
 fn unsupported_or_ambiguous_metadata_cannot_silently_pass() {
     for text in [
-        "flags: [async]",
+        "flags: [async, raw]",
         "flags: [module, raw]",
         "flags: [CanBlockIsTrue]",
         "flags: [unknown]",
@@ -379,6 +379,106 @@ fn setup_and_test_share_the_remaining_work_quota() {
     );
     assert_eq!(
         evaluate(&mut agent, realm, "1", &budget),
+        Outcome::Host(Abrupt::Exhausted(crate::agent::Exhausted::Steps))
+    );
+}
+
+#[test]
+fn async_tests_load_done_print_handle_before_their_includes() {
+    let names = |text| -> Vec<String> {
+        harness(&metadata(text))
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect()
+    };
+    assert_eq!(
+        names("flags: [async]"),
+        ["assert.js", "sta.js", "doneprintHandle.js"]
+    );
+    assert_eq!(
+        names("flags: [async]\nincludes: [compareArray.js]"),
+        [
+            "assert.js",
+            "sta.js",
+            "doneprintHandle.js",
+            "compareArray.js"
+        ]
+    );
+    assert_eq!(names(""), ["assert.js", "sta.js"]);
+}
+
+#[test]
+fn async_tests_pass_only_after_reporting_completion() {
+    let meta = metadata("flags: [async]");
+    let files = harness(&meta);
+    let run_async = |source| run(source, &meta, Mode::Sloppy, &files, false).expect("Harness");
+    for source in [
+        "$DONE();",
+        "Promise.resolve().then(function () { $DONE(); });",
+        "Promise.resolve(1).then(function (v) { assert.sameValue(v, 1); }).then($DONE, $DONE);",
+    ] {
+        assert_eq!(run_async(source), Outcome::Normal, "{source}");
+    }
+    for (source, wanted) in [
+        (
+            "Promise.resolve(1).then(function (v) { assert.sameValue(v, 2); }).then($DONE, $DONE);",
+            Outcome::AsyncFailure,
+        ),
+        (
+            "Promise.reject(new TypeError('t')).then($DONE, $DONE);",
+            Outcome::AsyncFailure,
+        ),
+        ("$DONE('Grund');", Outcome::AsyncFailure),
+        (
+            "$DONE(); print('Test262:AsyncTestFailure:später');",
+            Outcome::AsyncFailure,
+        ),
+        (
+            "new Promise(function () {}).then($DONE, $DONE);",
+            Outcome::AsyncIncomplete,
+        ),
+        ("1;", Outcome::AsyncIncomplete),
+        (
+            "print('Test262:AsyncTestComplete ');",
+            Outcome::AsyncIncomplete,
+        ),
+        ("null.x; $DONE();", Outcome::Error(ErrorKind::TypeError)),
+    ] {
+        assert_eq!(run_async(source), wanted, "{source}");
+    }
+    // Ohne `async` zählt `print` nicht.
+    assert_eq!(
+        ordinary("print('Test262:AsyncTestFailure:x');"),
+        Outcome::Normal
+    );
+}
+
+#[test]
+fn jobs_run_after_each_script_and_count_like_it() {
+    let meta = metadata("");
+    let files = vec![(
+        "jobs.js".to_owned(),
+        "var order = ''; Promise.resolve().then(function () { order += 'job,'; }); order += 'script,';"
+            .to_owned(),
+    )];
+    let source = "if (order !== 'script,job,') throw new Test262Error(order);";
+    for stress in [false, true] {
+        assert_eq!(
+            run(source, &meta, Mode::Sloppy, &files, stress),
+            Ok(Outcome::Normal)
+        );
+    }
+    // Wirft ein Job, zählt das wie eine Ausnahme des Scripts: Hier wirft
+    // [[Reject]] einer eigenen Capability.
+    assert_eq!(
+        ordinary(
+            "function F(executor) { executor(function () {}, function () { throw new RangeError(); }); } \
+             F[Symbol.species] = F; var p = Promise.reject(1); p.constructor = F; p.then();"
+        ),
+        Outcome::Error(ErrorKind::RangeError)
+    );
+    assert_eq!(
+        ordinary("function loop() { Promise.resolve().then(loop); } loop();"),
         Outcome::Host(Abrupt::Exhausted(crate::agent::Exhausted::Steps))
     );
 }

@@ -10,9 +10,10 @@
 //! `Array.prototype.values`, `keys`, `entries` und den Methoden für
 //! @@iterator, und %Symbol% mit den bekannten Symbolen, damit Scripts
 //! eigene Iteratoren bauen können. Generatoren bringen ihre Prototypen mit
-//! `next`, `return` und `throw` mit. Die übrigen Eigenschaften dieser Objekte
-//! und die anderen eingebauten Objekte kommen in Wellen (Schritt 8 des
-//! Plans).
+//! `next`, `return` und `throw` mit. %Promise% ist vollständig, mit
+//! %AggregateError% für `Promise.any`. Die übrigen Eigenschaften dieser
+//! Objekte und die anderen eingebauten Objekte kommen in Wellen (Schritt 8
+//! des Plans).
 //!
 //! Wo nichts anderes steht, sind Eigenschaften eingebauter Objekte
 //! beschreibbar und konfigurierbar, aber nicht aufzählbar (Abschnitt 18).
@@ -25,6 +26,7 @@ mod function;
 mod generator;
 mod iterator;
 mod object;
+mod promise;
 mod string;
 mod symbol;
 
@@ -56,7 +58,8 @@ pub(crate) fn create_intrinsics(
     array::create(agent, scope, realm)?;
     string::create(agent, scope, realm)?;
     symbol::create(agent, scope, realm)?;
-    error::create(agent, scope, realm)
+    error::create(agent, scope, realm)?;
+    promise::create(agent, scope, realm)
 }
 
 /// Verbindet einen Konstruktor mit seinem Prototyp: `prototype` am

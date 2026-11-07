@@ -36,6 +36,7 @@ Ein Schritt wird an diesen Stellen verbraucht:
 1. Vor jeder Script-Auswertung, noch vor Parse und globalen Deklarationen.
 2. Beim Einstieg in einen Interpreterlauf.
 3. Vor jedem Bytecodebefehl, einschließlich Sprüngen und `Return`.
+4. Vor jedem Job, den `Agent::run_jobs` aus der Warteschlange nimmt. Ohne Hostquote teilen sich alle Jobs eines Aufrufs eine Standardquote.
 
 Nach erfolgreichem Übersetzen wird das Abbruchsignal vor der Deklarationsphase nochmals ohne Schrittverbrauch geprüft. Das letzte erlaubte Kommando darf bei anschließend null verbleibenden Schritten noch enden; erst ein weiterer abgelehnter Verbrauch setzt den dauerhaften Erschöpfungsgrund.
 
@@ -46,6 +47,8 @@ Direkte JavaScript-Aufrufe bleiben im selben Budget. Getter, Setter und Umwandlu
 Bei mehreren aktiven Quoten kann eine frühere den Versuch bereits bezahlt haben, wenn eine spätere ihn ablehnt. Danach wird der Bytecodebefehl nicht ausgeführt. Die Quoten werden bei normaler oder `Result`-Fehlerrückkehr aus dem Hostbereich entfernt, ihr verbrauchter Vorrat bleibt im übergebenen Budget erhalten.
 
 Erschöpfung oder ein Abbruchsignal liefern `Abrupt::Exhausted(Exhausted::Steps)` beziehungsweise `Abrupt::Exhausted(Exhausted::Cancelled)`. Das ist eine Hostbeendigung und kein JavaScript-`Throw`; es entsteht dadurch kein neuer geworfener Wert. Register und Interpretertiefe werden über die vorhandenen Fehlerpfade aufgeräumt. Ein frisches Budget erlaubt anschließend einen weiteren Aufruf im selben Agent.
+
+Geht einem Job die Quote aus, ist er verbraucht; die übrigen Jobs warten weiter, und ein späterer Aufruf von `run_jobs` mit frischer Quote setzt mit ihnen fort. Ein Host, der wie der Läufer für Test262 Script und Jobs unter einer Quote laufen lässt, ruft `run_jobs` innerhalb von `with_execution_budget` auf.
 
 Ein Abbruch ist kein Rollback. Vorherige Zuweisungen und angelegte Bindungen bleiben erhalten. Ein anfängliches Nullbudget oder ein bereits gesetztes Abbruchsignal stoppt vor dem Anlegen globaler Bindungen. Eine kleine positive Quote kann dagegen bereits die Deklarationsphase erreichen und erst beim VM-Einstieg enden. Eine dauernd aktive Hostaufgabe muss ihre Quote über mehrere Aufrufe teilen; getrennte Aufrufe ohne Hostquote erhalten jeweils eine neue Standardquote.
 

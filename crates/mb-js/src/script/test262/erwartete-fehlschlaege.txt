@@ -3,7 +3,7 @@
 # nur der genannte. Erzeugt von script/test262/language.rs; bei einer
 # Abweichung schreibt der Test die neue Fassung nach
 # target/test262/erwartete-fehlschlaege.txt.
-# 23828 Dateien, 532 Vorschläge übersprungen; bestanden 12150 von 23296 Dateien und 23412 von 39297 Varianten
+# 23828 Dateien, 532 Vorschläge übersprungen; bestanden 12156 von 23296 Dateien und 23424 von 43794 Varianten
 arguments-object/10.5-1-s.js
 arguments-object/10.5-7-b-1-s.js
 arguments-object/10.6-11-b-1.js
@@ -3524,7 +3524,6 @@ expressions/class/private-static-setter-multiple-evaluations-of-class-realm.js
 expressions/class/restricted-properties.js
 expressions/class/setter-length-dflt.js
 expressions/class/static-method-length-dflt.js
-expressions/class/subclass-builtins/subclass-AggregateError.js
 expressions/class/subclass-builtins/subclass-Array.js
 expressions/class/subclass-builtins/subclass-ArrayBuffer.js
 expressions/class/subclass-builtins/subclass-BigInt64Array.js
@@ -3540,7 +3539,6 @@ expressions/class/subclass-builtins/subclass-Int32Array.js
 expressions/class/subclass-builtins/subclass-Int8Array.js
 expressions/class/subclass-builtins/subclass-Map.js
 expressions/class/subclass-builtins/subclass-Number.js
-expressions/class/subclass-builtins/subclass-Promise.js
 expressions/class/subclass-builtins/subclass-RegExp.js
 expressions/class/subclass-builtins/subclass-Set.js
 expressions/class/subclass-builtins/subclass-SharedArrayBuffer.js
@@ -8997,8 +8995,6 @@ statements/class/subclass/builtin-objects/NativeError/URIError-message.js
 statements/class/subclass/builtin-objects/Number/regular-subclassing.js
 statements/class/subclass/builtin-objects/Number/super-must-be-called.js
 statements/class/subclass/builtin-objects/Object/regular-subclassing.js
-statements/class/subclass/builtin-objects/Promise/regular-subclassing.js
-statements/class/subclass/builtin-objects/Promise/super-must-be-called.js
 statements/class/subclass/builtin-objects/Proxy/no-prototype-throws.js
 statements/class/subclass/builtin-objects/RegExp/lastIndex.js
 statements/class/subclass/builtin-objects/RegExp/regular-subclassing.js
@@ -9024,7 +9020,6 @@ statements/class/subclass/superclass-async-generator-function.js
 statements/class/subclass/superclass-bound-function.js
 statements/class/subclass/superclass-generator-function.js
 statements/class/subclass/superclass-static-method-override.js
-statements/class/subclass-builtins/subclass-AggregateError.js
 statements/class/subclass-builtins/subclass-Array.js
 statements/class/subclass-builtins/subclass-ArrayBuffer.js
 statements/class/subclass-builtins/subclass-BigInt64Array.js
@@ -9040,7 +9035,6 @@ statements/class/subclass-builtins/subclass-Int32Array.js
 statements/class/subclass-builtins/subclass-Int8Array.js
 statements/class/subclass-builtins/subclass-Map.js
 statements/class/subclass-builtins/subclass-Number.js
-statements/class/subclass-builtins/subclass-Promise.js
 statements/class/subclass-builtins/subclass-RegExp.js
 statements/class/subclass-builtins/subclass-Set.js
 statements/class/subclass-builtins/subclass-SharedArrayBuffer.js

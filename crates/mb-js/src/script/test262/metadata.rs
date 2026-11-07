@@ -164,7 +164,7 @@ impl Metadata {
         for flag in &self.flags {
             if !matches!(
                 flag.as_str(),
-                "raw" | "noStrict" | "onlyStrict" | "generated"
+                "raw" | "noStrict" | "onlyStrict" | "generated" | "async"
             ) {
                 return Err(format!("Flag wird noch nicht ausgeführt: {flag}"));
             }
@@ -186,6 +186,11 @@ impl Metadata {
         }
         if self.raw() && !self.includes.is_empty() {
             return Err("raw mit includes wird nicht unterstützt".to_owned());
+        }
+        // Ohne Harness gäbe es kein doneprintHandle.js, das das Ergebnis
+        // meldet.
+        if self.raw() && self.is_async() {
+            return Err("raw mit async wird nicht unterstützt".to_owned());
         }
         if keys.contains("negative") {
             self.negative = Some(match (phase.as_deref(), error_type.as_deref()) {
@@ -214,6 +219,11 @@ impl Metadata {
 
     pub(super) fn raw(&self) -> bool {
         self.flag("raw")
+    }
+
+    /// Ob der Test sein Ergebnis über `print` meldet (Flag `async`).
+    pub(super) fn is_async(&self) -> bool {
+        self.flag("async")
     }
 
     pub(super) fn modes(&self) -> Vec<Mode> {

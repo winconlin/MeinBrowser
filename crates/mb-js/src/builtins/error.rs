@@ -1,12 +1,13 @@
-//! Fehlerobjekte (Abschnitt 20.5): %Error% und die sechs %NativeError%
-//! (Abschnitt 20.5.6) mit ihren Prototypen und `Error.prototype.toString`.
-//! AggregateError braucht Iteratoren und kommt mit ihnen.
+//! Fehlerobjekte (Abschnitt 20.5): %Error%, die sechs %NativeError%
+//! (Abschnitt 20.5.6) und %AggregateError% (Abschnitt 20.5.7) mit ihren
+//! Prototypen und `Error.prototype.toString`.
 //!
 //! Die Prototypen sind gewöhnliche Objekte, keine Fehlerobjekte, mit dem
 //! Namen in `name` und der leeren Zeichenkette in `message` (Abschnitte
-//! 20.5.3 und 20.5.6.3). Die Konstruktoren der %NativeError% haben %Error%
-//! als [[Prototype]], ihre Prototypen %Error.prototype% (Abschnitte
-//! 20.5.6.2 und 20.5.6.3).
+//! 20.5.3, 20.5.6.3 und 20.5.7.3). Die Konstruktoren der %NativeError% und
+//! %AggregateError% haben %Error% als [[Prototype]], ihre Prototypen
+//! %Error.prototype% (Abschnitte 20.5.6.2, 20.5.6.3, 20.5.7.2 und
+//! 20.5.7.3).
 
 use super::{define_functions, link_constructor, units};
 use crate::agent::{Agent, Completion, ErrorKind};
@@ -16,9 +17,11 @@ use crate::builtin::{
 use crate::conversion::to_string;
 use crate::descriptor::PropertyDescriptor;
 use crate::heap::{Local, Scope};
+use crate::iterator::{get_iterator, iterator_step_value};
 use crate::object::{error_create, get_prototype_from_constructor, ordinary_object_create};
 use crate::operations::{
-    create_non_enumerable_data_property_or_throw, define_property_or_throw, get, has_property,
+    create_array_from_list, create_non_enumerable_data_property_or_throw, define_property_or_throw,
+    get, has_property,
 };
 use crate::realm::{Intrinsic, RealmId};
 use crate::value::Kind;
@@ -28,6 +31,13 @@ static ERROR: Builtin = Builtin {
     length: 1,
     constructor: true,
     behaviour: error,
+};
+
+static AGGREGATE_ERROR: Builtin = Builtin {
+    name: "AggregateError",
+    length: 2,
+    constructor: true,
+    behaviour: aggregate_error,
 };
 
 static PROTOTYPE_FUNCTIONS: [Builtin; 1] = [Builtin {
@@ -121,6 +131,12 @@ pub(super) fn create(agent: &mut Agent, scope: &Scope, realm: RealmId) -> Comple
             Ok(())
         })?;
     }
+    let own = error_prototype(agent, scope, prototype, AGGREGATE_ERROR.name)?;
+    let function =
+        builtin_function_with_prototype(agent, scope, realm, &AGGREGATE_ERROR, constructor)?;
+    link_constructor(agent, scope, function, own)?;
+    agent.set_intrinsic(realm, Intrinsic::AggregateError, function);
+    agent.set_intrinsic(realm, Intrinsic::AggregateErrorPrototype, own);
     Ok(())
 }
 
@@ -157,14 +173,85 @@ fn construct<'s>(
         get_prototype_from_constructor(agent, scope, new_target, fallback, arguments.realm)?;
     let object = error_create(agent, scope, prototype)?;
     let message = arguments.argument(agent, scope, 0);
+    let options = arguments.argument(agent, scope, 1);
+    install_message_and_cause(agent, scope, object, message, options)?;
+    Ok(object)
+}
+
+/// Die Schritte der Fehlerkonstruktoren für `message` und InstallErrorCause.
+fn install_message_and_cause(
+    agent: &mut Agent,
+    scope: &Scope,
+    object: Local<'_>,
+    message: Local<'_>,
+    options: Local<'_>,
+) -> Completion<()> {
     if !agent.heap().get(message).is_undefined() {
         let text = to_string(agent, scope, message)?;
         let key = agent.key_from_units(scope, &units("message"))?;
         create_non_enumerable_data_property_or_throw(agent, scope, object, key, text)?;
     }
-    let options = arguments.argument(agent, scope, 1);
-    install_error_cause(agent, scope, object, options)?;
+    install_error_cause(agent, scope, object, options)
+}
+
+/// AggregateError ( errors, message [ , options ] ) (Abschnitt 20.5.7.1.1)
+/// mit IteratorToList (Abschnitt 7.4.19).
+fn aggregate_error<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    arguments: &BuiltinCall<'_, '_>,
+) -> Completion<Local<'s>> {
+    let new_target = arguments.new_target.unwrap_or(arguments.function);
+    let realm = arguments.realm;
+    let prototype = get_prototype_from_constructor(
+        agent,
+        scope,
+        new_target,
+        Intrinsic::AggregateErrorPrototype,
+        realm,
+    )?;
+    let object = error_create(agent, scope, prototype)?;
+    let message = arguments.argument(agent, scope, 1);
+    let options = arguments.argument(agent, scope, 2);
+    install_message_and_cause(agent, scope, object, message, options)?;
+    let errors = arguments.argument(agent, scope, 0);
+    let (iterator, next) = get_iterator(agent, scope, realm, errors)?;
+    let mut list = Vec::new();
+    while let Some(value) = iterator_step_value(agent, scope, iterator, next)? {
+        list.push(value);
+    }
+    define_errors(agent, scope, realm, object, &list)?;
     Ok(object)
+}
+
+/// Ein neues AggregateError-Objekt mit `errors` als Array in der
+/// Eigenschaft `errors`, wie es Promise.any anlegt. `realm` ist der
+/// aktuelle Realm.
+pub(super) fn aggregate_error_create<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    realm: RealmId,
+    errors: &[Local<'_>],
+) -> Completion<Local<'s>> {
+    let prototype = agent.intrinsic(scope, realm, Intrinsic::AggregateErrorPrototype);
+    let object = error_create(agent, scope, prototype)?;
+    define_errors(agent, scope, realm, object, errors)?;
+    Ok(object)
+}
+
+/// Die Eigenschaft `errors`: beschreibbar und konfigurierbar, nicht
+/// aufzählbar.
+fn define_errors(
+    agent: &mut Agent,
+    scope: &Scope,
+    realm: RealmId,
+    object: Local<'_>,
+    errors: &[Local<'_>],
+) -> Completion<()> {
+    let array = create_array_from_list(agent, scope, realm, errors)?;
+    let key = agent.key_from_units(scope, &units("errors"))?;
+    let descriptor = PropertyDescriptor::data(array, true, false, true);
+    define_property_or_throw(agent, scope, object, key, &descriptor)
 }
 
 /// InstallErrorCause (Abschnitt 20.5.9.1).
