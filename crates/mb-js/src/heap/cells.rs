@@ -15,6 +15,8 @@ use crate::value::{Ref, RefKind, Value};
 const ATOM_FLAG: u32 = 1;
 /// Kennzeichen eines Objekts, dessen [[Extensible]] *true* ist.
 const EXTENSIBLE_FLAG: u32 = 1;
+/// Kennzeichen eines Symbols, das ein privater Name ist (Abschnitt 6.2.12).
+const PRIVATE_FLAG: u32 = 1;
 
 /// Die Arten der Zellen aus Werten.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -188,6 +190,27 @@ impl Heap {
             let head = with_flags(head, header_flags(head) | ATOM_FLAG);
             self.write(string.offset(), 0, head);
         }
+    }
+
+    // Private Namen
+
+    /// Ob das Symbol ein privater Name ist.
+    pub(crate) fn is_private_symbol(&self, symbol: Ref<'_>) -> bool {
+        self.symbol_header(symbol)
+            .is_some_and(|head| header_flags(head) & PRIVATE_FLAG != 0)
+    }
+
+    /// Kennzeichnet ein neues Symbol als privaten Namen.
+    pub(crate) fn mark_private_symbol(&self, symbol: Ref<'_>) {
+        if let Some(head) = self.symbol_header(symbol) {
+            let head = with_flags(head, header_flags(head) | PRIVATE_FLAG);
+            self.write(symbol.offset(), 0, head);
+        }
+    }
+
+    fn symbol_header(&self, symbol: Ref<'_>) -> Option<u64> {
+        let head = self.word(symbol.offset(), 0)?;
+        (header_kind(head) == KIND_SYMBOL).then_some(head)
     }
 
     /// Ob zwei Zeichenketten dieselben Codeeinheiten an denselben Stellen

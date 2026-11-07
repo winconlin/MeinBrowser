@@ -19,6 +19,14 @@
 //! [[HasProperty]] so umsetzen, durchlaufen die Prototypkette in einer
 //! Schleife statt rekursiv (RS-8). Kommt eine Art mit eigenen Fassungen
 //! dazu, etwa Proxy, verlässt die Schleife die Kette dort.
+//!
+//! Private Elemente (Abschnitt 6.2.10) liegen wie Eigenschaften in der
+//! Gestalt, mit dem privaten Namen als Schlüssel: ein Feld als beschreibbare
+//! Dateneigenschaft, eine Methode als nicht beschreibbare, ein Accessor als
+//! Paar aus Getter und Setter. [[OwnPropertyKeys]] überspringt sie; die
+//! übrigen internen Methoden bekommen ihre Schlüssel nie, denn Code der
+//! Sprache hat keinen privaten Namen als Wert. Gesucht werden sie nur am
+//! Objekt selbst, nie in seiner Prototypkette.
 
 #![forbid(unsafe_code)]
 
@@ -33,7 +41,7 @@ use crate::compare::same_value;
 use crate::descriptor::PropertyDescriptor;
 use crate::function::get_function_realm;
 use crate::heap::{Heap, Local, ObjectClass, OutOfMemory, Scope};
-use crate::key::PropertyKey;
+use crate::key::{PropertyKey, is_private_name};
 use crate::operations::{call, create_data_property};
 use crate::realm::{Intrinsic, RealmId};
 use crate::value::{Kind, Ref, Value};
@@ -852,11 +860,98 @@ pub fn own_property_keys<'s>(
         }
     }
     for (key, _) in &entries {
-        if let Kind::Symbol(_) = key.kind() {
+        if let Kind::Symbol(_) = key.kind()
+            && !is_private_name(heap, *key)
+        {
             keys.push(PropertyKey::Symbol(heap.local(scope, *key)));
         }
     }
     Ok(keys)
+}
+
+/// Ein privates Element (Abschnitt 6.2.10) ohne seinen Namen.
+#[derive(Clone, Copy)]
+pub(crate) enum PrivateElement<'s> {
+    Field(Local<'s>),
+    Method(Local<'s>),
+    /// Getter und Setter, jeder vielleicht *undefined*.
+    Accessor {
+        getter: Local<'s>,
+        setter: Local<'s>,
+    },
+}
+
+/// PrivateElementFind (Abschnitt 7.3.26) für den privaten Namen `name` am
+/// Objekt `object`; `None` auch für einen anderen Wert als ein Objekt.
+pub(crate) fn private_element_find<'s>(
+    heap: &Heap,
+    scope: &'s Scope,
+    object: Local<'_>,
+    name: Local<'_>,
+) -> Option<PrivateElement<'s>> {
+    let object = object_of(heap, object)?;
+    Some(match find_own(heap, object, Key::Named(heap.get(name)))? {
+        Own::Data { value, attributes } if attributes & WRITABLE != 0 => {
+            PrivateElement::Field(heap.local(scope, value))
+        }
+        Own::Data { value, .. } => PrivateElement::Method(heap.local(scope, value)),
+        Own::Accessor { getter, setter, .. } => PrivateElement::Accessor {
+            getter: heap.local(scope, getter),
+            setter: heap.local(scope, setter),
+        },
+    })
+}
+
+/// Legt das private Element `name` am Objekt `object` an oder ersetzt es.
+/// [[Extensible]] gilt dafür nicht (PrivateFieldAdd und
+/// PrivateMethodOrAccessorAdd, Abschnitte 7.3.27 und 7.3.28); ob es den
+/// Namen schon gibt, prüft der Aufrufer.
+pub(crate) fn private_element_write(
+    agent: &mut Agent,
+    scope: &Scope,
+    object: Local<'_>,
+    name: Local<'_>,
+    element: PrivateElement<'_>,
+) -> Result<(), OutOfMemory> {
+    let property = match element {
+        PrivateElement::Field(value) | PrivateElement::Method(value) => Property::Data {
+            value,
+            writable: matches!(element, PrivateElement::Field(_)),
+            enumerable: false,
+            configurable: false,
+        },
+        PrivateElement::Accessor { getter, setter } => Property::Accessor {
+            getter,
+            setter,
+            enumerable: false,
+            configurable: false,
+        },
+    };
+    write_property(agent, scope, object, PropertyKey::Symbol(name), &property)
+}
+
+/// Die privaten Elemente des Objekts `object` mit ihren Namen, in der
+/// Reihenfolge, in der sie entstanden sind.
+pub(crate) fn private_elements<'s>(
+    heap: &Heap,
+    scope: &'s Scope,
+    object: Local<'_>,
+) -> Vec<(Local<'s>, PrivateElement<'s>)> {
+    let entries = object_of(heap, object)
+        .and_then(|object| heap.object_shape(object))
+        .map(|shape| shape::entries(heap, shape))
+        .unwrap_or_default();
+    let mut elements = Vec::new();
+    for (key, _) in entries {
+        if !is_private_name(heap, key) {
+            continue;
+        }
+        let name = heap.local(scope, key);
+        if let Some(element) = private_element_find(heap, scope, object, name) {
+            elements.push((name, element));
+        }
+    }
+    elements
 }
 
 #[cfg(test)]

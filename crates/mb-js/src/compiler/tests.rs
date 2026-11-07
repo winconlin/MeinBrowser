@@ -395,12 +395,12 @@ fn instructions_know_their_place_in_the_source() {
 fn unsupported_constructs_name_their_place() {
     let cases = [
         ("async function f() {}", 0),
-        ("class A { x; }", 10),
+        ("class A { async m() {} }", 10),
         ("x = {async *a() {}};", 5),
         ("x = {async a() {}};", 5),
         ("x = {1n: 1};", 5),
         ("let {1n: a} = b;", 5),
-        ("[a = class { x; }] = b;", 13),
+        ("[a = class { async m() {} }] = b;", 13),
         ("for (var k in o);", 0),
         ("f`x`;", 0),
         ("1n;", 0),
@@ -1530,9 +1530,110 @@ fn classes_create_their_constructor_then_their_methods() {
     );
 }
 
+/// Felder und private Namen: Die Namen entstehen nach der Oberklasse in
+/// Plätzen des Bereichs der Klasse, ein Feld kommt mit seinem Namen und dem
+/// Initialisierer an den Konstruktor. Der Initialisierer ist eine Funktion
+/// ohne Parameter, eine anonyme Funktion darin heißt wie das Feld. Der
+/// Konstruktor ohne Oberklasse beginnt mit InitializeInstanceElements.
+#[test]
+fn fields_and_private_names_live_in_the_class_scope() {
+    assert_eq!(
+        listing("class A { #x = 1; }"),
+        [
+            "PushContext 1",
+            "LdaHole",
+            "Star r2",
+            "LdaHole",
+            "Star r3",
+            "CreatePrivateName \"#x\"",
+            "StaContext 0 1",
+            "LdaConstant A",
+            "Star r4",
+            "CreateClass default r3",
+            "Star r4",
+            "LdaContext 0 1",
+            "Star r5",
+            "CreateClosureKeyed fn0 r5",
+            "AddField r4 r5",
+            "Ldar r4",
+            "Star r2",
+            "Ldar r4",
+            "PopContext",
+            "InitGlobal A",
+            "Ldar r1",
+            "Return"
+        ]
+    );
+    let compiled = |source: &str| {
+        let ast = parse_script(&units(source)).expect("gültig");
+        let script = compile_script(&ast).expect("übersetzbar");
+        compile_function(&ast, &first_template(&script.code)).expect("übersetzbar")
+    };
+    let initializer = compiled("class A { #x = 1; }");
+    assert_eq!(initializer.parameter_count(), 0);
+    assert_eq!(lines(&initializer), ["LdaSmi 1", "Return"]);
+    assert_eq!(
+        lines(&compiled("class A { f = function () {}; }")),
+        [
+            "Ldar r1",
+            "LdaNamed name",
+            "Star r2",
+            "CreateClosureKeyed fn0 r2",
+            "Return"
+        ]
+    );
+    assert_eq!(
+        lines(&compiled("class A { #x; m() { return this.#x; } }")),
+        [
+            "Ldar r0",
+            "Star r2",
+            "LdaContext 0 1",
+            "Star r3",
+            "Ldar r2",
+            "LdaPrivate r3",
+            "Return",
+            "LdaUndefined",
+            "Return"
+        ]
+    );
+    assert_eq!(
+        lines(&compiled(
+            "class A { #x; static has(o) { return #x in o; } }"
+        )),
+        [
+            "LdaContext 0 1",
+            "Star r3",
+            "Ldar r2",
+            "TestPrivateIn r3",
+            "Return",
+            "LdaUndefined",
+            "Return"
+        ]
+    );
+    let constructor = compiled("class A { x = 1; constructor(a) {} }");
+    assert_eq!(constructor.register_count(), 8);
+    assert_eq!(
+        lines(&constructor),
+        [
+            "Mov r1 r3",
+            "Mov r0 r6",
+            "InitializePrivateMethods r3 r6",
+            "LdaSmi 0",
+            "Star r4",
+            "NextField @37 r3",
+            "JumpIfNullish @32",
+            "Call r5 0",
+            "DefineField r6 r7",
+            "JumpLoop @13",
+            "LdaUndefined",
+            "Return"
+        ]
+    );
+}
+
 /// Im Konstruktor einer abgeleiteten Klasse: new.target und
-/// GetSuperConstructor vor den Argumenten, nach `super()` BindThisValue, und
-/// jedes `this` prüft die Lücke.
+/// GetSuperConstructor vor den Argumenten, nach `super()` BindThisValue und
+/// InitializeInstanceElements, und jedes `this` prüft die Lücke.
 #[test]
 fn derived_constructors_bind_this_after_super() {
     let source = "class B extends A { constructor() { super(1); this.x; } }";
@@ -1558,6 +1659,18 @@ fn derived_constructors_bind_this_after_super() {
             "ThrowIfNotHole",
             "Ldar r3",
             "Star r0",
+            "Star r6",
+            "Ldar r1",
+            "Star r3",
+            "InitializePrivateMethods r3 r6",
+            "LdaSmi 0",
+            "Star r4",
+            "NextField @62 r3",
+            "JumpIfNullish @57",
+            "Call r5 0",
+            "DefineField r6 r7",
+            "JumpLoop @38",
+            "Ldar r6",
             "CheckHole r0 this",
             "Ldar r0",
             "LdaNamed x",
@@ -1587,10 +1700,38 @@ fn derived_constructors_bind_this_after_super() {
             "CreateRestParameter r2 0",
             "Star r7",
             "SuperCallSpread r5",
+            "Star r6",
+            "Mov r1 r3",
+            "InitializePrivateMethods r3 r6",
+            "LdaSmi 0",
+            "Star r4",
+            "NextField @52 r3",
+            "JumpIfNullish @47",
+            "Call r5 0",
+            "DefineField r6 r7",
+            "JumpLoop @28",
+            "Ldar r6",
             "Return"
         ]
     );
     let base = compile_default_constructor(false).expect("übersetzbar");
     assert!(!base.is_derived_constructor());
-    assert_eq!(lines(&base), ["LdaUndefined", "Return"]);
+    assert_eq!(base.register_count(), 7);
+    assert_eq!(
+        lines(&base),
+        [
+            "Mov r1 r2",
+            "Mov r0 r5",
+            "InitializePrivateMethods r2 r5",
+            "LdaSmi 0",
+            "Star r3",
+            "NextField @37 r2",
+            "JumpIfNullish @32",
+            "Call r4 0",
+            "DefineField r5 r6",
+            "JumpLoop @13",
+            "LdaUndefined",
+            "Return"
+        ]
+    );
 }

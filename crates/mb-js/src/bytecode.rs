@@ -45,6 +45,17 @@
 //! ([`Op::SuperCall`]). Im Konstruktor einer abgeleiteten Klasse hält
 //! `this` bis dahin die Lücke ([`Code::is_derived_constructor`]).
 //!
+//! Felder und private Elemente: Private Namen liegen in Kontexten des
+//! Klassenbereichs ([`ContextLayout::privates`]), [`Op::CreatePrivateName`]
+//! legt sie zu Beginn der Klasse an. Die Felder einer Instanz kommen mit
+//! [`Op::AddField`] an den Konstruktor, die privaten Methoden mit
+//! [`Op::CreatePrivateMethods`] an ein Objekt bei ihm.
+//! InitializeInstanceElements ist eine Schleife im Bytecode des
+//! Konstruktors: [`Op::InitializePrivateMethods`], dann je Feld
+//! [`Op::NextField`], ein [`Op::Call`] des Initialisierers und
+//! [`Op::DefineField`]. So läuft auch ein Initialisierer ohne Rekursion in
+//! Rust.
+//!
 //! Generatoren: Der Code einer Generatorfunktion legt nach
 //! FunctionDeclarationInstantiation mit [`Op::CreateGenerator`] den
 //! Generator an und kehrt mit ihm zurück. [`Op::Yield`] hält den Rahmen an;
@@ -202,6 +213,43 @@ ops! {
     /// MakeMethod (Abschnitt 10.2.7): Das Objekt im Register wird
     /// [[HomeObject]] der Funktion im Akkumulator.
     SetHomeObject [Register],
+    /// Ein neuer privater Name (Abschnitt 6.2.12) im Akkumulator, die
+    /// Zeichenkette aus der Konstante als [[Description]].
+    CreatePrivateName [Constant],
+    /// Legt für den Konstruktor einer Klasse im Register ein Objekt an,
+    /// das seine privaten Methoden und Accessoren als private Elemente
+    /// hält ([[PrivateMethods]]), und legt es in den Akkumulator.
+    CreatePrivateMethods [Register],
+    /// Eine private Methode (PrivateMethodOrAccessorAdd, Abschnitt 7.3.28):
+    /// die Funktion im Akkumulator am Objekt im ersten Register unter dem
+    /// privaten Namen im zweiten. Gibt es den Namen dort schon, wirft das
+    /// einen TypeError.
+    DefinePrivateMethod [Register, Register],
+    /// Dasselbe für einen privaten Getter; einen Setter für denselben
+    /// Namen behält er (ClassDefinitionEvaluation, Abschnitt 15.7.14,
+    /// Schritt 31.e.ii).
+    DefinePrivateGetter [Register, Register],
+    /// Dasselbe für einen privaten Setter.
+    DefinePrivateSetter [Register, Register],
+    /// Hängt an [[Fields]] des Konstruktors im ersten Register ein Feld mit
+    /// dem Namen im zweiten an, mit der Funktion im Akkumulator als
+    /// Initialisierer, ohne *undefined*.
+    AddField [Register, Register],
+    /// InitializeInstanceElements (Abschnitt 7.3.33), Schritte 1 bis 3: die
+    /// privaten Methoden und Accessoren des Konstruktors im ersten Register
+    /// am Objekt im zweiten (PrivateMethodOrAccessorAdd). Gibt es einen der
+    /// Namen dort schon, wirft das einen TypeError.
+    InitializePrivateMethods [Register, Register],
+    /// Ein Schritt durch [[Fields]] (InitializeInstanceElements, Schritt 4):
+    /// Das Register hält den Konstruktor, das danach den Index des
+    /// nächsten Feldes. Gibt es keins mehr, springt es. Sonst nimmt das
+    /// zweite Register danach den Initialisierer auf, das vierte den Namen,
+    /// der Akkumulator den Initialisierer, und der Index wächst um eins.
+    NextField [Jump, Register],
+    /// DefineField (Abschnitt 7.3.32) mit dem Akkumulator als Wert: für
+    /// einen privaten Namen im zweiten Register PrivateFieldAdd am Objekt
+    /// im ersten, sonst CreateDataPropertyOrThrow.
+    DefineField [Register, Register],
     /// Ein Element eines Array-Literals: der Akkumulator an der Stelle der
     /// Länge.
     ArrayPush [Register],
@@ -257,6 +305,14 @@ ops! {
     StaSuperNamed [Register, Constant],
     /// Dasselbe mit dem Schlüssel wie bei [`Op::LdaSuperKeyed`].
     StaSuperKeyed [Register],
+    /// GetValue für eine private Referenz (PrivateGet, Abschnitt 7.3.30)
+    /// mit dem privaten Namen im Register auf dem Akkumulator. Ist er kein
+    /// Objekt, wirft das einen TypeError.
+    LdaPrivate [Register],
+    /// PutValue mit dem Akkumulator für eine private Referenz (PrivateSet,
+    /// Abschnitt 7.3.31) mit dem privaten Namen im zweiten Register auf dem
+    /// ersten.
+    StaPrivate [Register, Register],
 
     Add [Register],
     Sub [Register],
@@ -287,6 +343,9 @@ ops! {
     TestIn [Register],
     /// `instanceof`: der Wert im Register, das Ziel im Akkumulator.
     TestInstanceOf [Register],
+    /// `#x in`: der private Name im Register, das Objekt im Akkumulator.
+    /// Ist er kein Objekt, wirft das einen TypeError.
+    TestPrivateIn [Register],
 
     /// `!`
     LogicalNot [],
@@ -526,6 +585,9 @@ pub(crate) struct ContextLayout {
     /// Ob der Platz mit `this` die Lücke halten kann: im Konstruktor einer
     /// abgeleiteten Klasse vor `super()`.
     pub(crate) derived: bool,
+    /// Die Plätze der privaten Namen einer Klasse (PrivateEnvironment
+    /// Record, Abschnitt 9.2).
+    pub(crate) privates: BTreeMap<Atom, u32>,
 }
 
 /// Eine Bindung in einem Kontext.

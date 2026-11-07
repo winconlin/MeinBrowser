@@ -1,11 +1,17 @@
 //! ECMAScript-Funktionsobjekte (Abschnitt 10.2).
 //!
 //! Ein Funktionsobjekt ist ein Objekt der Art [`ObjectClass::Function`] mit
-//! vier internen Feldern vor seinen Eigenschaften: der Nummer seiner
+//! sechs internen Feldern vor seinen Eigenschaften: der Nummer seiner
 //! gemeinsamen Daten im Agent, der Nummer seines Realms ([[Realm]]), dem
 //! Kontext, in dem es entstand ([[Environment]]; *undefined* für Funktionen,
-//! die nur die globale Umgebung sehen), und dem Objekt, dessen Prototyp
-//! `super` liest ([[HomeObject]]; *undefined* ohne).
+//! die nur die globale Umgebung sehen), dem Objekt, dessen Prototyp
+//! `super` liest ([[HomeObject]]; *undefined* ohne), und beim Konstruktor
+//! einer Klasse [[Fields]] und [[PrivateMethods]]. [[Fields]] ist eine
+//! interne Zelle: vorn die Zahl der Felder, dann je Feld Name und
+//! Initialisierer (*undefined* ohne), mit Platz für weitere. Die privaten
+//! Methoden und Accessoren liegen als private Elemente an einem eigenen
+//! Objekt ohne Prototyp, das Code der Sprache nie sieht; beide Felder sind
+//! *undefined*, solange die Klasse nichts davon hat.
 //! Die gemeinsamen Daten ([`SharedFunction`]) gehören zu der Stelle im
 //! Quelltext, an der die Funktionsobjekte entstehen: der Syntaxbaum, die
 //! Funktion darin und, sobald sie das erste Mal aufgerufen wurde, ihr
@@ -42,7 +48,7 @@ use crate::key::{PropertyKey, symbol_description};
 use crate::object::{INLINE, ordinary_object_create};
 use crate::operations::define_property_or_throw;
 use crate::realm::{Intrinsic, RealmId};
-use crate::value::{Kind, Value};
+use crate::value::{Kind, Ref, Value};
 
 /// Das interne Feld mit der Nummer der gemeinsamen Daten.
 const SHARED: usize = 0;
@@ -52,6 +58,14 @@ const REALM: usize = 1;
 const ENVIRONMENT: usize = 2;
 /// Das interne Feld mit [[HomeObject]].
 const HOME: usize = 3;
+/// Das interne Feld mit [[Fields]].
+const FIELDS: usize = 4;
+/// Das interne Feld mit [[PrivateMethods]].
+const PRIVATE_METHODS: usize = 5;
+/// In der Zelle von [[Fields]]: die Zahl der Felder, dann je Feld zwei
+/// Werte.
+const FIELD_COUNT: usize = 0;
+const FIELD_ENTRY: usize = 2;
 
 /// Die gemeinsamen Daten der Funktionsobjekte einer Stelle im Quelltext.
 pub(crate) struct SharedFunction {
@@ -186,6 +200,124 @@ pub(crate) fn make_method(heap: &Heap, function: Value<'_>, home: Value<'_>) {
     if let Kind::Object(object) = function.kind() {
         heap.set_function_field(object, HOME, home);
     }
+}
+
+/// Hängt an [[Fields]] des Funktionsobjekts `function` ein Feld mit dem
+/// Namen `name` und dem Initialisierer `initializer` an
+/// (ClassDefinitionEvaluation, Abschnitt 15.7.14, Schritte 31.f und 33).
+/// Ist die Zelle voll, kommt eine doppelt so große. Für andere Werte
+/// geschieht nichts.
+pub(crate) fn add_field(
+    agent: &mut Agent,
+    scope: &Scope,
+    function: Local<'_>,
+    name: Local<'_>,
+    initializer: Local<'_>,
+) -> Result<(), OutOfMemory> {
+    let (count, capacity) = {
+        let heap = agent.heap();
+        match fields_cell(heap, heap.get(function)) {
+            Some(cell) => (
+                heap.slot(cell, FIELD_COUNT)
+                    .and_then(Value::as_int32)
+                    .and_then(|count| usize::try_from(count).ok())
+                    .unwrap_or(0),
+                heap.slot_count(cell),
+            ),
+            None => (0, 0),
+        }
+    };
+    let next = count.checked_add(1).ok_or(OutOfMemory)?;
+    let stored = i32::try_from(next).map_err(|_| OutOfMemory)?;
+    let entry = count
+        .checked_mul(FIELD_ENTRY)
+        .and_then(|values| values.checked_add(1))
+        .ok_or(OutOfMemory)?;
+    let needed = entry.checked_add(FIELD_ENTRY).ok_or(OutOfMemory)?;
+    if needed > capacity {
+        let size = needed
+            .max(capacity.checked_mul(2).ok_or(OutOfMemory)?)
+            .max(1 + 4 * FIELD_ENTRY);
+        let cell = agent.heap_mut().alloc_slots(scope, size)?;
+        let heap = agent.heap();
+        let (Kind::Object(object), Kind::Internal(new)) =
+            (heap.get(function).kind(), heap.get(cell).kind())
+        else {
+            return Ok(());
+        };
+        if let Some(old) = fields_cell(heap, heap.get(function)) {
+            for index in 0..capacity {
+                heap.set_slot(
+                    new,
+                    index,
+                    heap.slot(old, index).unwrap_or(Value::UNDEFINED),
+                );
+            }
+        }
+        heap.set_function_field(object, FIELDS, Value::internal(new));
+    }
+    let heap = agent.heap();
+    if let Some(cell) = fields_cell(heap, heap.get(function)) {
+        heap.set_slot(cell, entry, heap.get(name));
+        heap.set_slot(cell, entry.saturating_add(1), heap.get(initializer));
+        heap.set_slot(cell, FIELD_COUNT, Value::int32(stored));
+    }
+    Ok(())
+}
+
+/// Das Feld mit dem Index `index` in [[Fields]] des Funktionsobjekts
+/// `function`: Name und Initialisierer, `None` dahinter und für andere
+/// Werte.
+pub(crate) fn field_entry<'h>(
+    heap: &'h Heap,
+    function: Value<'_>,
+    index: usize,
+) -> Option<(Value<'h>, Value<'h>)> {
+    let cell = fields_cell(heap, function)?;
+    let count = heap.slot(cell, FIELD_COUNT)?.as_int32()?;
+    if index >= usize::try_from(count).ok()? {
+        return None;
+    }
+    let entry = index.checked_mul(FIELD_ENTRY)?.checked_add(1)?;
+    Some((
+        heap.slot(cell, entry)?,
+        heap.slot(cell, entry.checked_add(1)?)?,
+    ))
+}
+
+fn fields_cell<'h>(heap: &'h Heap, function: Value<'_>) -> Option<Ref<'h>> {
+    let Kind::Object(object) = function.kind() else {
+        return None;
+    };
+    match heap.function_field(object, FIELDS)?.kind() {
+        Kind::Internal(cell) => Some(cell),
+        _ => None,
+    }
+}
+
+/// Das Objekt mit den privaten Methoden und Accessoren ([[PrivateMethods]])
+/// des Funktionsobjekts `function`, `None` ohne und für andere Werte.
+pub(crate) fn private_methods<'h>(heap: &'h Heap, function: Value<'_>) -> Option<Value<'h>> {
+    let Kind::Object(object) = function.kind() else {
+        return None;
+    };
+    heap.function_field(object, PRIVATE_METHODS)
+        .filter(|methods| matches!(methods.kind(), Kind::Object(_)))
+}
+
+/// Legt das Objekt für [[PrivateMethods]] des Funktionsobjekts `function`
+/// an und gibt es zurück. Für andere Werte bleibt es ungenutzt.
+pub(crate) fn create_private_methods<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    function: Local<'_>,
+) -> Result<Local<'s>, OutOfMemory> {
+    let methods = ordinary_object_create(agent, scope, None)?;
+    let heap = agent.heap();
+    if let Kind::Object(object) = heap.get(function).kind() {
+        heap.set_function_field(object, PRIVATE_METHODS, heap.get(methods));
+    }
+    Ok(methods)
 }
 
 /// IsConstructor (Abschnitt 7.2.4): Funktionsobjekte, die MakeConstructor
@@ -430,7 +562,8 @@ pub(crate) fn set_function_length(
 }
 
 /// SetFunctionName (Abschnitt 10.2.9). Ein Symbol gibt seine Beschreibung
-/// in eckigen Klammern, ohne Beschreibung die leere Zeichenkette.
+/// in eckigen Klammern, ohne Beschreibung die leere Zeichenkette, ein
+/// privater Name seine Beschreibung.
 pub(crate) fn set_function_name(
     agent: &mut Agent,
     scope: &Scope,
@@ -453,9 +586,13 @@ pub(crate) fn set_function_name(
             if let Kind::Symbol(symbol) = heap.get(symbol).kind()
                 && let Kind::String(description) = symbol_description(heap, symbol).kind()
             {
-                text.push(u16::from(b'['));
-                text.extend(heap.string_units(description));
-                text.push(u16::from(b']'));
+                if heap.is_private_symbol(symbol) {
+                    text.extend(heap.string_units(description));
+                } else {
+                    text.push(u16::from(b'['));
+                    text.extend(heap.string_units(description));
+                    text.push(u16::from(b']'));
+                }
             }
         }
     }
