@@ -805,6 +805,40 @@ fn iterator_prototypes_inherit_from_iterator_prototype() {
     });
 }
 
+/// %AsyncIteratorPrototype% hat nur @@asyncIterator, das `this` zurückgibt,
+/// %AsyncFromSyncIteratorPrototype% erbt von ihm und hat `next`, `return`
+/// und `throw` mit optionalem Parameter, also mit `length` 0.
+#[test]
+fn async_iterator_prototypes_inherit_from_object_prototype() {
+    let (mut agent, realm) = agent_with(false);
+    agent.scope(|agent, scope| {
+        let object = agent.intrinsic(scope, realm, Intrinsic::ObjectPrototype);
+        let iterator = agent.intrinsic(scope, realm, Intrinsic::AsyncIteratorPrototype);
+        let parent = prototype_of(agent, scope, iterator);
+        assert!(same(agent, parent, object));
+        assert_eq!(keys(agent, scope, iterator), ["Symbol"]);
+        let (method, attributes) =
+            symbol_data(agent, scope, iterator, WellKnownSymbol::AsyncIterator);
+        assert_eq!(attributes, HIDDEN);
+        let (name, _) = data(agent, scope, method, "name");
+        assert_eq!(describe(agent, name), "\"[Symbol.asyncIterator]\"");
+        let undefined = agent.heap().local(scope, Value::UNDEFINED);
+        let result = call(agent, scope, method, object, &[undefined]).expect("Aufruf");
+        assert!(same(agent, result, object));
+        let prototype = agent.intrinsic(scope, realm, Intrinsic::AsyncFromSyncIteratorPrototype);
+        let parent = prototype_of(agent, scope, prototype);
+        assert!(same(agent, parent, iterator));
+        assert_eq!(keys(agent, scope, prototype), ["next", "return", "throw"]);
+        for name in ["next", "return", "throw"] {
+            let (function, attributes) = data(agent, scope, prototype, name);
+            assert_eq!(attributes, HIDDEN, "{name}");
+            assert!(!is_constructor(agent, agent.heap().get(function)), "{name}");
+            let (length, _) = data(agent, scope, function, "length");
+            assert_eq!(describe(agent, length), "0", "{name}");
+        }
+    });
+}
+
 #[test]
 fn generator_prototypes_link_functions_and_iterators() {
     const FIXED: [Option<bool>; 3] = [Some(false), Some(false), Some(true)];

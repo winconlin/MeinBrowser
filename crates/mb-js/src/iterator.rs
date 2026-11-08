@@ -9,14 +9,20 @@
 //! nicht: Jeder Aufruf von `next` oder `return` ist ein neuer Lauf des
 //! Interpreters wie der eines Getters und kostet Rust-Stapel nur im Rahmen
 //! von [`crate::agent::STACK_BUDGET`].
+//!
+//! GetIterator mit ~async~ legt für Objekte ohne @@asyncIterator einen
+//! Async-from-Sync Iterator an (Abschnitt 27.1.5), ein Objekt der Art
+//! [`ObjectClass::AsyncFromSyncIterator`] mit [[Iterator]] und
+//! [[NextMethod]] seines [[SyncIteratorRecord]]; seine Methoden stehen in
+//! `builtins`.
 
 #![forbid(unsafe_code)]
 
 use crate::agent::{Abrupt, Agent, Completion, ErrorKind};
 use crate::conversion::to_boolean;
-use crate::heap::{Local, Scope};
+use crate::heap::{Local, ObjectClass, Scope};
 use crate::key::{PropertyKey, WellKnownSymbol};
-use crate::object::ordinary_object_create;
+use crate::object::{INLINE, ordinary_object_create};
 use crate::operations::{call, create_data_property_or_throw, get, get_method, is_callable};
 use crate::realm::{Intrinsic, RealmId};
 use crate::reference::{get_value, to_object_base};
@@ -52,10 +58,14 @@ fn get_method_of_value<'s>(
     Ok(Some(function))
 }
 
-/// GetIterator (Abschnitt 7.4.4) mit ~sync~, GetIteratorFromMethod
-/// (Abschnitt 7.4.3) und GetIteratorDirect (Abschnitt 7.4.2): der Iterator
-/// und der Wert seiner Eigenschaft `next`. Ob der aufrufbar ist, zeigt erst
-/// der erste Aufruf.
+/// Die Felder eines Async-from-Sync Iterator: [[Iterator]] und
+/// [[NextMethod]] seines [[SyncIteratorRecord]].
+pub(crate) const SYNC_ITERATOR: usize = 0;
+pub(crate) const SYNC_NEXT: usize = 1;
+
+/// GetIterator (Abschnitt 7.4.4) mit ~sync~: der Iterator und der Wert
+/// seiner Eigenschaft `next`. Ob der aufrufbar ist, zeigt erst der erste
+/// Aufruf.
 pub(crate) fn get_iterator<'s>(
     agent: &mut Agent,
     scope: &'s Scope,
@@ -67,6 +77,35 @@ pub(crate) fn get_iterator<'s>(
     let Some(method) = method else {
         return Err(agent.throw_error(ErrorKind::TypeError));
     };
+    get_iterator_from_method(agent, scope, value, method)
+}
+
+/// GetIterator mit ~async~: der Iterator aus @@asyncIterator und der Wert
+/// seiner Eigenschaft `next`. Fehlt @@asyncIterator, ist es ein
+/// Async-from-Sync Iterator um den Iterator aus @@iterator.
+pub(crate) fn get_async_iterator<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    realm: RealmId,
+    value: Local<'_>,
+) -> Completion<(Local<'s>, Local<'s>)> {
+    let symbol = agent.well_known_symbol(scope, WellKnownSymbol::AsyncIterator);
+    let method = get_method_of_value(agent, scope, realm, value, PropertyKey::Symbol(symbol))?;
+    if let Some(method) = method {
+        return get_iterator_from_method(agent, scope, value, method);
+    }
+    let (iterator, next) = get_iterator(agent, scope, realm, value)?;
+    create_async_from_sync_iterator(agent, scope, realm, iterator, next)
+}
+
+/// GetIteratorFromMethod (Abschnitt 7.4.3) mit GetIteratorDirect
+/// (Abschnitt 7.4.2).
+fn get_iterator_from_method<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    value: Local<'_>,
+    method: Local<'_>,
+) -> Completion<(Local<'s>, Local<'s>)> {
     let iterator = call(agent, scope, method, value, &[])?;
     if !is_object(agent, iterator) {
         return Err(agent.throw_error(ErrorKind::TypeError));
@@ -76,31 +115,91 @@ pub(crate) fn get_iterator<'s>(
     Ok((iterator, next))
 }
 
-/// IteratorStep (Abschnitt 7.4.9) mit IteratorNext und IteratorComplete
-/// (Abschnitte 7.4.6 und 7.4.7): das Ergebnis von `next` oder `None`, wenn
-/// der Iterator fertig ist. Danach gilt [[Done]] bei `None` und nach jedem
-/// Fehler.
+/// CreateAsyncFromSyncIterator (Abschnitt 27.1.5.1) mit
+/// %AsyncFromSyncIteratorPrototype% aus `realm`, dem aktuellen Realm: der
+/// neue Iterator und der Wert seiner Eigenschaft `next`.
+fn create_async_from_sync_iterator<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    realm: RealmId,
+    iterator: Local<'_>,
+    next: Local<'_>,
+) -> Completion<(Local<'s>, Local<'s>)> {
+    let prototype = agent.intrinsic(scope, realm, Intrinsic::AsyncFromSyncIteratorPrototype);
+    let shape = agent.empty_shape(scope);
+    let object = agent.heap_mut().alloc_object(
+        scope,
+        ObjectClass::AsyncFromSyncIterator,
+        INLINE,
+        shape,
+        Some(prototype),
+    )?;
+    let heap = agent.heap();
+    if let Kind::Object(cell) = heap.get(object).kind() {
+        heap.set_async_from_sync_field(cell, SYNC_ITERATOR, heap.get(iterator));
+        heap.set_async_from_sync_field(cell, SYNC_NEXT, heap.get(next));
+    }
+    let key = agent.key_from_units(scope, &units("next"))?;
+    let method = get(agent, scope, object, key)?;
+    Ok((object, method))
+}
+
+/// IteratorNext (Abschnitt 7.4.6): das Ergebnis von `next` mit den
+/// Argumenten `arguments`, höchstens einem.
+pub(crate) fn iterator_next<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    iterator: Local<'_>,
+    next: Local<'_>,
+    arguments: &[Local<'_>],
+) -> Completion<Local<'s>> {
+    let result = call(agent, scope, next, iterator, arguments)?;
+    if !is_object(agent, result) {
+        return Err(agent.throw_error(ErrorKind::TypeError));
+    }
+    Ok(result)
+}
+
+/// IteratorComplete (Abschnitt 7.4.7).
+pub(crate) fn iterator_complete(
+    agent: &mut Agent,
+    scope: &Scope,
+    result: Local<'_>,
+) -> Completion<bool> {
+    let key = agent.key_from_units(scope, &units("done"))?;
+    let done = get(agent, scope, result, key)?;
+    Ok(to_boolean(agent.heap(), agent.heap().get(done)))
+}
+
+/// IteratorValue (Abschnitt 7.4.8).
+pub(crate) fn iterator_value<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    result: Local<'_>,
+) -> Completion<Local<'s>> {
+    let key = agent.key_from_units(scope, &units("value"))?;
+    get(agent, scope, result, key)
+}
+
+/// IteratorStep (Abschnitt 7.4.9) mit IteratorNext und IteratorComplete:
+/// das Ergebnis von `next` oder `None`, wenn der Iterator fertig ist.
+/// Danach gilt [[Done]] bei `None` und nach jedem Fehler.
 pub(crate) fn iterator_step<'s>(
     agent: &mut Agent,
     scope: &'s Scope,
     iterator: Local<'_>,
     next: Local<'_>,
 ) -> Completion<Option<Local<'s>>> {
-    let result = call(agent, scope, next, iterator, &[])?;
-    if !is_object(agent, result) {
-        return Err(agent.throw_error(ErrorKind::TypeError));
-    }
-    let key = agent.key_from_units(scope, &units("done"))?;
-    let done = get(agent, scope, result, key)?;
-    if to_boolean(agent.heap(), agent.heap().get(done)) {
+    let result = iterator_next(agent, scope, iterator, next, &[])?;
+    if iterator_complete(agent, scope, result)? {
         return Ok(None);
     }
     Ok(Some(result))
 }
 
-/// IteratorStepValue (Abschnitt 7.4.10) mit IteratorStep und IteratorValue
-/// (Abschnitt 7.4.8): der nächste Wert oder `None`, wenn der Iterator
-/// fertig ist. Danach gilt [[Done]] bei `None` und nach jedem Fehler.
+/// IteratorStepValue (Abschnitt 7.4.10) mit IteratorStep und IteratorValue:
+/// der nächste Wert oder `None`, wenn der Iterator fertig ist. Danach gilt
+/// [[Done]] bei `None` und nach jedem Fehler.
 pub(crate) fn iterator_step_value<'s>(
     agent: &mut Agent,
     scope: &'s Scope,
@@ -110,8 +209,7 @@ pub(crate) fn iterator_step_value<'s>(
     let Some(result) = iterator_step(agent, scope, iterator, next)? else {
         return Ok(None);
     };
-    let key = agent.key_from_units(scope, &units("value"))?;
-    Ok(Some(get(agent, scope, result, key)?))
+    Ok(Some(iterator_value(agent, scope, result)?))
 }
 
 /// IteratorClose (Abschnitt 7.4.11) für eine Beendigung, die keine Ausnahme

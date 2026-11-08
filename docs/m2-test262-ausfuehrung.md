@@ -122,25 +122,25 @@ mit `module`. Eine Panik der Engine lässt den Test immer scheitern,
 sie kann nicht erwartet werden. Jede Datei der festen Auswahl muss auch hier
 bestehen.
 
-Mit diesem Stand bestehen 12.374 von 23.296 ausgeführten Dateien und 23.859
-von 43.794 Varianten. Seit Teil 7b gibt es async-Funktionen und `await`. Die
-meisten Dateien mit dem Flag `async`, die noch scheitern, brauchen
-async-Generatoren oder `for await` (Teil 7c) und scheitern als
-`Unsupported`, oder ihnen fehlen eingebaute Objekte, etwa
+Mit diesem Stand bestehen 12.695 von 23.296 ausgeführten Dateien und 24.481
+von 43.794 Varianten. Seit Teil 7b gibt es async-Funktionen und `await`, seit
+Teil 7c-1 `for await` in async-Funktionen. Die meisten Dateien mit dem Flag
+`async`, die noch scheitern, brauchen async-Generatoren (Teil 7c-2) und
+scheitern als `Unsupported`, oder ihnen fehlen eingebaute Objekte, etwa
 `Object.prototype.hasOwnProperty`, das `asyncTest` aus `asyncHelpers.js`
-gleich zu Beginn aufruft, oder `Array.prototype.push`. Dateien mit `async`
-und `module` scheitern am Flag `module`. Die Gründe der Fehlschläge gibt der Test
-mit `--nocapture` aus:
+gleich zu Beginn aufruft, `Object.defineProperty` oder
+`Array.prototype.push`. Dateien mit `async` und `module` scheitern am Flag
+`module`. Die Gründe der Fehlschläge gibt der Test mit `--nocapture` aus:
 
 | Varianten | Grund |
 | ---: | --- |
-| 9.388 | Der Übersetzer kann ein Konstrukt noch nicht (`Unsupported`) |
+| 8.726 | Der Übersetzer kann ein Konstrukt noch nicht (`Unsupported`) |
 | 3.631 | Eine Datei der Harness endet mit einem ReferenceError |
 | 3.277 | ReferenceError im Test |
 | 2.031 | TypeError im Test |
 | 772 | `Test262Error`: Eine Assertion schlug fehl |
 | 698 | Flag `module` |
-| 106 | Ein Test mit `async` meldete einen Fehlschlag (`AsyncFailure`) |
+| 146 | Ein Test mit `async` meldete einen Fehlschlag (`AsyncFailure`) |
 | 30 | Die Arbeitsschritte sind erschöpft |
 | 2 | Eine Datei der Harness endet mit einem TypeError |
 
@@ -260,7 +260,7 @@ Tag. Ihre Endpositionen prüfen auch eigene Tests in `compiler/tests.rs`, die
 Rekursion ohne wachsenden Registerstapel `script/tests.rs`. Weitere
 Sprachfunktionen wie BigInt bleiben mit ihren Implementierungen zu
 ergänzen. Iteratoren, Destrukturierung, Generatoren, Klassen mit Feldern
-und privaten Namen und async-Funktionen gibt es schon, Dateien dazu stehen aber noch nicht in der
+und privaten Namen, async-Funktionen und `for await` gibt es schon, Dateien dazu stehen aber noch nicht in der
 Auswahl; sie laufen bisher nur im Lauf über `test/language/` ohne
 erzwungene Sammlungen.
 Diese Auswahl behauptet nicht, sie abzudecken.

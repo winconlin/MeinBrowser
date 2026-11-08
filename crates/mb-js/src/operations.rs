@@ -46,7 +46,8 @@ pub fn is_callable(heap: &Heap, value: Value<'_>) -> bool {
                 | ObjectClass::Primitive
                 | ObjectClass::Iterator
                 | ObjectClass::Generator
-                | ObjectClass::Promise,
+                | ObjectClass::Promise
+                | ObjectClass::AsyncFromSyncIterator,
             )
             | None => false,
         },

@@ -85,8 +85,8 @@ use crate::generator::{
 };
 use crate::heap::{Heap, Local, Scope};
 use crate::iterator::{
-    create_iterator_result_object, get_iterator, iterator_close, iterator_close_on_throw,
-    iterator_step, iterator_step_value,
+    create_iterator_result_object, get_async_iterator, get_iterator, iterator_close,
+    iterator_close_on_throw, iterator_complete, iterator_step, iterator_step_value, iterator_value,
 };
 use crate::key::{PropertyKey, array_index, is_private_name};
 use crate::number;
@@ -2382,6 +2382,43 @@ impl<'c> Frame<'c, '_> {
                     } else {
                         iterator_close_on_throw(agent, scope, iterator)?;
                     }
+                }
+            }
+            Op::GetAsyncIterator => {
+                let value = self.accumulator_copy(agent, scope);
+                let (iterator, next) = get_async_iterator(agent, scope, self.realm, value)?;
+                self.set_register(agent, first, iterator);
+                self.set_register(agent, first.saturating_add(1), next);
+            }
+            Op::AsyncIteratorNext => {
+                let iterator = self.register(agent, scope, first);
+                let next = self.register(agent, scope, first.saturating_add(1));
+                let result = call(agent, scope, next, iterator, &[])?;
+                self.set_accumulator(agent, result);
+            }
+            Op::IteratorResult => {
+                let result = self.accumulator_copy(agent, scope);
+                if !matches!(agent.heap().get(result).kind(), Kind::Object(_)) {
+                    return Err(agent.throw_error(ErrorKind::TypeError));
+                }
+                if iterator_complete(agent, scope, result)? {
+                    return Ok(jump(instruction));
+                }
+                let value = iterator_value(agent, scope, result)?;
+                self.set_accumulator(agent, value);
+            }
+            Op::AsyncIteratorClose => {
+                let iterator = self.register(agent, scope, second);
+                let key = named_key(agent, scope, "return")?;
+                let Some(method) = get_method(agent, scope, iterator, key)? else {
+                    return Ok(jump(instruction));
+                };
+                let result = call(agent, scope, method, iterator, &[])?;
+                self.set_accumulator(agent, result);
+            }
+            Op::ThrowIfNotObject => {
+                if !matches!(agent.heap().get(self.accumulator).kind(), Kind::Object(_)) {
+                    return Err(agent.throw_error(ErrorKind::TypeError));
                 }
             }
             Op::CreateArguments | Op::CreateMappedArguments | Op::CreateRestParameter => {
