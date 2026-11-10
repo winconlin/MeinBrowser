@@ -3,9 +3,10 @@
 Auf den [Tokenizer](m2-webidl-lexer.md) baut nun
 `mb_webidl::parser` auf. Er prüft die normative WebIDL-Grammatik vollständig
 und liefert einen flachen Arena-Syntaxbaum mit Produktionsnamen, Tokenarten
-und UTF-8-Byte-Ranges. Die unveränderte Quelle bleibt geliehen. Namens- und
-Typprüfung, Auswertung der Extended Attributes und Binding-Generierung sind
-weiter eigene, noch fehlende Schritte.
+und UTF-8-Byte-Ranges. Die unveränderte Quelle bleibt geliehen. Darauf baut
+inzwischen der [quellenübergreifende Namensindex](m2-webidl-index.md) auf.
+Vollständige Typ-/Memberprüfung, Auswertung der Extended Attributes und
+Binding-Generierung fehlen weiterhin.
 
 ## Grammatik und eigene Tabellen
 
@@ -104,8 +105,9 @@ Prüfung aller 350 Dateien bleibt bestehen.
 Weitere Regressionen prüfen verschiedene Definitionen und Typen,
 Extended Attributes, genaue Fehler-Ranges, angehängte Eingaben, Quoten und
 Limits sowie 2.000 verschachtelte Sequenztypen auf einem Faden mit 1 MiB
-Rust-Stapel. Semantisch ungültige, aber syntaktisch gültige Definitionen wie
-doppelte Namen oder unbekannte Typen werden bewusst erst später geprüft.
+Rust-Stapel. Doppelte Definitionsnamen und unbekannte benannte Typen prüft anschließend
+der Namensindex; der Parser allein akzeptiert diese syntaktisch gültigen
+Eingaben weiterhin.
 
 Das vorhandene Fuzzing-Ziel `webidl` prüft zusätzlich den Parser mit
 50.000 Schritten, höchstens 12 KiB UTF-8-Quelltext, 8.192 Knoten und 8.192
@@ -121,10 +123,11 @@ der Lexer geprüft. Es gelten die äußeren Grenzen aus [fuzzing.md](fuzzing.md)
    Standardstand prüfen. Generierte Tabellen nur über `datagen` ändern.
 2. Baum und Quoten prüfen, insbesondere leere Produktionen, Trivia-Ranges,
    Grenzen vor dem Anlegen neuer Knoten und gemeinsam verwendete Budgets.
-3. Eine semantische IR aufbauen: Definitionen zusammenführen, Partials,
-   Mixins/Includes und Vererbung auflösen, Bezeichner normalisieren, Typen,
-   Defaultwerte und Extended Attributes validieren. Der Syntaxbaum allein
-   garantiert keine gültige oder implementierte Web-API.
+3. Den inzwischen vorhandenen [Namensindex](m2-webidl-index.md) prüfen und
+   darauf die normalisierte Typ-/Member-IR aufbauen. Definitionen, Partials,
+   Includes, Eltern und benannte Typen sind bereits verbunden; vollständige
+   Typ-/Member-, Defaultwert- und Extended-Attribute-Prüfung fehlen.
+   Syntaxbaum und Namensindex garantieren noch keine gültige Web-API.
 4. Darauf den eigenen Binding-Generator mit Argumentprüfung, Konversionen,
    Ausnahmen und Prototypen implementieren und gegen WebIDL-/DOM-WPT prüfen.
    DOM-Bindings und Ereignisschleife fehlen weiter; M2 ist nicht abgeschlossen.

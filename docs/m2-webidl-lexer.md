@@ -6,7 +6,7 @@ geplanten IDL-Leser und Binding-Generator. Er zerlegt Quelltext nach dem
 Anhang [IDL grammar](https://webidl.spec.whatwg.org/#idl-grammar).
 Gelesener Quellstand des Standards:
 [`296213a1d9c8293850295c6e77d3b13dce8681a9`](https://github.com/whatwg/webidl/blob/296213a1d9c8293850295c6e77d3b13dce8681a9/index.bs#L15426).
-Es wird keine fremde Parser- oder Browserimplementierung verwendet. Inzwischen baut darauf der [Syntaxparser](m2-webidl-parser.md) auf; dessen Grenzen und nächste Schritte stehen separat.
+Es wird keine fremde Parser- oder Browserimplementierung verwendet. Inzwischen baut darauf der [Syntaxparser](m2-webidl-parser.md) auf; ergänzt wird er durch den [Namensindex](m2-webidl-index.md). Grenzen und nächste Schritte stehen separat.
 
 ## API und Verhalten
 
@@ -98,11 +98,13 @@ python3 fuzz/run.py webidl --seconds 30 --seed 1
    feste Terminalmenge gemeinsam aktualisieren.
 2. Der LL(1)-Syntaxparser ist implementiert und liefert Produktionsbäume
    für Definitionen, Typen, Mitglieder und Extended Attributes. Seine
-   Prüfpunkte stehen in [m2-webidl-parser.md](m2-webidl-parser.md). Escaped
-   Identifier und Zahlenwerte bleiben semantisch auszuwerten.
-3. Namensauflösung, Partials, Mixins/Includes, Typprüfung und die Bedeutung
-   der Extended Attributes implementieren. Das bisherige Lesen der
-   webref-Dateien bestätigt diese Schritte noch nicht.
+   Prüfpunkte stehen in [m2-webidl-parser.md](m2-webidl-parser.md). Der
+   Namensindex entfernt inzwischen den Escape-Unterstrich; Zahlenwerte
+   bleiben semantisch auszuwerten.
+3. Den [Namensindex](m2-webidl-index.md) für Definitionen, Partials,
+   Typverweise, Includes und Vererbung prüfen. Darauf noch Typ-/Member-IR,
+   vollständige Typprüfung und die Bedeutung der Extended Attributes aufbauen.
+   Das Lesen der webref-Dateien bestätigt keine vollständige Semantik.
 4. Anschließend den Binding-Generator mit Argumentprüfung, Konversionen,
    Ausnahmen und Prototypen an die vorhandene JS-Engine anbinden und gegen
    WebIDL-/DOM-WPT prüfen. DOM-Bindings und Ereignisschleife fehlen weiter;

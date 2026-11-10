@@ -249,6 +249,13 @@ def main():
     write("webidl", "parser-deep-types", "typedef " + "sequence<" * 200 + "long" + ">" * 200 + " Deep;")
     write("webidl", "parser-many-members", "interface X {" + "attribute long n;" * 200 + "};")
     write("webidl", "parser-invalid", 'partial interface X { constructor(); }; typedef sequence<> Bad;')
+    write("webidl", "index-forward-partials", 'partial interface X { attribute Options options; }; X includes M; partial interface mixin M { undefined run(X value); }; interface X : Base {}; interface Base {}; interface mixin M {}; dictionary Options {};')
+    write("webidl", "index-inheritance-cycle", 'interface A : B {}; interface B : A {};')
+    write("webidl", "index-typedef-cycle", 'typedef sequence<B> A; typedef FrozenArray<A> B;')
+    write("webidl", "index-escaped-names", 'interface _interface {}; partial interface _interface { attribute _interface value; }; interface mixin _mixin {}; _interface includes _mixin;')
+    write("webidl", "index-duplicate-definition", 'interface Example {}; dictionary _Example {};')
+    write("webidl", "index-unknown-type", 'interface Example { undefined run(Missing value); };')
+
     write("html", "document", "<!doctype html><table><tr><td>x</table><template><p>y</template>")
     write("html", "text-modes", "<textarea>&amp;</textarea><script>'<&'</script><svg><title>x</title></svg>")
     write("css", "stylesheet", "@layer a { div:nth-child(2n+1) { color: red; width: 10px } }")
