@@ -793,7 +793,10 @@ mod tests {
         );
         assert_eq!(stats.functions, 3);
         assert_eq!(stats.unsupported_functions, 0);
-        assert_eq!(stats.generators, 3, "each async generator creates its object");
+        assert_eq!(
+            stats.generators, 3,
+            "each async generator creates its object"
+        );
         assert_eq!(stats.async_generators, 3);
         assert_eq!(stats.async_functions, 0, "no capability of their own");
         assert_eq!(stats.yields, 4, "three yields and the one of yield*");
