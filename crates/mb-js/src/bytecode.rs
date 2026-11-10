@@ -80,6 +80,15 @@
 //! ([`Op::GetAsyncIterator`]) und wartet mit [`Op::Await`] auf jedes
 //! Ergebnis von `next` und `return`.
 //!
+//! async-Generatoren: Ihr Code legt wie der eines Generators mit
+//! [`Op::CreateGenerator`] den Generator an ([`Code::is_async_generator`])
+//! und hat kein Register für einen Zustand. [`Op::Await`] hält den Rahmen
+//! im Generator an, [`Op::AsyncYield`] gibt einen Wert an den ersten
+//! Eintrag der Warteschlange und hält an, wenn keiner mehr wartet; danach
+//! verzweigt [`Op::ResumeGenerator`] wie bei Generatoren. `yield*` wartet
+//! mit [`Op::Await`] auf jedes Ergebnis des inneren Iterators
+//! ([`Op::AsyncYieldStar`], [`Op::AsyncYieldStarResult`]).
+//!
 //! Im Bytecode steht keine Adresse im Heap. Zahlen, Zeichenketten und die
 //! Funktionen, die der Code anlegt, liegen als [`Constant`] bei ihm; der
 //! Interpreter legt sie im Heap an, für ein Script zu Beginn des Laufs, für
@@ -495,7 +504,8 @@ ops! {
     /// (OrdinaryCreateFromConstructor mit %GeneratorPrototype%) im Register
     /// aus [`Code::generator_register`] und im Akkumulator. Er hält den
     /// Rahmen, der beim Befehl danach beginnt. Dann kehrt der Rahmen mit ihm
-    /// zurück.
+    /// zurück. Im Code eines async-Generators ist es EvaluateAsyncGeneratorBody
+    /// (Abschnitt 15.6.2) mit %AsyncGeneratorPrototype%.
     CreateGenerator [],
     /// `yield` (Yield und GeneratorYield, Abschnitte 27.8.3.7 und 27.8.3.6):
     /// CreateIteratorResultObject mit dem Akkumulator und *false* in den
@@ -520,6 +530,34 @@ ops! {
     /// springt es dann mit dem übergebenen Wert, ohne `throw` schließt es ihn
     /// und wirft einen TypeError.
     YieldStar [Jump, Register],
+    /// AsyncGeneratorYield (Abschnitt 27.9.3.8) im Code eines
+    /// async-Generators mit dem Akkumulator, auf den schon gewartet wurde:
+    /// Der erste Eintrag der Warteschlange bekommt ihn als Ergebnis. Wartet
+    /// danach ein weiterer, geht es mit dessen Abschluss gleich weiter, mit
+    /// dem Wert im Akkumulator; auf den Wert für `return` wartet der Rahmen
+    /// vorher (AsyncGeneratorUnwrapYieldResumption, Abschnitt 27.9.3.7).
+    /// Sonst hält der Rahmen an, bis `next`, `return` oder `throw` ihn
+    /// fortsetzt. Der Befehl danach liest die Fortsetzung.
+    AsyncYield [],
+    /// Ein Durchlauf von `yield*` in einem async-Generator (Abschnitt
+    /// 15.5.5) mit dem Iterator Record von [`Op::GetAsyncIterator`] ab dem
+    /// Register, dahinter einem Register für die Art des Durchlaufs, und dem
+    /// übergebenen Wert im Akkumulator: Je nach Fortsetzung ruft es `next`,
+    /// `throw` oder `return` des Iterators auf, das Ergebnis für
+    /// [`Op::Await`] im Akkumulator. Ohne `throw` beginnt es
+    /// AsyncIteratorClose (Abschnitt 7.4.15) und ruft `return` ohne
+    /// Argumente auf, ohne `return` am Iterator bleibt nach `throw` nur der
+    /// TypeError und nach `return` der übergebene Wert, auf den noch
+    /// gewartet wird.
+    AsyncYieldStar [Register],
+    /// Das Ergebnis eines Durchlaufs nach dem Await: Ist es kein Objekt,
+    /// wirft es einen TypeError, nach dem Schließen ohne `throw` immer. Ist
+    /// der Iterator nicht fertig, kommt sein Wert für [`Op::AsyncYield`] in
+    /// den Akkumulator. Sonst springt es mit dem Wert, der für
+    /// [`Op::ResumeGenerator`] als Fortsetzung mit `next` gilt, nach `return`
+    /// als Fortsetzung mit `return`, ebenso ohne `return` am Iterator mit
+    /// dem übergebenen Wert.
+    AsyncYieldStarResult [Jump, Register],
 
     /// EvaluateAsyncFunctionBody und EvaluateAsyncConciseBody (Abschnitte
     /// 15.8.4 und 15.9.3), Schritt 1, vor FunctionDeclarationInstantiation:
@@ -531,7 +569,8 @@ ops! {
     /// Funktionen, die den Rahmen fortsetzen. Dann hält der Rahmen an und
     /// kehrt mit dem Promise der Funktion zurück. Der Zustand hält den
     /// Rahmen, der beim Befehl danach weitergeht, mit dem Wert oder dem Grund
-    /// im Akkumulator.
+    /// im Akkumulator. In einem async-Generator hält ihn der Generator, und
+    /// der Lauf endet wie bei `yield`.
     Await [],
     /// Nach einem Halt bei [`Op::Await`]: Wurde der Rahmen mit einem Grund
     /// fortgesetzt, wirft es den Akkumulator; sonst bleibt er.
@@ -749,6 +788,9 @@ pub struct Code {
     /// Das Register mit dem Zustand im Code einer async-Funktion, ab
     /// [`Op::BeginAsync`].
     pub(crate) async_state: Option<u32>,
+    /// Ob der Code der einer async-Generatorfunktion ist: Er hat das
+    /// Register aus `generator`, aber keins für einen Zustand.
+    pub(crate) async_generator: bool,
     pub(crate) strict: bool,
     /// Die Bereiche strikten Codes in nicht striktem Code: Paare aus Anfang
     /// und Ende im Bytecode, aufsteigend, nicht leer und ohne Überlappung.
@@ -811,6 +853,11 @@ impl Code {
     pub fn async_state_register(&self) -> Option<usize> {
         self.async_state
             .and_then(|register| usize::try_from(register).ok())
+    }
+
+    /// Ob der Code der einer async-Generatorfunktion ist.
+    pub fn is_async_generator(&self) -> bool {
+        self.async_generator
     }
 
     /// Die Plätze der Parameter für ein verknüpftes arguments-Objekt.
@@ -1082,6 +1129,7 @@ impl Emitter {
             new_target: None,
             generator: None,
             async_state: None,
+            async_generator: false,
             strict,
             strict_ranges: self.strict_ranges,
             derived: false,

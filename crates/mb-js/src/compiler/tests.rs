@@ -394,18 +394,18 @@ fn instructions_know_their_place_in_the_source() {
 #[test]
 fn unsupported_constructs_name_their_place() {
     let cases = [
-        ("async function* f() {}", 0),
-        ("class A { async *m() {} }", 10),
-        ("x = {async *a() {}};", 5),
-        ("x = {async *['a']() {}};", 5),
+        ("a = 1n;", 4),
+        ("class A { [1n]() {} }", 11),
+        ("x = {a: 1n};", 8),
+        ("x = {[1n]: 1};", 6),
         ("x = {1n: 1};", 5),
         ("let {1n: a} = b;", 5),
-        ("[a = class { async *m() {} }] = b;", 13),
+        ("[a = class { [1n]() {} }] = b;", 14),
         ("for (var k in o);", 0),
         ("f`x`;", 0),
         ("1n;", 0),
         ("/a/;", 0),
-        ("(async function* () {});", 1),
+        ("(/a/);", 1),
         ("with (a) {}", 0),
         ("l: function g() {}", 3),
     ];
@@ -1527,6 +1527,77 @@ fn async_functions_begin_with_their_capability_and_reject_from_one_handler() {
         first_function("function f() {}").async_state_register(),
         None
     );
+}
+
+/// Ein async-Generator hat ein Generatorregister und kein Register für
+/// den Zustand einer async-Funktion. `yield` wartet auf seinen Wert, dann
+/// gibt [`Op::AsyncYield`] ihn weiter; `return` mit Wert wartet auf ihn,
+/// `return` ohne Wert nicht. `yield*` wiederholt einen Durchlauf mit
+/// [`Op::AsyncYieldStar`], dem Warten und [`Op::AsyncYieldStarResult`].
+#[test]
+fn async_generators_await_their_yields_and_returns() {
+    let code = first_function("async function* g(a) { var x = yield a; return x; }");
+    assert!(code.is_async_generator());
+    assert_eq!(code.generator_register(), Some(3));
+    assert_eq!(code.async_state_register(), None);
+    assert_eq!(
+        function_shape(&code),
+        [
+            "CreateGenerator",
+            "Ldar r2",
+            "Await",
+            "ResumeAsync",
+            "AsyncYield",
+            "ResumeGenerator @",
+            "Return",
+            "Star r4",
+            "Ldar r4",
+            "Await",
+            "ResumeAsync",
+            "Return",
+            "LdaUndefined",
+            "Return"
+        ]
+    );
+    let code = first_function("async function* g() { yield* a; }");
+    assert_eq!(
+        function_shape(&code),
+        [
+            "CreateGenerator",
+            "LdaGlobal a",
+            "GetAsyncIterator r3",
+            "LdaUndefined",
+            "AsyncYieldStar r3",
+            "Await",
+            "ResumeAsync",
+            "AsyncYieldStarResult @ r3",
+            "AsyncYield",
+            "JumpLoop @",
+            "ResumeGenerator @",
+            "Return",
+            "LdaUndefined",
+            "Return"
+        ]
+    );
+    let code = first_function("async function* g() { return; }");
+    assert_eq!(
+        function_shape(&code),
+        [
+            "CreateGenerator",
+            "LdaUndefined",
+            "Return",
+            "LdaUndefined",
+            "Return"
+        ]
+    );
+    assert_eq!(
+        tail_calls(&first_function(
+            "async function* g() { 'use strict'; return f(); }"
+        )),
+        0
+    );
+    assert!(!first_function("function* g() {}").is_async_generator());
+    assert!(!first_function("async function f() {}").is_async_generator());
 }
 
 /// IsInTailPosition (Abschnitt 15.10.1): In async-Funktionen steht kein

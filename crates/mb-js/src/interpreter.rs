@@ -58,6 +58,13 @@
 //! Aufrufer geht weiter. Eine der beiden Funktionen, die Await an das
 //! Promise hängt, setzt ihn in einem neuen Lauf fort ([`resume_async`]),
 //! dessen unterster Rahmen er ist.
+//!
+//! async-Generatoren: Ihr Rumpf läuft wie der eines Generators nur in
+//! einem Lauf, dessen unterster Rahmen er ist
+//! ([`resume_async_generator`]). Er hält bei `await` und bei `yield` an:
+//! Der Rahmen kommt in den Generator, und der Lauf endet
+//! ([`Ending::Suspended`]). Was danach mit der Warteschlange geschieht,
+//! entscheidet `crate::async_generator`.
 
 #![forbid(unsafe_code)]
 
@@ -68,6 +75,7 @@ use crate::ast::Ast;
 use crate::async_function::{
     async_start, await_value, frame_cell, promise, settle, start_running, suspend, take_throw,
 };
+use crate::async_generator::{async_generator_create, async_generator_yield, suspend_frame};
 use crate::builtin::{builtin_parts, call_builtin};
 use crate::bytecode::{Code, Constant, HandlerKind, Instruction, Op};
 use crate::compare::{is_less_than, is_loosely_equal, is_strictly_equal};
@@ -147,7 +155,8 @@ enum Flow {
 pub(crate) enum Ending {
     /// Sein unterster Rahmen kehrte zurück.
     Returned,
-    /// Sein unterster Rahmen, der eines Generators, hielt bei `yield` an.
+    /// Sein unterster Rahmen, der eines Generators, hielt bei `yield` an,
+    /// der eines async-Generators auch bei `await`.
     Suspended,
 }
 
@@ -477,6 +486,47 @@ fn resume_awaiting(
     Ok(())
 }
 
+/// Setzt den angehaltenen Rahmen des async-Generators `generator` fort
+/// (AsyncGeneratorResume, Abschnitt 27.9.3.6, ab RunSuspendedContext, und
+/// die Funktionen eines Await): ein neuer Lauf mit dem Rahmen aus seiner
+/// Zelle und `value` im Akkumulator; der Befehl danach liest `resumption`.
+/// Erst wenn der Rahmen steht, ist der Generator ~executing~. Das Ergebnis
+/// sagt, ob der Rahmen wieder anhielt oder zurückkehrte, mit dem
+/// Akkumulator.
+pub(crate) fn resume_async_generator<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    generator: Local<'_>,
+    resumption: Resumption,
+    value: Local<'_>,
+) -> Completion<(Ending, Local<'s>)> {
+    agent.with_default_execution_budget(|agent| {
+        agent.enter_interpreter()?;
+        let result = resume_generator_body(agent, scope, generator, resumption, value);
+        agent.leave_interpreter();
+        result
+    })
+}
+
+fn resume_generator_body<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    generator: Local<'_>,
+    resumption: Resumption,
+    value: Local<'_>,
+) -> Completion<(Ending, Local<'s>)> {
+    // Kann nicht fehlen: Fortgesetzt wird nur ein angehaltener Rahmen.
+    let Some((function, frame, offset)) =
+        crate::async_generator::suspended_parts(agent, scope, generator)
+    else {
+        return Err(agent.throw_error(ErrorKind::TypeError));
+    };
+    let started = |heap: &Heap| {
+        crate::async_generator::start_running(heap, heap.get(generator), resumption);
+    };
+    resume_saved(agent, scope, function, frame, offset, value, started)
+}
+
 /// Legt den Rahmen aus der Zelle `frame` für das Funktionsobjekt
 /// `function` wieder auf den Registerstapel und führt ihn ab dem Befehl bei
 /// `offset` aus, mit `value` im Akkumulator. `started` erfährt, wenn der
@@ -609,7 +659,8 @@ fn run(
             }
             Flow::Yield => {
                 // Kann nur im untersten Rahmen vorkommen: Der Rumpf eines
-                // Generators läuft nur in einem Lauf aus [`resume_frame`].
+                // Generators läuft nur in einem Lauf aus [`resume_frame`]
+                // oder [`resume_async_generator`].
                 if stack.len() > 1 {
                     return Err(agent.throw_error(ErrorKind::RangeError));
                 }
@@ -1489,6 +1540,9 @@ impl<'c> Frame<'c, '_> {
         scope: &Scope,
         instruction: &Instruction,
     ) -> Completion<Flow> {
+        if self.code.is_async_generator() {
+            return self.async_generator_operation(agent, scope, instruction);
+        }
         if instruction.op == Op::BeginAsync {
             // Register 1 hält das Funktionsobjekt.
             let function = self.register(agent, scope, 1);
@@ -1560,6 +1614,168 @@ impl<'c> Frame<'c, '_> {
         let result = heap.local(scope, promise(heap, heap.get(state)));
         self.set_accumulator(agent, result);
         Ok(Flow::Return)
+    }
+
+    /// Die Befehle für `await`, `yield` und `yield*` im Code eines
+    /// async-Generators. `await` hält den Rahmen im Generator an, und der
+    /// Lauf endet wie bei `yield`; der Generator bleibt ~executing~.
+    fn async_generator_operation(
+        &self,
+        agent: &mut Agent,
+        scope: &Scope,
+        instruction: &Instruction,
+    ) -> Completion<Flow> {
+        let generator = self.generator(agent, scope)?;
+        // Kann nicht fehlen: Jeder Rahmen hat seinen Kopf.
+        let Some(header) = self.base.checked_sub(HEADER) else {
+            return Err(agent.throw_error(ErrorKind::RangeError));
+        };
+        match instruction.op {
+            Op::Await => {
+                let value = self.accumulator_copy(agent, scope);
+                crate::async_generator::await_value(
+                    agent, scope, self.realm, generator, value, false,
+                )?;
+                let heap = agent.heap();
+                // Kann nicht scheitern: Der Generator hat seine Zelle, und
+                // der Übersetzer schreibt höchstens `i32::MAX` Bytes.
+                if suspend_frame(heap, heap.get(generator), header, instruction.end).is_none() {
+                    return Err(agent.throw_error(ErrorKind::RangeError));
+                }
+                return Ok(Flow::Yield);
+            }
+            Op::ResumeAsync => {
+                let heap = agent.heap();
+                let resumption = crate::async_generator::take_resumption(heap, heap.get(generator));
+                if resumption == Resumption::Throw {
+                    return Err(agent.throw_value(self.accumulator));
+                }
+            }
+            Op::AsyncYield => {
+                let value = self.accumulator_copy(agent, scope);
+                let next = async_generator_yield(
+                    agent,
+                    scope,
+                    self.realm,
+                    generator,
+                    value,
+                    header,
+                    instruction.end,
+                )?;
+                let Some(next) = next else {
+                    return Ok(Flow::Yield);
+                };
+                self.set_accumulator(agent, next);
+            }
+            Op::AsyncYieldStar => return self.async_delegate(agent, scope, instruction, generator),
+            Op::AsyncYieldStarResult => {
+                return self.async_delegate_result(agent, scope, instruction, generator);
+            }
+            // Die übrigen Befehle führt `step` aus.
+            _ => return Err(agent.throw_error(ErrorKind::RangeError)),
+        }
+        Ok(Flow::Next)
+    }
+
+    /// Ein Durchlauf von `yield*` in einem async-Generator (Abschnitt
+    /// 15.5.5, Schritt 8) bis zum Await, mit dem Iterator Record ab dem
+    /// Operanden und dem übergebenen Wert im Akkumulator. Was es an den
+    /// Iterator gab, kommt in das Register hinter dem Record.
+    fn async_delegate(
+        &self,
+        agent: &mut Agent,
+        scope: &Scope,
+        instruction: &Instruction,
+        generator: Local<'_>,
+    ) -> Completion<Flow> {
+        let record = instruction.operand(0);
+        let resumption = {
+            let heap = agent.heap();
+            crate::async_generator::take_resumption(heap, heap.get(generator))
+        };
+        let iterator = self.register(agent, scope, record);
+        let received = self.accumulator_copy(agent, scope);
+        let (delegation, result) = match resumption {
+            Resumption::Next => {
+                let next = self.register(agent, scope, record.saturating_add(1));
+                let result = call(agent, scope, next, iterator, &[received])?;
+                (Delegation::Step, result)
+            }
+            Resumption::Throw => {
+                let key = named_key(agent, scope, "throw")?;
+                if let Some(method) = get_method(agent, scope, iterator, key)? {
+                    let result = call(agent, scope, method, iterator, &[received])?;
+                    (Delegation::Step, result)
+                } else {
+                    // Schritt 8.b.iii: AsyncIteratorClose mit einem normalen
+                    // Abschluss, dann ein TypeError. Ohne `return` kommt
+                    // der TypeError gleich.
+                    let key = named_key(agent, scope, "return")?;
+                    let Some(method) = get_method(agent, scope, iterator, key)? else {
+                        return Err(agent.throw_error(ErrorKind::TypeError));
+                    };
+                    let result = call(agent, scope, method, iterator, &[])?;
+                    (Delegation::Close, result)
+                }
+            }
+            Resumption::Return => {
+                let key = named_key(agent, scope, "return")?;
+                match get_method(agent, scope, iterator, key)? {
+                    Some(method) => {
+                        let result = call(agent, scope, method, iterator, &[received])?;
+                        (Delegation::Return, result)
+                    }
+                    // Schritt 8.c.iii: Gewartet wird auf den übergebenen
+                    // Wert.
+                    None => (Delegation::Returned, received),
+                }
+            }
+        };
+        let code = agent.heap().local(scope, Value::int32(delegation.code()));
+        self.set_register(agent, record.saturating_add(2), code);
+        self.set_accumulator(agent, result);
+        Ok(Flow::Next)
+    }
+
+    /// Nach dem Await eines Durchlaufs von `yield*`: das Ergebnis im
+    /// Akkumulator prüfen, je nachdem, was der Durchlauf an den Iterator
+    /// gab (Schritte 8.a.iii bis 8.a.vi, 8.b.ii, 8.b.iii und 8.c).
+    fn async_delegate_result(
+        &self,
+        agent: &mut Agent,
+        scope: &Scope,
+        instruction: &Instruction,
+        generator: Local<'_>,
+    ) -> Completion<Flow> {
+        let record = instruction.operand(1);
+        let code = self.register(agent, scope, record.saturating_add(2));
+        let delegation = Delegation::from_code(agent.heap().get(code).as_int32());
+        if delegation == Delegation::Returned {
+            // Schritt 8.c.iii.3: `return` mit dem Wert, auf den gewartet
+            // wurde.
+            let heap = agent.heap();
+            crate::async_generator::set_resumption(heap, heap.get(generator), Resumption::Return);
+            return Ok(jump(instruction));
+        }
+        let result = self.accumulator_copy(agent, scope);
+        // Nach dem Schließen ohne `throw` bleibt nur der TypeError
+        // (AsyncIteratorClose, Schritt 7, dann Schritt 8.b.iii.6).
+        if delegation == Delegation::Close
+            || !matches!(agent.heap().get(result).kind(), Kind::Object(_))
+        {
+            return Err(agent.throw_error(ErrorKind::TypeError));
+        }
+        let done = iterator_complete(agent, scope, result)?;
+        let value = iterator_value(agent, scope, result)?;
+        self.set_accumulator(agent, value);
+        if !done {
+            return Ok(Flow::Next);
+        }
+        if delegation == Delegation::Return {
+            let heap = agent.heap();
+            crate::async_generator::set_resumption(heap, heap.get(generator), Resumption::Return);
+        }
+        Ok(jump(instruction))
     }
 
     /// Der Generator aus seinem Register, im Code einer Generatorfunktion.
@@ -2444,6 +2660,17 @@ impl<'c> Frame<'c, '_> {
                 else {
                     return Err(agent.throw_error(ErrorKind::RangeError));
                 };
+                if self.code.is_async_generator() {
+                    let generator =
+                        async_generator_create(agent, scope, function, self.realm, length)?;
+                    let heap = agent.heap();
+                    heap.set_register(place(self.base, register), heap.get(generator));
+                    if suspend_frame(heap, heap.get(generator), header, instruction.end).is_none() {
+                        return Err(agent.throw_error(ErrorKind::RangeError));
+                    }
+                    self.set_accumulator(agent, generator);
+                    return Ok(Flow::Return);
+                }
                 let generator =
                     generator_create(agent, scope, function, self.realm, length, instruction.end)?;
                 let heap = agent.heap();
@@ -2476,7 +2703,12 @@ impl<'c> Frame<'c, '_> {
             Op::ResumeGenerator => {
                 let generator = self.generator(agent, scope)?;
                 let heap = agent.heap();
-                match take_resumption(heap, heap.get(generator)) {
+                let resumption = if self.code.is_async_generator() {
+                    crate::async_generator::take_resumption(heap, heap.get(generator))
+                } else {
+                    take_resumption(heap, heap.get(generator))
+                };
+                match resumption {
                     Resumption::Next => return Ok(jump(instruction)),
                     Resumption::Throw => return Err(agent.throw_value(self.accumulator)),
                     Resumption::Return => {}
@@ -2485,6 +2717,9 @@ impl<'c> Frame<'c, '_> {
             Op::YieldStar => return self.delegate(agent, scope, instruction),
             Op::BeginAsync | Op::Await | Op::ResumeAsync | Op::ResolveAsync | Op::RejectAsync => {
                 return self.async_operation(agent, scope, instruction);
+            }
+            Op::AsyncYield | Op::AsyncYieldStar | Op::AsyncYieldStarResult => {
+                return self.async_generator_operation(agent, scope, instruction);
             }
             Op::Throw => return Err(agent.throw_value(self.accumulator)),
             Op::Rethrow => return Err(agent.rethrow(self.accumulator)),
@@ -2530,6 +2765,40 @@ fn class_parents<'s>(
     };
     let heap = agent.heap();
     Ok((prototype, heap.local(scope, heap.get(superclass))))
+}
+
+/// Was ein Durchlauf von `yield*` in einem async-Generator an den inneren
+/// Iterator gab, im Register hinter seinem Record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Delegation {
+    /// `next` oder `throw`: Ist er fertig, ist sein Wert der von `yield*`.
+    Step,
+    /// `return`: Ist er fertig, gilt sein Wert für `return`.
+    Return,
+    /// `return` nach einem `throw`, für das er keine Methode hat.
+    Close,
+    /// Nichts, denn er hat kein `return`: Es gilt der übergebene Wert.
+    Returned,
+}
+
+impl Delegation {
+    fn code(self) -> i32 {
+        match self {
+            Delegation::Step => 0,
+            Delegation::Return => 1,
+            Delegation::Close => 2,
+            Delegation::Returned => 3,
+        }
+    }
+
+    fn from_code(code: Option<i32>) -> Delegation {
+        match code {
+            Some(1) => Delegation::Return,
+            Some(2) => Delegation::Close,
+            Some(3) => Delegation::Returned,
+            _ => Delegation::Step,
+        }
+    }
 }
 
 fn jump(instruction: &Instruction) -> Flow {

@@ -93,6 +93,12 @@ pub enum Intrinsic {
     /// %GeneratorPrototype% (Abschnitt 27.8.1) mit `next`, `return` und
     /// `throw`.
     GeneratorPrototype,
+    /// %AsyncGeneratorFunction.prototype% (Abschnitt 27.7.3), der Prototyp
+    /// der async-Generatorfunktionen, bisher ohne `constructor`.
+    AsyncGeneratorFunctionPrototype,
+    /// %AsyncGeneratorPrototype% (Abschnitt 27.9.1) mit `next`, `return` und
+    /// `throw`.
+    AsyncGeneratorPrototype,
     /// %AsyncFunction.prototype% (Abschnitt 27.10.3), der Prototyp der
     /// async-Funktionen, bisher ohne `constructor`.
     AsyncFunctionPrototype,

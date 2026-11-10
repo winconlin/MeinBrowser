@@ -120,6 +120,7 @@ const KIND_ITERATOR: u64 = 16;
 const KIND_GENERATOR: u64 = 17;
 const KIND_PROMISE: u64 = 18;
 const KIND_ASYNC_FROM_SYNC: u64 = 19;
+const KIND_ASYNC_GENERATOR: u64 = 20;
 
 /// Die Kennzeichen stehen in den Bits 8 bis 31 des Kopfworts.
 const FLAG_SHIFT: u32 = 8;
@@ -157,7 +158,7 @@ fn is_value_cell(kind: u64) -> bool {
 }
 
 /// Die Arten der Objektzellen.
-const OBJECT_KINDS: [u64; 11] = [
+const OBJECT_KINDS: [u64; 12] = [
     KIND_OBJECT,
     KIND_ARRAY,
     KIND_FUNCTION,
@@ -169,6 +170,7 @@ const OBJECT_KINDS: [u64; 11] = [
     KIND_GENERATOR,
     KIND_PROMISE,
     KIND_ASYNC_FROM_SYNC,
+    KIND_ASYNC_GENERATOR,
 ];
 
 /// Die internen Felder eines Funktionsobjekts, Werte vor den eingebetteten
@@ -190,6 +192,8 @@ pub(crate) const PROMISE_FIELDS: usize = 4;
 /// Die internen Felder eines Async-from-Sync Iterator: [[Iterator]] und
 /// [[NextMethod]] seines [[SyncIteratorRecord]].
 pub(crate) const ASYNC_FROM_SYNC_FIELDS: usize = 2;
+/// Die internen Felder eines async-Generators.
+pub(crate) const ASYNC_GENERATOR_FIELDS: usize = 8;
 
 fn is_object(kind: u64) -> bool {
     OBJECT_KINDS.contains(&kind)
@@ -207,6 +211,7 @@ fn object_fields(kind: u64) -> usize {
         KIND_GENERATOR => GENERATOR_FIELDS,
         KIND_PROMISE => PROMISE_FIELDS,
         KIND_ASYNC_FROM_SYNC => ASYNC_FROM_SYNC_FIELDS,
+        KIND_ASYNC_GENERATOR => ASYNC_GENERATOR_FIELDS,
         _ => 0,
     }
 }

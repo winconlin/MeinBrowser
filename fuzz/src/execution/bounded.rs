@@ -194,7 +194,7 @@ mod tests {
         assert_eq!(both("null.x"), Outcome::Error(ErrorKind::TypeError));
         assert!(matches!(both("let = ;"), Outcome::Syntax(_)));
         assert!(matches!(
-            both("class C { async *m() {} }"),
+            both("with ({}) {}"),
             Outcome::Unsupported(_)
         ));
     }
