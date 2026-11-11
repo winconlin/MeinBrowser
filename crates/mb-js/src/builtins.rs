@@ -9,9 +9,9 @@
 //! Ausbreitung brauchen: die Iteratoren für Arrays und Zeichenketten mit
 //! `Array.prototype.values`, `keys`, `entries` und den Methoden für
 //! @@iterator, und %Symbol% mit den bekannten Symbolen, damit Scripts
-//! eigene Iteratoren bauen können. Generatoren bringen ihre Prototypen mit
-//! `next`, `return` und `throw` mit, async-Funktionen ihren Prototyp, und
-//! `for await` braucht %AsyncIteratorPrototype% und
+//! eigene Iteratoren bauen können. Generatoren und async-Generatoren bringen
+//! ihre Prototypen mit `next`, `return` und `throw` mit, async-Funktionen
+//! ihren Prototyp, und `for await` braucht %AsyncIteratorPrototype% und
 //! %AsyncFromSyncIteratorPrototype%.
 //! %Promise% ist vollständig, mit %AggregateError% für `Promise.any`. Die
 //! übrigen Eigenschaften dieser Objekte und die anderen eingebauten Objekte
@@ -24,6 +24,7 @@
 
 mod array;
 mod async_function;
+mod async_generator;
 mod async_iterator;
 mod error;
 mod function;
@@ -59,6 +60,7 @@ pub(crate) fn create_intrinsics(
     object::create(agent, scope, realm)?;
     iterator::create(agent, scope, realm)?;
     async_iterator::create(agent, scope, realm)?;
+    async_generator::create(agent, scope, realm)?;
     generator::create(agent, scope, realm)?;
     async_function::create(agent, scope, realm)?;
     array::create(agent, scope, realm)?;

@@ -359,7 +359,7 @@ fn throw_and_early_errors() {
     assert!(syntax.starts_with("Syntax("), "{syntax}");
     let redeclared = eval("let a; var a;");
     assert!(redeclared.starts_with("Syntax("), "{redeclared}");
-    assert_eq!(eval("class A { async *m() {} }"), "Unsupported(10)");
+    assert_eq!(eval("1; with (a) {}"), "Unsupported(3)");
 }
 
 #[test]
@@ -2424,8 +2424,7 @@ fn tail_calls_throw_to_the_caller() {
 #[test]
 fn a_failed_tail_call_leaves_no_frame() {
     let (mut agent, realm) = checked();
-    let source =
-        "function g() { class A { async *m() {} } } (function () { 'use strict'; return g(); })()";
+    let source = "function g() { with (a) {} } (function () { 'use strict'; return g(); })()";
     assert!(run(&mut agent, realm, source).starts_with("Unsupported"));
     assert_eq!(run(&mut agent, realm, "1 + 1"), "2");
 }

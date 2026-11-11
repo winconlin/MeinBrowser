@@ -124,9 +124,9 @@ bestehen.
 
 Mit diesem Stand bestehen 12.695 von 23.296 ausgeführten Dateien und 24.481
 von 43.794 Varianten. Seit Teil 7b gibt es async-Funktionen und `await`, seit
-Teil 7c-1 `for await` in async-Funktionen. Die meisten Dateien mit dem Flag
-`async`, die noch scheitern, brauchen async-Generatoren (Teil 7c-2) und
-scheitern als `Unsupported`, oder ihnen fehlen eingebaute Objekte, etwa
+Teil 7c-1 `for await` in async-Funktionen und seit Teil 7c-2
+async-Generatoren. Den meisten Dateien mit dem Flag `async`, die noch
+scheitern, fehlen eingebaute Objekte, etwa
 `Object.prototype.hasOwnProperty`, das `asyncTest` aus `asyncHelpers.js`
 gleich zu Beginn aufruft, `Object.defineProperty` oder
 `Array.prototype.push`. Dateien mit `async` und `module` scheitern am Flag
@@ -260,7 +260,7 @@ Tag. Ihre Endpositionen prüfen auch eigene Tests in `compiler/tests.rs`, die
 Rekursion ohne wachsenden Registerstapel `script/tests.rs`. Weitere
 Sprachfunktionen wie BigInt bleiben mit ihren Implementierungen zu
 ergänzen. Iteratoren, Destrukturierung, Generatoren, Klassen mit Feldern
-und privaten Namen, async-Funktionen und `for await` gibt es schon, Dateien dazu stehen aber noch nicht in der
+und privaten Namen, async-Funktionen, `for await` und async-Generatoren gibt es schon, Dateien dazu stehen aber noch nicht in der
 Auswahl; sie laufen bisher nur im Lauf über `test/language/` ohne
 erzwungene Sammlungen.
 Diese Auswahl behauptet nicht, sie abzudecken.

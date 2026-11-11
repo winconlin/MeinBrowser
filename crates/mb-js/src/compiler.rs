@@ -120,6 +120,17 @@
 //! [`Op::ResumeAsync`]. Aufrufe in async-Funktionen stehen nie in
 //! Endposition.
 //!
+//! async-Generatoren: Ihr Code beginnt wie der eines Generators, ohne
+//! [`Op::BeginAsync`]; Ausnahmen aus FunctionDeclarationInstantiation gehen
+//! an den Aufrufer (EvaluateAsyncGeneratorBody, Abschnitt 15.6.2). `await`
+//! ist dasselbe Paar wie in async-Funktionen, `return` mit einem Ausdruck
+//! wartet auf seinen Wert. `yield` wartet auf seinen Wert, dann folgt
+//! [`Op::AsyncYield`] mit demselben Weg nach dem Halt wie bei Generatoren.
+//! `yield*` hält den Iterator von [`Op::GetAsyncIterator`] und die Art des
+//! Durchlaufs in drei Registern und wiederholt [`Op::AsyncYieldStar`],
+//! [`Op::Await`], [`Op::ResumeAsync`], [`Op::AsyncYieldStarResult`] und
+//! [`Op::AsyncYield`], bis der innere Iterator fertig ist.
+//!
 //! Abschlusswert: Scripts führen ein Register dafür (UpdateEmpty, Abschnitt
 //! 6.2.4.4). Jede Ausdrucksanweisung schreibt ihren Wert hinein. `if`,
 //! Schleifen, `switch` und `try` liefern nie ~empty~, sondern ohne eigenen
@@ -553,6 +564,9 @@ struct Compiler<'a> {
     generator: Option<u32>,
     /// Das Register mit dem Zustand, in async-Funktionen.
     async_state: Option<u32>,
+    /// Ob der Code der eines async-Generators ist, mit dem Register aus
+    /// `generator` und ohne Zustand.
+    async_generator: bool,
     /// Ob der Code der Konstruktor einer abgeleiteten Klasse ist.
     derived: bool,
     /// Die Aufrufe in Endposition im Ausdruck, der gerade übersetzt wird.
@@ -685,7 +699,7 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
             | FunctionKind::DerivedConstructor
             | FunctionKind::FieldInitializer
             | FunctionKind::StaticBlock
-    ) && !(function.is_async && function.generator);
+    );
     let captures = ast.captures().function(template.function);
     let (true, Some(captures)) = (supported, captures) else {
         return Err(CompileError::Unsupported(position));
@@ -758,7 +772,9 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
     if function.generator {
         compiler.generator = Some(compiler.allocate()?);
     }
-    if function.is_async {
+    if function.is_async && function.generator {
+        compiler.async_generator = true;
+    } else if function.is_async {
         compiler.async_state = Some(compiler.allocate()?);
     }
     // Anhang B.3.2.1: Zu parameterNames gehört dann auch `arguments`
@@ -1046,9 +1062,9 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
             compiler.store_location(binding.location)?;
         }
     }
-    // EvaluateGeneratorBody (Abschnitt 15.5.2): Nach
-    // FunctionDeclarationInstantiation kehrt der Aufruf mit dem Generator
-    // zurück; der Rumpf läuft erst mit `next`.
+    // EvaluateGeneratorBody und EvaluateAsyncGeneratorBody (Abschnitte
+    // 15.5.2 und 15.6.2): Nach FunctionDeclarationInstantiation kehrt der
+    // Aufruf mit dem Generator zurück; der Rumpf läuft erst mit `next`.
     if compiler.generator.is_some() {
         compiler.emit(Op::CreateGenerator, &[])?;
     }
@@ -1079,6 +1095,7 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
     let new_target = compiler.new_target;
     let generator = compiler.generator;
     let async_state = compiler.async_state;
+    let async_generator = compiler.async_generator;
     let derived = compiler.derived;
     let mut code = compiler.finish();
     code.parameters = u32::try_from(registers.len()).map_err(|_| CompileError::TooLarge)?;
@@ -1087,6 +1104,7 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
     code.new_target = new_target;
     code.generator = generator;
     code.async_state = async_state;
+    code.async_generator = async_generator;
     code.derived = derived;
     Ok(code)
 }
@@ -1186,6 +1204,7 @@ impl<'a> Compiler<'a> {
             new_target: None,
             generator: None,
             async_state: None,
+            async_generator: false,
             derived: false,
             tail_calls: BTreeSet::new(),
             protected: 0,
@@ -1313,9 +1332,6 @@ impl<'a> Compiler<'a> {
                 .ast
                 .function(id)
                 .ok_or_else(|| self.unsupported(item))?;
-            if function.is_async && function.generator {
-                return Err(self.unsupported(item));
-            }
             let Some(name) = function.name else {
                 return Err(self.unsupported(item));
             };
@@ -1699,7 +1715,6 @@ impl<'a> Compiler<'a> {
     fn block_function(&self, node: NodeId, id: FunctionId) -> Result<Atom> {
         self.ast
             .function(id)
-            .filter(|function| !(function.is_async && function.generator))
             .and_then(|function| function.name)
             .ok_or_else(|| self.unsupported(node))
     }
@@ -2000,6 +2015,13 @@ impl<'a> Compiler<'a> {
                         let result = self.expression(argument);
                         self.tail_calls.clear();
                         result?;
+                        // Abschnitt 14.10.1: In einem async-Generator wartet
+                        // `return` auf seinen Wert.
+                        if self.async_generator {
+                            self.position(node)?;
+                            self.emit(Op::Await, &[])?;
+                            self.emit(Op::ResumeAsync, &[])?;
+                        }
                     }
                     None => self.emit(Op::LdaUndefined, &[])?,
                 }
@@ -2358,12 +2380,13 @@ impl<'a> Compiler<'a> {
     /// schließt ihn über einen Handler ([`Op::IteratorCloseOnThrow`]) und
     /// wird dann wieder geworfen, eine aus `next` selbst nicht.
     ///
-    /// `for await` gibt es bisher nur in async-Funktionen. Es holt den
-    /// Iterator mit [`Op::GetAsyncIterator`] und wartet auf jedes Ergebnis
-    /// von `next`, bevor [`Op::IteratorResult`] es prüft. Geschlossen wird
-    /// mit AsyncIteratorClose (Abschnitt 7.4.15), das auf das Ergebnis von
-    /// `return` wartet; bei einer Ausnahme fängt ein zweiter Handler, was
-    /// das Schließen wirft, und es gilt die Ausnahme davor.
+    /// `for await` gibt es in async-Funktionen und async-Generatoren. Es
+    /// holt den Iterator mit [`Op::GetAsyncIterator`] und wartet auf jedes
+    /// Ergebnis von `next`, bevor [`Op::IteratorResult`] es prüft.
+    /// Geschlossen wird mit AsyncIteratorClose (Abschnitt 7.4.15), das auf
+    /// das Ergebnis von `return` wartet; bei einer Ausnahme fängt ein
+    /// zweiter Handler, was das Schließen wirft, und es gilt die Ausnahme
+    /// davor.
     fn for_of_loop(
         &mut self,
         node: NodeId,
@@ -2373,7 +2396,7 @@ impl<'a> Compiler<'a> {
         body: NodeId,
         is_await: bool,
     ) -> Result<()> {
-        if is_await && self.async_state.is_none() {
+        if is_await && !self.is_async() {
             return Err(self.unsupported(node));
         }
         let lhs = self.for_of_target(left)?;
@@ -3271,6 +3294,9 @@ impl<'a> Compiler<'a> {
         if self.generator.is_none() {
             return Err(self.unsupported(node));
         }
+        if self.async_generator {
+            return self.async_yield_expression(node, argument, delegate);
+        }
         if !delegate {
             match argument {
                 Some(argument) => self.expression(argument)?,
@@ -3302,11 +3328,66 @@ impl<'a> Compiler<'a> {
         self.resumption()
     }
 
+    /// `yield` und `yield*` in einem async-Generator. `yield` wartet auf
+    /// seinen Wert (Yield, Abschnitt 27.8.3.7), dann gibt ihn
+    /// [`Op::AsyncYield`] weiter. Für `yield*` wartet jeder Durchlauf auf
+    /// das Ergebnis des inneren Iterators, und sein Wert geht ohne weiteres
+    /// Warten weiter.
+    fn async_yield_expression(
+        &mut self,
+        node: NodeId,
+        argument: Option<NodeId>,
+        delegate: bool,
+    ) -> Result<()> {
+        if !delegate {
+            match argument {
+                Some(argument) => self.expression(argument)?,
+                None => self.emit(Op::LdaUndefined, &[])?,
+            }
+            self.position(node)?;
+            self.emit(Op::Await, &[])?;
+            self.emit(Op::ResumeAsync, &[])?;
+            self.emit(Op::AsyncYield, &[])?;
+            return self.resumption();
+        }
+        let Some(argument) = argument else {
+            return Err(self.unsupported(node));
+        };
+        self.expression(argument)?;
+        self.position(node)?;
+        // Der Iterator, `next` und die Art des Durchlaufs.
+        let record = self.allocate()?;
+        self.allocate()?;
+        self.allocate()?;
+        self.emit(Op::GetAsyncIterator, &[i64::from(record)])?;
+        // Der erste Durchlauf ruft `next` mit *undefined*.
+        self.emit(Op::LdaUndefined, &[])?;
+        let start = self.emitter.offset();
+        self.emit(Op::AsyncYieldStar, &[i64::from(record)])?;
+        self.emit(Op::Await, &[])?;
+        self.emit(Op::ResumeAsync, &[])?;
+        let done = self
+            .emitter
+            .jump_with(Op::AsyncYieldStarResult, &[i64::from(record)])?;
+        self.emit(Op::AsyncYield, &[])?;
+        self.emitter.jump_loop(start)?;
+        self.bind(done)?;
+        self.release(record);
+        self.resumption()
+    }
+
+    /// Ob der Code `await` enthalten kann: der einer async-Funktion oder
+    /// eines async-Generators.
+    fn is_async(&self) -> bool {
+        self.async_state.is_some() || self.async_generator
+    }
+
     /// `await` (Abschnitt 15.8.5). Der Parser lässt es nur im Rumpf einer
-    /// async-Funktion zu, nicht in ihren Parametern und nicht in inneren
-    /// Funktionen; auf oberster Ebene eines Moduls kommt es mit den Modulen.
+    /// async-Funktion oder eines async-Generators zu, nicht in den
+    /// Parametern und nicht in inneren Funktionen; auf oberster Ebene eines
+    /// Moduls kommt es mit den Modulen.
     fn await_expression(&mut self, node: NodeId, argument: NodeId) -> Result<()> {
-        if self.async_state.is_none() {
+        if !self.is_async() {
             return Err(self.unsupported(node));
         }
         self.expression(argument)?;
@@ -3318,7 +3399,8 @@ impl<'a> Compiler<'a> {
     /// Der Weg nach einem Halt: Mit `next` geht es hinter dem Weg von
     /// `return` weiter, mit `return` gilt der Akkumulator als Wert von
     /// `return` und geht durch `finally` und das Schließen der Iteratoren von
-    /// `for`-`of`.
+    /// `for`-`of`. In einem async-Generator wurde auf diesen Wert schon
+    /// gewartet.
     fn resumption(&mut self) -> Result<()> {
         let next = self.jump(Op::ResumeGenerator)?;
         self.exit(Exit::Return)?;
@@ -3426,7 +3508,7 @@ impl<'a> Compiler<'a> {
                 | FunctionKind::Setter
                 | FunctionKind::FieldInitializer
                 | FunctionKind::StaticBlock
-        ) && !(function.is_async && function.generator);
+        );
         if !supported {
             return Err(self.unsupported(node));
         }

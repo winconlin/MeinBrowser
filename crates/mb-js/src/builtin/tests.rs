@@ -949,6 +949,83 @@ fn the_async_function_prototype_tags_async_functions() {
     ]);
 }
 
+/// %AsyncGeneratorFunction.prototype% (Abschnitt 27.7.3) und
+/// %AsyncGeneratorPrototype% (Abschnitt 27.9.1), das von
+/// %AsyncIteratorPrototype% erbt. Ohne den Konstruktor
+/// %AsyncGeneratorFunction% fehlt dem ersten noch `constructor`.
+#[test]
+fn async_generator_prototypes_link_functions_and_iterators() {
+    const FIXED: [Option<bool>; 3] = [Some(false), Some(false), Some(true)];
+    let (mut agent, realm) = agent_with(false);
+    agent.scope(|agent, scope| {
+        let function = agent.intrinsic(scope, realm, Intrinsic::FunctionPrototype);
+        let iterator = agent.intrinsic(scope, realm, Intrinsic::AsyncIteratorPrototype);
+        let generator_function =
+            agent.intrinsic(scope, realm, Intrinsic::AsyncGeneratorFunctionPrototype);
+        let generator = agent.intrinsic(scope, realm, Intrinsic::AsyncGeneratorPrototype);
+        let parent = prototype_of(agent, scope, generator_function);
+        assert!(same(agent, parent, function));
+        assert!(!is_callable(
+            agent.heap(),
+            agent.heap().get(generator_function)
+        ));
+        assert_eq!(
+            keys(agent, scope, generator_function),
+            ["prototype", "Symbol"]
+        );
+        let (value, attributes) = data(agent, scope, generator_function, "prototype");
+        assert!(same(agent, value, generator));
+        assert_eq!(attributes, FIXED);
+        let (value, attributes) = symbol_data(
+            agent,
+            scope,
+            generator_function,
+            WellKnownSymbol::ToStringTag,
+        );
+        assert_eq!(describe(agent, value), "\"AsyncGeneratorFunction\"");
+        assert_eq!(attributes, FIXED);
+        let parent = prototype_of(agent, scope, generator);
+        assert!(same(agent, parent, iterator));
+        assert_eq!(
+            keys(agent, scope, generator),
+            ["constructor", "next", "return", "throw", "Symbol"]
+        );
+        let (value, attributes) = data(agent, scope, generator, "constructor");
+        assert!(same(agent, value, generator_function));
+        assert_eq!(attributes, FIXED);
+        for name in ["next", "return", "throw"] {
+            let (method, attributes) = data(agent, scope, generator, name);
+            assert_eq!(attributes, HIDDEN, "{name}");
+            assert!(!is_constructor(agent, agent.heap().get(method)), "{name}");
+            let (length, _) = data(agent, scope, method, "length");
+            assert_eq!(describe(agent, length), "1", "{name}");
+            let (text, _) = data(agent, scope, method, "name");
+            assert_eq!(describe(agent, text), format!("{name:?}"));
+        }
+        let (value, attributes) =
+            symbol_data(agent, scope, generator, WellKnownSymbol::ToStringTag);
+        assert_eq!(describe(agent, value), "\"AsyncGenerator\"");
+        assert_eq!(attributes, FIXED);
+    });
+    check(&[
+        (
+            "Object.prototype.toString.call(async function* () {})",
+            "\"[object AsyncGeneratorFunction]\"",
+        ),
+        (
+            "Object.prototype.toString.call(({ async *m() {} }).m())",
+            "\"[object AsyncGenerator]\"",
+        ),
+        ("typeof (async function* () {})()", "\"object\""),
+        // Die Methoden prüfen `this` (AsyncGeneratorValidate, Abschnitt
+        // 27.9.3.3), lehnen aber das Promise ab, statt zu werfen.
+        (
+            "var g = (async function* () {})(); g.next.call({}) instanceof Promise",
+            "true",
+        ),
+    ]);
+}
+
 #[test]
 fn array_and_string_prototypes_return_iterators() {
     let (mut agent, realm) = agent_with(false);

@@ -52,7 +52,7 @@ const SLOTS: usize = 7;
 /// Im Platz [`OFFSET`]: Der Rahmen läuft oder ist fertig.
 const RUNNING: i32 = -1;
 
-/// Await, Schritte 2 und 3: *onFulfilled* setzt den Rahmen mit dem Wert
+/// Await, Schritte 3 und 4: *onFulfilled* setzt den Rahmen mit dem Wert
 /// fort.
 static AWAIT_FULFILLED: Builtin = Builtin {
     name: "",
@@ -61,7 +61,7 @@ static AWAIT_FULFILLED: Builtin = Builtin {
     behaviour: await_fulfilled,
 };
 
-/// Await, Schritte 4 und 5: *onRejected* setzt ihn mit dem Grund fort.
+/// Await, Schritte 5 und 6: *onRejected* setzt ihn mit dem Grund fort.
 static AWAIT_REJECTED: Builtin = Builtin {
     name: "",
     length: 1,
@@ -132,10 +132,10 @@ pub(crate) fn frame_cell<'s>(
     Ok(cell)
 }
 
-/// Await (Abschnitt 27.10.5.3), Schritte 2 bis 9, im aktuellen Realm
+/// Await (Abschnitt 27.10.5.3), Schritte 2 bis 7, im aktuellen Realm
 /// `realm`: PromiseResolve(%Promise%, `value`), dann PerformPromiseThen mit
 /// *onFulfilled* und *onRejected*, die den Zustand `state` einfangen. Den
-/// Rahmen hält danach der Interpreter an (Schritt 10).
+/// Rahmen hält danach der Interpreter an (Schritt 8).
 pub(crate) fn await_value(
     agent: &mut Agent,
     scope: &Scope,
@@ -145,8 +145,33 @@ pub(crate) fn await_value(
 ) -> Completion<()> {
     let constructor = agent.intrinsic(scope, realm, Intrinsic::Promise);
     let promise = promise_resolve(agent, scope, realm, constructor, value)?;
-    let on_fulfilled = create_builtin_closure(agent, scope, realm, &AWAIT_FULFILLED, state)?;
-    let on_rejected = create_builtin_closure(agent, scope, realm, &AWAIT_REJECTED, state)?;
+    perform_then_with(
+        agent,
+        scope,
+        realm,
+        promise,
+        state,
+        &AWAIT_FULFILLED,
+        &AWAIT_REJECTED,
+    )
+}
+
+/// PerformPromiseThen für `promise` ohne Capability für das Ergebnis, mit
+/// zwei neuen eingebauten Funktionen aus `fulfilled` und `rejected` im
+/// Realm `realm`, die `captures` einfangen: Await, Schritte 3 bis 7, auch
+/// für async-Generatoren, und AsyncGeneratorAwaitReturn (Abschnitt
+/// 27.9.3.9), Schritte 11 bis 15.
+pub(crate) fn perform_then_with(
+    agent: &mut Agent,
+    scope: &Scope,
+    realm: RealmId,
+    promise: Local<'_>,
+    captures: Local<'_>,
+    fulfilled: &'static Builtin,
+    rejected: &'static Builtin,
+) -> Completion<()> {
+    let on_fulfilled = create_builtin_closure(agent, scope, realm, fulfilled, captures)?;
+    let on_rejected = create_builtin_closure(agent, scope, realm, rejected, captures)?;
     perform_promise_then(
         agent,
         scope,
@@ -159,7 +184,7 @@ pub(crate) fn await_value(
     Ok(())
 }
 
-/// Await, Schritt 10, bis auf den Wechsel des Laufs: Der Rahmen geht beim
+/// Await, Schritt 8, bis auf den Wechsel des Laufs: Der Rahmen geht beim
 /// Befehl bei `offset` weiter. `None`, wenn der Abstand nicht passt.
 pub(crate) fn suspend(heap: &Heap, state: Value<'_>, offset: usize) -> Option<()> {
     let offset = i32::try_from(offset).ok()?;

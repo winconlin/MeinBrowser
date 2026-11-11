@@ -83,7 +83,7 @@ pub(crate) enum Resumption {
 }
 
 impl Resumption {
-    fn code(self) -> i32 {
+    pub(crate) fn code(self) -> i32 {
         match self {
             Resumption::Next => 0,
             Resumption::Throw => 1,
@@ -91,7 +91,7 @@ impl Resumption {
         }
     }
 
-    fn from_code(code: i32) -> Resumption {
+    pub(crate) fn from_code(code: i32) -> Resumption {
         match code {
             1 => Resumption::Throw,
             2 => Resumption::Return,

@@ -404,7 +404,11 @@ pub(crate) fn instantiate_function<'s>(
 /// InstantiateAsyncFunctionExpression und
 /// InstantiateAsyncArrowFunctionExpression, Abschnitte 15.8.2, 15.8.3 und
 /// 15.9.4) haben %AsyncFunction.prototype% als Prototyp und kein
-/// `prototype`.
+/// `prototype`. async-Generatoren und ihre Methoden
+/// (InstantiateAsyncGeneratorFunctionObject und
+/// InstantiateAsyncGeneratorFunctionExpression, Abschnitte 15.6.3 und
+/// 15.6.4) haben wie Generatoren ein `prototype`, mit
+/// %AsyncGeneratorFunction.prototype% und %AsyncGeneratorPrototype%.
 pub(crate) fn instantiate_closure<'s>(
     agent: &mut Agent,
     scope: &'s Scope,
@@ -435,9 +439,7 @@ pub(crate) fn instantiate_closure<'s>(
         (false, false) => Intrinsic::FunctionPrototype,
         (true, false) => Intrinsic::GeneratorFunctionPrototype,
         (false, true) => Intrinsic::AsyncFunctionPrototype,
-        // Kann nicht vorkommen: Der Übersetzer legt async-Generatoren noch
-        // nicht an.
-        (true, true) => return Err(agent.throw_error(ErrorKind::TypeError)),
+        (true, true) => Intrinsic::AsyncGeneratorFunctionPrototype,
     };
     let prototype = agent.intrinsic(scope, realm, intrinsic);
     let function = allocate_function(agent, scope, realm, shared, environment, prototype)?;
@@ -452,7 +454,12 @@ pub(crate) fn instantiate_closure<'s>(
         make_constructor(agent, scope, realm, function)?;
     }
     if generator {
-        let generator_prototype = agent.intrinsic(scope, realm, Intrinsic::GeneratorPrototype);
+        let intrinsic = if is_async {
+            Intrinsic::AsyncGeneratorPrototype
+        } else {
+            Intrinsic::GeneratorPrototype
+        };
+        let generator_prototype = agent.intrinsic(scope, realm, intrinsic);
         let prototype = ordinary_object_create(agent, scope, Some(generator_prototype))?;
         let key = agent.key_from_units(scope, &units("prototype"))?;
         let descriptor = PropertyDescriptor::data(prototype, true, false, false);

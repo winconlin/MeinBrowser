@@ -31,6 +31,7 @@ struct Stats {
     async_functions: usize,
     awaits: usize,
     async_iterators: usize,
+    async_generators: usize,
     classes: usize,
     super_references: usize,
     strict_ranges: usize,
@@ -50,6 +51,7 @@ impl Stats {
         self.async_functions += other.async_functions;
         self.awaits += other.awaits;
         self.async_iterators += other.async_iterators;
+        self.async_generators += other.async_generators;
         self.classes += other.classes;
         self.super_references += other.super_references;
         self.strict_ranges += other.strict_ranges;
@@ -106,6 +108,17 @@ fn check_code(code: &Code, source_length: usize) -> Stats {
             "async code begins with its capability"
         );
     }
+    if code.is_async_generator() {
+        assert!(
+            code.generator_register().is_some(),
+            "async generator code keeps its generator in a register"
+        );
+        assert!(
+            code.async_state_register().is_none(),
+            "async generators settle the promises of their requests, not one of their own"
+        );
+    }
+    let is_async = code.async_state_register().is_some() || code.is_async_generator();
     let mut stats = Stats::default();
     let mut starts = BTreeSet::new();
     let mut targets = Vec::new();
@@ -177,11 +190,33 @@ fn check_code(code: &Code, source_length: usize) -> Stats {
         }
         if matches!(
             instruction.op,
-            Op::CreateGenerator | Op::Yield | Op::YieldResult | Op::ResumeGenerator | Op::YieldStar
+            Op::CreateGenerator
+                | Op::Yield
+                | Op::YieldResult
+                | Op::ResumeGenerator
+                | Op::YieldStar
+                | Op::AsyncYield
+                | Op::AsyncYieldStar
+                | Op::AsyncYieldStarResult
         ) {
             assert!(
                 code.generator_register().is_some(),
                 "generator instructions only in generator code"
+            );
+        }
+        if matches!(instruction.op, Op::Yield | Op::YieldResult | Op::YieldStar) {
+            assert!(
+                !code.is_async_generator(),
+                "synchronous yields only in synchronous generators"
+            );
+        }
+        if matches!(
+            instruction.op,
+            Op::AsyncYield | Op::AsyncYieldStar | Op::AsyncYieldStarResult
+        ) {
+            assert!(
+                code.is_async_generator(),
+                "async yields only in async generator code"
             );
         }
         if matches!(instruction.op, Op::TailCall | Op::TailCallSpread) {
@@ -196,18 +231,21 @@ fn check_code(code: &Code, source_length: usize) -> Stats {
         }
         if matches!(
             instruction.op,
-            Op::BeginAsync
-                | Op::Await
+            Op::Await
                 | Op::ResumeAsync
-                | Op::ResolveAsync
-                | Op::RejectAsync
                 | Op::GetAsyncIterator
                 | Op::AsyncIteratorNext
                 | Op::AsyncIteratorClose
         ) {
+            assert!(is_async, "async instructions only in async code");
+        }
+        if matches!(
+            instruction.op,
+            Op::BeginAsync | Op::ResolveAsync | Op::RejectAsync
+        ) {
             assert!(
                 code.async_state_register().is_some(),
-                "async instructions only in async code"
+                "only async functions settle a promise of their own"
             );
         }
         if instruction.op == Op::BeginAsync {
@@ -294,6 +332,19 @@ fn check_code(code: &Code, source_length: usize) -> Stats {
                     stats.async_iterators += 1;
                 }
             }
+            Op::AsyncYieldStar | Op::AsyncYieldStarResult => {
+                // The record of an async yield* is the iterator, its next
+                // method and the kind of the current step.
+                let operand = usize::from(instruction.op == Op::AsyncYieldStarResult);
+                let iterator =
+                    usize::try_from(instruction.operand(operand)).expect("iterator register");
+                assert!(
+                    iterator
+                        .checked_add(3)
+                        .is_some_and(|end| end <= code.register_count()),
+                    "the async yield* record fits its frame"
+                );
+            }
             Op::CreateRestObject => {
                 // The source value, then the keys the rest excludes.
                 let source = usize::try_from(instruction.operand(0)).expect("source register");
@@ -367,8 +418,13 @@ fn check_code(code: &Code, source_length: usize) -> Stats {
                     "a private name has a string description"
                 );
             }
-            Op::CreateGenerator => stats.generators += 1,
-            Op::Yield | Op::YieldResult => stats.yields += 1,
+            Op::CreateGenerator => {
+                stats.generators += 1;
+                if code.is_async_generator() {
+                    stats.async_generators += 1;
+                }
+            }
+            Op::Yield | Op::YieldResult | Op::AsyncYield => stats.yields += 1,
             Op::BeginAsync => stats.async_functions += 1,
             Op::Await => stats.awaits += 1,
             Op::CreateClosure | Op::CreateClosureKeyed => {
@@ -616,7 +672,7 @@ mod tests {
 
     #[test]
     fn syntax_and_unsupported_paths_preserve_positions() {
-        for source in ["class A{async *m(){}}", "with({}){}", "for (var k in o);"] {
+        for source in ["class A{[1n](){}}", "with({}){}", "for (var k in o);"] {
             let source: Vec<u16> = source.encode_utf16().collect();
             assert_eq!(check_source(&source), Outcome::Unsupported);
         }
@@ -724,6 +780,29 @@ mod tests {
         );
         assert_eq!(stats.awaits, 5);
         let stats = checked("'use strict'; async function f() { return f(); }");
+        assert_eq!(stats.functions, 1);
+        assert_eq!(stats.calls, 1, "a plain call, never a tail call");
+    }
+
+    #[test]
+    fn async_generators_keep_their_register_and_records_in_frame() {
+        let stats = checked(
+            "async function* g(a) { var x = yield a; try { yield* x; } finally { await x; } \
+             for await (var y of x) yield y; return x; } \
+             var o = { async *m() { yield 1; } }; { async function* h() {} }",
+        );
+        assert_eq!(stats.functions, 3);
+        assert_eq!(stats.unsupported_functions, 0);
+        assert_eq!(
+            stats.generators, 3,
+            "each async generator creates its object"
+        );
+        assert_eq!(stats.async_generators, 3);
+        assert_eq!(stats.async_functions, 0, "no capability of their own");
+        assert_eq!(stats.yields, 4, "three yields and the one of yield*");
+        assert_eq!(stats.async_iterators, 2, "yield* and for await");
+        assert!(stats.awaits >= 7, "yields, returns and awaits all await");
+        let stats = checked("'use strict'; async function* g() { return g(); }");
         assert_eq!(stats.functions, 1);
         assert_eq!(stats.calls, 1, "a plain call, never a tail call");
     }
