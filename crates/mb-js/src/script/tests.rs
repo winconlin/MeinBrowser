@@ -1432,10 +1432,9 @@ fn unmapped_arguments_keep_their_values() {
             "function f() { 'use strict'; return arguments.length; } f(1, 2)",
             "2",
         ),
-        // Abweichung: Ohne %ThrowTypeError% ist `callee` *undefined*.
         (
             "function f() { 'use strict'; return arguments.callee; } f()",
-            "undefined",
+            "TypeError",
         ),
         (
             "function f() { 'use strict'; arguments.callee = 1; } f()",

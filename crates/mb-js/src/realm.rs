@@ -22,6 +22,7 @@ use crate::agent::{Agent, Completion, ErrorKind};
 use crate::builtin::builtin_function_with_prototype;
 use crate::builtins::{self, FUNCTION_PROTOTYPE};
 use crate::descriptor::PropertyDescriptor;
+use crate::function::add_restricted_function_properties;
 use crate::heap::{Local, Persistent, Scope};
 use crate::key::PropertyKey;
 use crate::object::{
@@ -57,11 +58,16 @@ struct Binding {
 /// Die Intrinsics (Abschnitt 6.1.7.4), die es schon gibt.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Intrinsic {
-    /// %Object.prototype% (Abschnitt 20.1.3) mit `toString`.
+    /// %Object.prototype% (Abschnitt 20.1.3) mit allen Eigenschaften, auch
+    /// denen aus Anhang B.2.2.
     ObjectPrototype,
     /// %Function.prototype% (Abschnitt 20.2.3), selbst eine eingebaute
-    /// Funktion, mit `call`.
+    /// Funktion, mit allen Eigenschaften, auch `caller` und `arguments` aus
+    /// AddRestrictedFunctionProperties (Abschnitt 10.2.4).
     FunctionPrototype,
+    /// %ThrowTypeError% (Abschnitt 10.2.4.1): wirft einen TypeError, ist
+    /// nicht erweiterbar, `length` und `name` sind nicht konfigurierbar.
+    ThrowTypeError,
     /// %Array.prototype% (Abschnitt 23.1.3): ein Array mit der Länge 0.
     ArrayPrototype,
     /// %Boolean.prototype% (Abschnitt 20.3.3), ein Boolean-Objekt mit
@@ -129,6 +135,9 @@ pub enum Intrinsic {
     AggregateErrorPrototype,
     /// %Object% (Abschnitt 20.1.1).
     Object,
+    /// %Function% (Abschnitt 20.2.1), bisher ohne CreateDynamicFunction:
+    /// Aufruf und `new` enden als nicht unterstützt, bis `eval` kommt.
+    Function,
     /// %String% (Abschnitt 22.1.1).
     String,
     /// %Symbol% (Abschnitt 20.4.1) mit den bekannten Symbolen und
@@ -593,7 +602,8 @@ fn initialize_realm(agent: &mut Agent, scope: &Scope, realm: RealmId) -> Complet
 /// CreateIntrinsics (Abschnitt 9.3.2) für die Intrinsics, die es schon gibt:
 /// erst %Object.prototype% und %Function.prototype%, auf denen alle anderen
 /// aufbauen, dann die Prototypen der Arrays und der primitiven Werte, dann
-/// die eingebauten Objekte aus `builtins`.
+/// die eingebauten Objekte aus `builtins`, zuletzt `caller` und `arguments`
+/// an %Function.prototype% (Schritt 3).
 fn create_intrinsics(agent: &mut Agent, scope: &Scope, realm: RealmId) -> Completion<()> {
     let object = ordinary_object_create(agent, scope, None)?;
     agent.set_intrinsic(realm, Intrinsic::ObjectPrototype, object);
@@ -616,7 +626,8 @@ fn create_intrinsics(agent: &mut Agent, scope: &Scope, realm: RealmId) -> Comple
     agent.set_intrinsic(realm, Intrinsic::StringPrototype, string);
     let symbol = ordinary_object_create(agent, scope, Some(object))?;
     agent.set_intrinsic(realm, Intrinsic::SymbolPrototype, symbol);
-    builtins::create_intrinsics(agent, scope, realm)
+    builtins::create_intrinsics(agent, scope, realm)?;
+    add_restricted_function_properties(agent, scope, realm, function)
 }
 
 /// SetDefaultGlobalBindings (Abschnitt 9.3.3) für die Werteigenschaften aus
@@ -648,6 +659,7 @@ fn set_default_global_bindings(
         ("AggregateError", Intrinsic::AggregateError),
         ("Error", Intrinsic::Error),
         ("EvalError", Intrinsic::EvalError),
+        ("Function", Intrinsic::Function),
         ("Object", Intrinsic::Object),
         ("Promise", Intrinsic::Promise),
         ("RangeError", Intrinsic::RangeError),

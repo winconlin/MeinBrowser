@@ -76,6 +76,7 @@ use crate::async_function::{
     async_start, await_value, frame_cell, promise, settle, start_running, suspend, take_throw,
 };
 use crate::async_generator::{async_generator_create, async_generator_yield, suspend_frame};
+use crate::bound_function::{is_bound_function, unwrap_call, unwrap_construct};
 use crate::builtin::{builtin_parts, call_builtin};
 use crate::bytecode::{Code, Constant, HandlerKind, Instruction, Op};
 use crate::compare::{is_less_than, is_loosely_equal, is_strictly_equal};
@@ -314,7 +315,24 @@ fn returned<'s>(
 /// [[Call]] eines Funktionsobjekts (Abschnitt 10.2.1), wenn die Engine es
 /// aufruft: ein neuer Lauf, der mit der Rückkehr der Funktion endet. Für
 /// eine eingebaute Funktion (Abschnitt 10.3.1) zählt ihr Aufruf als Lauf.
+/// Eine gebundene Funktion (Abschnitt 10.4.1.1) führt zu ihrer
+/// Zielfunktion mit dem gebundenen `this` und den gebundenen Argumenten.
 pub(crate) fn call_function<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    function: Local<'_>,
+    this: Local<'_>,
+    arguments: &[Local<'_>],
+) -> Completion<Local<'s>> {
+    if is_bound_function(agent.heap(), agent.heap().get(function)) {
+        let (target, this, arguments) = unwrap_call(agent, scope, function, this, arguments);
+        return call_unbound(agent, scope, target, this, &arguments);
+    }
+    call_unbound(agent, scope, function, this, arguments)
+}
+
+/// [`call_function`] für eine Funktion, die nicht gebunden ist.
+fn call_unbound<'s>(
     agent: &mut Agent,
     scope: &'s Scope,
     function: Local<'_>,
@@ -355,8 +373,26 @@ fn call_frame<'s>(
 /// prüfte der Aufrufer. Das neue Objekt entsteht wie bei `new` vor dem
 /// Rahmen mit OrdinaryCreateFromConstructor, im aktuellen Realm `current`
 /// (Abschnitt 10.2.2, Schritt 3). Kehrt der Rahmen ohne Objekt zurück,
-/// prüft der Lauf das Ergebnis wie bei `new`.
+/// prüft der Lauf das Ergebnis wie bei `new`. Eine gebundene Funktion
+/// (Abschnitt 10.4.1.2) führt zu ihrer Zielfunktion.
 pub(crate) fn construct_function<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    current: RealmId,
+    constructor: Local<'_>,
+    arguments: &[Local<'_>],
+    new_target: Local<'_>,
+) -> Completion<Local<'s>> {
+    if is_bound_function(agent.heap(), agent.heap().get(constructor)) {
+        let (target, arguments, new_target) =
+            unwrap_construct(agent, scope, constructor, arguments, new_target);
+        return construct_unbound(agent, scope, current, target, &arguments, new_target);
+    }
+    construct_unbound(agent, scope, current, constructor, arguments, new_target)
+}
+
+/// [`construct_function`] für einen Konstruktor, der nicht gebunden ist.
+fn construct_unbound<'s>(
     agent: &mut Agent,
     scope: &'s Scope,
     current: RealmId,
@@ -376,6 +412,29 @@ pub(crate) fn construct_function<'s>(
         agent.leave_interpreter();
         result
     })
+}
+
+/// Ob eine Funktion im Befehl ihres Aufrufs läuft statt in einem eigenen
+/// Rahmen: eingebaute und gebundene Funktionen.
+fn runs_in_instruction(heap: &Heap, value: Value<'_>) -> bool {
+    builtin_parts(heap, value).is_some() || is_bound_function(heap, value)
+}
+
+/// [[Call]] einer eingebauten oder gebundenen Funktion im Befehl des
+/// Aufrufs. Eine gebundene Funktion führt zu einem neuen Lauf wie bei
+/// `Function.prototype.call`.
+fn call_in_instruction<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    callee: Local<'_>,
+    this: Local<'_>,
+    arguments: &[Local<'_>],
+) -> Completion<Local<'s>> {
+    if is_bound_function(agent.heap(), agent.heap().get(callee)) {
+        call_function(agent, scope, callee, this, arguments)
+    } else {
+        call_builtin(agent, scope, callee, this, arguments, None)
+    }
 }
 
 fn construct_frame<'s>(
@@ -971,7 +1030,7 @@ fn compiled<'s>(
     let unit = Rc::clone(&entry.unit);
     let result = match &entry.origin {
         Origin::Function(template) => compile_function(&unit, template),
-        Origin::DefaultConstructor { derived } => compile_default_constructor(*derived),
+        Origin::DefaultConstructor { derived, .. } => compile_default_constructor(*derived),
     };
     let code = match result {
         Ok(code) => Rc::new(code),
@@ -1015,11 +1074,12 @@ fn constant_pool<'s>(
                     let shared = agent.add_shared_function(Rc::clone(unit), template.clone())?;
                     agent.heap().local(inner, Value::int32(shared))
                 }
-                Constant::DefaultConstructor(derived) => {
+                Constant::DefaultConstructor { derived, class } => {
                     let Some(unit) = unit else {
                         return Err(agent.throw_error(ErrorKind::TypeError));
                     };
-                    let shared = agent.add_default_constructor(Rc::clone(unit), *derived)?;
+                    let shared =
+                        agent.add_default_constructor(Rc::clone(unit), *derived, *class)?;
                     agent.heap().local(inner, Value::int32(shared))
                 }
             };
@@ -1467,7 +1527,9 @@ impl<'c> Frame<'c, '_> {
         let result = match instruction.op {
             Op::CreateArguments => {
                 let prototype = agent.intrinsic(scope, self.realm, Intrinsic::ObjectPrototype);
-                let object = create_unmapped_arguments_object(agent, scope, prototype, arguments)?;
+                let thrower = agent.intrinsic(scope, self.realm, Intrinsic::ThrowTypeError);
+                let object =
+                    create_unmapped_arguments_object(agent, scope, prototype, thrower, arguments)?;
                 let values = agent.intrinsic(scope, self.realm, Intrinsic::ArrayPrototypeValues);
                 define_arguments_iterator(agent, scope, object, values)?;
                 object
@@ -2120,24 +2182,36 @@ impl<'c> Frame<'c, '_> {
         } else {
             usize::try_from(instruction.operand(1)).unwrap_or(0)
         };
-        if builtin_parts(agent.heap(), agent.heap().get(constructor)).is_some() {
+        if runs_in_instruction(agent.heap(), agent.heap().get(constructor)) {
             // [[Construct]] einer eingebauten Funktion (Abschnitt 10.3.2):
-            // `this` bleibt uninitialisiert.
+            // `this` bleibt uninitialisiert. Eine gebundene Funktion
+            // (Abschnitt 10.4.1.2) führt zu ihrer Zielfunktion.
             let arguments = if spread {
                 let array = self.register(agent, scope, first.saturating_add(2));
                 spread_list(agent, scope, array)?
             } else {
                 self.call_operands(agent, scope, first, count).1
             };
-            let this = agent.heap().local(scope, Value::UNDEFINED);
-            let result = call_builtin(
-                agent,
-                scope,
-                constructor,
-                this,
-                &arguments,
-                Some(new_target),
-            )?;
+            let result = if is_bound_function(agent.heap(), agent.heap().get(constructor)) {
+                construct_function(
+                    agent,
+                    scope,
+                    self.realm,
+                    constructor,
+                    &arguments,
+                    new_target,
+                )?
+            } else {
+                let this = agent.heap().local(scope, Value::UNDEFINED);
+                call_builtin(
+                    agent,
+                    scope,
+                    constructor,
+                    this,
+                    &arguments,
+                    Some(new_target),
+                )?
+            };
             self.set_accumulator(agent, result);
             return Ok(Flow::Next);
         }
@@ -2482,12 +2556,12 @@ impl<'c> Frame<'c, '_> {
                     return Err(agent.throw_error(ErrorKind::TypeError));
                 }
                 let count = usize::try_from(second).unwrap_or(0);
-                if builtin_parts(agent.heap(), agent.heap().get(callee)).is_some() {
-                    // Eine eingebaute Funktion läuft im Befehl, auch in
-                    // Endposition; den Rahmen baut erst das folgende Return
-                    // ab.
+                if runs_in_instruction(agent.heap(), agent.heap().get(callee)) {
+                    // Eine eingebaute oder gebundene Funktion läuft im
+                    // Befehl, auch in Endposition; den Rahmen baut erst das
+                    // folgende Return ab.
                     let (this, arguments) = self.call_operands(agent, scope, first, count);
-                    let result = call_builtin(agent, scope, callee, this, &arguments, None)?;
+                    let result = call_in_instruction(agent, scope, callee, this, &arguments)?;
                     self.set_accumulator(agent, result);
                     return Ok(Flow::Next);
                 }
@@ -2512,11 +2586,11 @@ impl<'c> Frame<'c, '_> {
                 if !is_callable(agent.heap(), agent.heap().get(callee)) {
                     return Err(agent.throw_error(ErrorKind::TypeError));
                 }
-                if builtin_parts(agent.heap(), agent.heap().get(callee)).is_some() {
+                if runs_in_instruction(agent.heap(), agent.heap().get(callee)) {
                     let this = self.register(agent, scope, first.saturating_add(1));
                     let array = self.register(agent, scope, first.saturating_add(2));
                     let arguments = spread_list(agent, scope, array)?;
-                    let result = call_builtin(agent, scope, callee, this, &arguments, None)?;
+                    let result = call_in_instruction(agent, scope, callee, this, &arguments)?;
                     self.set_accumulator(agent, result);
                     return Ok(Flow::Next);
                 }

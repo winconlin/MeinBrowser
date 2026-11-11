@@ -19,7 +19,8 @@
 #![forbid(unsafe_code)]
 
 use crate::agent::{Abrupt, Agent, Completion, ErrorKind};
-use crate::conversion::to_boolean;
+use crate::compare::same_value;
+use crate::conversion::{to_boolean, to_property_key};
 use crate::heap::{Local, ObjectClass, Scope};
 use crate::key::{PropertyKey, WellKnownSymbol};
 use crate::object::{INLINE, ordinary_object_create};
@@ -252,6 +253,111 @@ pub(crate) fn iterator_close_on_throw(
             Ok(())
         }
         other => other,
+    }
+}
+
+/// IfAbruptCloseIterator (Abschnitt 7.4.12) für das Ergebnis eines
+/// Schritts: Eine Ausnahme schließt den Iterator und gilt dann weiter, ein
+/// erschöpftes Budget geht ohne Schließen weiter.
+fn close_if_abrupt<T>(
+    agent: &mut Agent,
+    scope: &Scope,
+    iterator: Local<'_>,
+    result: Completion<T>,
+) -> Completion<T> {
+    match result {
+        Err(Abrupt::Throw) => {
+            let value = agent.take_thrown_for_rethrow(scope)?;
+            iterator_close_on_throw(agent, scope, iterator)?;
+            Err(agent.rethrow(value))
+        }
+        other => other,
+    }
+}
+
+/// AddEntriesFromIterable (Abschnitt 24.1.1.2): `adder` mit `target` als
+/// `this` für jedes Paar aus `iterable`, das weder *undefined* noch *null*
+/// ist.
+pub(crate) fn add_entries_from_iterable<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    realm: RealmId,
+    target: Local<'s>,
+    iterable: Local<'_>,
+    adder: Local<'_>,
+) -> Completion<Local<'s>> {
+    let (iterator, next) = get_iterator(agent, scope, realm, iterable)?;
+    loop {
+        let done = agent.scope(|agent, inner| -> Completion<bool> {
+            let Some(entry) = iterator_step_value(agent, inner, iterator, next)? else {
+                return Ok(true);
+            };
+            let result = if is_object(agent, entry) {
+                let key = get(agent, inner, entry, PropertyKey::Index(0))?;
+                let value = get(agent, inner, entry, PropertyKey::Index(1))?;
+                call(agent, inner, adder, target, &[key, value]).map(|_| ())
+            } else {
+                Err(agent.throw_error(ErrorKind::TypeError))
+            };
+            close_if_abrupt(agent, inner, iterator, result)?;
+            Ok(false)
+        })?;
+        if done {
+            return Ok(target);
+        }
+    }
+}
+
+/// GroupBy (Abschnitt 7.3.36) mit ~property~: die Gruppen in der
+/// Reihenfolge ihres ersten Schlüssels, jede mit ihren Werten in der
+/// Reihenfolge von `items`; die Schlüssel kommen aus ToPropertyKey als
+/// Zeichenketten oder Symbole. AddValueToKeyedGroup (Abschnitt 7.3.35)
+/// vergleicht mit SameValue; die Suche nach der Gruppe ist linear.
+/// ~collection~ kommt mit `Map.groupBy`.
+pub(crate) fn group_by<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    realm: RealmId,
+    items: Local<'_>,
+    callback: Local<'_>,
+) -> Completion<Vec<(Local<'s>, Vec<Local<'s>>)>> {
+    let value = agent.heap().get(items);
+    if value.is_undefined() || value.is_null() {
+        return Err(agent.throw_error(ErrorKind::TypeError));
+    }
+    if !is_callable(agent.heap(), agent.heap().get(callback)) {
+        return Err(agent.throw_error(ErrorKind::TypeError));
+    }
+    let mut groups: Vec<(Local<'s>, Vec<Local<'s>>)> = Vec::new();
+    let (iterator, next) = get_iterator(agent, scope, realm, items)?;
+    // Mehr als 2⁵³ − 1 Werte bekommt kein Schlüssel als genaue Zahl.
+    const LIMIT: u64 = (1 << 53) - 1;
+    let mut count: u64 = 0;
+    loop {
+        if count >= LIMIT {
+            let error = Err(agent.throw_error(ErrorKind::TypeError));
+            return close_if_abrupt(agent, scope, iterator, error);
+        }
+        let Some(value) = iterator_step_value(agent, scope, iterator, next)? else {
+            return Ok(groups);
+        };
+        // u64 bis 2⁵³ − 1 ist als f64 genau.
+        let index = agent.heap().local(scope, Value::number(count as f64));
+        let undefined = agent.heap().local(scope, Value::UNDEFINED);
+        let key = call(agent, scope, callback, undefined, &[value, index]);
+        let key = close_if_abrupt(agent, scope, iterator, key)?;
+        let key = to_property_key(agent, scope, key);
+        let key = close_if_abrupt(agent, scope, iterator, key)?;
+        let key = agent.key_as_value(scope, key)?;
+        let heap = agent.heap();
+        let found = groups
+            .iter_mut()
+            .find(|(existing, _)| same_value(heap, heap.get(*existing), heap.get(key)));
+        match found {
+            Some((_, elements)) => elements.push(value),
+            None => groups.push((key, vec![value])),
+        }
+        count = count.saturating_add(1);
     }
 }
 

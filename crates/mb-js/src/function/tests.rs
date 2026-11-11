@@ -130,10 +130,21 @@ fn functions_have_length_name_and_prototype() {
             Some(bits(agent, function_prototype))
         );
         // %Function.prototype% hat selbst einen Namen und eine Länge, dazu
-        // bisher `call`.
+        // seine Methoden und @@hasInstance.
         assert_eq!(
             keys(agent, scope, function_prototype),
-            ["length", "name", "call"]
+            [
+                "length",
+                "name",
+                "constructor",
+                "apply",
+                "bind",
+                "call",
+                "toString",
+                "caller",
+                "arguments",
+                "Symbol"
+            ]
         );
         assert_eq!(function_name(agent, scope, function_prototype), "");
     });

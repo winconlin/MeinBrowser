@@ -136,8 +136,11 @@ pub const SOURCES: [Source; 9] = [
         paths: &[
             "/test/language/",
             "/test/annexB/language/",
+            "/test/built-ins/Function/",
+            "/test/built-ins/Object/",
             "/test/built-ins/Promise/",
             "/test/built-ins/RegExp/",
+            "/test/annexB/built-ins/Object/",
             "/test/annexB/built-ins/RegExp/",
             "/features.txt",
             "/harness/",

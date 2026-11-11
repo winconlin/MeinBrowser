@@ -14,6 +14,7 @@
 #![forbid(unsafe_code)]
 
 use crate::agent::{Agent, Completion, ErrorKind};
+use crate::bound_function::bound_target;
 use crate::compare::same_value;
 use crate::conversion::to_boolean;
 use crate::heap::{Local, Scope};
@@ -264,31 +265,41 @@ pub(crate) fn copy_data_properties(
     Ok(())
 }
 
-/// InstanceofOperator (Abschnitt 13.10.2).
+/// InstanceofOperator (Abschnitt 13.10.2). Für eine gebundene Funktion
+/// ohne eigenes @@hasInstance geht OrdinaryHasInstance (Schritt 2) zu
+/// ihrer Zielfunktion zurück an den Anfang; das ist hier eine Schleife
+/// statt der Rekursion (RS-8).
 pub(crate) fn instanceof_operator(
     agent: &mut Agent,
     scope: &Scope,
     value: Local<'_>,
     target: Local<'_>,
 ) -> Completion<bool> {
-    if !is_object(agent, target) {
-        return Err(agent.throw_error(ErrorKind::TypeError));
-    }
-    let symbol = agent.well_known_symbol(scope, WellKnownSymbol::HasInstance);
-    if let Some(handler) = get_method(agent, scope, target, PropertyKey::Symbol(symbol))? {
-        let result = call(agent, scope, handler, target, &[value])?;
+    let heap = agent.heap();
+    let target = heap.local(scope, heap.get(target));
+    loop {
+        if !is_object(agent, target) {
+            return Err(agent.throw_error(ErrorKind::TypeError));
+        }
+        let symbol = agent.well_known_symbol(scope, WellKnownSymbol::HasInstance);
+        if let Some(handler) = get_method(agent, scope, target, PropertyKey::Symbol(symbol))? {
+            let result = call(agent, scope, handler, target, &[value])?;
+            let heap = agent.heap();
+            return Ok(to_boolean(heap, heap.get(result)));
+        }
+        if !is_callable(agent.heap(), agent.heap().get(target)) {
+            return Err(agent.throw_error(ErrorKind::TypeError));
+        }
         let heap = agent.heap();
-        return Ok(to_boolean(heap, heap.get(result)));
+        match bound_target(heap, heap.get(target)) {
+            Some(bound) => heap.set(target, bound),
+            None => return ordinary_has_instance(agent, scope, target, value),
+        }
     }
-    if !is_callable(agent.heap(), agent.heap().get(target)) {
-        return Err(agent.throw_error(ErrorKind::TypeError));
-    }
-    ordinary_has_instance(agent, scope, target, value)
 }
 
-/// OrdinaryHasInstance (Abschnitt 7.3.21). Gebundene Funktionen gibt es
-/// noch nicht.
-fn ordinary_has_instance(
+/// OrdinaryHasInstance (Abschnitt 7.3.21).
+pub(crate) fn ordinary_has_instance(
     agent: &mut Agent,
     scope: &Scope,
     constructor: Local<'_>,
@@ -296,6 +307,13 @@ fn ordinary_has_instance(
 ) -> Completion<bool> {
     if !is_callable(agent.heap(), agent.heap().get(constructor)) {
         return Ok(false);
+    }
+    let heap = agent.heap();
+    if let Some(target) = bound_target(heap, heap.get(constructor)) {
+        // InstanceofOperator löst die Kette gebundener Funktionen auf und
+        // kommt nur mit einer anderen Funktion hierher zurück.
+        let target = heap.local(scope, target);
+        return instanceof_operator(agent, scope, instance, target);
     }
     if !is_object(agent, instance) {
         return Ok(false);

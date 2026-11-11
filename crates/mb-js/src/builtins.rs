@@ -2,9 +2,10 @@
 //! Familie hat ein Modul mit ihrer Tabelle aus [`Builtin`]-Einträgen und
 //! einer Funktion, die sie in einem neuen Realm anlegt.
 //!
-//! Bisher sind es die Teile, die die Harness von Test262 braucht:
-//! %Function.prototype% mit `call`, %Object% mit
-//! `Object.prototype.toString`, %String% und die Fehlerkonstruktoren mit
+//! Vollständig sind %Object% mit %Object.prototype% (Welle 8a des Plans)
+//! und %Function.prototype% mit gebundenen Funktionen; %Function% selbst
+//! wartet auf `eval`. Sonst sind es bisher die Teile, die die Harness von
+//! Test262 braucht: %String% und die Fehlerkonstruktoren mit
 //! `Error.prototype.toString`. Dazu kommen, was `for`-`of` und die
 //! Ausbreitung brauchen: die Iteratoren für Arrays und Zeichenketten mit
 //! `Array.prototype.values`, `keys`, `entries` und den Methoden für

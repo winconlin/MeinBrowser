@@ -165,6 +165,9 @@ impl Parser<'_> {
                 }
             }
         }
+        // Der Quelltext einer Methode ist die *MethodDefinition* ohne
+        // `static` (*ClassElement*).
+        let member_start = self.start(Goal::Div)?;
         let modifiers = self.method_modifiers(true)?;
         let key_start = self.start(Goal::Div)?;
         let (key, name) = self.property_name(true)?;
@@ -195,7 +198,7 @@ impl Parser<'_> {
             if is_static && named(self, "prototype") {
                 return Err(self.error_at(ErrorKind::InvalidClassElement, key_start));
             }
-            let function = self.method(modifiers, start, None)?;
+            let function = self.method(modifiers, member_start, None)?;
             let kind = modifiers.accessor.unwrap_or(MethodKind::Method);
             if let Some(atom) = private {
                 self.declare_private(atom, kind, is_static, key_start)?;

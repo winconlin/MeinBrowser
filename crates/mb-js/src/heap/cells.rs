@@ -3,11 +3,12 @@
 //! zusammen; hier steht nur, wie die Zellen im Heap liegen.
 
 use super::{
-    Heap, KIND_ARGUMENTS, KIND_ARRAY, KIND_ASYNC_FROM_SYNC, KIND_ASYNC_GENERATOR, KIND_BUILTIN,
-    KIND_ERROR, KIND_FUNCTION, KIND_GENERATOR, KIND_ITERATOR, KIND_OBJECT, KIND_PRIMITIVE,
-    KIND_PROMISE, KIND_SHAPE, KIND_SLOTS, KIND_SPARSE, KIND_SYMBOL, KIND_WEAK, Local, NONE,
-    OBJECT_REFS, OutOfMemory, Scope, cell_words, header, header_flags, header_kind, header_length,
-    is_object, is_value_cell, object_fields, packed, packed_high, packed_low, to_usize, with_flags,
+    Heap, KIND_ARGUMENTS, KIND_ARRAY, KIND_ASYNC_FROM_SYNC, KIND_ASYNC_GENERATOR,
+    KIND_BOUND_FUNCTION, KIND_BUILTIN, KIND_ERROR, KIND_FUNCTION, KIND_GENERATOR, KIND_ITERATOR,
+    KIND_OBJECT, KIND_PRIMITIVE, KIND_PROMISE, KIND_SHAPE, KIND_SLOTS, KIND_SPARSE, KIND_SYMBOL,
+    KIND_WEAK, Local, NONE, OBJECT_REFS, OutOfMemory, Scope, cell_words, header, header_flags,
+    header_kind, header_length, is_object, is_value_cell, object_fields, packed, packed_high,
+    packed_low, to_usize, with_flags,
 };
 use crate::value::{Ref, RefKind, Value};
 
@@ -99,6 +100,10 @@ pub(crate) enum ObjectClass {
     /// [`ASYNC_GENERATOR_FIELDS`](super::ASYNC_GENERATOR_FIELDS) internen
     /// Feldern, sonst gewöhnlich.
     AsyncGenerator,
+    /// Eine gebundene Funktion (Abschnitt 10.4.1) mit
+    /// [`BOUND_FUNCTION_FIELDS`](super::BOUND_FUNCTION_FIELDS) internen
+    /// Feldern, sonst gewöhnlich.
+    BoundFunction,
 }
 
 impl ObjectClass {
@@ -116,6 +121,7 @@ impl ObjectClass {
             ObjectClass::Promise => KIND_PROMISE,
             ObjectClass::AsyncFromSyncIterator => KIND_ASYNC_FROM_SYNC,
             ObjectClass::AsyncGenerator => KIND_ASYNC_GENERATOR,
+            ObjectClass::BoundFunction => KIND_BOUND_FUNCTION,
         }
     }
 
@@ -133,6 +139,7 @@ impl ObjectClass {
             KIND_PROMISE => Some(ObjectClass::Promise),
             KIND_ASYNC_FROM_SYNC => Some(ObjectClass::AsyncFromSyncIterator),
             KIND_ASYNC_GENERATOR => Some(ObjectClass::AsyncGenerator),
+            KIND_BOUND_FUNCTION => Some(ObjectClass::BoundFunction),
             _ => None,
         }
     }
@@ -531,6 +538,25 @@ impl Heap {
         value: Value<'_>,
     ) -> bool {
         self.field_word(object, KIND_ASYNC_GENERATOR, index)
+            .is_some_and(|word| self.store(object.offset(), word, value.bits()))
+    }
+
+    /// Ein internes Feld einer gebundenen Funktion, `None` für andere
+    /// Zellen.
+    pub(crate) fn bound_function_field(&self, object: Ref<'_>, index: usize) -> Option<Value<'_>> {
+        let word = self.field_word(object, KIND_BOUND_FUNCTION, index)?;
+        self.word(object.offset(), word).map(Value::from_bits)
+    }
+
+    /// Schreibt ein internes Feld einer gebundenen Funktion. `false`, wenn
+    /// es das Feld nicht gibt.
+    pub(crate) fn set_bound_function_field(
+        &self,
+        object: Ref<'_>,
+        index: usize,
+        value: Value<'_>,
+    ) -> bool {
+        self.field_word(object, KIND_BOUND_FUNCTION, index)
             .is_some_and(|word| self.store(object.offset(), word, value.bits()))
     }
 

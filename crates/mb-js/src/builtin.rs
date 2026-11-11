@@ -193,7 +193,7 @@ pub(crate) fn builtin_function_with_prototype<'s>(
         heap.set_builtin_field(object, BEHAVIOUR, Value::int32(number));
         heap.set_builtin_field(object, REALM, Value::int32(realm_number));
     }
-    set_function_length(agent, scope, function, builtin.length)?;
+    set_function_length(agent, scope, function, f64::from(builtin.length))?;
     let name = agent.key_from_units(scope, &units(builtin.name))?;
     set_function_name(agent, scope, function, name, None)?;
     Ok(function)

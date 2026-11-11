@@ -130,8 +130,9 @@ fn unmapped_objects_have_length_indices_and_callee() {
     let mut agent = agent_with(false);
     agent.scope(|agent, scope| {
         let prototype = ordinary_object_create(agent, scope, None).expect("Speicher");
+        let thrower = ordinary_object_create(agent, scope, None).expect("Speicher");
         let arguments = cell(agent, scope, &[1.0, 2.0]);
-        let object = create_unmapped_arguments_object(agent, scope, prototype, arguments)
+        let object = create_unmapped_arguments_object(agent, scope, prototype, thrower, arguments)
             .expect("kein Fehler");
         let heap = agent.heap();
         let class = object_of(heap, object).and_then(|target| heap.object_class(target));
@@ -142,14 +143,16 @@ fn unmapped_objects_have_length_indices_and_callee() {
         assert_eq!(data(agent, &descriptor), (Some(2.0), true, false, true));
         let descriptor = own(agent, scope, object, PropertyKey::Index(1));
         assert_eq!(data(agent, &descriptor), (Some(2.0), true, true, true));
-        // Abweichung: *undefined* statt %ThrowTypeError%.
+        // `callee` hat den Werfer als Getter und Setter.
         let callee = name(agent, scope, "callee");
         let descriptor = own(agent, scope, object, callee);
         assert!(descriptor.is_accessor());
-        let undefined = |local: Option<Local<'_>>| {
-            local.is_some_and(|local| agent.heap().get(local).is_undefined())
+        let is_thrower = |local: Option<Local<'_>>| {
+            local.is_some_and(|local| {
+                agent.heap().get(local).bits() == agent.heap().get(thrower).bits()
+            })
         };
-        assert!(undefined(descriptor.get) && undefined(descriptor.set));
+        assert!(is_thrower(descriptor.get) && is_thrower(descriptor.set));
         assert_eq!(
             (descriptor.enumerable, descriptor.configurable),
             (Some(false), Some(false))
@@ -303,9 +306,11 @@ fn arguments_objects_survive_collections() {
         let context = cell(agent, scope, &[0.0, 10.0, 20.0]);
         let object = mapped(agent, scope, context, &[Some(1), Some(2)]);
         let prototype = ordinary_object_create(agent, scope, None).expect("Speicher");
+        let thrower = ordinary_object_create(agent, scope, None).expect("Speicher");
         let arguments = cell(agent, scope, &[1.0, 2.0]);
-        let unmapped = create_unmapped_arguments_object(agent, scope, prototype, arguments)
-            .expect("kein Fehler");
+        let unmapped =
+            create_unmapped_arguments_object(agent, scope, prototype, thrower, arguments)
+                .expect("kein Fehler");
         for round in 0..4 {
             let value = f64::from(round);
             assert!(write(agent, scope, object, 1, value));

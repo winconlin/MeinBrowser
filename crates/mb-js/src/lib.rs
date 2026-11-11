@@ -6,6 +6,7 @@ pub mod agent;
 pub mod ast;
 mod async_function;
 mod async_generator;
+mod bound_function;
 pub mod builtin;
 mod builtins;
 pub mod bytecode;

@@ -121,6 +121,7 @@ const KIND_GENERATOR: u64 = 17;
 const KIND_PROMISE: u64 = 18;
 const KIND_ASYNC_FROM_SYNC: u64 = 19;
 const KIND_ASYNC_GENERATOR: u64 = 20;
+const KIND_BOUND_FUNCTION: u64 = 21;
 
 /// Die Kennzeichen stehen in den Bits 8 bis 31 des Kopfworts.
 const FLAG_SHIFT: u32 = 8;
@@ -158,7 +159,7 @@ fn is_value_cell(kind: u64) -> bool {
 }
 
 /// Die Arten der Objektzellen.
-const OBJECT_KINDS: [u64; 12] = [
+const OBJECT_KINDS: [u64; 13] = [
     KIND_OBJECT,
     KIND_ARRAY,
     KIND_FUNCTION,
@@ -171,6 +172,7 @@ const OBJECT_KINDS: [u64; 12] = [
     KIND_PROMISE,
     KIND_ASYNC_FROM_SYNC,
     KIND_ASYNC_GENERATOR,
+    KIND_BOUND_FUNCTION,
 ];
 
 /// Die internen Felder eines Funktionsobjekts, Werte vor den eingebetteten
@@ -194,6 +196,9 @@ pub(crate) const PROMISE_FIELDS: usize = 4;
 pub(crate) const ASYNC_FROM_SYNC_FIELDS: usize = 2;
 /// Die internen Felder eines async-Generators.
 pub(crate) const ASYNC_GENERATOR_FIELDS: usize = 8;
+/// Die internen Felder einer gebundenen Funktion: [[BoundTargetFunction]],
+/// [[BoundThis]] und [[BoundArguments]].
+pub(crate) const BOUND_FUNCTION_FIELDS: usize = 3;
 
 fn is_object(kind: u64) -> bool {
     OBJECT_KINDS.contains(&kind)
@@ -212,6 +217,7 @@ fn object_fields(kind: u64) -> usize {
         KIND_PROMISE => PROMISE_FIELDS,
         KIND_ASYNC_FROM_SYNC => ASYNC_FROM_SYNC_FIELDS,
         KIND_ASYNC_GENERATOR => ASYNC_GENERATOR_FIELDS,
+        KIND_BOUND_FUNCTION => BOUND_FUNCTION_FIELDS,
         _ => 0,
     }
 }

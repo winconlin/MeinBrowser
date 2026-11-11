@@ -149,7 +149,21 @@ fn function_prototype_is_a_builtin_function() {
         let parent = prototype_of(agent, scope, prototype);
         let object = agent.intrinsic(scope, realm, Intrinsic::ObjectPrototype);
         assert!(same(agent, parent, object));
-        assert_eq!(keys(agent, scope, prototype), ["length", "name", "call"]);
+        assert_eq!(
+            keys(agent, scope, prototype),
+            [
+                "length",
+                "name",
+                "constructor",
+                "apply",
+                "bind",
+                "call",
+                "toString",
+                "caller",
+                "arguments",
+                "Symbol"
+            ]
+        );
         let (length, attributes) = data(agent, scope, prototype, "length");
         assert_eq!(describe(agent, length), "0");
         assert_eq!(attributes, [Some(false), Some(false), Some(true)]);
@@ -173,6 +187,12 @@ fn constructors_are_global_and_linked_to_their_prototypes() {
                 "Object",
                 Intrinsic::Object,
                 Intrinsic::ObjectPrototype,
+                Intrinsic::FunctionPrototype,
+            ),
+            (
+                "Function",
+                Intrinsic::Function,
+                Intrinsic::FunctionPrototype,
                 Intrinsic::FunctionPrototype,
             ),
             (
@@ -698,12 +718,16 @@ fn builtins_survive_collections() {
     let source = "var s = new String('abc'); \
         var e = new TypeError('m', { cause: s }); \
         var call = (function (x) {}).call; \
+        var bound = (function (a, b) { return this.x + a + b; }).bind({ x: 'p' }, 'q'); \
+        var frozen = Object.freeze(Object.fromEntries([['k', 'v']])); \
         e.cause[2] + e.message + String(e) + Object.prototype.toString.call(s) + \
         call.call(function (x) { 'use strict'; return x; }, 0, 'z') + String(tag) + \
-        (Object(1).constructor === Object)";
+        (Object(1).constructor === Object) + bound('r') + bound.name + \
+        Object.keys(frozen)[0] + Object.isFrozen(frozen) + \
+        Object.getOwnPropertyDescriptor(frozen, 'k').value";
     assert_eq!(
         run(&mut agent, realm, source),
-        "\"cmTypeError: m[object String]zSymbol(Symbol.toStringTag)true\""
+        "\"cmTypeError: m[object String]zSymbol(Symbol.toStringTag)truepqrbound ktruev\""
     );
     agent.heap_mut().collect();
     agent.heap().verify().expect("gültiger Heap");
@@ -1069,5 +1093,453 @@ fn array_and_string_prototypes_return_iterators() {
         ("new (''[Symbol.iterator])()", "TypeError"),
         ("typeof [].values()", "\"object\""),
         ("[].values() instanceof Object", "true"),
+    ]);
+}
+
+#[test]
+fn object_constructor_functions_follow_the_spec() {
+    check(&[
+        (
+            "Object.assign.length + Object.defineProperty.length + \
+             Object.getOwnPropertyDescriptor.length",
+            "7",
+        ),
+        ("Object.getOwnPropertyNames.name", "\"getOwnPropertyNames\""),
+        ("Object.assign({}, {a: 1}, null, undefined, {b: 2}).b", "2"),
+        ("var t = {}; Object.assign(t, {a: 1}) === t", "true"),
+        (
+            "Object.assign({}, Object.defineProperty({}, 'x', {value: 1})).x",
+            "undefined",
+        ),
+        ("Object.assign({}, {get x() { return 5; }}).x", "5"),
+        ("Object.assign(null)", "TypeError"),
+        ("Object.getPrototypeOf(Object.create(null))", "null"),
+        ("Object.create(1)", "TypeError"),
+        ("Object.create({x: 1}).x", "1"),
+        (
+            "Object.create({}, {y: {value: 2, enumerable: true}}).y",
+            "2",
+        ),
+        (
+            "var d = Object.getOwnPropertyDescriptor(\
+                 Object.defineProperty({}, 'x', {value: 1}), 'x'); \
+             d.value + ',' + d.writable + ',' + d.enumerable + ',' + d.configurable",
+            "\"1,false,false,false\"",
+        ),
+        (
+            "var d = Object.getOwnPropertyDescriptor({get x() { return 1; }}, 'x'); \
+             typeof d.get + ',' + d.set + ',' + d.enumerable + ',' + \
+             Object.keys(d).length",
+            "\"function,undefined,true,4\"",
+        ),
+        ("Object.getOwnPropertyDescriptor({}, 'x')", "undefined"),
+        ("Object.getOwnPropertyDescriptor('ab', 1).value", "\"b\""),
+        ("Object.defineProperty(1, 'x', {})", "TypeError"),
+        ("Object.defineProperty({}, 'x', 1)", "TypeError"),
+        ("Object.defineProperty({}, 'x', {get: 1})", "TypeError"),
+        (
+            "Object.defineProperty({}, 'x', {get: function () {}, value: 1})",
+            "TypeError",
+        ),
+        (
+            "var o = Object.defineProperties({}, \
+                 {a: {value: 1, enumerable: true}, b: {get: function () { return 2; }}}); \
+             o.a + o.b",
+            "3",
+        ),
+        ("Object.defineProperties(1, {})", "TypeError"),
+        (
+            "Object.entries({a: 1})[0][0] + Object.entries({a: 1})[0][1]",
+            "\"a1\"",
+        ),
+        ("Object.values({a: 1, b: 2})[1]", "2"),
+        ("Object.keys([3, 4])[1]", "\"1\""),
+        ("typeof Object.keys([3])[0]", "\"string\""),
+        ("Object.keys({[Symbol.iterator]: 1, a: 2}).length", "1"),
+        ("Object.keys('ab').length", "2"),
+        ("Object.keys(null)", "TypeError"),
+        ("Object.isFrozen(Object.freeze({a: 1}))", "true"),
+        ("Object.isFrozen({})", "false"),
+        ("Object.isFrozen(Object.preventExtensions({}))", "true"),
+        ("Object.isSealed(Object.seal({a: 1}))", "true"),
+        ("Object.isFrozen(Object.seal({a: 1}))", "false"),
+        ("Object.isSealed(Object.freeze({get a() {}}))", "true"),
+        ("Object.isExtensible(Object.preventExtensions({}))", "false"),
+        ("Object.isExtensible(1)", "false"),
+        ("Object.isFrozen(1)", "true"),
+        ("Object.freeze(1)", "1"),
+        ("Object.preventExtensions(1)", "1"),
+        (
+            "'use strict'; var o = Object.freeze({a: 1}); o.a = 2;",
+            "TypeError",
+        ),
+        ("var o = Object.freeze({a: 1}); o.a = 2; o.a", "1"),
+        ("var o = Object.seal({a: 1}); o.a = 2; delete o.a; o.a", "2"),
+        ("Object.fromEntries([['a', 1], ['b', 2]]).b", "2"),
+        ("Object.keys(Object.fromEntries([])).length", "0"),
+        ("Object.fromEntries([1])", "TypeError"),
+        ("Object.fromEntries(null)", "TypeError"),
+        ("Object.getOwnPropertyDescriptors({a: 1}).a.value", "1"),
+        ("Object.getOwnPropertyNames([1]).length", "2"),
+        (
+            "Object.getOwnPropertyNames({[Symbol.iterator]: 1, a: 2}).length",
+            "1",
+        ),
+        (
+            "Object.getOwnPropertySymbols({[Symbol.iterator]: 1, a: 2})[0] === \
+             Symbol.iterator",
+            "true",
+        ),
+        ("Object.getPrototypeOf({}) === Object.prototype", "true"),
+        ("Object.getPrototypeOf(null)", "TypeError"),
+        (
+            "var g = Object.groupBy([1, 2, 3], function (x) { return x % 2 ? 'odd' : 'even'; }); \
+             g.odd.length + ',' + g.even[0] + ',' + Object.getPrototypeOf(g)",
+            "\"2,2,null\"",
+        ),
+        (
+            "var g = Object.groupBy('aba', function (x, i) { return i; }); Object.keys(g)[2]",
+            "\"2\"",
+        ),
+        ("Object.groupBy(null, function () {})", "TypeError"),
+        ("Object.groupBy([], 1)", "TypeError"),
+        ("Object.hasOwn({a: 1}, 'a')", "true"),
+        ("Object.hasOwn({}, 'toString')", "false"),
+        (
+            "Object.is(NaN, NaN) + ',' + Object.is(0, -0) + ',' + Object.is('a', 'a')",
+            "\"true,false,true\"",
+        ),
+        ("var p = {x: 1}; Object.setPrototypeOf({}, p).x", "1"),
+        ("Object.setPrototypeOf(1, {})", "1"),
+        ("Object.setPrototypeOf({}, 1)", "TypeError"),
+        ("Object.setPrototypeOf(null, {})", "TypeError"),
+        (
+            "Object.setPrototypeOf(Object.preventExtensions({}), {})",
+            "TypeError",
+        ),
+    ]);
+}
+
+#[test]
+fn object_prototype_methods_follow_the_spec() {
+    check(&[
+        ("({a: 1}).hasOwnProperty('a')", "true"),
+        (
+            "Object.prototype.hasOwnProperty.call('abc', 'length')",
+            "true",
+        ),
+        (
+            "Object.prototype.hasOwnProperty.call(null, 'x')",
+            "TypeError",
+        ),
+        (
+            "Object.prototype.isPrototypeOf(Object.create(null))",
+            "false",
+        ),
+        ("Object.prototype.isPrototypeOf({})", "true"),
+        ("({}).isPrototypeOf(1)", "false"),
+        ("Object.prototype.isPrototypeOf.call(null, 1)", "false"),
+        ("({a: 1}).propertyIsEnumerable('a')", "true"),
+        ("({}).propertyIsEnumerable('toString')", "false"),
+        (
+            "({toString: function () { return 'x'; }}).toLocaleString()",
+            "\"x\"",
+        ),
+        ("var o = {}; o.valueOf() === o", "true"),
+        ("typeof Object.prototype.valueOf.call(1)", "\"object\""),
+        ("Object.prototype.valueOf.call(undefined)", "TypeError"),
+        ("({}).__proto__ === Object.prototype", "true"),
+        ("var o = {}; o.__proto__ = {y: 2}; o.y", "2"),
+        (
+            "var o = {}; o.__proto__ = 1; Object.getPrototypeOf(o) === Object.prototype",
+            "true",
+        ),
+        ("Object.prototype.__proto__", "null"),
+        (
+            "var d = Object.getOwnPropertyDescriptor(Object.prototype, '__proto__'); \
+             d.get.name + ',' + d.set.name + ',' + d.enumerable + ',' + d.configurable",
+            "\"get __proto__,set __proto__,false,true\"",
+        ),
+        (
+            "Object.getOwnPropertyDescriptor(Object.prototype, '__proto__').set.call(1, {})",
+            "undefined",
+        ),
+        (
+            "Object.getOwnPropertyDescriptor(Object.prototype, '__proto__').set.call(null, {})",
+            "TypeError",
+        ),
+        (
+            "var o = {}; o.__defineGetter__('x', function () { return 3; }); o.x",
+            "3",
+        ),
+        (
+            "var o = {}; o.__defineSetter__('x', function (v) { this.y = v; }); o.x = 4; o.y",
+            "4",
+        ),
+        (
+            "var o = {get x() { return 1; }}; o.__lookupGetter__('x')()",
+            "1",
+        ),
+        ("({}).__lookupGetter__('x')", "undefined"),
+        (
+            "Object.create({get x() { return 7; }}).__lookupGetter__('x')()",
+            "7",
+        ),
+        ("({}).__lookupSetter__('toString')", "undefined"),
+        (
+            "var o = {set x(v) {}}; typeof o.__lookupSetter__('x') + typeof o.__lookupGetter__('x')",
+            "\"functionundefined\"",
+        ),
+        ("({}).__defineGetter__('x', 1)", "TypeError"),
+        ("Object.prototype.__defineGetter__.length", "2"),
+    ]);
+}
+
+#[test]
+fn function_prototype_methods_and_bound_functions_follow_the_spec() {
+    check(&[
+        (
+            "Function.prototype.apply.length + Function.prototype.bind.length + \
+             Function.prototype.toString.length",
+            "3",
+        ),
+        (
+            "(function (a, b) { return a + b; }).apply(null, [1, 2])",
+            "3",
+        ),
+        (
+            "typeof (function () { return this; }).apply(5)",
+            "\"object\"",
+        ),
+        ("(function () { 'use strict'; return this; }).apply(5)", "5"),
+        (
+            "(function () { return arguments.length; }).apply(null, {length: 2})",
+            "2",
+        ),
+        (
+            "(function () { return arguments.length; }).apply(null, null)",
+            "0",
+        ),
+        ("(function () {}).apply(null, 1)", "TypeError"),
+        ("Function.prototype.apply.call(1)", "TypeError"),
+        (
+            "var b = (function (a, b) { return this.x + a + b; }).bind({x: 1}, 2); b(3)",
+            "6",
+        ),
+        ("(function () {}).bind().name", "\"bound \""),
+        (
+            "function f(a, b, c) {} f.bind(null, 1).length + ',' + f.bind(null, 1).name",
+            "\"2,bound f\"",
+        ),
+        ("function f(a, b, c) {} f.bind().length", "3"),
+        ("(function () {}).bind(null, 1, 2).length", "0"),
+        (
+            "(function (a, b, c) {}).bind(null, 1).bind(null, 2).length",
+            "1",
+        ),
+        (
+            "var f = function () {}; Object.defineProperty(f, 'length', {value: 'x'}); \
+             f.bind().length",
+            "0",
+        ),
+        (
+            "var f = function () {}; Object.defineProperty(f, 'length', {value: Infinity}); \
+             f.bind().length",
+            "Infinity",
+        ),
+        (
+            "var f = function () {}; Object.defineProperty(f, 'length', {value: -Infinity}); \
+             f.bind().length",
+            "0",
+        ),
+        (
+            "var f = function () {}; Object.defineProperty(f, 'name', {value: 1}); \
+             f.bind().name",
+            "\"bound \"",
+        ),
+        ("typeof (function () {}).bind()", "\"function\""),
+        (
+            "Object.getPrototypeOf((function () {}).bind()) === Function.prototype",
+            "true",
+        ),
+        (
+            "(function () {}).bind().hasOwnProperty('prototype')",
+            "false",
+        ),
+        (
+            "Object.prototype.toString.call((function () {}).bind())",
+            "\"[object Function]\"",
+        ),
+        ("Function.prototype.bind.call(1)", "TypeError"),
+        (
+            "new ((function (a, b) { this.s = a + b; }).bind(null, 1))(2).s",
+            "3",
+        ),
+        (
+            "function F() { return new.target; } new (F.bind())() === F",
+            "true",
+        ),
+        (
+            "function F() {} var B = F.bind(); new F() instanceof B",
+            "true",
+        ),
+        (
+            "function F() {} var B = F.bind(); new B() instanceof F",
+            "true",
+        ),
+        (
+            "function F() {} var B = F.bind(); Object.getPrototypeOf(new B()) === F.prototype",
+            "true",
+        ),
+        ("new ((() => {}).bind())()", "TypeError"),
+        ("class D extends (function () {}).bind() {}", "TypeError"),
+        (
+            "function f(a, b, c) { return this.x + ':' + a + b + c; } \
+             f.bind({x: 'A'}, 1).bind({x: 'B'}, 2)(3)",
+            "\"A:123\"",
+        ),
+        (
+            "function F(a, b) { this.v = a + b; this.t = new.target === F; } \
+             var B = F.bind(null, 1).bind(null, 2); var o = new B(); o.v + ',' + o.t",
+            "\"3,true\"",
+        ),
+        (
+            "var create = Object.create.bind(null, null); Object.getPrototypeOf(create())",
+            "null",
+        ),
+        (
+            "var bound = (function () { return this; }).bind(1); \
+             typeof bound() + typeof bound.call(2)",
+            "\"objectobject\"",
+        ),
+        (
+            "(function f(a) { return a; }).toString()",
+            "\"function f(a) { return a; }\"",
+        ),
+        ("((a) => a).toString()", "\"(a) => a\""),
+        ("({ m(x) { } }).m.toString()", "\"m(x) { }\""),
+        (
+            "Object.getOwnPropertyDescriptor({ get x() { return 1; } }, 'x').get.toString()",
+            "\"get x() { return 1; }\"",
+        ),
+        (
+            "(class A { constructor() {} m() {} }).toString()",
+            "\"class A { constructor() {} m() {} }\"",
+        ),
+        ("(class B {}).toString()", "\"class B {}\""),
+        (
+            "class C extends Object {} C.toString()",
+            "\"class C extends Object {}\"",
+        ),
+        ("class C { static m() {} } C.m.toString()", "\"m() {}\""),
+        (
+            "class C { static async * m() {} } C.m.toString()",
+            "\"async * m() {}\"",
+        ),
+        (
+            "(async function g() {}).toString()",
+            "\"async function g() {}\"",
+        ),
+        ("(function* h() {}).toString()", "\"function* h() {}\""),
+        (
+            "Object.keys.toString()",
+            "\"function keys() { [native code] }\"",
+        ),
+        (
+            "Object.getOwnPropertyDescriptor(Object.prototype, '__proto__').get.toString()",
+            "\"function get __proto__() { [native code] }\"",
+        ),
+        (
+            "(function f() {}).bind().toString()",
+            "\"function () { [native code] }\"",
+        ),
+        (
+            "Function.prototype.toString()",
+            "\"function () { [native code] }\"",
+        ),
+        (
+            "Function.prototype[Symbol.hasInstance].toString()",
+            "\"function [Symbol.hasInstance]() { [native code] }\"",
+        ),
+        ("Function.prototype.toString.call({})", "TypeError"),
+        ("Function.prototype.toString.call(1)", "TypeError"),
+        (
+            "Function.prototype[Symbol.hasInstance].call(Object, {})",
+            "true",
+        ),
+        (
+            "Function.prototype[Symbol.hasInstance].call({}, {})",
+            "false",
+        ),
+        (
+            "Function.prototype[Symbol.hasInstance].call(function () {}, 1)",
+            "false",
+        ),
+        (
+            "function F() {} Function.prototype[Symbol.hasInstance].call(F.bind(), new F())",
+            "true",
+        ),
+        (
+            "Function.prototype[Symbol.hasInstance].name + \
+             Function.prototype[Symbol.hasInstance].length",
+            "\"[Symbol.hasInstance]1\"",
+        ),
+        (
+            "var d = Object.getOwnPropertyDescriptor(Function.prototype, Symbol.hasInstance); \
+             d.writable + ',' + d.enumerable + ',' + d.configurable",
+            "\"false,false,false\"",
+        ),
+        ("typeof Function", "\"function\""),
+        ("Function.prototype.constructor === Function", "true"),
+        ("Function.length + ',' + Function.name", "\"1,Function\""),
+        (
+            "Object.getPrototypeOf(Function) === Function.prototype",
+            "true",
+        ),
+        (
+            "Function.prototype === Object.getPrototypeOf(function () {})",
+            "true",
+        ),
+        ("Function('return 1')", "Unsupported(0)"),
+        ("new Function()", "Unsupported(0)"),
+        // AddRestrictedFunctionProperties und %ThrowTypeError%.
+        (
+            "var c = Object.getOwnPropertyDescriptor(Function.prototype, 'caller'); \
+             var a = Object.getOwnPropertyDescriptor(Function.prototype, 'arguments'); \
+             '' + (c.get === c.set) + (c.get === a.get) + (c.get === a.set) \
+             + c.enumerable + c.configurable + a.enumerable + a.configurable",
+            "\"truetruetruefalsetruefalsetrue\"",
+        ),
+        (
+            "var t = Object.getOwnPropertyDescriptor(Function.prototype, 'caller').get; \
+             var l = Object.getOwnPropertyDescriptor(t, 'length'); \
+             var n = Object.getOwnPropertyDescriptor(t, 'name'); \
+             typeof t + t.length + '[' + t.name + ']' + l.writable + l.configurable \
+             + n.writable + n.configurable + Object.isExtensible(t) + Object.isFrozen(t)",
+            "\"function0[]falsefalsefalsefalsefalsetrue\"",
+        ),
+        (
+            "Object.getOwnPropertyDescriptor(Function.prototype, 'caller').get()",
+            "TypeError",
+        ),
+        ("(function () {}).caller", "TypeError"),
+        ("(function () { 'use strict'; }).arguments", "TypeError"),
+        ("(function () {}).caller = 1", "TypeError"),
+        (
+            "(function () { 'use strict'; return arguments.callee; })()",
+            "TypeError",
+        ),
+        (
+            "var d = (function () { 'use strict'; \
+                return Object.getOwnPropertyDescriptor(arguments, 'callee'); })(); \
+             d.get === Object.getOwnPropertyDescriptor(Function.prototype, 'caller').get \
+             && d.get === d.set && !d.enumerable && !d.configurable",
+            "true",
+        ),
+        (
+            "var f = function () {}; Object.prototype.hasOwnProperty.call(f, 'caller') \
+             || Object.prototype.hasOwnProperty.call(f, 'arguments')",
+            "false",
+        ),
     ]);
 }
