@@ -1,8 +1,8 @@
 # MeinBrowser – Architekturkonzept
 
-Stand: Entwurf vom 24.10.2026 · Status: zur Diskussion
+Stand: Entwurf vom 24.10.2026, Ziele und Meilensteine am 11.11.2026 mit dem Repository abgeglichen · Status: zur Diskussion
 
-Dieses Dokument beschreibt, wie MeinBrowser aufgebaut werden soll: welche Bausteine es gibt, wo wir bewusst andere Wege gehen als heutige Browser, wie die eigene JavaScript-Engine aussieht, wie Chrome- und Firefox-Erweiterungen laufen sollen und in welcher Reihenfolge wir bauen. Es ist ein Entwurf. Alles, was noch entschieden werden muss, steht gesammelt in [Abschnitt 14](#14-offene-entscheidungen).
+Dieses Dokument beschreibt, wie MeinBrowser aufgebaut werden soll: welche Bausteine es gibt, wo wir bewusst andere Wege gehen als heutige Browser, wie die eigene JavaScript-Engine aussieht, wie Chrome- und Firefox-Erweiterungen laufen sollen und in welcher Reihenfolge wir bauen. Es ist ein Entwurf. Alles, was noch entschieden werden muss, steht gesammelt in [Abschnitt 14](#14-offene-entscheidungen). Wie weit die Umsetzung ist, zeigen [1.3](#13-stand-der-ziele) je Ziel und [12.1](#121-stand-der-meilensteine) je Meilenstein.
 
 ## Inhalt
 
@@ -37,6 +37,8 @@ Dieses Dokument beschreibt, wie MeinBrowser aufgebaut werden soll: welche Bauste
 - **Läuft auf jedem System**: Linux, Windows und macOS zuerst, danach Android, BSD und weitere.
 - **Eigene Engine und eigener Browsercode**: eine von Grund auf neue Engine ohne fremde Browser-Engines. Als begrenzte Ausnahme kann der Nutzer ein proprietäres Widevine-Modul für DRM aktivieren ([4.13](#413-bilder-audio-und-video)).
 
+Woran wir jedes Ziel messen und wo es heute steht, zeigt [1.3](#13-stand-der-ziele).
+
 ### 1.1 Was „komplett eigen“ hier bedeutet
 
 Ganz ohne fremden Code kann kein Programm laufen: Um ein Fenster zu öffnen, ins Netz zu gehen oder die Grafikkarte zu nutzen, muss der Browser mit dem Betriebssystem sprechen. Entschieden am 24.10.2026: Erlaubt sind die Rust-Standardbibliothek sowie die Schnittstellen von Betriebssystem und Grafiktreibern. Den Browsercode darüber bauen wir selbst, auch TLS und Kryptografie. Ergänzend ist ein optionales Widevine-CDM als eng begrenzte Laufzeitausnahme erlaubt; die eigene Engine bleibt davon unabhängig. Im Einzelnen:
@@ -49,8 +51,8 @@ Ganz ohne fremden Code kann kein Programm laufen: Um ein Fenster zu öffnen, ins
 | Schnittstellen des Betriebssystems | Erlaubt: Systemaufrufe, Fenster und Eingabe, Zwischenablage, Barrierefreiheit, Zertifikatsspeicher, Schlüsselbund. Die Anbindung (FFI-Deklarationen) schreiben wir selbst, also keine Crates wie `libc`, `windows-sys` oder `objc`. |
 | Grafiktreiber-Schnittstellen | Erlaubt: Vulkan, Metal, Direct3D 12. |
 | Werkzeuge, die nicht ausgeliefert werden | Annahme: erlaubt. Gemeint sind Compiler, Cargo, Git, Profiler und Fuzzing-Werkzeuge der Toolchain. Dazu kommt als einzige fremde Crate `libfuzzer-sys` im getrennten Fuzzing-Workspace `fuzz/` (entschieden am 30.10.2026, [14](#14-offene-entscheidungen)). |
-| Testsammlungen | Annahme: erlaubt. web-platform-tests, Test262, html5lib-tests und andere sind Prüfmaßstab, kein Bestandteil des Browsers. |
-| Datensätze, die man nicht erfinden kann | Annahme: erlaubt, eingelesen mit eigenen Generatoren. Dazu gehören die Unicode-Zeichendatenbank, CLDR, die IANA-Zeitzonendatenbank, die Public Suffix List, die Liste vertrauenswürdiger Wurzelzertifikate, die HSTS-Preload-Liste, Silbentrennmuster und die IDL-Blöcke aus den Spezifikationen. Die Lizenzen jedes Datensatzes dokumentieren wir im Repository. |
+| Testsammlungen | Annahme: erlaubt. web-platform-tests, Test262, html5lib-tests und andere sind Prüfmaßstab, kein Bestandteil des Browsers. Bisher holt `tools/testdata` neun Sammlungen in fester Version ([Abschnitt 10](#10-kompatibilität-messen)). |
+| Datensätze, die man nicht erfinden kann | Annahme: erlaubt, eingelesen mit eigenen Generatoren. Dazu gehören die Unicode-Zeichendatenbank, CLDR, die IANA-Zeitzonendatenbank, die Public Suffix List, die Liste vertrauenswürdiger Wurzelzertifikate, die HSTS-Preload-Liste, Silbentrennmuster und die IDL-Blöcke aus den Spezifikationen. Die Lizenzen jedes Datensatzes dokumentieren wir im Repository. Bisher liegen unter `data/` fünf Datensätze, jeder mit Quelle, Version und Lizenz in einer `HERKUNFT.md`: die Unicode-Zeichendatenbank, die Daten des WHATWG Encoding Standard, die benannten Zeichenreferenzen und die CSS-Blöcke aus dem HTML Standard sowie die WebIDL-Grammatik. |
 
 **Durchsetzung:** Eine CI-Prüfung (`tools/deps-guard`) lehnt jeden Pull Request ab, dessen `Cargo.lock` ein Paket mit externer Quelle enthält (also mit einem `source`-Eintrag). Weil Pfadabhängigkeiten keinen solchen Eintrag haben, prüft sie zusätzlich die Metadaten von Cargo mit allen Features: Jedes Paket im Abhängigkeitsgraphen, auch optionale Abhängigkeiten, muss ein Mitglied des Workspace sein, und sein Manifest muss nach dem Auflösen symbolischer Verweise im Workspace liegen. Im getrennten Fuzzing-Workspace prüft sie `fuzz/Cargo.lock`: Fremd darf dort nur sein, was `libfuzzer-sys` von crates.io mitbringt ([8.2](#82-schutzschichten), Punkt 14). So bleibt die Regel nicht nur ein Vorsatz. Ein separat geladenes CDM wird von dieser Cargo-Prüfung nicht erfasst und benötigt eine eigene Herkunfts-, Integritäts- und Updateprüfung nach [4.13](#413-bilder-audio-und-video). Die Widevine-Ausnahme erlaubt keine sonstigen fremden Bibliotheken im Browserkern.
 
@@ -59,6 +61,21 @@ Ganz ohne fremden Code kann kein Programm laufen: Um ein Fenster zu öffnen, ins
 Webseiten sehen vom Browser nur sein Verhalten. Dieses Verhalten ist durch Spezifikationen festgelegt (WHATWG, W3C, TC39, Khronos, IETF) und in der Praxis zusätzlich durch das, was Chrome und Firefox tun. Hier dürfen wir nicht abweichen, sonst leidet die Kompatibilität.
 
 Wie wir dieses Verhalten im Inneren herstellen, ist dagegen völlig frei. Dort setzen die Grundideen in [Abschnitt 2](#2-die-grundideen) an. Eine Einschränkung gilt trotzdem: Wo eine bekannte Technik nachweislich am besten funktioniert (zum Beispiel Inline-Caches für JavaScript-Eigenschaftszugriffe), bauen wir sie selbst nach, statt aus Prinzip eine schlechtere zu erfinden. Die Funktionalität soll unter dem Eigenbau nicht leiden.
+
+### 1.3 Stand der Ziele
+
+Stand 11.11.2026, nach PR #100. Die Tabelle nennt zu jedem Ziel den Maßstab und was das Repository davon heute zeigt. Den Stand je Meilenstein enthält [12.1](#121-stand-der-meilensteine).
+
+| Ziel | Maßstab | Stand |
+|---|---|---|
+| Open Source | MIT-Lizenz | Erfüllt: `LICENSE` und alle Crates stehen unter MIT. Beitragsregeln fehlen noch ([14](#14-offene-entscheidungen), Punkt 6). |
+| Extrem ressourcenschonend | Zielwerte in [Abschnitt 7](#7-ressourcenschonung) | Noch nicht messbar: Es gibt weder Tabs noch Speicherzähler oder Messläufe in der CI, gemessen ist nur die Programmgröße. Angelegt sind der Dokumentspeicher mit 32-Bit-Nummern, der JavaScript-Heap mit 32-Bit-Abständen und das Übersetzen von Funktionen erst beim ersten Aufruf. |
+| Maximal kompatibel | Testsammlungen aus [Abschnitt 10](#10-kompatibilität-messen), echte Webseiten | Das Kriterium für M1 ist erfüllt ([12.1](#121-stand-der-meilensteine)). Von Test262 bestehen alle Syntaxläufe; ausgeführt besteht rund ein Drittel der Testdateien ohne Intl. Echte Webseiten lassen sich noch nicht laden: Es gibt kein Netzwerk, und Seiten führen keine Skripte aus. |
+| Erweiterungen | Die Zielerweiterungen laufen ohne Änderung ([5.4](#54-kompatibilität-prüfen)) | Nicht begonnen, `mb-ext` ist leer. Voraussetzungen sind JavaScript mit DOM-Bindings (M2), Netzwerk (M3) sowie Speicherung und Oberfläche (M5). |
+| Sicher | Schutzschichten aus [8.2](#82-schutzschichten) | Vorhanden: Abhängigkeitswächter, CI ohne fremde Actions, `SECURITY.md`, `#![forbid(unsafe_code)]` in allen Crates außer `mb-platform`, `mb-ipc` und `mb-js` (auch `mb-js` enthält bisher kein `unsafe`), 16 Fuzz-Ziele bei Pull Requests mit Codeänderungen und nachts, Arbeits- und Bytebudgets für Seiten und ein Schrittbudget für die Ausführung von JavaScript. Es fehlen Prozessisolation, Sandbox und TLS; bis M5 ist der Browser nur für Entwicklung und Tests gedacht ([8.3](#83-sicherheit-in-jedem-meilenstein)). |
+| Modifizierbar und skinbar | Skins, Anordnung und Mods aus [Abschnitt 6](#6-modifizierbarkeit-und-skins) | Nicht begonnen, `mb-ui` ist leer. Das Programm zeigt bisher ein Fenster mit einer Seite, ohne Oberfläche. |
+| Läuft auf jedem System | Stufen aus [Abschnitt 9](#9-plattformen) | Fenster, Eingabe und CPU-Bildausgabe laufen unter Linux (X11, unter Wayland über XWayland), Windows und macOS. Die CI baut und testet jeden Pull Request auf je einem Läufer dieser drei Systeme, die Referenztests nur unter Linux. Es fehlen der eigene Wayland-Client, die Ausgabe über die GPU und die Stufen 2 und 3. |
+| Eigene Engine und eigener Browsercode | Abhängigkeitswächter ([1.1](#11-was-komplett-eigen-hier-bedeutet)) | Erfüllt: `Cargo.lock` enthält kein fremdes Paket, `fuzz/Cargo.lock` nur `libfuzzer-sys` mit dem, was es mitbringt. Die Widevine-Anbindung ist nicht umgesetzt. |
 
 ---
 
@@ -446,14 +463,16 @@ Die Oberfläche selbst führt kein JavaScript aus. Ihre Logik ist in Rust geschr
 6. Zusammenlegbare Dienstprozesse auf schwachen Geräten ([3.1](#31-prozesse-und-zellen)).
 7. Messen statt hoffen: Speicherzähler je Subsystem und Messläufe in der CI, damit Rückschritte sofort auffallen.
 
-**Erste Zielwerte.** Das sind Ziele, keine Messungen. Wir überprüfen sie ab Meilenstein M5 an echter Hardware und passen sie an.
+**Erste Zielwerte.** Das sind Ziele, keine Messungen. Wir überprüfen sie ab Meilenstein M5 an echter Hardware und passen sie an. Die Spalte „Stand“ zeigt, was sich am 11.11.2026 schon messen lässt.
 
-| Kennzahl | Zielwert |
-|---|---|
-| Kaltstart bis bedienbares Fenster | unter 300 ms |
-| Zusätzlicher Arbeitsspeicher für einen leeren Tab | unter 10 MB |
-| Aufwachvorgänge eines Hintergrund-Tabs im Leerlauf | höchstens einer pro Minute |
-| Größe des Programms | unter 40 MB |
+| Kennzahl | Zielwert | Stand |
+|---|---|---|
+| Kaltstart bis bedienbares Fenster | unter 300 ms | noch nicht gemessen |
+| Zusätzlicher Arbeitsspeicher für einen leeren Tab | unter 10 MB | noch nicht messbar, es gibt keine Tabs |
+| Aufwachvorgänge eines Hintergrund-Tabs im Leerlauf | höchstens einer pro Minute | noch nicht messbar, es gibt keine Tabs |
+| Größe des Programms | unter 40 MB | 3,9 MB unter Linux auf x86_64 (`cargo build --release -p meinbrowser`, rustc 1.97.0). Das Programm bindet JavaScript-Engine, Netzwerk und Oberfläche noch nicht ein, die Zahl sagt also wenig über den fertigen Browser. |
+
+Von den Mechanismen fehlt der siebte noch ganz: Es gibt weder Speicherzähler je Subsystem noch Messläufe in der CI.
 
 ---
 
@@ -622,12 +641,12 @@ Große Testsammlungen wie die WPT werden nicht ins Repository kopiert, sondern i
 
 ## 12. Roadmap und Meilensteine
 
-Die Meilensteine bauen aufeinander auf, viele Teile lassen sich aber parallel bearbeiten. Jeder Meilenstein hat ein prüfbares Abschlusskriterium. Bewusst stehen hier keine Termine, denn die hängen davon ab, wie viele Menschen mitarbeiten (siehe [Abschnitt 13](#13-der-aufwand-ehrlich-betrachtet)).
+Die Meilensteine bauen aufeinander auf, viele Teile lassen sich aber parallel bearbeiten. Jeder Meilenstein hat ein prüfbares Abschlusskriterium. Bewusst stehen hier keine Termine, denn die hängen davon ab, wie viele Menschen mitarbeiten (siehe [Abschnitt 13](#13-der-aufwand-ehrlich-betrachtet)). Wie weit jeder Meilenstein ist, steht in [12.1](#121-stand-der-meilensteine), was als Nächstes kommt, in [12.2](#122-nächste-schritte).
 
 | # | Meilenstein | Inhalt | Fertig, wenn |
 |---|---|---|---|
 | M0 | Fundament | Workspace, CI für Linux, Windows und macOS, Abhängigkeitswächter, Unicode-Generator, Plattformschicht mit Fenster, Eingabe und CPU-Bildausgabe | Ein Fenster zeigt auf allen drei Systemen ein selbst gezeichnetes Testbild, die CI ist grün. |
-| M1 | Erstes Dokument | Encoding, URL, HTML-Parser, Dokumentspeicher, CSS-Grundlagen, Block- und Inline-Layout, einfache Textformung, Systemschriften, CPU-Renderer | html5lib-tests vollständig bestanden, die URL-Testdaten der WPT weitgehend bestanden, eine lokale HTML-Datei wird korrekt angezeigt (gemessen an den Referenztests in `tools/testrunner/m1-referenztests.txt`). |
+| M1 | Erstes Dokument | Encoding, URL, HTML-Parser, Dokumentspeicher, CSS-Grundlagen, Block- und Inline-Layout, einfache Textformung, Systemschriften, CPU-Renderer, dazu XML und XHTML sowie PNG mit Deflate, weil die Referenztests sie brauchen (entschieden am 25.10.2026) | html5lib-tests vollständig bestanden, die URL-Testdaten der WPT weitgehend bestanden, eine lokale HTML-Datei wird korrekt angezeigt (gemessen an den Referenztests in `tools/testrunner/m1-referenztests.txt`). |
 | M2 | JavaScript | Parser, Bytecode, Interpreter, Garbage Collector, eingebaute Objekte (ohne Intl), WebIDL-Generator, DOM-Bindings, Ereignisschleife, eigener WPT-Läufer | Test262 ohne Intl zu einem hohen Anteil bestanden, testharness.js läuft, WPT-Ergebnisse für DOM-Bereiche werden täglich gemessen. |
 | M3 | Netzwerk | DNS, HTTP/1.1, TLS 1.3 und 1.2, X.509, Kompression, Cookies, Fetch, HTTP-Cache, HSTS | Beliebige HTTPS-Seiten laden. WPT-Bereiche zu Fetch und Cookies werden gemessen. |
 | M4 | Modernes Layout und GPU | Flex, Grid, Positionierung, Floats, Tabellen, Scrollen, Transformationen, Filter, Animationen, GPU-Renderer, Compositor | CSS-Bereiche der WPT erreichen ihre Zielquoten, CPU- und GPU-Renderer stimmen in den Referenztests überein. |
@@ -639,6 +658,40 @@ Die Meilensteine bauen aufeinander auf, viele Teile lassen sich aber parallel be
 | M10 | Version 1.0 | Externes Sicherheitsaudit (insbesondere Kryptografie, Sandbox, JIT), signierte Updates, Absturzberichte, Datenschutzprüfung, Doku für Skin- und Mod-Autoren | Das Audit ist abgeschlossen und alle kritischen Befunde sind behoben. |
 
 Barrierefreiheit (M9) wird schon ab M5 mitgedacht und nicht erst am Ende angefangen. Die Sicherheitsaufgaben je Meilenstein stehen in [8.3](#83-sicherheit-in-jedem-meilenstein).
+
+### 12.1 Stand der Meilensteine
+
+Stand 11.11.2026, nach PR #100: M0 und M1 sind abgeschlossen, M2 läuft. Einige Teile späterer Meilensteine sind vorgezogen. Was der Code im Einzelnen kann, steht im Stand in [Abschnitt 11](#11-aufbau-des-repositorys).
+
+| # | Stand | Erreicht | Bis zum Abschlusskriterium fehlt |
+|---|---|---|---|
+| M0 | abgeschlossen | Workspace, CI für Linux, Windows und macOS, Abhängigkeitswächter, `tools/datagen` für die Unicode-Tabellen, Fenster mit Eingabe und CPU-Bildausgabe über einen eigenen X11-Client, Win32 und AppKit. Die CI prüft das Testbild auf allen drei Systemen mit `meinbrowser --selbsttest`. | Nichts. Der eigene Wayland-Client aus [4.2](#42-plattformschicht) kommt später, bis dahin läuft der X11-Client über XWayland. |
+| M1 | abgeschlossen am 26.10.2026 | Encoding, URL, HTML, XML, Dokumentspeicher, CSS bis zur Kaskade und den berechneten Werten, Block- und Inline-Layout, einfache Textformung, Systemschriften, PNG, CPU-Renderer und `meinbrowser DATEI`. Zum Kriterium: Die Tokenizer-Tests aus html5lib-tests bestehen bis auf `xmlViolation.test`, die Baumaufbau-Tests bis auf vier Dateien, die laufende Skripte erwarten. Alle URL-Testdaten der WPT und alle 398 Referenztests bestehen. Bis zum 30.10.2026 kamen Scrollen, hohe Auflösungen, `@media`, `@supports`, `@import` und das erste Einzelbild von GIF dazu. | Nichts. Die vier Baumaufbau-Dateien lassen sich erst mit Skripten im Dokument prüfen (M2). |
+| M2 | läuft seit 30.10.2026 | JavaScript: Parser für Scripts, Module und die Muster regulärer Ausdrücke, Werte, Heap und kopierender Garbage Collector, Bytecode und Interpreter. Die Schritte 1 bis 7 aus [12.2](#122-nächste-schritte) sind umgesetzt, also die Sprache bis zu Klassen, Generatoren, `async` und `await`, dazu `Promise` und die eingebauten Funktionen, die die Harness von Test262 braucht. Test262: Alle 48.517 Syntaxläufe bestehen. Ausgeführt werden 23.939 der 48.882 Testdateien außerhalb von `intl402/` und `staging/`, nämlich `test/language/` und `test/built-ins/Promise/` ohne Vorschläge; 15.787 davon bestehen, das ist rund ein Drittel der Sammlung ohne Intl. WebIDL: Tokenizer, Syntaxparser und Namensindex über mehrere Quellen. | Die Schritte 8 bis 12 aus [12.2](#122-nächste-schritte), vor allem die eingebauten Objekte. Die Typ- und Memberprüfung für WebIDL und der Binding-Generator, DOM-Bindings, die Ereignisschleife und Skripte im Dokument (`mb-web` bindet `mb-js` noch nicht ein). Ein WPT-Läufer für testharness.js und die tägliche Messung der DOM-Bereiche. |
+| M3 | Vorarbeiten | Deflate und zlib mit ihren Prüfsummen (`mb-compress`). Seiten holen ihre Dateien über eine Abruffunktion mit Bytekontingent, bisher nur aus lokalen Dateien. | Alles Übrige: DNS, HTTP/1.1, TLS, X.509, Cookies, Fetch, HTTP-Cache und HSTS. `mb-net` und `mb-crypto` sind leer. |
+| M4 | Vorarbeiten | Scrollen des Viewports nach CSS Overflow 3, Skalierung für hohe Auflösungen. | Flex, Grid, Positionierung, Floats, Tabellen, die Eigenschaft `overflow`, Transformationen, Filter, Animationen, GPU-Renderer und Compositor. `mb-gpu` und `mb-shader` sind leer. |
+| M5 | Vorarbeiten | PNG und das erste Einzelbild von GIF. | Alles Übrige. `mb-ipc`, `mb-storage` und `mb-ui` sind leer. |
+| M6 bis M10 | nicht begonnen | – | Alles. `mb-ext`, `mb-media`, `mb-wasm` und `mb-devtools` sind leer. |
+
+### 12.2 Nächste Schritte
+
+Für JavaScript folgt M2 dem am 31.10.2026 angenommenen Plan in zwölf Schritten. Umgesetzt sind die Schritte 1 bis 7: Werte und Heap, Objekte, Bytecode und Interpreter für Scripts, Funktionen, Realm, Host und Test262, dann Klassen, Destrukturierung, Ausbreitung, Iteratoren und Generatoren und zuletzt `Promise`, Jobs, `async` und `await`. Offen sind:
+
+8. Eingebaute Objekte in Wellen, jede mit ihrem Teil von `test/built-ins/`: zuerst `Object` und `Function.prototype`, dann `Array`, dann `Error`, `Symbol`, `Boolean`, `Number` und `Math`, die Iterator-Helfer und `JSON`, `Map` und `Set`, `Reflect` und `Proxy`. Danach `String` mit der Engine für reguläre Ausdrücke, BigInt, `Date`, `ArrayBuffer` mit den typisierten Arrays und die schwachen Sammlungen, zuletzt `SharedArrayBuffer` und `Atomics`.
+9. `eval`, `with`, der `Function`-Konstruktor und Module mit `import()`.
+10. Garbage Collector mit Generationen und Schreibbarriere, dazu nächtliche Belastungstests.
+11. Zwischenspeicher für Bytecode pro Skript-Hash. Er braucht einen eigenen Hash aus `mb-crypto`.
+12. Vorprüfung der Funktionsrümpfe, wie Stufe 1 in [4.9](#49-javascript-und-webassembly) sie vorsieht.
+
+In der Sprache fehlen daneben noch `for`-`in`, Templates mit Tag, `using` und Funktionsdeklarationen mit Marke (Anhang B.3.1). Literale für BigInt und reguläre Ausdrücke brauchen ihre eingebauten Objekte aus Schritt 8.
+
+Für die übrigen Teile von M2 stehen an:
+
+- **WebIDL:** auf dem Namensindex eine geprüfte Beschreibung der Typen und Member aufbauen (Member-Namen, Dictionaries, Overloads, Extended Attributes), danach der Binding-Generator ([m2-webidl-index.md](m2-webidl-index.md)).
+- **Skripte im Dokument:** DOM-Bindings, Ereignisschleife und das Ausführen von `script`-Elementen in `mb-web`.
+- **Messung:** ein WPT-Läufer für testharness.js und ein nächtlicher Lauf, der die Ergebnisse je Bereich festhält. Bisher läuft nachts nur das Fuzzing.
+
+Danach folgt M3. Für „Test262 ohne Intl zu einem hohen Anteil bestanden“ ist noch kein Zahlenwert festgelegt.
 
 ---
 
