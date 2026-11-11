@@ -1,7 +1,7 @@
 # MeinBrowser
-Ein unabhängiger, ressourcenschonender Open-Source-Browser mit eigener Engine. Ziel ist die Unterstützung von Chrome- und Firefox-Erweiterungen; implementiert sind bisher die Grundlagen zur Darstellung lokaler HTML- und XHTML-Dateien (M0 und M1).
+Ein unabhängiger, ressourcenschonender Open-Source-Browser mit eigener Engine. Ziel ist die Unterstützung von Chrome- und Firefox-Erweiterungen; implementiert sind bisher die Grundlagen zur Darstellung lokaler HTML- und XHTML-Dateien (M0 und M1, abgeschlossen) und große Teile der JavaScript-Engine (M2, läuft); Skripte in Seiten laufen aber noch nicht. Netzwerk, Oberfläche und Erweiterungen fehlen noch.
 
-Architekturkonzept (Deutsch): [docs/architektur.md](docs/architektur.md)
+Architekturkonzept (Deutsch): [docs/architektur.md](docs/architektur.md). Wo die Ziele und die Meilensteine heute stehen, zeigen dort die Abschnitte [1.3](docs/architektur.md#13-stand-der-ziele) und [12.1](docs/architektur.md#121-stand-der-meilensteine).
 
 Grundsatz ist eigener Browsercode. Geplant ist eine optionale Widevine-Anbindung für DRM: standardmäßig deaktiviert, nur nach Zustimmung und in einem eigenen eingeschränkten Prozess. Sie ist noch nicht implementiert; Lizenzierung, Plattformen und Verfügbarkeit bei Streamingdiensten sind gesondert zu klären. Die Entscheidung und Schutzgrenzen stehen in [Abschnitt 4.13 der Architektur](docs/architektur.md#413-bilder-audio-und-video).
 
@@ -34,4 +34,4 @@ WebIDL-Dateien gemeinsam auf Syntax, Definitionsnamen und Verweise prüfen: `car
 
 Tabellen aus Rohdaten unter `data/` (zurzeit die Unicode-Zeichendatenbank mit der IDNA-Zuordnungstabelle, die Daten des WHATWG Encoding Standard, die benannten Zeichenreferenzen, die CSS-Blöcke aus dem Abschnitt „Rendering“ des HTML Standard und die normative WebIDL-Grammatik) erzeugt `cargo run -p datagen`. Die erzeugten Dateien werden eingecheckt.
 
-Externe Testsammlungen (zurzeit Teile der WPT, html5lib-tests, Testdateien von Unicode, css-parsing-tests, webref, die XML-Testsuite des W3C, Deflate-Testdaten aus Go und die PNG-Testbilder von image-png) liegen nicht im Repository. `cargo run -p testdata` holt sie mit `git` in der Version, die `tools/testdata/src/lib.rs` festlegt, nach `target/testdata/`.
+Externe Testsammlungen (zurzeit Teile der WPT, html5lib-tests, Testdateien von Unicode, css-parsing-tests, webref, die XML-Testsuite des W3C, Deflate-Testdaten aus Go, die PNG-Testbilder von image-png und Teile von Test262) liegen nicht im Repository. `cargo run -p testdata` holt sie mit `git` in der Version, die `tools/testdata/src/lib.rs` festlegt, nach `target/testdata/`.
