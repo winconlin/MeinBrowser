@@ -1217,6 +1217,39 @@ fn object_constructor_functions_follow_the_spec() {
             "Object.setPrototypeOf(Object.preventExtensions({}), {})",
             "TypeError",
         ),
+        // %Object.prototype% hat einen unveränderlichen Prototyp.
+        (
+            "Object.setPrototypeOf(Object.prototype, Object.create(null))",
+            "TypeError",
+        ),
+        ("Object.setPrototypeOf(Object.prototype, {})", "TypeError"),
+        (
+            "Object.setPrototypeOf(Object.prototype, null) === Object.prototype \
+             && Object.isExtensible(Object.prototype)",
+            "true",
+        ),
+        (
+            "Object.prototype.__proto__ = Object.create(null)",
+            "TypeError",
+        ),
+        (
+            "Object.prototype.__proto__ = null; Object.prototype.__proto__",
+            "null",
+        ),
+        // Schlägt das Lesen eines Eintrags fehl, schließt fromEntries den
+        // Iterator.
+        (
+            "var closed = ''; \
+             function entries(entry) { return { [Symbol.iterator]() { return { \
+               next() { return {done: false, value: entry}; }, \
+               return() { closed += 'r'; return {}; } }; } }; } \
+             var thrown = ''; \
+             for (var e of [ {get 0() { throw 'k'; }}, {0: 'a', get 1() { throw 'v'; }}, 1 ]) { \
+               try { Object.fromEntries(entries(e)); } catch (x) { thrown += x; } \
+             } \
+             closed + '/' + thrown",
+            "\"rrr/kvTypeError\"",
+        ),
     ]);
 }
 
@@ -1502,6 +1535,31 @@ fn function_prototype_methods_and_bound_functions_follow_the_spec() {
         ),
         ("Function('return 1')", "Unsupported(0)"),
         ("new Function()", "Unsupported(0)"),
+        // Eine lange Kette gebundener Funktionen ohne Rekursion, auch mit
+        // @@hasInstance aus %Function.prototype%.
+        (
+            "function F() {} var B = F; \
+             for (var i = 0; i < 2000; i++) { B = B.bind(null); } \
+             '' + (new F() instanceof B) + (new B() instanceof F) \
+             + (B instanceof Function) + ({} instanceof B) \
+             + Function.prototype[Symbol.hasInstance].call(B, new F())",
+            "\"truetruetruefalsetrue\"",
+        ),
+        (
+            "function F() {} \
+             Object.defineProperty(F, Symbol.hasInstance, {value: function (v) { return v === 1; }}); \
+             var B = F.bind(); '' + (1 instanceof B) + ({} instanceof B)",
+            "\"truefalse\"",
+        ),
+        (
+            "function F() {} F.prototype = 1; var B = F.bind().bind(); \
+             ({}) instanceof B",
+            "TypeError",
+        ),
+        (
+            "var o = Object.create(Function.prototype); ({}) instanceof o",
+            "false",
+        ),
         // AddRestrictedFunctionProperties und %ThrowTypeError%.
         (
             "var c = Object.getOwnPropertyDescriptor(Function.prototype, 'caller'); \

@@ -67,7 +67,10 @@ static PROTOTYPE_FUNCTIONS: [Builtin; 4] = [
     },
 ];
 
-static HAS_INSTANCE: Builtin = Builtin {
+/// Function.prototype [ %Symbol.hasInstance% ] (Abschnitt 20.2.3.6); der
+/// Operator `instanceof` erkennt sie an ihrer Adresse und läuft dann ohne
+/// Aufruf weiter.
+pub(crate) static HAS_INSTANCE: Builtin = Builtin {
     name: "[Symbol.hasInstance]",
     length: 1,
     constructor: false,

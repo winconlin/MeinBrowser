@@ -3,7 +3,7 @@
 # nur der genannte. Erzeugt von script/test262/language.rs; bei einer
 # Abweichung schreibt der Test die neue Fassung nach
 # target/test262/erwartete-fehlschlaege-built-ins.txt.
-# 4652 Dateien, 89 Vorschläge übersprungen; bestanden 2368 von 4563 Dateien und 4647 von 8975 Varianten
+# 4652 Dateien, 89 Vorschläge übersprungen; bestanden 2370 von 4563 Dateien und 4651 von 8975 Varianten
 Function/15.3.2.1-10-6gs.js
 Function/15.3.2.1-11-1-s.js
 Function/15.3.2.1-11-1.js
@@ -1537,8 +1537,6 @@ Object/freeze/proxy-with-defineProperty-handler.js
 Object/freeze/throws-when-false.js
 Object/freeze/typedarray-backed-by-resizable-buffer.js
 Object/fromEntries/evaluation-order.js
-Object/fromEntries/iterator-closed-for-throwing-entry-key-accessor.js
-Object/fromEntries/iterator-closed-for-throwing-entry-value-accessor.js
 Object/fromEntries/length.js
 Object/fromEntries/name.js
 Object/fromEntries/simple-properties.js

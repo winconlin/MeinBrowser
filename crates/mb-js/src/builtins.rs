@@ -44,6 +44,7 @@ use crate::key::{PropertyKey, WellKnownSymbol};
 use crate::operations::define_property_or_throw;
 use crate::realm::RealmId;
 
+pub(crate) use function::HAS_INSTANCE as FUNCTION_PROTOTYPE_HAS_INSTANCE;
 pub(crate) use function::PROTOTYPE as FUNCTION_PROTOTYPE;
 
 fn units(text: &str) -> Vec<u16> {

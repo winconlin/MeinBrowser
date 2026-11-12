@@ -292,10 +292,15 @@ pub(crate) fn add_entries_from_iterable<'s>(
             let Some(entry) = iterator_step_value(agent, inner, iterator, next)? else {
                 return Ok(true);
             };
+            // Schlägt das Lesen von `0` oder `1` oder der Aufruf fehl,
+            // schließt IfAbruptCloseIterator den Iterator (Schritte 4.e
+            // bis 4.h).
             let result = if is_object(agent, entry) {
-                let key = get(agent, inner, entry, PropertyKey::Index(0))?;
-                let value = get(agent, inner, entry, PropertyKey::Index(1))?;
-                call(agent, inner, adder, target, &[key, value]).map(|_| ())
+                get(agent, inner, entry, PropertyKey::Index(0)).and_then(|key| {
+                    get(agent, inner, entry, PropertyKey::Index(1)).and_then(|value| {
+                        call(agent, inner, adder, target, &[key, value]).map(|_| ())
+                    })
+                })
             } else {
                 Err(agent.throw_error(ErrorKind::TypeError))
             };

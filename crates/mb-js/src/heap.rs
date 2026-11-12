@@ -74,7 +74,7 @@
 #![forbid(unsafe_code)]
 
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeMap;
+
 use std::fmt;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -95,6 +95,11 @@ const MAX_PAGES: usize = 1 << 14;
 pub const MAX_LIMIT: usize = 1 << 30;
 /// Ab dieser Menge wird frühestens gesammelt.
 const MIN_TRIGGER: usize = 4 << 20;
+/// So viele frei gewordene kleine Seiten behält der Heap für die nächsten
+/// Anforderungen, statt sie neu anzulegen. Im Belastungsmodus wird vor jeder
+/// Anforderung gesammelt; ohne Vorrat kostete jede Sammlung eine neue Seite
+/// zu 256 KiB samt Nullen.
+const SPARE_PAGES: usize = 4;
 /// Höchstens so viele Register hat der Registerstapel, zusammen 8 MiB.
 pub const MAX_REGISTERS: usize = 1 << 20;
 
@@ -273,7 +278,9 @@ fn to_usize(value: u32) -> usize {
 pub struct Options {
     /// Das Speicherbudget in Bytes, höchstens [`MAX_LIMIT`].
     pub limit: usize,
-    /// Sammeln vor jeder Anforderung (Belastungsmodus).
+    /// Sammeln vor jeder Anforderung (Belastungsmodus). Während ein Realm
+    /// entsteht, setzt er aus und eine Sammlung am Ende verschiebt den
+    /// fertigen Realm; siehe [`Heap::pause_stress`].
     pub stress: bool,
     /// Nach jeder Sammlung alle Verweise und Kopfwörter prüfen
     /// (Prüfmodus, nur für Tests: ein Fehler löst eine Panic aus).
@@ -341,6 +348,9 @@ pub struct Heap {
     id: u64,
     pages: Vec<Option<Page>>,
     free_pages: Vec<usize>,
+    /// Vorrat an Wortfeldern kleiner Seiten, bis zur früheren Belegung
+    /// genullt; siehe [`SPARE_PAGES`].
+    spare: Vec<Box<[Cell<u64>]>>,
     /// Seiten zu 256 KiB in der Reihenfolge, in der sie angelegt wurden; in
     /// die letzte wird angefordert.
     small: Vec<usize>,
@@ -359,6 +369,8 @@ pub struct Heap {
     /// Ab hier wird vor der nächsten Anforderung gesammelt.
     trigger: usize,
     options: Options,
+    /// Solange größer als null, setzt der Belastungsmodus aus.
+    paused: u32,
     collections: u64,
     /// Während einer Sammlung die schon kopierten schwachen Zellen.
     weak: Vec<u32>,
@@ -384,6 +396,7 @@ impl Heap {
             id: NEXT_HEAP.fetch_add(1, Ordering::Relaxed),
             pages: Vec::new(),
             free_pages: Vec::new(),
+            spare: Vec::new(),
             small: Vec::new(),
             large: Vec::new(),
             roots: RefCell::new(Vec::new()),
@@ -393,6 +406,7 @@ impl Heap {
             used: 0,
             trigger: MIN_TRIGGER.min(options.limit),
             options,
+            paused: 0,
             collections: 0,
             weak: Vec::new(),
         }
@@ -406,6 +420,25 @@ impl Heap {
     /// Wie oft bisher gesammelt wurde.
     pub fn collections(&self) -> u64 {
         self.collections
+    }
+
+    /// Ob der Heap im Belastungsmodus ist.
+    pub fn stress(&self) -> bool {
+        self.options.stress
+    }
+
+    /// Setzt den Belastungsmodus aus, bis [`Heap::resume_stress`] ebenso
+    /// oft gerufen wurde. Der Aufbau eines Realms läuft so: Er ist für jeden
+    /// Realm gleich und kostete sonst eine Sammlung je Anforderung, im
+    /// Fuzzer mit seinen frischen Realms je Eingabe den größten Teil der
+    /// Zeit. Dass er auch mit Sammlungen vor jeder Anforderung besteht,
+    /// prüft ein Test in `realm`.
+    pub(crate) fn pause_stress(&mut self) {
+        self.paused = self.paused.saturating_add(1);
+    }
+
+    pub(crate) fn resume_stress(&mut self) {
+        self.paused = self.paused.saturating_sub(1);
     }
 
     // Handles
@@ -763,7 +796,9 @@ impl Heap {
 
     fn allocate(&mut self, words: usize) -> Result<u32, OutOfMemory> {
         let bytes = words.checked_mul(8).ok_or(OutOfMemory)?;
-        if self.options.stress || self.used.saturating_add(bytes) > self.trigger {
+        if (self.options.stress && self.paused == 0)
+            || self.used.saturating_add(bytes) > self.trigger
+        {
             self.collect();
         }
         if self.used.saturating_add(bytes) > self.options.limit {
@@ -813,13 +848,36 @@ impl Heap {
             }
             None => return None,
         };
+        let spare = if words == PAGE_WORDS {
+            self.spare.pop()
+        } else {
+            None
+        };
         let slot = self.pages.get_mut(index)?;
         *slot = Some(Page {
-            words: vec![Cell::new(0); words].into_boxed_slice(),
+            words: spare.unwrap_or_else(|| vec![Cell::new(0); words].into_boxed_slice()),
             used: 0,
             old: false,
         });
         Some(index)
+    }
+
+    /// Gibt eine Seite des alten Raums frei. Das Wortfeld einer kleinen
+    /// Seite kommt genullt in den Vorrat, solange dort Platz ist.
+    fn release_page(&mut self, index: usize) {
+        let Some(slot) = self.pages.get_mut(index) else {
+            return;
+        };
+        if let Some(page) = slot.take()
+            && page.words.len() == PAGE_WORDS
+            && self.spare.len() < SPARE_PAGES
+        {
+            for cell in page.words.iter().take(page.used) {
+                cell.set(0);
+            }
+            self.spare.push(page.words);
+        }
+        self.free_pages.push(index);
     }
 
     // Sammeln
@@ -854,10 +912,7 @@ impl Heap {
         self.clear_weak();
 
         for index in old_small.into_iter().chain(old_large) {
-            if let Some(slot) = self.pages.get_mut(index) {
-                *slot = None;
-                self.free_pages.push(index);
-            }
+            self.release_page(index);
         }
         self.trigger = self
             .used
@@ -1023,7 +1078,12 @@ impl Heap {
     /// jeder Verweis in Handles, Feldern und Objekten zeigt auf den Anfang
     /// einer passenden Zelle.
     pub fn verify(&self) -> Result<(), String> {
-        let mut starts = BTreeMap::new();
+        // Ein Bit je Wort jeder Seite: Beginnt dort eine Zelle? Abstände
+        // nummerieren die Wörter einer Seite mit 15 Bit, auch in großen
+        // Seiten, deren einzige Zelle bei Wort 0 liegt.
+        const STRIDE: usize = PAGE_WORDS / 64;
+        let mut starts = vec![0_u64; self.pages.len().saturating_mul(STRIDE)];
+        let mut cells = Vec::new();
         for (index, page) in self.pages.iter().enumerate() {
             let Some(page) = page else {
                 continue;
@@ -1038,13 +1098,25 @@ impl Heap {
                 let head = page.words.get(word).map_or(0, Cell::get);
                 let words = cell_words(head)
                     .ok_or_else(|| format!("ungültiges Kopfwort {head:#x} bei {offset:#x}"))?;
-                starts.insert(offset, header_kind(head));
+                if let Some(bits) = starts.get_mut(index.saturating_mul(STRIDE) + word / 64) {
+                    *bits |= 1 << (word % 64);
+                }
+                cells.push((offset, header_kind(head)));
                 word = word.saturating_add(words);
             }
             if word != page.used {
                 return Err(format!("Seite {index}: Zellen überschreiten die Belegung"));
             }
         }
+        let kind_at = |offset: u32| -> Option<u64> {
+            let page = to_usize(offset >> PAGE_SHIFT);
+            let word = to_usize((offset & IN_PAGE_MASK) >> 3);
+            let bits = starts.get(page.checked_mul(STRIDE)?.checked_add(word / 64)?)?;
+            if bits >> (word % 64) & 1 == 0 {
+                return None;
+            }
+            self.word(offset, 0).map(header_kind)
+        };
         let fits = |kind: RefKind, cell: u64| match kind {
             RefKind::String => matches!(cell, KIND_LATIN1 | KIND_UTF16),
             RefKind::Symbol => cell == KIND_SYMBOL,
@@ -1058,7 +1130,7 @@ impl Heap {
             let Some((kind, offset)) = Value::from_bits(bits).reference_parts() else {
                 return Ok(());
             };
-            if starts.get(&offset).is_some_and(|&cell| fits(kind, cell)) {
+            if kind_at(offset).is_some_and(|cell| fits(kind, cell)) {
                 return Ok(());
             }
             Err(format!(
@@ -1066,11 +1138,7 @@ impl Heap {
             ))
         };
         let check_packed = |offset: u32, allowed: &[u64], place: &str| -> Result<(), String> {
-            if offset == NONE
-                || starts
-                    .get(&offset)
-                    .is_some_and(|cell| allowed.contains(cell))
-            {
+            if offset == NONE || kind_at(offset).is_some_and(|cell| allowed.contains(&cell)) {
                 return Ok(());
             }
             Err(format!(
@@ -1086,7 +1154,7 @@ impl Heap {
         for &bits in self.registers.borrow().iter() {
             check(bits, "Register")?;
         }
-        for (&offset, &kind) in &starts {
+        for &(offset, kind) in &cells {
             let count = self
                 .word(offset, 0)
                 .map_or(0, |head| to_usize(header_length(head)));

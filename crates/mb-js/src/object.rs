@@ -253,6 +253,11 @@ pub fn set_prototype_of(
     if heap.object_prototype(object) == prototype {
         return Ok(true);
     }
+    // SetImmutablePrototype (Abschnitt 10.4.7.1): nur derselbe Prototyp
+    // geht, und der ist oben schon erledigt.
+    if heap.object_prototype_immutable(object) {
+        return Ok(false);
+    }
     if !heap.object_extensible(object) {
         return Ok(false);
     }
@@ -312,6 +317,16 @@ pub fn prevent_extensions(agent: &mut Agent, object: Local<'_>) -> Completion<bo
             }
             Ok(true)
         }
+    }
+}
+
+/// Macht `object` zu einem Objekt mit unveränderlichem Prototyp (Abschnitt
+/// 10.4.7): [[SetPrototypeOf]] nimmt dann nur noch den Prototyp an, den es
+/// schon hat. So ist %Object.prototype% (Abschnitt 20.1.3).
+pub(crate) fn make_prototype_immutable(agent: &Agent, object: Local<'_>) {
+    let heap = agent.heap();
+    if let Some(object) = object_of(heap, object) {
+        heap.make_object_prototype_immutable(object);
     }
 }
 

@@ -16,6 +16,9 @@ use crate::value::{Ref, RefKind, Value};
 const ATOM_FLAG: u32 = 1;
 /// Kennzeichen eines Objekts, dessen [[Extensible]] *true* ist.
 const EXTENSIBLE_FLAG: u32 = 1;
+/// Ein Objekt mit unveränderlichem Prototyp (Abschnitt 10.4.7), bisher nur
+/// %Object.prototype%.
+const IMMUTABLE_PROTOTYPE_FLAG: u32 = 2;
 /// Kennzeichen eines Symbols, das ein privater Name ist (Abschnitt 6.2.12).
 const PRIVATE_FLAG: u32 = 1;
 
@@ -369,6 +372,21 @@ impl Heap {
     pub(crate) fn prevent_object_extensions(&self, object: Ref<'_>) {
         if let Some(head) = self.object_header(object) {
             let head = with_flags(head, header_flags(head) & !EXTENSIBLE_FLAG);
+            self.write(object.offset(), 0, head);
+        }
+    }
+
+    /// Ob das Objekt seinen Prototyp nicht mehr ändert (Abschnitt 10.4.7).
+    pub(crate) fn object_prototype_immutable(&self, object: Ref<'_>) -> bool {
+        self.object_header(object)
+            .is_some_and(|head| header_flags(head) & IMMUTABLE_PROTOTYPE_FLAG != 0)
+    }
+
+    /// Macht den Prototyp des Objekts unveränderlich; das lässt sich nicht
+    /// zurücknehmen.
+    pub(crate) fn make_object_prototype_immutable(&self, object: Ref<'_>) {
+        if let Some(head) = self.object_header(object) {
+            let head = with_flags(head, header_flags(head) | IMMUTABLE_PROTOTYPE_FLAG);
             self.write(object.offset(), 0, head);
         }
     }

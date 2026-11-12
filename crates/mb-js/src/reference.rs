@@ -13,8 +13,10 @@
 
 #![forbid(unsafe_code)]
 
-use crate::agent::{Agent, Completion, ErrorKind};
+use crate::agent::{Abrupt, Agent, Completion, ErrorKind};
 use crate::bound_function::bound_target;
+use crate::builtin::{builtin_entry, builtin_parts};
+use crate::builtins::FUNCTION_PROTOTYPE_HAS_INSTANCE;
 use crate::compare::same_value;
 use crate::conversion::to_boolean;
 use crate::heap::{Local, Scope};
@@ -266,9 +268,12 @@ pub(crate) fn copy_data_properties(
 }
 
 /// InstanceofOperator (Abschnitt 13.10.2). Für eine gebundene Funktion
-/// ohne eigenes @@hasInstance geht OrdinaryHasInstance (Schritt 2) zu
-/// ihrer Zielfunktion zurück an den Anfang; das ist hier eine Schleife
-/// statt der Rekursion (RS-8).
+/// geht OrdinaryHasInstance (Schritt 2) zu ihrer Zielfunktion zurück an den
+/// Anfang; das ist hier eine Schleife statt der Rekursion (RS-8). Damit sie
+/// auch greift, wenn @@hasInstance der Funktion aus %Function.prototype%
+/// kommt (Abschnitt 20.2.3.6, nur OrdinaryHasInstance), erkennt der
+/// Operator diese Funktion und tut dasselbe ohne den Aufruf; ein Fehler
+/// dabei gehört wie beim Aufruf zu ihrem Realm.
 pub(crate) fn instanceof_operator(
     agent: &mut Agent,
     scope: &Scope,
@@ -282,18 +287,42 @@ pub(crate) fn instanceof_operator(
             return Err(agent.throw_error(ErrorKind::TypeError));
         }
         let symbol = agent.well_known_symbol(scope, WellKnownSymbol::HasInstance);
-        if let Some(handler) = get_method(agent, scope, target, PropertyKey::Symbol(symbol))? {
-            let result = call(agent, scope, handler, target, &[value])?;
-            let heap = agent.heap();
-            return Ok(to_boolean(heap, heap.get(result)));
-        }
-        if !is_callable(agent.heap(), agent.heap().get(target)) {
-            return Err(agent.throw_error(ErrorKind::TypeError));
+        let handler = get_method(agent, scope, target, PropertyKey::Symbol(symbol))?;
+        let default = handler.and_then(|handler| {
+            let value = agent.heap().get(handler);
+            let entry = builtin_entry(agent, value)?;
+            std::ptr::eq(entry, &FUNCTION_PROTOTYPE_HAS_INSTANCE)
+                .then(|| builtin_parts(agent.heap(), value).map(|(_, realm)| realm))
+                .flatten()
+        });
+        match (handler, default) {
+            (Some(handler), None) => {
+                let result = call(agent, scope, handler, target, &[value])?;
+                let heap = agent.heap();
+                return Ok(to_boolean(heap, heap.get(result)));
+            }
+            (Some(_), Some(_)) => {
+                // OrdinaryHasInstance, Schritt 1.
+                if !is_callable(agent.heap(), agent.heap().get(target)) {
+                    return Ok(false);
+                }
+            }
+            (None, _) => {
+                if !is_callable(agent.heap(), agent.heap().get(target)) {
+                    return Err(agent.throw_error(ErrorKind::TypeError));
+                }
+            }
         }
         let heap = agent.heap();
         match bound_target(heap, heap.get(target)) {
             Some(bound) => heap.set(target, bound),
-            None => return ordinary_has_instance(agent, scope, target, value),
+            None => {
+                let result = ordinary_has_instance(agent, scope, target, value);
+                if let (Err(Abrupt::Throw), Some(realm)) = (&result, default) {
+                    agent.set_error_realm(realm);
+                }
+                return result;
+            }
         }
     }
 }
