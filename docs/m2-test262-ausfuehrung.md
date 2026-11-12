@@ -173,12 +173,12 @@ nimmt ebenso die Teile von `test/annexB/built-ins/`, bisher `Object/`,
 gegen `erwartete-fehlschlaege-annexb-built-ins.txt`.
 
 Von 4.652 Dateien laufen 4.563, 89 unter `Promise/` brauchen Vorschläge aus
-`features.txt`. Es bestehen 2.368 Dateien und 4.647 von 8.975 Varianten:
+`features.txt`. Es bestehen 2.370 Dateien und 4.651 von 8.975 Varianten:
 
 | Teil | Dateien | Varianten |
 | --- | ---: | ---: |
 | `Function/` | 248 von 509 | 419 von 893 |
-| `Object/` | 1.633 von 3.411 | 3.260 von 6.802 |
+| `Object/` | 1.635 von 3.411 | 3.264 von 6.802 |
 | `Promise/` | 487 von 643 | 968 von 1.280 |
 
 Die eine Datei unter `annexB/built-ins/Object/` braucht `$262.IsHTMLDDA`,
@@ -201,10 +201,10 @@ Datei einzeln geprüft. Die Gründe:
 | Varianten | Grund |
 | ---: | --- |
 | 1.838 | Eine Datei der Harness endet mit einem ReferenceError |
-| 1.209 | ReferenceError im Test |
+| 1.213 | ReferenceError im Test |
 | 875 | Der Übersetzer kann ein Konstrukt noch nicht oder `Function` wurde aufgerufen (`Unsupported`) |
 | 206 | TypeError im Test, meist der Aufruf einer Funktion, die fehlt |
-| 154 | `Test262Error`: Eine Assertion schlug fehl |
+| 146 | `Test262Error`: Eine Assertion schlug fehl |
 | 30 | `AsyncFailure`: Der Test meldete einen Fehlschlag |
 | 12 | Eine Datei der Harness endet als `Unsupported` |
 | 2 | `AsyncIncomplete`: Der Test meldete nichts |
