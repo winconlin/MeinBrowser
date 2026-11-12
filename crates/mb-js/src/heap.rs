@@ -417,6 +417,11 @@ impl Heap {
         self.used
     }
 
+    /// Das Speicherbudget in Bytes.
+    pub fn limit(&self) -> usize {
+        self.options.limit
+    }
+
     /// Wie oft bisher gesammelt wurde.
     pub fn collections(&self) -> u64 {
         self.collections

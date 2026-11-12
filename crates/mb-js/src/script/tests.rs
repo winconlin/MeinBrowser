@@ -2558,7 +2558,10 @@ fn for_of_has_a_completion_value() {
 #[test]
 fn for_in_enumerates_string_keys_in_order() {
     check(&[
-        ("var s = ''; for (var k in {a: 1, b: 2}) s += k; s", "\"ab\""),
+        (
+            "var s = ''; for (var k in {a: 1, b: 2}) s += k; s",
+            "\"ab\"",
+        ),
         ("var s = ''; for (var k in [7, 8]) s += k; s", "\"01\""),
         // Indizes zuerst, dann die anderen Namen in ihrer Reihenfolge.
         (
@@ -2566,7 +2569,10 @@ fn for_in_enumerates_string_keys_in_order() {
             "\"12ba\"",
         ),
         ("var s = ''; for (var k in 'ab') s += k; s", "\"01\""),
-        ("var t = ''; for (var k in [1]) t = typeof k; t", "\"string\""),
+        (
+            "var t = ''; for (var k in [1]) t = typeof k; t",
+            "\"string\"",
+        ),
         (
             "var n = 0; for (var k in null) n++; for (var k in undefined) n++; n",
             "0",
@@ -2621,9 +2627,15 @@ fn for_in_binds_each_kind_of_target() {
         ("for (var g in {x: 1}); g", "\"x\""),
         ("for (h in {y: 1}); h", "\"y\""),
         ("var o = {}; for (o.p in {a: 1, b: 1}); o.p", "\"b\""),
-        ("function f() { for (var k in {a: 1, b: 1}); return k; } f()", "\"b\""),
+        (
+            "function f() { for (var k in {a: 1, b: 1}); return k; } f()",
+            "\"b\"",
+        ),
         ("var s = 0; for (let k in {a: 1, b: 1}) s++; s", "2"),
-        ("var s = ''; for (const k in {a: 1, b: 1}) s += k; s", "\"ab\""),
+        (
+            "var s = ''; for (const k in {a: 1, b: 1}) s += k; s",
+            "\"ab\"",
+        ),
         ("for (const k in {a: 1}) k = 2;", "TypeError"),
         ("'use strict'; for (u in {a: 1});", "ReferenceError"),
         // Jeder Durchlauf hat eigene Bindungen.
@@ -2637,9 +2649,18 @@ fn for_in_binds_each_kind_of_target() {
         ("let k = 1; { for (let k in {a: k}); }", "ReferenceError"),
         ("var k = 'a'; for (var k in {[k + 'b']: 1}); k", "\"ab\""),
         // Muster zerlegen den Schlüssel.
-        ("var s = ''; for (var [a, b] in {xy: 1}) s += a + b; s", "\"xy\""),
-        ("var s = ''; for ([a, b] in {xy: 1}) s += b + a; s", "\"yx\""),
-        ("var s = ''; for (let {length: n} in {abc: 1}) s += n; s", "\"3\""),
+        (
+            "var s = ''; for (var [a, b] in {xy: 1}) s += a + b; s",
+            "\"xy\"",
+        ),
+        (
+            "var s = ''; for ([a, b] in {xy: 1}) s += b + a; s",
+            "\"yx\"",
+        ),
+        (
+            "var s = ''; for (let {length: n} in {abc: 1}) s += n; s",
+            "\"3\"",
+        ),
         // Anhang B.3.5: `var` mit Initialisierer, auch mit NamedEvaluation.
         ("for (var k = 'init' in {}); k", "\"init\""),
         ("for (var k = 'init' in {a: 1}); k", "\"a\""),

@@ -1328,6 +1328,498 @@ fn object_prototype_methods_follow_the_spec() {
     ]);
 }
 
+/// Führt `source` aus, dann alle Jobs, und liest danach die globale
+/// Variable `r`. Scheitert das Script selbst, kommt sein Fehler.
+fn settle(source: &str) -> String {
+    let (mut agent, realm) = agent_with(false);
+    define_tag(&mut agent, realm);
+    let result = run(&mut agent, realm, source);
+    if result.ends_with("Error") || result.starts_with("throw ") {
+        return result;
+    }
+    agent.run_jobs().expect("Jobs");
+    run(&mut agent, realm, "r")
+}
+
+#[test]
+fn array_constructor_and_functions_follow_the_spec() {
+    check(&[
+        (
+            "Array.length + ',' + Array.from.length + ',' + Array.of.length + ',' + \
+             Array.isArray.length + ',' + Array.fromAsync.length",
+            "\"1,1,0,1,1\"",
+        ),
+        ("Array.prototype.constructor === Array", "true"),
+        (
+            "Object.getPrototypeOf(Array.prototype) === Object.prototype",
+            "true",
+        ),
+        (
+            "Array.isArray(Array.prototype) + ',' + Array.prototype.length",
+            "\"true,0\"",
+        ),
+        ("Array[Symbol.species] === Array", "true"),
+        (
+            "Object.getOwnPropertyDescriptor(Array, Symbol.species).get.name",
+            "\"get [Symbol.species]\"",
+        ),
+        (
+            "Array.prototype[Symbol.iterator] === Array.prototype.values",
+            "true",
+        ),
+        (
+            "var u = Array.prototype[Symbol.unscopables]; \
+             (Object.getPrototypeOf(u) === null) + ',' + u.flat + ',' + u.toSorted + ',' + \
+             Object.keys(u).length",
+            "\"true,true,true,16\"",
+        ),
+        (
+            "var d = Object.getOwnPropertyDescriptor(Array.prototype, Symbol.unscopables); \
+             d.writable + ',' + d.enumerable + ',' + d.configurable",
+            "\"false,false,true\"",
+        ),
+        // Der Konstruktor (Abschnitt 23.1.1.1).
+        ("Array().length + ',' + new Array().length", "\"0,0\""),
+        (
+            "new Array(3).length + ',' + Array(3).length + ',' + (0 in Array(3))",
+            "\"3,3,false\"",
+        ),
+        ("Array('3').length + ',' + Array('3')[0]", "\"1,3\""),
+        ("new Array(1.5)", "RangeError"),
+        ("new Array(-1)", "RangeError"),
+        ("new Array(4294967295).length", "4294967295"),
+        ("new Array(4294967296)", "RangeError"),
+        ("Array(1, 2).length + ',' + Array(1, 2)[1]", "\"2,2\""),
+        (
+            "class A extends Array {} var a = new A(2); \
+             (a instanceof A) + ',' + a.length + ',' + Array.isArray(a)",
+            "\"true,2,true\"",
+        ),
+        (
+            "Array.isArray([]) + ',' + Array.isArray({}) + ',' + Array.isArray()",
+            "\"true,false,false\"",
+        ),
+        // Array.from (Abschnitt 23.1.2.1).
+        ("Array.from('abc').join('')", "\"abc\""),
+        (
+            "Array.from({length: 2, 0: 'x'}).join() + ',' + Array.from({length: 2}).length",
+            "\"x,,2\"",
+        ),
+        ("Array.from([1, 2], x => x * 2).join()", "\"2,4\""),
+        (
+            "Array.from([1, 2], function (x, i) { return this.v + x + i; }, {v: 10}).join()",
+            "\"11,13\"",
+        ),
+        ("Array.from([1], 1)", "TypeError"),
+        ("Array.from(null)", "TypeError"),
+        (
+            "Array.from.call(function C(n) { this.n = n; }, {length: 3}).n",
+            "3",
+        ),
+        (
+            "Array.from.call(function C() { this.c = 1; }, [1, 2]).length",
+            "2",
+        ),
+        ("Array.from.call(1, [1, 2]).length", "2"),
+        (
+            "var c = 0; var it = {[Symbol.iterator]() { return {next() { return {value: 1, done: false}; }, \
+             return() { c++; return {}; }}; }}; \
+             try { Array.from(it, () => { throw 1; }); } catch (e) { c += e * 10; } c",
+            "11",
+        ),
+        // Array.of (Abschnitt 23.1.2.4).
+        (
+            "Array.of(7).length + ',' + Array.of(1, 2, 3).join()",
+            "\"1,1,2,3\"",
+        ),
+        ("Array.of.call(function C(n) { this.n = n; }, 1, 2).n", "2"),
+        ("Array.of.call(undefined, 1).length", "1"),
+    ]);
+}
+
+#[test]
+fn array_prototype_methods_follow_the_spec() {
+    check(&[
+        (
+            "[Array.prototype.at.length, Array.prototype.concat.length, \
+             Array.prototype.copyWithin.length, Array.prototype.slice.length, \
+             Array.prototype.splice.length, Array.prototype.toSpliced.length, \
+             Array.prototype.with.length, Array.prototype.flat.length, \
+             Array.prototype.push.length, Array.prototype.unshift.length, \
+             Array.prototype.reduce.length, Array.prototype.toLocaleString.length].join()",
+            "\"1,1,2,2,2,2,2,0,1,1,1,0\"",
+        ),
+        (
+            "[1, 2, 3].at(-1) + ',' + [1].at(5) + ',' + [1, 2].at(0.5)",
+            "\"3,undefined,1\"",
+        ),
+        (
+            "[1].concat([2, [3]], 4).length + ',' + [1].concat([2, [3]], 4)[2].length",
+            "\"4,1\"",
+        ),
+        (
+            "var o = {length: 1, 0: 'x', [Symbol.isConcatSpreadable]: true}; [].concat(o).join()",
+            "\"x\"",
+        ),
+        (
+            "var a = [1]; a[Symbol.isConcatSpreadable] = false; [].concat(a)[0] === a",
+            "true",
+        ),
+        (
+            "[1, , 3].concat([]).hasOwnProperty(1) + ',' + [1, , 3].concat([]).length",
+            "\"false,3\"",
+        ),
+        ("[1, 2, 3, 4, 5].copyWithin(0, 3).join()", "\"4,5,3,4,5\""),
+        (
+            "[1, 2, 3, 4, 5].copyWithin(1, 3, 4).join()",
+            "\"1,4,3,4,5\"",
+        ),
+        (
+            "[1, 2, 3, 4, 5].copyWithin(-2, -3, -1).join()",
+            "\"1,2,3,3,4\"",
+        ),
+        ("[1, 2, 3, 4, 5].copyWithin(2, 0).join()", "\"1,2,1,2,3\""),
+        (
+            "var a = [1, , 3]; a.copyWithin(0, 1); a.hasOwnProperty(0) + ',' + a[1]",
+            "\"false,3\"",
+        ),
+        (
+            "[...[7, 8].keys()].join() + ';' + [...['a'].entries()][0].join()",
+            "\"0,1;0,a\"",
+        ),
+        (
+            "[1, 2].every(x => x > 0) + ',' + [1, 2].some(x => x > 1) + ',' + \
+             [].every(x => false) + ',' + [].some(x => true)",
+            "\"true,true,true,false\"",
+        ),
+        ("var n = 0; [1, , 3].forEach(() => n++); n", "2"),
+        (
+            "[1].every(function () { return this.v; }, {v: true})",
+            "true",
+        ),
+        ("[1].forEach(1)", "TypeError"),
+        (
+            "[1, 2, 3].fill(0, 1).join() + ';' + [1, 2, 3].fill(9, -1).join()",
+            "\"1,0,0;1,2,9\"",
+        ),
+        ("new Array(2).fill('x').join()", "\"x,x\""),
+        ("[1, 2, 3, 4].filter(x => x % 2).join()", "\"1,3\""),
+        (
+            "[1, , 3].map(x => x * 2).length + ',' + [1, , 3].map(x => x * 2).hasOwnProperty(1)",
+            "\"3,false\"",
+        ),
+        (
+            "[1, 2].map((x, i, a) => x + i + a.length).join()",
+            "\"3,5\"",
+        ),
+        (
+            "[1, 2, 3].find(x => x > 1) + ',' + [1, 2, 3].findIndex(x => x > 5) + ',' + \
+             [1, 2, 3].findLast(x => x < 3) + ',' + [1, 2, 3].findLastIndex(x => x < 3)",
+            "\"2,-1,2,1\"",
+        ),
+        ("var n = 0; [, 1].find(() => n++); n", "2"),
+        (
+            "[1, [2, [3, [4]]]].flat().length + ',' + [1, [2, [3, [4]]]].flat(Infinity).join()",
+            "\"3,1,2,3,4\"",
+        ),
+        (
+            "[1, [2, [3]]].flat(0).length + ',' + [[1], [2]].flat(-1).length + ',' + [1, , 3].flat().length",
+            "\"2,2,2\"",
+        ),
+        (
+            "[1, 2].flatMap(x => [x, x * 10]).join() + ',' + [1].flatMap(x => [[x]]).length",
+            "\"1,10,2,20,1\"",
+        ),
+        ("[1].flatMap(1)", "TypeError"),
+        (
+            "[1, NaN].includes(NaN) + ',' + [1, NaN].indexOf(NaN)",
+            "\"true,-1\"",
+        ),
+        (
+            "[, undefined].includes(undefined, 0) + ',' + [, 1].indexOf(undefined)",
+            "\"true,-1\"",
+        ),
+        (
+            "[1, 2, 1].lastIndexOf(1) + ',' + [1, 2, 1].lastIndexOf(1, -2) + ',' + \
+             [1, 2, 1].indexOf(1, 1) + ',' + [1, 2].lastIndexOf(2, -3)",
+            "\"2,0,2,-1\"",
+        ),
+        (
+            "[1, 2].indexOf(2, -5) + ',' + [1, 2].includes(2, 2) + ',' + [].includes()",
+            "\"1,false,false\"",
+        ),
+        (
+            "[1, null, undefined, 'a'].join() + ';' + [1, 2].join('-') + ';' + [[1, 2], 3].join(';')",
+            "\"1,,,a;1-2;1,2;3\"",
+        ),
+        (
+            "Array.prototype.join.call({length: 2, 0: 'a', 1: 'b'})",
+            "\"a,b\"",
+        ),
+        (
+            "var a = [1, 2]; a.push(3, 4) + ',' + a.join()",
+            "\"4,1,2,3,4\"",
+        ),
+        (
+            "var a = [1, 2]; a.pop() + ',' + a.length + ',' + [].pop()",
+            "\"2,1,undefined\"",
+        ),
+        (
+            "var a = [1, 2]; a.shift() + ',' + a.join() + ',' + [].shift()",
+            "\"1,2,undefined\"",
+        ),
+        (
+            "var a = [2]; a.unshift(0, 1) + ',' + a.join() + ',' + a.unshift()",
+            "\"3,0,1,2,3\"",
+        ),
+        (
+            "var o = {length: 0}; Array.prototype.push.call(o, 'x'); o.length + ',' + o[0]",
+            "\"1,x\"",
+        ),
+        (
+            "Array.prototype.push.call({length: 2 ** 53 - 1}, 1)",
+            "TypeError",
+        ),
+        (
+            "Array.prototype.unshift.call({length: 2 ** 53 - 1}, 1)",
+            "TypeError",
+        ),
+        (
+            "[1, 2, 3].reduce((a, b) => a + b) + ',' + [1, 2, 3].reduce((a, b) => a + b, 10)",
+            "\"6,16\"",
+        ),
+        ("[].reduce((a, b) => a + b)", "TypeError"),
+        (
+            "[, , 3].reduce((a, b) => a + b) + ',' + [].reduce((a, b) => a + b, 'i')",
+            "\"3,i\"",
+        ),
+        ("['a', 'b', 'c'].reduceRight((a, b) => a + b)", "\"cba\""),
+        ("[1, 2, 3].reverse().join()", "\"3,2,1\""),
+        (
+            "var a = [1, , 3]; a.reverse(); a.join() + ',' + a.hasOwnProperty(1)",
+            "\"3,,1,false\"",
+        ),
+        (
+            "var o = {length: 2, 0: 'a'}; Array.prototype.reverse.call(o); o[1] + ',' + (0 in o)",
+            "\"a,false\"",
+        ),
+        (
+            "[1, 2, 3, 4].slice(1, -1).join() + ';' + [1, 2, 3].slice(-2).join()",
+            "\"2,3;2,3\"",
+        ),
+        (
+            "[1, , 3].slice(0).hasOwnProperty(1) + ',' + [1, 2].slice(5).length",
+            "\"false,0\"",
+        ),
+        (
+            "var a = [1, 2, 3, 4]; a.splice(1, 2, 'x').join() + ';' + a.join()",
+            "\"2,3;1,x,4\"",
+        ),
+        (
+            "var a = [1, 2, 3]; a.splice(1).join() + ';' + a.join()",
+            "\"2,3;1\"",
+        ),
+        (
+            "var a = [1, 2, 3]; a.splice().length + ',' + a.length",
+            "\"0,3\"",
+        ),
+        (
+            "var a = [1, 2]; a.splice(1, 0, 'a', 'b'); a.join()",
+            "\"1,a,b,2\"",
+        ),
+        ("var a = [1, 2, 3]; a.splice(-1, 1); a.join()", "\"1,2\""),
+        ("var a = [1, 2, 3]; a.splice(0, 2, 9); a.join()", "\"9,3\""),
+        // `toLocaleString` von Number und String kommen mit Welle 8c; bis
+        // dahin antwortet Object.prototype.toLocaleString.
+        (
+            "var o = {toLocaleString() { return 'L'; }}; [o, null, undefined, o].toLocaleString()",
+            "\"L,,,L\"",
+        ),
+        (
+            "[{toLocaleString() { return 1; }}, {toLocaleString: 2}].toLocaleString()",
+            "TypeError",
+        ),
+        (
+            "var a = [1, 2]; var b = a.toReversed(); a.join() + ';' + b.join()",
+            "\"1,2;2,1\"",
+        ),
+        ("[1, , 3].toReversed().hasOwnProperty(1)", "true"),
+        (
+            "[1, 2, 3].toSpliced(1, 1, 'x', 'y').join() + ';' + [1, 2, 3].toSpliced().join()",
+            "\"1,x,y,3;1,2,3\"",
+        ),
+        (
+            "[1, 2, 3].toSpliced(1).join() + ';' + [1, 2].with(-1, 'z').join()",
+            "\"1;1,z\"",
+        ),
+        ("[1].with(1, 0)", "RangeError"),
+        ("var a = [1, 2]; a.with(0, 9); a.join()", "\"1,2\""),
+        (
+            "Array.prototype.toReversed.call({length: 2 ** 32})",
+            "RangeError",
+        ),
+        (
+            "[1, [2, 3]].toString() + ';' + String([1, 2])",
+            "\"1,2,3;1,2\"",
+        ),
+        (
+            "var a = [1]; a.join = 5; a.toString()",
+            "\"[object Array]\"",
+        ),
+        (
+            "Array.prototype.toString.call({}) + ';' + Array.prototype.toString.call({join() { return 'j'; }})",
+            "\"[object Object];j\"",
+        ),
+        // ArraySpeciesCreate (Abschnitt 10.4.2.3).
+        (
+            "class A extends Array { static get [Symbol.species]() { return Array; } } \
+             new A(1, 2).map(x => x) instanceof A",
+            "false",
+        ),
+        (
+            "class B extends Array {} new B(1, 2).filter(() => true) instanceof B",
+            "true",
+        ),
+        (
+            "var a = [1]; a.constructor = undefined; Array.isArray(a.slice())",
+            "true",
+        ),
+        (
+            "var a = [1]; a.constructor = {[Symbol.species]: null}; Array.isArray(a.map(x => x))",
+            "true",
+        ),
+        ("var a = [1]; a.constructor = 1; a.map(x => x)", "TypeError"),
+        (
+            "var a = [1]; a.constructor = {[Symbol.species]: function (n) { this.n = n; }}; \
+             a.map(x => x).n + ',' + a.slice().n + ',' + a.splice(0).n + ',' + a.concat().n",
+            "\"1,1,1,0\"",
+        ),
+        // Große und unübliche Längen.
+        (
+            "Array.prototype.indexOf.call({length: 2 ** 53 - 1, [2 ** 53 - 2]: 'x'}, 'x', 2 ** 53 - 2)",
+            "9007199254740990",
+        ),
+        (
+            "var o = {length: 2 ** 32 + 2}; o[2 ** 32 + 1] = 'y'; Array.prototype.at.call(o, -1)",
+            "\"y\"",
+        ),
+        (
+            "Array.prototype.at.call({length: -5}, 0) + ',' + Array.prototype.join.call({length: '2'})",
+            "\"undefined,,\"",
+        ),
+        (
+            "Array.prototype.map.call('ab', c => c + c).join()",
+            "\"aa,bb\"",
+        ),
+    ]);
+}
+
+#[test]
+fn array_sorting_is_stable_and_follows_the_spec() {
+    check(&[
+        (
+            "[10, 9, 1].sort().join() + ';' + [3, undefined, 1].sort().join()",
+            "\"1,10,9;1,3,\"",
+        ),
+        (
+            "[{k: 1, v: 'a'}, {k: 0, v: 'b'}, {k: 1, v: 'c'}].sort((x, y) => x.k - y.k).map(x => x.v).join('')",
+            "\"bac\"",
+        ),
+        (
+            "var a = [3, , 1]; a.sort(); a.length + ':' + a.join() + ':' + (2 in a)",
+            "\"3:1,3,:false\"",
+        ),
+        (
+            "var a = [3, , 1]; a.toSorted().join() + ',' + a.toSorted().hasOwnProperty(2)",
+            "\"1,3,,true\"",
+        ),
+        ("[2, 1].sort(() => { throw 7; })", "throw 7"),
+        ("[].sort(1)", "TypeError"),
+        ("[].toSorted(1)", "TypeError"),
+        ("var a = [1, 2]; a.sort() === a", "true"),
+        (
+            "[5, 1, 4].sort((x, y) => y - x).join() + ';' + [1, 2].sort(() => NaN).join()",
+            "\"5,4,1;1,2\"",
+        ),
+        (
+            "var o = {length: 3, 0: 'c', 1: 'a', 2: 'b'}; Array.prototype.sort.call(o); o[0] + o[1] + o[2]",
+            "\"abc\"",
+        ),
+        (
+            "var s = ''; for (var i = 0; i < 40; i++) s += i % 7; \
+             var a = Array.from(s); a.sort(); a.join('')",
+            "\"0000001111112222223333334444445555566666\"",
+        ),
+        (
+            "[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].sort().join()",
+            "\"1,10,2,3,4,5,6,7,8,9\"",
+        ),
+        (
+            "Array.prototype.toSorted.call({length: 2 ** 32})",
+            "RangeError",
+        ),
+    ]);
+}
+
+#[test]
+fn array_from_async_awaits_each_element() {
+    for (source, expected) in [
+        ("var r = Array.fromAsync([]) instanceof Promise;", "true"),
+        (
+            "var r; Array.fromAsync([1, Promise.resolve(2), 3]).then(a => r = a.join());",
+            "\"1,2,3\"",
+        ),
+        (
+            "var r; Array.fromAsync([1, 2], x => x * 2).then(a => r = a.join());",
+            "\"2,4\"",
+        ),
+        (
+            "var r; Array.fromAsync([1, 2], function (x, i) { return this.v + x + i; }, {v: 10})\
+             .then(a => r = a.join());",
+            "\"11,13\"",
+        ),
+        (
+            "var r; async function* g() { yield 1; yield Promise.resolve(2); } \
+             Array.fromAsync(g()).then(a => r = a.join());",
+            "\"1,2\"",
+        ),
+        (
+            "var r; Array.fromAsync({length: 2, 0: 'a', 1: Promise.resolve('b')}).then(a => r = a.join());",
+            "\"a,b\"",
+        ),
+        (
+            "var r; Array.fromAsync([], 1).then(() => r = 'ok', e => r = e instanceof TypeError);",
+            "true",
+        ),
+        (
+            "var r; Array.fromAsync(null).then(() => r = 'ok', e => r = e instanceof TypeError);",
+            "true",
+        ),
+        (
+            "var r; Array.fromAsync([Promise.reject(5)]).then(null, e => r = e);",
+            "5",
+        ),
+        (
+            "var closed = false; var it = {[Symbol.iterator]() { return {next() { return {value: 1, done: false}; }, \
+             return() { closed = true; return {}; }}; }}; var r; \
+             Array.fromAsync(it, () => { throw 1; }).then(null, e => r = e + ',' + closed);",
+            "\"1,true\"",
+        ),
+        (
+            "var r; function C() { this.c = true; } \
+             Array.fromAsync.call(C, [1]).then(a => r = a.c + ',' + a.length + ',' + a[0]);",
+            "\"true,1,1\"",
+        ),
+        (
+            "var r; var order = []; Array.fromAsync({length: 1, get 0() { order.push('get'); return 1; }})\
+             .then(a => r = order.join() + ';' + a.join()); order.push('sync');",
+            "\"get,sync;1\"",
+        ),
+    ] {
+        assert_eq!(settle(source), expected, "{source}");
+    }
+}
+
 #[test]
 fn function_prototype_methods_and_bound_functions_follow_the_spec() {
     check(&[

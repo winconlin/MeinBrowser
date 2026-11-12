@@ -55,7 +55,7 @@ const LANGUAGE: Suite = Suite {
 /// Tests des Konstruktors scheitern erwartet, bis `eval` kommt.
 const BUILT_INS: Suite = Suite {
     directory: "test/built-ins",
-    parts: &["Function", "Object", "Promise"],
+    parts: &["Array", "Function", "Object", "Promise"],
     selection: false,
     file: "erwartete-fehlschlaege-built-ins.txt",
     expected: include_str!("erwartete-fehlschlaege-built-ins.txt"),
@@ -382,6 +382,7 @@ fn check_suite(suite: &Suite) {
     let mut reasons: BTreeMap<String, usize> = BTreeMap::new();
     let mut variants: BTreeMap<&str, Vec<Variant>> = BTreeMap::new();
     let mut actual = BTreeSet::new();
+    let mut failures: BTreeMap<(String, Variant), &str> = BTreeMap::new();
     for (path, result) in &results {
         let FileResult::Ran(list) = result else {
             skipped += 1;
@@ -399,6 +400,7 @@ fn check_suite(suite: &Suite) {
                 Some(reason) => {
                     *reasons.entry(reason.clone()).or_default() += 1;
                     actual.insert((path.clone(), *variant));
+                    failures.insert((path.clone(), *variant), reason);
                 }
             }
         }
@@ -444,7 +446,11 @@ fn check_suite(suite: &Suite) {
     match expected_set {
         Ok(expected_set) => {
             for (path, variant) in actual.difference(&expected_set) {
-                let _ = writeln!(report, "Rückschritt: {path} {}", variant.name());
+                let reason = failures
+                    .get(&(path.clone(), *variant))
+                    .copied()
+                    .unwrap_or_default();
+                let _ = writeln!(report, "Rückschritt: {path} {} ({reason})", variant.name());
             }
             for (path, variant) in expected_set.difference(&actual) {
                 let _ = writeln!(report, "unerwarteter Erfolg: {path} {}", variant.name());

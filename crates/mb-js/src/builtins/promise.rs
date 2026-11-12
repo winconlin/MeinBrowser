@@ -177,7 +177,7 @@ fn property_key<'s>(
 /// (IfAbruptRejectPromise, Abschnitt 27.5.1.1.1); andere abrupte
 /// Beendigungen gehen weiter. Ein Fehler der Engine ohne Realm bekommt
 /// `realm`, den aktuellen.
-fn reject_abrupt(
+pub(super) fn reject_abrupt(
     agent: &mut Agent,
     scope: &Scope,
     realm: RealmId,

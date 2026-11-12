@@ -81,9 +81,9 @@ use crate::builtin::{builtin_parts, call_builtin};
 use crate::bytecode::{Code, Constant, HandlerKind, Instruction, Op};
 use crate::compare::{is_less_than, is_loosely_equal, is_strictly_equal};
 use crate::compiler::{CompileError, compile_default_constructor, compile_function};
-use crate::enumerate::{for_in_next, for_in_prepare};
 use crate::conversion::{to_boolean, to_number, to_numeric, to_object, to_property_key, to_string};
 use crate::descriptor::PropertyDescriptor;
+use crate::enumerate::{for_in_next, for_in_prepare};
 use crate::function::{
     Compiled, Construction, Origin, add_field, construction, create_private_methods, field_entry,
     function_environment, function_parts, home_object, instantiate_class_constructor,

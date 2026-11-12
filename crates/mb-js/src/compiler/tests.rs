@@ -401,7 +401,6 @@ fn unsupported_constructs_name_their_place() {
         ("x = {1n: 1};", 5),
         ("let {1n: a} = b;", 5),
         ("[a = class { [1n]() {} }] = b;", 14),
-        ("for (var k in o);", 0),
         ("f`x`;", 0),
         ("1n;", 0),
         ("/a/;", 0),

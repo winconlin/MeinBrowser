@@ -119,7 +119,7 @@ pub(crate) fn get_iterator_from_method<'s>(
 /// CreateAsyncFromSyncIterator (Abschnitt 27.1.5.1) mit
 /// %AsyncFromSyncIteratorPrototype% aus `realm`, dem aktuellen Realm: der
 /// neue Iterator und der Wert seiner Eigenschaft `next`.
-fn create_async_from_sync_iterator<'s>(
+pub(crate) fn create_async_from_sync_iterator<'s>(
     agent: &mut Agent,
     scope: &'s Scope,
     realm: RealmId,

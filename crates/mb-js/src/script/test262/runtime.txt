@@ -1,6 +1,7 @@
 # Feste M2-Auswahl; Quellen unverändert aus dem gepinnten Test262-Stand.
 # Erweiterungen müssen die in m2-test262-ausfuehrung.md genannten Grenzen
 # prüfen. Keine Syntax-Negativtests und kein automatisches Überspringen.
+test/language/expressions/arrow-function/cannot-override-this-with-thisArg.js
 test/language/expressions/arrow-function/dflt-params-arg-val-not-undefined.js
 test/language/expressions/arrow-function/dflt-params-arg-val-undefined.js
 test/language/expressions/arrow-function/dflt-params-ref-prior.js
@@ -57,6 +58,7 @@ test/language/expressions/exponentiation/applying-the-exp-operator_A4.js
 test/language/expressions/exponentiation/applying-the-exp-operator_A7.js
 test/language/expressions/exponentiation/applying-the-exp-operator_A8.js
 test/language/expressions/exponentiation/exp-assignment-operator.js
+test/language/expressions/exponentiation/exp-operator-evaluation-order.js
 test/language/expressions/exponentiation/exp-operator.js
 test/language/expressions/exponentiation/int32_min-exponent.js
 test/language/expressions/function/arguments-with-arguments-fn.js
@@ -95,6 +97,7 @@ test/language/expressions/new.target/value-via-member.js
 test/language/expressions/new/ctorExpr-fn-ref-before-args-eval-fn-wrapup.js
 test/language/expressions/new/ctorExpr-fn-ref-before-args-eval.js
 test/language/expressions/new/ctorExpr-isCtor-after-args-eval-fn-wrapup.js
+test/language/expressions/new/ctorExpr-isCtor-after-args-eval.js
 test/language/expressions/object/method-definition/meth-dflt-params-arg-val-not-undefined.js
 test/language/expressions/object/method-definition/meth-dflt-params-arg-val-undefined.js
 test/language/expressions/object/method-definition/meth-dflt-params-ref-prior.js
