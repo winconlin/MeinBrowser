@@ -14,6 +14,7 @@ pub mod compare;
 pub mod compiler;
 pub mod conversion;
 pub mod descriptor;
+mod enumerate;
 pub mod function;
 mod generator;
 pub mod heap;

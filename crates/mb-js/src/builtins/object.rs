@@ -861,7 +861,7 @@ fn builtin_tag(agent: &Agent, object: Local<'_>) -> &'static str {
 }
 
 /// Object.prototype.toString ( ) (Abschnitt 20.1.3.6).
-fn object_prototype_to_string<'s>(
+pub(super) fn object_prototype_to_string<'s>(
     agent: &mut Agent,
     scope: &'s Scope,
     arguments: &BuiltinCall<'_, '_>,

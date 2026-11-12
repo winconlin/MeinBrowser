@@ -40,7 +40,7 @@
 //! in Scripts entscheidet GlobalDeclarationInstantiation, ob es die
 //! globale Bindung gibt, und setzt dafür ein Register.
 //!
-//! Noch nicht unterstützt sind `for`-`in`, `with`, `import()`,
+//! Noch nicht unterstützt sind `with`, `import()`,
 //! BigInt-Literale, reguläre Ausdrücke, Templates mit Tag und
 //! Funktionsdeklarationen mit Marke (Anhang B.3.1).
 //!
@@ -86,7 +86,10 @@
 //! Ausnahme über einen Handler. `for await` hält nur [[Iterator]] und
 //! [[NextMethod]] ([`Op::GetAsyncIterator`]) und wartet auf die Ergebnisse
 //! von `next` und `return`. Ein Aufruf mit Ausbreitung sammelt seine
-//! Argumente in einem Array ([`Op::CallSpread`]).
+//! Argumente in einem Array ([`Op::CallSpread`]). `for`-`in` hält seinen
+//! Aufzähler in einem Register ([`Op::ForInPrepare`], [`Op::ForInNext`])
+//! und bindet jeden Schlüssel wie `for`-`of` seinen Wert; schließen muss es
+//! nichts.
 //!
 //! Muster: Deklarationen, Parameter, `catch`, Zuweisungen und `for`-`of`
 //! binden mit demselben Weg den Wert im Akkumulator; was sie
@@ -407,6 +410,10 @@ impl Target {
         }
     }
 }
+
+/// Übersetzt eine Schleife oder ein `switch` mit seinem Ziel
+/// ([`Compiler::breakable`]).
+type Breakable<'a> = fn(&mut Compiler<'a>, NodeId, Target) -> Result<()>;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum ConstantKey {
@@ -1435,7 +1442,7 @@ impl<'a> Compiler<'a> {
                 }
                 self.var_declared_names(body, names)?;
             }
-            Node::ForOf { left, body, .. } => {
+            Node::ForOf { left, body, .. } | Node::ForIn { left, body, .. } => {
                 self.var_declared_names(left, names)?;
                 self.var_declared_names(body, names)?;
             }
@@ -1524,7 +1531,7 @@ impl<'a> Compiler<'a> {
                 self.hoisting_walk(body, path, excluded, found);
                 path.pop();
             }
-            Node::ForOf { left, body, .. } => {
+            Node::ForOf { left, body, .. } | Node::ForIn { left, body, .. } => {
                 path.push(self.lexically_declared(&[left], false));
                 self.hoisting_walk(body, path, excluded, found);
                 path.pop();
@@ -1998,6 +2005,7 @@ impl<'a> Compiler<'a> {
             | Node::DoWhile { .. }
             | Node::For { .. }
             | Node::ForOf { .. }
+            | Node::ForIn { .. }
             | Node::Switch { .. } => self.breakable(node, Vec::new()),
             Node::Labeled { .. } => self.labeled(node),
             Node::Break(label) => self.jump_to_target(node, label, false),
@@ -2209,6 +2217,7 @@ impl<'a> Compiler<'a> {
             | Node::DoWhile { .. }
             | Node::For { .. }
             | Node::ForOf { .. }
+            | Node::ForIn { .. }
             | Node::Switch { .. } => self.breakable(body, labels),
             // Anhang B.3.1.
             Node::FunctionDeclaration(_) => Err(self.unsupported(body)),
@@ -2233,36 +2242,22 @@ impl<'a> Compiler<'a> {
             .unwrap_or(Target::new(TargetKind::Labeled, Vec::new()))
     }
 
-    /// Schleifen und `switch` mit ihren Marken.
+    /// Schleifen und `switch` mit ihren Marken. Jede Art läuft über
+    /// denselben Aufruf: Diese Funktion liegt mit jeder Verschachtelung
+    /// einmal auf dem Stapel, und so hält ihr Rahmen nur ein Ziel statt
+    /// einer Kopie je Art (RS-8).
     fn breakable(&mut self, node: NodeId, labels: Vec<Atom>) -> Result<()> {
         self.position(node)?;
-        let kind = if matches!(self.ast.node(node), Node::Switch { .. }) {
-            TargetKind::Switch
-        } else {
-            TargetKind::Loop
+        let (kind, compile): (TargetKind, Breakable<'a>) = match self.ast.node(node) {
+            Node::While { .. } => (TargetKind::Loop, Self::while_loop),
+            Node::DoWhile { .. } => (TargetKind::Loop, Self::do_while_loop),
+            Node::For { .. } => (TargetKind::Loop, Self::for_loop),
+            Node::ForOf { .. } => (TargetKind::Loop, Self::for_of_loop),
+            Node::ForIn { .. } => (TargetKind::Loop, Self::for_in_loop),
+            Node::Switch { .. } => (TargetKind::Switch, Self::switch),
+            _ => return Err(self.unsupported(node)),
         };
-        let target = Target::new(kind, labels);
-        match *self.ast.node(node) {
-            Node::While { test, body } => self.while_loop(target, test, body),
-            Node::DoWhile { body, test } => self.do_while_loop(target, body, test),
-            Node::For {
-                init,
-                test,
-                update,
-                body,
-            } => self.for_loop(target, init, test, update, body),
-            Node::ForOf {
-                left,
-                right,
-                body,
-                is_await,
-            } => self.for_of_loop(node, target, left, right, body, is_await),
-            Node::Switch {
-                discriminant,
-                cases,
-            } => self.switch(target, discriminant, cases),
-            _ => Err(self.unsupported(node)),
-        }
+        compile(self, node, Target::new(kind, labels))
     }
 
     /// Übersetzt den Rumpf einer Schleife und bindet ihre Sprünge mit
@@ -2276,7 +2271,10 @@ impl<'a> Compiler<'a> {
     }
 
     /// `while` (Abschnitt 14.7.3.2).
-    fn while_loop(&mut self, target: Target, test: NodeId, body: NodeId) -> Result<()> {
+    fn while_loop(&mut self, node: NodeId, target: Target) -> Result<()> {
+        let Node::While { test, body } = *self.ast.node(node) else {
+            return Err(self.unsupported(node));
+        };
         self.reset_completion()?;
         let start = self.emitter.offset();
         self.expression(test)?;
@@ -2288,7 +2286,10 @@ impl<'a> Compiler<'a> {
     }
 
     /// `do`-`while` (Abschnitt 14.7.2.2).
-    fn do_while_loop(&mut self, target: Target, body: NodeId, test: NodeId) -> Result<()> {
+    fn do_while_loop(&mut self, node: NodeId, target: Target) -> Result<()> {
+        let Node::DoWhile { body, test } = *self.ast.node(node) else {
+            return Err(self.unsupported(node));
+        };
         self.reset_completion()?;
         let start = self.emitter.offset();
         let target = self.loop_body(target, body)?;
@@ -2304,14 +2305,16 @@ impl<'a> Compiler<'a> {
     /// (CreatePerIterationEnvironment): vor dem ersten Test und vor jedem
     /// Schritt danach. Bindungen in Registern sieht keine innere Funktion,
     /// sie brauchen keine Kopie.
-    fn for_loop(
-        &mut self,
-        target: Target,
-        init: Option<NodeId>,
-        test: Option<NodeId>,
-        update: Option<NodeId>,
-        body: NodeId,
-    ) -> Result<()> {
+    fn for_loop(&mut self, node: NodeId, target: Target) -> Result<()> {
+        let Node::For {
+            init,
+            test,
+            update,
+            body,
+        } = *self.ast.node(node)
+        else {
+            return Err(self.unsupported(node));
+        };
         let mut per_iteration = false;
         let mark = match init {
             Some(init) if matches!(self.ast.node(init), Node::Variables { .. }) => {
@@ -2387,15 +2390,16 @@ impl<'a> Compiler<'a> {
     /// das Ergebnis von `return` wartet; bei einer Ausnahme fängt ein
     /// zweiter Handler, was das Schließen wirft, und es gilt die Ausnahme
     /// davor.
-    fn for_of_loop(
-        &mut self,
-        node: NodeId,
-        target: Target,
-        left: NodeId,
-        right: NodeId,
-        body: NodeId,
-        is_await: bool,
-    ) -> Result<()> {
+    fn for_of_loop(&mut self, node: NodeId, target: Target) -> Result<()> {
+        let Node::ForOf {
+            left,
+            right,
+            body,
+            is_await,
+        } = *self.ast.node(node)
+        else {
+            return Err(self.unsupported(node));
+        };
         if is_await && !self.is_async() {
             return Err(self.unsupported(node));
         }
@@ -2527,6 +2531,99 @@ impl<'a> Compiler<'a> {
         }
     }
 
+    /// `for`-`in` (Abschnitt 14.7.5.5 mit ForIn/OfHeadEvaluation und
+    /// ForIn/OfBodyEvaluation): Die rechte Seite wird wie bei `for`-`of`
+    /// ausgewertet, [`Op::ForInPrepare`] legt den Aufzähler in ein Register,
+    /// und jeder Durchlauf holt mit [`Op::ForInNext`] den nächsten Schlüssel
+    /// in den Akkumulator und bindet ihn wie `for`-`of` seinen Wert. Nach
+    /// Anhang B.3.5 darf `var` im Kopf einen Initialisierer haben, der vor
+    /// der rechten Seite in die Variable kommt.
+    fn for_in_loop(&mut self, node: NodeId, target: Target) -> Result<()> {
+        let Node::ForIn { left, right, body } = *self.ast.node(node) else {
+            return Err(self.unsupported(node));
+        };
+        let (lhs, initializer) = self.for_in_target(left)?;
+        let mark = self.next_register;
+        if let (ForTarget::Var(declared), Some(init)) = (lhs, initializer) {
+            self.for_in_initializer(left, declared, init)?;
+        }
+        if let ForTarget::Lexical(_) = lhs {
+            let tdz = self.enter_tdz(left)?;
+            self.expression(right)?;
+            self.leave_block(tdz)?;
+        } else {
+            self.expression(right)?;
+        }
+        self.position(right)?;
+        let enumerator = self.allocate()?;
+        self.emit(Op::ForInPrepare, &[i64::from(enumerator)])?;
+        let item = i64::from(self.allocate()?);
+        self.reset_completion()?;
+        let start = self.emitter.offset();
+        self.position(node)?;
+        let done = self
+            .emitter
+            .jump_with(Op::ForInNext, &[i64::from(enumerator)])?;
+        self.push_target(target);
+        let block = self.for_of_binding(left, lhs, item)?;
+        self.statement(body)?;
+        if let Some(block) = block {
+            self.leave_block(block)?;
+        }
+        let mut target = self.pop_target();
+        self.bind_all(std::mem::take(&mut target.continues))?;
+        self.emitter.jump_loop(start)?;
+        self.bind(done)?;
+        self.bind_all(target.breaks)?;
+        self.release(mark);
+        Ok(())
+    }
+
+    /// Was links in `for`-`in` steht, dazu der Initialisierer aus Anhang
+    /// B.3.5, den der Parser nur bei `var` mit einem Bezeichner zulässt.
+    fn for_in_target(&self, left: NodeId) -> Result<(ForTarget, Option<NodeId>)> {
+        let Node::Variables { kind, declarators } = *self.ast.node(left) else {
+            return Ok((ForTarget::Expression, None));
+        };
+        let &[declarator] = self.ast.list(declarators) else {
+            return Err(self.unsupported(left));
+        };
+        let Node::Declarator { target, init } = *self.ast.node(declarator) else {
+            return Err(self.unsupported(declarator));
+        };
+        match kind {
+            DeclarationKind::Var => Ok((ForTarget::Var(target), init)),
+            DeclarationKind::Let | DeclarationKind::Const if init.is_none() => {
+                Ok((ForTarget::Lexical(target), None))
+            }
+            _ => Err(self.unsupported(left)),
+        }
+    }
+
+    /// Der Initialisierer von `for (var x = init in …)` (Anhang B.3.5):
+    /// Erst wird der Name aufgelöst, dann der Wert mit NamedEvaluation
+    /// berechnet und mit PutValue geschrieben, wie bei `var x = init`.
+    fn for_in_initializer(&mut self, left: NodeId, target: NodeId, init: NodeId) -> Result<()> {
+        let ast = self.ast;
+        let Node::BindingIdentifier(atom) = *ast.node(target) else {
+            return Err(self.unsupported(left));
+        };
+        let units = ast.atom(atom);
+        if let Some(binding) = self.resolve(atom, target)? {
+            self.named_expression(init, units)?;
+            self.position(left)?;
+            return self.store_local(binding, atom, ast.range(left).end);
+        }
+        let name = self.name(atom)?;
+        let register = self.allocate()?;
+        self.emit(Op::ResolveGlobal, &[name, i64::from(register)])?;
+        self.named_expression(init, units)?;
+        self.position(left)?;
+        self.emit(Op::StaGlobal, &[name, i64::from(register)])?;
+        self.release(register);
+        Ok(())
+    }
+
     /// Der Bereich, in dem die rechte Seite von `for`-`of` die Namen aus
     /// `let` und `const` im Kopf sieht (ForIn/OfHeadEvaluation, Abschnitt
     /// 14.7.5.6): Sie halten die Lücke und werden nie initialisiert. Gibt die
@@ -2619,7 +2716,14 @@ impl<'a> Compiler<'a> {
     /// `switch` (Abschnitt 14.12.4) mit CaseBlockEvaluation: erst die
     /// Vergleiche aller `case` in ihrer Reihenfolge, dann `default`, dann
     /// die Anweisungen ab dem Treffer.
-    fn switch(&mut self, target: Target, discriminant: NodeId, cases: List) -> Result<()> {
+    fn switch(&mut self, node: NodeId, target: Target) -> Result<()> {
+        let Node::Switch {
+            discriminant,
+            cases,
+        } = *self.ast.node(node)
+        else {
+            return Err(self.unsupported(node));
+        };
         self.expression(discriminant)?;
         let input = self.allocate()?;
         self.emit(Op::Star, &[i64::from(input)])?;

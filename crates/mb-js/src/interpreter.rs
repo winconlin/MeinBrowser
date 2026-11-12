@@ -83,6 +83,7 @@ use crate::compare::{is_less_than, is_loosely_equal, is_strictly_equal};
 use crate::compiler::{CompileError, compile_default_constructor, compile_function};
 use crate::conversion::{to_boolean, to_number, to_numeric, to_object, to_property_key, to_string};
 use crate::descriptor::PropertyDescriptor;
+use crate::enumerate::{for_in_next, for_in_prepare};
 use crate::function::{
     Compiled, Construction, Origin, add_field, construction, create_private_methods, field_entry,
     function_environment, function_parts, home_object, instantiate_class_constructor,
@@ -2672,6 +2673,18 @@ impl<'c> Frame<'c, '_> {
                     } else {
                         iterator_close_on_throw(agent, scope, iterator)?;
                     }
+                }
+            }
+            Op::ForInPrepare => {
+                let value = self.accumulator_copy(agent, scope);
+                let enumerator = for_in_prepare(agent, scope, self.realm, value)?;
+                self.set_register(agent, first, enumerator);
+            }
+            Op::ForInNext => {
+                let enumerator = self.register(agent, scope, second);
+                match for_in_next(agent, scope, enumerator)? {
+                    Some(key) => self.set_accumulator(agent, key),
+                    None => return Ok(jump(instruction)),
                 }
             }
             Op::GetAsyncIterator => {

@@ -401,7 +401,6 @@ fn unsupported_constructs_name_their_place() {
         ("x = {1n: 1};", 5),
         ("let {1n: a} = b;", 5),
         ("[a = class { [1n]() {} }] = b;", 14),
-        ("for (var k in o);", 0),
         ("f`x`;", 0),
         ("1n;", 0),
         ("/a/;", 0),
@@ -1156,6 +1155,36 @@ fn for_of_bodies_hold_no_tail_calls() {
         let sloppy = format!("function f() {{ {body} }}");
         assert_eq!(tail_calls(&first_function(&sloppy)), 0, "{sloppy}");
     }
+}
+
+/// `for`-`in`: Der Aufzähler liegt in einem Register, jeder Durchlauf holt
+/// einen Schlüssel oder springt hinter die Schleife; geschlossen wird
+/// nichts.
+#[test]
+fn for_in_loops_hold_their_enumerator_in_a_register() {
+    assert_eq!(
+        shape("for (var k in o) f(k);"),
+        [
+            "LdaGlobal o",
+            "ForInPrepare r2",
+            "LdaUndefined",
+            "Star r1",
+            "ForInNext @ r2",
+            "ResolveGlobal k r4",
+            "StaGlobal k r4",
+            "LdaGlobal f",
+            "Star r4",
+            "LdaUndefined",
+            "Star r5",
+            "LdaGlobal k",
+            "Star r6",
+            "Call r4 1",
+            "Star r1",
+            "JumpLoop @",
+            "Ldar r1",
+            "Return",
+        ]
+    );
 }
 
 /// Die Befehle ohne Abstände und ohne Sprungziele.

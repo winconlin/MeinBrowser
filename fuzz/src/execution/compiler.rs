@@ -332,6 +332,16 @@ fn check_code(code: &Code, source_length: usize) -> Stats {
                     stats.async_iterators += 1;
                 }
             }
+            Op::ForInPrepare | Op::ForInNext => {
+                // The enumerator of a for-in loop is one register.
+                let operand = usize::from(instruction.op == Op::ForInNext);
+                let enumerator =
+                    usize::try_from(instruction.operand(operand)).expect("enumerator register");
+                assert!(
+                    enumerator < code.register_count(),
+                    "the enumerator fits its frame"
+                );
+            }
             Op::AsyncYieldStar | Op::AsyncYieldStarResult => {
                 // The record of an async yield* is the iterator, its next
                 // method and the kind of the current step.
@@ -672,7 +682,7 @@ mod tests {
 
     #[test]
     fn syntax_and_unsupported_paths_preserve_positions() {
-        for source in ["class A{[1n](){}}", "with({}){}", "for (var k in o);"] {
+        for source in ["class A{[1n](){}}", "with({}){}", "f`x`;"] {
             let source: Vec<u16> = source.encode_utf16().collect();
             assert_eq!(check_source(&source), Outcome::Unsupported);
         }
@@ -705,10 +715,7 @@ mod tests {
 
     #[test]
     fn unsupported_deferred_bodies_preserve_positions() {
-        for source in [
-            "function f(){with ({}) {}}",
-            "function f(){for (var k in o);}",
-        ] {
+        for source in ["function f(){with ({}) {}}", "function f(){f`x`;}"] {
             let stats = checked(source);
             assert_eq!(stats.functions, 0);
             assert_eq!(stats.unsupported_functions, 1);
@@ -717,6 +724,17 @@ mod tests {
             checked("f();").calls > 0,
             "unknown callees can still compile"
         );
+    }
+
+    #[test]
+    fn for_in_keeps_its_enumerator_in_frame() {
+        let stats = checked(
+            "for (var k in o) { if (k) continue; } for (let [a] in b) break; \
+             function f(){ for (const k in o) return k; } for (var i = 0 in c);",
+        );
+        assert_eq!(stats.functions, 1);
+        assert_eq!(stats.unsupported_functions, 0);
+        assert!(stats.loop_jumps >= 3, "each for-in loops back");
     }
 
     #[test]
