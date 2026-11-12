@@ -1805,6 +1805,26 @@ fn array_from_async_awaits_each_element() {
              Array.fromAsync(it, () => { throw 1; }).then(null, e => r = e + ',' + closed);",
             "\"1,true\"",
         ),
+        // Wirft schon PromiseResolve im Await auf das Ergebnis von `mapper`,
+        // schließt das den Iterator.
+        (
+            "var closed = false; var p = Promise.resolve(1); \
+             Object.defineProperty(p, 'constructor', {get() { throw new RangeError(); }}); \
+             var it = {[Symbol.asyncIterator]() { return {next() { return {value: 1, done: false}; }, \
+             return() { closed = true; return {}; }}; }}; var r; \
+             Array.fromAsync(it, () => p).then(null, e => r = (e instanceof RangeError) + ',' + closed);",
+            "\"true,true\"",
+        ),
+        // Wirft es im Await auf das Ergebnis von `return`, bleibt es bei der
+        // Ausnahme aus `mapper`.
+        (
+            "var q = Promise.resolve({}); \
+             Object.defineProperty(q, 'constructor', {get() { throw new TypeError(); }}); \
+             var it = {[Symbol.asyncIterator]() { return {next() { return {value: 1, done: false}; }, \
+             return() { return q; }}; }}; var r; \
+             Array.fromAsync(it, () => { throw 7; }).then(null, e => r = e);",
+            "7",
+        ),
         (
             "var r; function C() { this.c = true; } \
              Array.fromAsync.call(C, [1]).then(a => r = a.c + ',' + a.length + ',' + a[0]);",

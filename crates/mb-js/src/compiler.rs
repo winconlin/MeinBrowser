@@ -411,6 +411,10 @@ impl Target {
     }
 }
 
+/// Übersetzt eine Schleife oder ein `switch` mit seinem Ziel
+/// ([`Compiler::breakable`]).
+type Breakable<'a> = fn(&mut Compiler<'a>, NodeId, Target) -> Result<()>;
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum ConstantKey {
     Number(u64),
@@ -2238,37 +2242,22 @@ impl<'a> Compiler<'a> {
             .unwrap_or(Target::new(TargetKind::Labeled, Vec::new()))
     }
 
-    /// Schleifen und `switch` mit ihren Marken.
+    /// Schleifen und `switch` mit ihren Marken. Jede Art läuft über
+    /// denselben Aufruf: Diese Funktion liegt mit jeder Verschachtelung
+    /// einmal auf dem Stapel, und so hält ihr Rahmen nur ein Ziel statt
+    /// einer Kopie je Art (RS-8).
     fn breakable(&mut self, node: NodeId, labels: Vec<Atom>) -> Result<()> {
         self.position(node)?;
-        let kind = if matches!(self.ast.node(node), Node::Switch { .. }) {
-            TargetKind::Switch
-        } else {
-            TargetKind::Loop
+        let (kind, compile): (TargetKind, Breakable<'a>) = match self.ast.node(node) {
+            Node::While { .. } => (TargetKind::Loop, Self::while_loop),
+            Node::DoWhile { .. } => (TargetKind::Loop, Self::do_while_loop),
+            Node::For { .. } => (TargetKind::Loop, Self::for_loop),
+            Node::ForOf { .. } => (TargetKind::Loop, Self::for_of_loop),
+            Node::ForIn { .. } => (TargetKind::Loop, Self::for_in_loop),
+            Node::Switch { .. } => (TargetKind::Switch, Self::switch),
+            _ => return Err(self.unsupported(node)),
         };
-        let target = Target::new(kind, labels);
-        match *self.ast.node(node) {
-            Node::While { test, body } => self.while_loop(target, test, body),
-            Node::DoWhile { body, test } => self.do_while_loop(target, body, test),
-            Node::For {
-                init,
-                test,
-                update,
-                body,
-            } => self.for_loop(target, init, test, update, body),
-            Node::ForOf {
-                left,
-                right,
-                body,
-                is_await,
-            } => self.for_of_loop(node, target, left, right, body, is_await),
-            Node::ForIn { left, right, body } => self.for_in_loop(node, target, left, right, body),
-            Node::Switch {
-                discriminant,
-                cases,
-            } => self.switch(target, discriminant, cases),
-            _ => Err(self.unsupported(node)),
-        }
+        compile(self, node, Target::new(kind, labels))
     }
 
     /// Übersetzt den Rumpf einer Schleife und bindet ihre Sprünge mit
@@ -2282,7 +2271,10 @@ impl<'a> Compiler<'a> {
     }
 
     /// `while` (Abschnitt 14.7.3.2).
-    fn while_loop(&mut self, target: Target, test: NodeId, body: NodeId) -> Result<()> {
+    fn while_loop(&mut self, node: NodeId, target: Target) -> Result<()> {
+        let Node::While { test, body } = *self.ast.node(node) else {
+            return Err(self.unsupported(node));
+        };
         self.reset_completion()?;
         let start = self.emitter.offset();
         self.expression(test)?;
@@ -2294,7 +2286,10 @@ impl<'a> Compiler<'a> {
     }
 
     /// `do`-`while` (Abschnitt 14.7.2.2).
-    fn do_while_loop(&mut self, target: Target, body: NodeId, test: NodeId) -> Result<()> {
+    fn do_while_loop(&mut self, node: NodeId, target: Target) -> Result<()> {
+        let Node::DoWhile { body, test } = *self.ast.node(node) else {
+            return Err(self.unsupported(node));
+        };
         self.reset_completion()?;
         let start = self.emitter.offset();
         let target = self.loop_body(target, body)?;
@@ -2310,14 +2305,16 @@ impl<'a> Compiler<'a> {
     /// (CreatePerIterationEnvironment): vor dem ersten Test und vor jedem
     /// Schritt danach. Bindungen in Registern sieht keine innere Funktion,
     /// sie brauchen keine Kopie.
-    fn for_loop(
-        &mut self,
-        target: Target,
-        init: Option<NodeId>,
-        test: Option<NodeId>,
-        update: Option<NodeId>,
-        body: NodeId,
-    ) -> Result<()> {
+    fn for_loop(&mut self, node: NodeId, target: Target) -> Result<()> {
+        let Node::For {
+            init,
+            test,
+            update,
+            body,
+        } = *self.ast.node(node)
+        else {
+            return Err(self.unsupported(node));
+        };
         let mut per_iteration = false;
         let mark = match init {
             Some(init) if matches!(self.ast.node(init), Node::Variables { .. }) => {
@@ -2393,15 +2390,16 @@ impl<'a> Compiler<'a> {
     /// das Ergebnis von `return` wartet; bei einer Ausnahme fängt ein
     /// zweiter Handler, was das Schließen wirft, und es gilt die Ausnahme
     /// davor.
-    fn for_of_loop(
-        &mut self,
-        node: NodeId,
-        target: Target,
-        left: NodeId,
-        right: NodeId,
-        body: NodeId,
-        is_await: bool,
-    ) -> Result<()> {
+    fn for_of_loop(&mut self, node: NodeId, target: Target) -> Result<()> {
+        let Node::ForOf {
+            left,
+            right,
+            body,
+            is_await,
+        } = *self.ast.node(node)
+        else {
+            return Err(self.unsupported(node));
+        };
         if is_await && !self.is_async() {
             return Err(self.unsupported(node));
         }
@@ -2540,14 +2538,10 @@ impl<'a> Compiler<'a> {
     /// in den Akkumulator und bindet ihn wie `for`-`of` seinen Wert. Nach
     /// Anhang B.3.5 darf `var` im Kopf einen Initialisierer haben, der vor
     /// der rechten Seite in die Variable kommt.
-    fn for_in_loop(
-        &mut self,
-        node: NodeId,
-        target: Target,
-        left: NodeId,
-        right: NodeId,
-        body: NodeId,
-    ) -> Result<()> {
+    fn for_in_loop(&mut self, node: NodeId, target: Target) -> Result<()> {
+        let Node::ForIn { left, right, body } = *self.ast.node(node) else {
+            return Err(self.unsupported(node));
+        };
         let (lhs, initializer) = self.for_in_target(left)?;
         let mark = self.next_register;
         if let (ForTarget::Var(declared), Some(init)) = (lhs, initializer) {
@@ -2722,7 +2716,14 @@ impl<'a> Compiler<'a> {
     /// `switch` (Abschnitt 14.12.4) mit CaseBlockEvaluation: erst die
     /// Vergleiche aller `case` in ihrer Reihenfolge, dann `default`, dann
     /// die Anweisungen ab dem Treffer.
-    fn switch(&mut self, target: Target, discriminant: NodeId, cases: List) -> Result<()> {
+    fn switch(&mut self, node: NodeId, target: Target) -> Result<()> {
+        let Node::Switch {
+            discriminant,
+            cases,
+        } = *self.ast.node(node)
+        else {
+            return Err(self.unsupported(node));
+        };
         self.expression(discriminant)?;
         let input = self.allocate()?;
         self.emit(Op::Star, &[i64::from(input)])?;

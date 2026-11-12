@@ -209,9 +209,15 @@ fn next_result(
     let k = agent
         .heap()
         .local(scope, Value::number(index(agent, state)));
-    match call(agent, scope, mapper, this_arg, &[value, k]) {
+    // IfAbruptCloseAsyncIterator gilt für den Aufruf und für das Await
+    // danach, auch wenn schon PromiseResolve wirft.
+    let awaited = match call(agent, scope, mapper, this_arg, &[value, k]) {
         Ok(mapped) => await_value(agent, scope, realm, state, MAPPED, mapped),
+        Err(abrupt) => Err(abrupt),
+    };
+    match awaited {
         Err(abrupt) => close_with(agent, scope, realm, state, abrupt),
+        Ok(()) => Ok(()),
     }
 }
 
@@ -352,13 +358,18 @@ fn close_with_reason(
         }
         Err(abrupt) => return Err(abrupt),
     };
-    match call(agent, scope, method, iterator, &[]) {
+    // Wirft `return` oder schon PromiseResolve im Await danach, bleibt es
+    // bei der Ausnahme von vorher (Schritt 6 von AsyncIteratorClose).
+    let awaited = match call(agent, scope, method, iterator, &[]) {
         Ok(result) => await_value(agent, scope, realm, state, CLOSING, result),
+        Err(abrupt) => Err(abrupt),
+    };
+    match awaited {
         Err(Abrupt::Throw) => {
             agent.take_exception(scope);
             reject_stored(agent, scope, state)
         }
-        Err(abrupt) => Err(abrupt),
+        other => other,
     }
 }
 
