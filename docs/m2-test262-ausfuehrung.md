@@ -4,9 +4,10 @@ Die 48.517 bisherigen Test262-Läufe in `parser/test262.rs` prüfen die Syntax.
 `script/test262.rs` führt zusätzlich eine feste Auswahl unveränderter externer
 Tests durch Parser, Compiler und Interpreter aus, und `script/test262/language.rs`
 alle Dateien unter `test/language/` gegen eine Datei der erwarteten
-Fehlschläge (siehe [unten](#ganz-language-mit-erwarteten-ergebnissen)) und die
-unter `test/built-ins/Promise/` gegen eine zweite (siehe
-[unten](#built-inspromise-mit-erwarteten-ergebnissen)). Das ergänzt die M2-Arbeit
+Fehlschläge (siehe [unten](#ganz-language-mit-erwarteten-ergebnissen)), die
+unter `test/built-ins/Function/`, `Object/` und `Promise/` gegen eine zweite
+und die unter `test/annexB/built-ins/Object/` gegen eine dritte (siehe
+[unten](#built-ins-und-annexbbuilt-ins-mit-erwarteten-ergebnissen)). Das ergänzt die M2-Arbeit
 aus [Architektur, Abschnitt 10](architektur.md#10-kompatibilität-messen), ohne
 die Implementierung der Engine zu ändern.
 
@@ -17,9 +18,9 @@ cargo run --locked -p testdata
 cargo test --locked -p mb-js script::test262 -- --nocapture
 ```
 
-Die Auswahl steht in `crates/mb-js/src/script/test262/runtime.txt`: 180 Dateien,
-davon 165 positive und 15 mit erwartetem Laufzeitfehler. Sie ergeben 331
-Sprachvarianten und mit zwei GC-Modi 662 Ausführungen. Geprüft werden unter
+Die Auswahl steht in `crates/mb-js/src/script/test262/runtime.txt`: 185 Dateien,
+davon 170 positive und 15 mit erwartetem Laufzeitfehler. Sie ergeben 341
+Sprachvarianten und mit zwei GC-Modi 682 Ausführungen. Geprüft werden unter
 anderem Exponentiation, `??`, logische Zuweisungen, Pfeilfunktionen, Closures,
 Vorgabewerte, `arguments`, Methoden, Schleifenbindungen, TDZ-Fehler, `try`
 mit `catch` und `finally`, `new` mit [[Construct]] und `new.target`,
@@ -27,8 +28,9 @@ mit `catch` und `finally`, `new` mit [[Construct]] und `new.target`,
 `Test262Error` erwarten. Die
 Sammlung bleibt im bereits festgelegten Commit
 `91c70759363c46557b694792bf34a2551a7af5ba`; `tools/testdata` holt nun auch
-`harness/`, `INTERPRETING.md` und `test/built-ins/Promise/`. Kein externer
-Testcode wird ausgeliefert.
+`harness/`, `INTERPRETING.md`, `test/built-ins/Function/`, `Object/` und
+`Promise/` und `test/annexB/built-ins/Object/`. Kein externer Testcode wird
+ausgeliefert.
 
 Jede Sprachvariante läuft in einem frischen Agent und Realm, einmal mit
 normaler und einmal mit erzwungener Garbage Collection. Standardmäßig gibt
@@ -68,9 +70,10 @@ nicht unterstützte Formen der ausgewerteten Felder werden abgelehnt.
 
 Die Auswahl ist eine Regressionstest-Grundlage für den vorhandenen
 Sprachumfang, auch im Belastungsmodus. Die Bestehensquoten für
-`test/language/` und `test/built-ins/Promise/` liefern die Läufe weiter
-unten; für das übrige `built-ins/` und `annexB/` gibt es noch keine, und keine der Zahlen ist ein vollständiger
-ECMAScript-Konformitätsnachweis. Die Syntaxzahlen werden getrennt geführt;
+`test/language/`, die fertigen Teile von `test/built-ins/` und
+`test/annexB/built-ins/Object/` liefern die Läufe weiter unten; für das
+übrige `built-ins/` und `annexB/` gibt es noch keine, und keine der Zahlen
+ist ein vollständiger ECMAScript-Konformitätsnachweis. Die Syntaxzahlen werden getrennt geführt;
 Syntax-Negativtests dürfen nicht in diese Auswahl.
 
 ## Jobs und asynchrone Tests
@@ -122,62 +125,90 @@ mit `module`. Eine Panik der Engine lässt den Test immer scheitern,
 sie kann nicht erwartet werden. Jede Datei der festen Auswahl muss auch hier
 bestehen.
 
-Mit diesem Stand bestehen 12.695 von 23.296 ausgeführten Dateien und 24.481
-von 43.794 Varianten. Seit Teil 7b gibt es async-Funktionen und `await`, seit
-Teil 7c-1 `for await` in async-Funktionen und seit Teil 7c-2
-async-Generatoren. Den meisten Dateien mit dem Flag `async`, die noch
-scheitern, fehlen eingebaute Objekte, etwa
-`Object.prototype.hasOwnProperty`, das `asyncTest` aus `asyncHelpers.js`
-gleich zu Beginn aufruft, `Object.defineProperty` oder
-`Array.prototype.push`. Dateien mit `async` und `module` scheitern am Flag
-`module`. Die Gründe der Fehlschläge gibt der Test mit `--nocapture` aus:
+Mit diesem Stand bestehen 16.882 von 23.296 ausgeführten Dateien und 32.504
+von 43.794 Varianten. Seit Schritt 7 gibt es async-Funktionen, `for await`
+und async-Generatoren, seit Schritt 8a `Object` mit allen Funktionen,
+`Object.prototype` und `Function.prototype` vollständig und gebundene
+Funktionen. Den meisten Dateien, die noch scheitern, fehlen weiter
+eingebaute Objekte, allen voran `Array` (auch über `propertyHelper.js`, das
+gleich zu Beginn `Array.isArray` liest), oder der Übersetzer kann ein
+Konstrukt noch nicht, etwa `import()`, `with`, `for`-`in` oder reguläre
+Ausdrücke; `Function(...)` und `eval` enden bis Schritt 9 ebenso als
+`Unsupported`. Dateien mit `async` und `module` scheitern am Flag `module`.
+Die beiden Dateien mit dem Feature `caller`
+(`arguments-object/10.6-13-a-2.js` und `-3.js`) lesen `caller` einer nicht
+strikten Funktion; diese Erweiterung aus Abschnitt 17.1 gibt es nicht, und
+`caller` an %Function.prototype% wirft (Abschnitt 10.2.4). Die Gründe der
+Fehlschläge gibt der Test mit `--nocapture` aus:
 
 | Varianten | Grund |
 | ---: | --- |
-| 8.726 | Der Übersetzer kann ein Konstrukt noch nicht (`Unsupported`) |
-| 3.631 | Eine Datei der Harness endet mit einem ReferenceError |
-| 3.277 | ReferenceError im Test |
-| 2.031 | TypeError im Test |
-| 772 | `Test262Error`: Eine Assertion schlug fehl |
+| 3.575 | Eine Datei der Harness endet mit einem ReferenceError |
+| 3.295 | ReferenceError im Test |
+| 1.978 | Der Übersetzer kann ein Konstrukt noch nicht (`Unsupported`) |
+| 803 | `Test262Error`: Eine Assertion schlug fehl |
+| 731 | Ein Test mit `async` meldete einen Fehlschlag (`AsyncFailure`) |
 | 698 | Flag `module` |
-| 146 | Ein Test mit `async` meldete einen Fehlschlag (`AsyncFailure`) |
+| 122 | TypeError im Test |
+| 56 | Eine Datei der Harness endet als `Unsupported`, etwa `fnGlobalObject.js`, das `Function` aufruft |
 | 30 | Die Arbeitsschritte sind erschöpft |
 | 2 | Eine Datei der Harness endet mit einem TypeError |
 
-## `built-ins/Promise/` mit erwarteten Ergebnissen
+## `built-ins/` und `annexB/built-ins/` mit erwarteten Ergebnissen
 
 ```sh
 cargo test --locked -p mb-js script::test262::language::test262_built_ins -- --nocapture
+cargo test --locked -p mb-js script::test262::language::test262_annex_b_built_ins -- --nocapture
 ```
 
 Derselbe Läufer nimmt die Teile von `test/built-ins/`, deren eingebaute
-Objekte es schon mit allen Eigenschaften gibt, bisher nur `Promise/`. Ihre
-erwarteten Fehlschläge stehen in
+Objekte es schon mit allen Eigenschaften gibt: `Function/`, `Object/` und
+`Promise/`. Ihre erwarteten Fehlschläge stehen in
 `crates/mb-js/src/script/test262/erwartete-fehlschlaege-built-ins.txt`, mit
 Pfaden relativ zu `test/built-ins/`, sonst wie oben. Dass es eine eigene
 Datei ist und nicht die für `language/`, ist eine Lesart von „in denselben
 Lauf aufnehmen“ aus dem Anschluss unten: Beide bleiben für sich lesbar, und
-ein neuer Teil von `built-ins/` ändert nur die zweite.
+ein neuer Teil von `built-ins/` ändert nur die zweite. Ein dritter Lauf
+nimmt ebenso die Teile von `test/annexB/built-ins/`, bisher `Object/`,
+gegen `erwartete-fehlschlaege-annexb-built-ins.txt`.
 
-Von 732 Dateien laufen 643, 89 brauchen Vorschläge aus `features.txt`. Es
-bestehen 328 Dateien und 650 von 1.280 Varianten. Jede gescheiterte Datei
-nutzt im Quelltext oder in ihren `includes` mindestens eines der eingebauten
-Objekte, die noch fehlen, am häufigsten `Object.defineProperty` und
-`Object.getOwnPropertyDescriptor` (auch über `propertyHelper.js`),
-`Array.prototype.push` (auch über `promiseHelper.js`), `Set`, `Function`,
-`Function.prototype.bind` und `apply`, `Array`, `Reflect` und `eval`. Das ist
-eine Suche nach den Namen; dass es jeweils der Grund des Fehlschlags ist,
-ist nicht für jede Datei einzeln geprüft. Die Gründe:
+Von 4.652 Dateien laufen 4.563, 89 unter `Promise/` brauchen Vorschläge aus
+`features.txt`. Es bestehen 2.370 Dateien und 4.651 von 8.975 Varianten:
+
+| Teil | Dateien | Varianten |
+| --- | ---: | ---: |
+| `Function/` | 248 von 509 | 419 von 893 |
+| `Object/` | 1.635 von 3.411 | 3.264 von 6.802 |
+| `Promise/` | 487 von 643 | 968 von 1.280 |
+
+Die eine Datei unter `annexB/built-ins/Object/` braucht `$262.IsHTMLDDA`,
+das der Host noch nicht hat, und scheitert.
+
+Jede gescheiterte Datei nutzt im Quelltext oder in ihren `includes`
+mindestens eines der eingebauten Objekte, die noch fehlen, oder ein
+Konstrukt, das der Übersetzer noch nicht kann. Am häufigsten ist `Array`:
+`propertyHelper.js`, das `verifyProperty` definiert und in 923 der 2.208
+gescheiterten Dateien steht, endet gleich zu Beginn an `Array.isArray` mit
+einem ReferenceError und braucht danach `Math.pow`, `Array.prototype.join`,
+`push` und `indexOf`. Danach kommen `Map` und `Set`, `Function` mit
+CreateDynamicFunction (fast alle Fehlschläge unter `Function/`), `Date`,
+reguläre Ausdrücke, `Proxy`, `JSON`, `Reflect` und `eval`; unter `Function/`
+scheitern außerdem die 21 Dateien mit dem Feature `caller`, die die
+Erweiterung aus Abschnitt 17.1 voraussetzen. Das ist eine Suche nach den
+Namen; dass es jeweils der Grund des Fehlschlags ist, ist nicht für jede
+Datei einzeln geprüft. Die Gründe:
 
 | Varianten | Grund |
 | ---: | --- |
-| 336 | TypeError im Test, meist der Aufruf einer Funktion, die fehlt |
-| 106 | Eine Datei der Harness endet mit einem ReferenceError |
-| 98 | `AsyncFailure`: Der Test meldete einen Fehlschlag |
-| 40 | ReferenceError im Test |
-| 40 | `Test262Error`: Eine Assertion schlug fehl |
-| 8 | Der Übersetzer kann ein Konstrukt noch nicht (`Unsupported`) |
+| 1.838 | Eine Datei der Harness endet mit einem ReferenceError |
+| 1.213 | ReferenceError im Test |
+| 875 | Der Übersetzer kann ein Konstrukt noch nicht oder `Function` wurde aufgerufen (`Unsupported`) |
+| 206 | TypeError im Test, meist der Aufruf einer Funktion, die fehlt |
+| 146 | `Test262Error`: Eine Assertion schlug fehl |
+| 30 | `AsyncFailure`: Der Test meldete einen Fehlschlag |
+| 12 | Eine Datei der Harness endet als `Unsupported` |
 | 2 | `AsyncIncomplete`: Der Test meldete nichts |
+| 2 | Eine Datei der Harness endet mit einem TypeError |
 
 ## Fehler und Ressourcen
 
@@ -229,24 +260,25 @@ aufzurufenden Gettern.
    Belastungsmodus laufen sollen. Für die feste Liste gibt es keine
    Ausnahmeliste; die erwarteten Fehlschläge gelten nur für den Lauf über
    `language/`.
-3. `annexB/language/`, das `tools/testdata` schon holt, und mit Schritt 8
-   weitere Teile von `built-ins/` in den Lauf mit erwarteten Ergebnissen
-   aufnehmen: je Teil ein Eintrag in `BUILT_INS` in `language.rs` und sein
+3. `annexB/language/`, das `tools/testdata` schon holt, in den Lauf mit
+   erwarteten Ergebnissen aufnehmen, und mit jeder Welle von Schritt 8
+   weitere Teile von `built-ins/` und `annexB/built-ins/`: je Teil ein
+   Eintrag in `BUILT_INS` oder `ANNEX_B_BUILT_INS` in `language.rs` und sein
    Pfad in `tools/testdata`.
 
-Elf bei der Vorbereitung untersuchte Dateien benötigen noch fehlende
-Standardbibliothek und sind deshalb nicht Teil dieser Auswahl:
+Von elf bei der Vorbereitung untersuchten Dateien sind fünf seit Schritt 8a
+in der Auswahl (`expressions/call/11.2.3-3_4.js`, `11.2.3-3_6.js`,
+`11.2.3-3_7.js` und die beiden unter `expressions/instanceof/`). Sechs
+benötigen noch fehlende Standardbibliothek und sind deshalb nicht Teil
+dieser Auswahl:
 
 | Test unter `test/language/` | Voraussetzung |
 | --- | --- |
 | `expressions/arrow-function/cannot-override-this-with-thisArg.js` | `Array.prototype.forEach` |
-| `expressions/call/11.2.3-3_4.js`, `11.2.3-3_6.js`, `11.2.3-3_7.js` | `Object.defineProperty` |
 | `expressions/call/11.2.3-3_5.js` | `eval` |
 | `expressions/exponentiation/applying-the-exp-operator_A23.js` | `Math.PI`, `Math.E` |
 | `expressions/exponentiation/exp-operator-evaluation-order.js` | `Array.prototype.push` |
 | `expressions/exponentiation/exp-operator-precedence-update-expression-semantics.js` | `Math.pow` |
-| `expressions/instanceof/primitive-prototype-with-object.js` | `Function` |
-| `expressions/instanceof/prototype-getter-with-object-throws.js` | `Object.defineProperty`, `Function` |
 | `expressions/new/ctorExpr-isCtor-after-args-eval.js` | `Array` |
 
 Sie sind konkrete Kandidaten für die nächste Erweiterung der Liste.

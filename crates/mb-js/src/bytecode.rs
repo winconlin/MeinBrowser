@@ -100,7 +100,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::rc::Rc;
 
-use crate::ast::{Atom, FunctionId};
+use crate::ast::{Atom, ClassId, FunctionId};
 
 /// Die Art eines Operanden.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -638,9 +638,13 @@ pub enum Constant {
     /// Funktionsobjekte macht.
     Function(FunctionTemplate),
     /// Der Konstruktor einer Klasse ohne `constructor` für
-    /// [`Op::CreateClass`], mit `true` für eine abgeleitete Klasse
-    /// (ClassDefinitionEvaluation, Abschnitt 15.7.14, Schritt 14.a).
-    DefaultConstructor(bool),
+    /// [`Op::CreateClass`], mit `derived` für eine abgeleitete Klasse
+    /// (ClassDefinitionEvaluation, Abschnitt 15.7.14, Schritt 14.a) und der
+    /// Klasse für ihren Quelltext.
+    DefaultConstructor {
+        derived: bool,
+        class: ClassId,
+    },
 }
 
 /// Eine Stelle im Quelltext, an der Funktionsobjekte entstehen. Übersetzt
@@ -1214,10 +1218,10 @@ impl fmt::Display for Code {
                         Some(Constant::Function(template)) => {
                             write!(formatter, " fn{}", template.function.index())?;
                         }
-                        Some(Constant::DefaultConstructor(false)) => {
+                        Some(Constant::DefaultConstructor { derived: false, .. }) => {
                             formatter.write_str(" default")?
                         }
-                        Some(Constant::DefaultConstructor(true)) => {
+                        Some(Constant::DefaultConstructor { derived: true, .. }) => {
                             formatter.write_str(" default-derived")?;
                         }
                         None => write!(formatter, " c{value}?")?,

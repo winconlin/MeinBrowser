@@ -9,3 +9,4 @@ crates/mb-style/src/ua/tables.rs text eol=lf
 crates/mb-webidl/src/parser/tables.rs text eol=lf
 crates/mb-js/src/script/test262/erwartete-fehlschlaege.txt text eol=lf
 crates/mb-js/src/script/test262/erwartete-fehlschlaege-built-ins.txt text eol=lf
+crates/mb-js/src/script/test262/erwartete-fehlschlaege-annexb-built-ins.txt text eol=lf

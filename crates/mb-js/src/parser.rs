@@ -376,7 +376,7 @@ impl<'a> Parser<'a> {
         }
         let body = self.finish_list(mark);
         let strict = self.function.context.strict;
-        self.ast.finish(body, self.module, strict);
+        self.ast.finish(body, self.module, strict, self.source);
         if self.ast.overflowed() {
             return Err(SyntaxError {
                 kind: ErrorKind::TooLong,

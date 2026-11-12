@@ -24,6 +24,9 @@ test/language/expressions/arrow-function/throw-new.js
 test/language/expressions/call/11.2.3-3_1.js
 test/language/expressions/call/11.2.3-3_2.js
 test/language/expressions/call/11.2.3-3_3.js
+test/language/expressions/call/11.2.3-3_4.js
+test/language/expressions/call/11.2.3-3_6.js
+test/language/expressions/call/11.2.3-3_7.js
 test/language/expressions/call/11.2.3-3_8.js
 test/language/expressions/coalesce/chainable-if-parenthesis-covered-logical-and.js
 test/language/expressions/coalesce/chainable-if-parenthesis-covered-logical-or.js
@@ -72,6 +75,8 @@ test/language/expressions/function/scope-name-var-close.js
 test/language/expressions/function/scope-name-var-open-non-strict.js
 test/language/expressions/function/scope-paramsbody-var-close.js
 test/language/expressions/function/scope-paramsbody-var-open.js
+test/language/expressions/instanceof/primitive-prototype-with-object.js
+test/language/expressions/instanceof/prototype-getter-with-object-throws.js
 test/language/expressions/logical-assignment/lgcl-and-assignment-operator-namedevaluation-arrow-function.js
 test/language/expressions/logical-assignment/lgcl-and-assignment-operator-namedevaluation-function.js
 test/language/expressions/logical-assignment/lgcl-and-assignment-operator-unresolved-rhs.js

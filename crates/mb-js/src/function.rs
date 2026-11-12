@@ -41,7 +41,8 @@
 use std::rc::Rc;
 
 use crate::agent::{Agent, Completion, ErrorKind};
-use crate::ast::{Ast, Function, FunctionKind, Node};
+use crate::ast::{Ast, ClassId, Function, FunctionKind, Node};
+use crate::bound_function::innermost_target;
 use crate::builtin::{builtin_entry, builtin_parts};
 use crate::bytecode::{Code, FunctionTemplate};
 use crate::descriptor::PropertyDescriptor;
@@ -83,8 +84,8 @@ pub(crate) enum Origin {
     /// Aus einer Funktion im Syntaxbaum.
     Function(FunctionTemplate),
     /// Der Konstruktor einer Klasse ohne `constructor`, mit `derived` für
-    /// eine abgeleitete Klasse.
-    DefaultConstructor { derived: bool },
+    /// eine abgeleitete Klasse und der Klasse selbst für ihren Quelltext.
+    DefaultConstructor { derived: bool, class: ClassId },
 }
 
 /// Ob ein Funktionsobjekt [[Construct]] hat und von welcher Art.
@@ -138,8 +139,9 @@ impl Agent {
         &mut self,
         unit: Rc<Ast>,
         derived: bool,
+        class: ClassId,
     ) -> Result<i32, OutOfMemory> {
-        self.add_shared(unit, Origin::DefaultConstructor { derived })
+        self.add_shared(unit, Origin::DefaultConstructor { derived, class })
     }
 
     fn add_shared(&mut self, unit: Rc<Ast>, origin: Origin) -> Result<i32, OutOfMemory> {
@@ -177,13 +179,62 @@ pub(crate) fn function_environment<'h>(heap: &'h Heap, value: Value<'_>) -> Opti
 }
 
 /// GetFunctionRealm (Abschnitt 7.3.24): der Realm eines Funktionsobjekts
-/// oder einer eingebauten Funktion, für andere Objekte `current`, der
-/// aktuelle. Gebundene Funktionen und Proxys kommen mit den eingebauten
-/// Objekten.
+/// oder einer eingebauten Funktion, bei einer gebundenen Funktion der
+/// ihrer Zielfunktion, für andere Objekte `current`, der aktuelle. Proxys
+/// kommen mit den eingebauten Objekten.
 pub(crate) fn get_function_realm(heap: &Heap, value: Value<'_>, current: RealmId) -> RealmId {
+    match innermost_target(heap, value) {
+        Some(target) => own_realm(heap, target, current),
+        None => own_realm(heap, value, current),
+    }
+}
+
+fn own_realm(heap: &Heap, value: Value<'_>, current: RealmId) -> RealmId {
     function_parts(heap, value)
         .or_else(|| builtin_parts(heap, value))
         .map_or(current, |(_, realm)| realm)
+}
+
+/// [[SourceText]] des Funktionsobjekts `function` als Zeichenkette, `None`
+/// für andere Werte. Für den Konstruktor einer Klasse ist es der Quelltext
+/// der Klasse (ClassDefinitionEvaluation, Abschnitt 15.7.14, Schritt 14,
+/// und Schritt 4 von ClassDeclaration und ClassExpression).
+/// HostHasSourceTextAvailable (Abschnitt 20.2.3.5) ist hier immer *true*.
+pub(crate) fn function_source_text<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    function: Local<'_>,
+) -> Result<Option<Local<'s>>, OutOfMemory> {
+    let Some((shared, _)) = function_parts(agent.heap(), agent.heap().get(function)) else {
+        return Ok(None);
+    };
+    let text: Vec<u16> = {
+        let Some(entry) = agent.functions.get(shared) else {
+            return Ok(None);
+        };
+        let range = match &entry.origin {
+            Origin::Function(template) => {
+                let Some(function) = entry.unit.function(template.function) else {
+                    return Ok(None);
+                };
+                match function.kind {
+                    FunctionKind::Constructor | FunctionKind::DerivedConstructor => entry
+                        .unit
+                        .class_with_constructor(template.function)
+                        .map_or(function.range.clone(), |class| class.range.clone()),
+                    _ => function.range.clone(),
+                }
+            }
+            Origin::DefaultConstructor { class, .. } => {
+                let Some(class) = entry.unit.class(*class) else {
+                    return Ok(None);
+                };
+                class.range.clone()
+            }
+        };
+        entry.unit.source().get(range).unwrap_or_default().to_vec()
+    };
+    Ok(Some(agent.heap_mut().alloc_string(scope, &text)?))
 }
 
 /// [[HomeObject]] des Funktionsobjekts `value`, `None` ohne und für andere
@@ -325,6 +376,15 @@ pub(crate) fn create_private_methods<'s>(
 /// IsConstructor (Abschnitt 7.2.4): Funktionsobjekte, die MakeConstructor
 /// bekamen, und eingebaute Funktionen, deren Eintrag [[Construct]] nennt.
 pub(crate) fn is_constructor(agent: &Agent, value: Value<'_>) -> bool {
+    // Eine gebundene Funktion hat [[Construct]], wenn ihre Zielfunktion es
+    // hat (BoundFunctionCreate, Abschnitt 10.4.1.3, Schritt 6).
+    match innermost_target(agent.heap(), value) {
+        Some(target) => has_construct(agent, target),
+        None => has_construct(agent, value),
+    }
+}
+
+fn has_construct(agent: &Agent, value: Value<'_>) -> bool {
     if let Some(builtin) = builtin_entry(agent, value) {
         return builtin.constructor;
     }
@@ -346,8 +406,8 @@ pub(crate) fn shared_construction(agent: &Agent, shared: usize) -> Construction 
     };
     let template = match &entry.origin {
         Origin::Function(template) => template,
-        Origin::DefaultConstructor { derived: true } => return Construction::Derived,
-        Origin::DefaultConstructor { derived: false } => return Construction::Base,
+        Origin::DefaultConstructor { derived: true, .. } => return Construction::Derived,
+        Origin::DefaultConstructor { derived: false, .. } => return Construction::Base,
     };
     match entry.unit.function(template.function) {
         Some(function) if function.kind == FunctionKind::Constructor => Construction::Base,
@@ -443,7 +503,7 @@ pub(crate) fn instantiate_closure<'s>(
     };
     let prototype = agent.intrinsic(scope, realm, intrinsic);
     let function = allocate_function(agent, scope, realm, shared, environment, prototype)?;
-    set_function_length(agent, scope, function, length)?;
+    set_function_length(agent, scope, function, f64::from(length))?;
     let prefix = match kind {
         FunctionKind::Getter => Some("get"),
         FunctionKind::Setter => Some("set"),
@@ -504,7 +564,7 @@ pub(crate) fn instantiate_class_constructor<'s>(
     let function = allocate_function(agent, scope, realm, shared, environment, parent)?;
     let heap = agent.heap();
     make_method(heap, heap.get(function), heap.get(prototype));
-    set_function_length(agent, scope, function, length)?;
+    set_function_length(agent, scope, function, f64::from(length))?;
     set_function_name(agent, scope, function, name, None)?;
     let key = agent.key_from_units(scope, &units("prototype"))?;
     let descriptor = PropertyDescriptor::data(prototype, false, false, false);
@@ -566,14 +626,33 @@ fn expected_argument_count(ast: &Ast, function: &Function) -> u32 {
     u32::try_from(count).unwrap_or(u32::MAX)
 }
 
-/// SetFunctionLength (Abschnitt 10.2.10).
+/// AddRestrictedFunctionProperties (Abschnitt 10.2.4): `caller` und
+/// `arguments` als Zugriffseigenschaften mit %ThrowTypeError% aus `realm`
+/// als Getter und Setter, konfigurierbar, nicht aufzählbar.
+pub(crate) fn add_restricted_function_properties(
+    agent: &mut Agent,
+    scope: &Scope,
+    realm: RealmId,
+    function: Local<'_>,
+) -> Completion<()> {
+    let thrower = agent.intrinsic(scope, realm, Intrinsic::ThrowTypeError);
+    let descriptor = PropertyDescriptor::accessor(thrower, thrower, false, true);
+    for name in ["caller", "arguments"] {
+        let key = agent.key_from_units(scope, &units(name))?;
+        define_property_or_throw(agent, scope, function, key, &descriptor)?;
+    }
+    Ok(())
+}
+
+/// SetFunctionLength (Abschnitt 10.2.10) mit einer ganzen Zahl ab 0 oder
+/// +∞.
 pub(crate) fn set_function_length(
     agent: &mut Agent,
     scope: &Scope,
     function: Local<'_>,
-    length: u32,
+    length: f64,
 ) -> Completion<()> {
-    let value = agent.heap().local(scope, Value::number(f64::from(length)));
+    let value = agent.heap().local(scope, Value::number(length));
     let key = agent.key_from_units(scope, &units("length"))?;
     let descriptor = PropertyDescriptor::data(value, false, false, true);
     define_property_or_throw(agent, scope, function, key, &descriptor)

@@ -25,11 +25,6 @@
 //! Spezifikation kommt sie davor. Sehen lässt sich das nicht: Kein Code
 //! läuft dazwischen, und [[OwnPropertyKeys]] nennt Symbole stets nach den
 //! Zeichenketten.
-//!
-//! Abweichung, bis es %ThrowTypeError% gibt: `callee` eines Objekts ohne
-//! Verknüpfung hat statt %ThrowTypeError% *undefined* als Getter und
-//! Setter. Lesen ergibt darum *undefined* statt eines TypeError; Schreiben
-//! im strikten Modus wirft ihn, wie es soll.
 
 use super::{INLINE, ordinary_define_own_property, storage::object_of};
 use crate::agent::{Agent, Completion};
@@ -104,20 +99,20 @@ fn define_length(
 }
 
 /// CreateUnmappedArgumentsObject (Abschnitt 10.4.4.6) für die Argumente in
-/// der internen Zelle `arguments`, mit `prototype` als %Object.prototype%.
+/// der internen Zelle `arguments`, mit `prototype` als %Object.prototype%
+/// und `thrower` als %ThrowTypeError%.
 pub(crate) fn create_unmapped_arguments_object<'s>(
     agent: &mut Agent,
     scope: &'s Scope,
     prototype: Local<'_>,
+    thrower: Local<'_>,
     arguments: Local<'_>,
 ) -> Completion<Local<'s>> {
     let object = alloc(agent, scope, prototype)?;
     define_length(agent, scope, object, arguments)?;
     define_indices(agent, object, arguments)?;
-    // Abweichung: *undefined* statt %ThrowTypeError%.
-    let undefined = agent.heap().local(scope, Value::UNDEFINED);
     let key = agent.key_from_units(scope, &units("callee"))?;
-    let descriptor = PropertyDescriptor::accessor(undefined, undefined, false, false);
+    let descriptor = PropertyDescriptor::accessor(thrower, thrower, false, false);
     define_property_or_throw(agent, scope, object, key, &descriptor)?;
     Ok(object)
 }

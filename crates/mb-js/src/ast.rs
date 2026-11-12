@@ -541,6 +541,9 @@ pub struct Ast {
     module: bool,
     strict: bool,
     overflow: bool,
+    /// Der Quelltext, aus dem der Baum entstand, für
+    /// `Function.prototype.toString`.
+    source: Rc<[u16]>,
     /// Für den Übersetzer, beim ersten Gebrauch berechnet.
     captures: OnceCell<Captures>,
 }
@@ -576,6 +579,19 @@ impl Ast {
     /// Die Klasse `id`. Verweise stammen aus diesem Baum und sind gültig.
     pub fn class(&self, id: ClassId) -> Option<&Class> {
         self.classes.get(to_usize(id.0))
+    }
+
+    /// Die Klasse, deren `constructor` die Funktion `function` ist.
+    pub fn class_with_constructor(&self, function: FunctionId) -> Option<&Class> {
+        self.classes
+            .iter()
+            .find(|class| class.constructor == Some(function))
+    }
+
+    /// Der Quelltext in Codeeinheiten; die Bereiche der Funktionen und
+    /// Klassen beziehen sich darauf.
+    pub fn source(&self) -> &[u16] {
+        &self.source
     }
 
     /// Die Anweisungen des Scripts oder Moduls.
@@ -701,10 +717,11 @@ impl Ast {
         self.intern(&units)
     }
 
-    pub(crate) fn finish(&mut self, body: List, module: bool, strict: bool) {
+    pub(crate) fn finish(&mut self, body: List, module: bool, strict: bool, source: &[u16]) {
         self.body = body;
         self.module = module;
         self.strict = strict;
+        self.source = Rc::from(source);
     }
 
     /// Der Verweis auf einen neuen Eintrag hinter `length` Einträgen.

@@ -146,6 +146,26 @@ impl Agent {
         }
     }
 
+    /// Der Schlüssel als Wert, wie [[OwnPropertyKeys]] ihn nennt: ein
+    /// Index als Zeichenkette seiner Dezimalziffern, sonst die Zeichenkette
+    /// oder das Symbol.
+    pub fn key_as_value<'s>(
+        &mut self,
+        scope: &'s Scope,
+        key: PropertyKey<'_>,
+    ) -> Result<Local<'s>, OutOfMemory> {
+        match key {
+            PropertyKey::Index(index) => {
+                let text: Vec<u16> = index.to_string().encode_utf16().collect();
+                self.heap_mut().alloc_string(scope, &text)
+            }
+            PropertyKey::String(local) | PropertyKey::Symbol(local) => {
+                let heap = self.heap();
+                Ok(heap.local(scope, heap.get(local)))
+            }
+        }
+    }
+
     /// Ein neues Symbol mit der Beschreibung `description`, einer
     /// Zeichenkette oder *undefined* für `None`.
     pub fn new_symbol<'s>(

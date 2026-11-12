@@ -315,3 +315,42 @@ fn reference_numbers_round_trip() {
         GlobalReference::Unresolvable
     );
 }
+
+#[test]
+fn a_realm_is_created_with_a_collection_before_every_allocation() {
+    let mut agent = Agent::with_options(Options {
+        stress: true,
+        verify: true,
+        ..Options::default()
+    })
+    .expect("Speicher");
+    let before = agent.heap().collections();
+    let realm = agent.create_realm_under_stress().expect("Speicher");
+    let during = agent.heap().collections() - before;
+    // Gewöhnlich setzt der Belastungsmodus beim Aufbau aus: eine Sammlung
+    // am Ende statt einer je Anforderung.
+    let paused = agent.create_realm().expect("Speicher");
+    let after = agent.heap().collections() - before - during;
+    assert!(
+        during > 100,
+        "{during} Sammlungen beim Aufbau unter Belastung"
+    );
+    assert_eq!(after, 1, "Sammlungen beim gewöhnlichen Aufbau");
+    agent.scope(|agent, scope| {
+        for realm in [realm, paused] {
+            let global = agent.global_object(scope, realm);
+            let prototype = agent.intrinsic(scope, realm, Intrinsic::ObjectPrototype);
+            let actual = get_prototype_of(agent, scope, global)
+                .expect("kein Fehler")
+                .expect("Prototyp");
+            assert_eq!(bits(agent, actual), bits(agent, prototype));
+            let object = agent.intrinsic(scope, realm, Intrinsic::Object);
+            let function = agent.intrinsic(scope, realm, Intrinsic::FunctionPrototype);
+            let actual = get_prototype_of(agent, scope, object)
+                .expect("kein Fehler")
+                .expect("Prototyp");
+            assert_eq!(bits(agent, actual), bits(agent, function));
+        }
+    });
+    agent.heap().verify().expect("gültiger Heap");
+}

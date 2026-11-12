@@ -383,7 +383,7 @@ fn check_code(code: &Code, source_length: usize) -> Stats {
                 );
                 match code.constant(instruction.operand(0)) {
                     Some(Constant::Function(_)) => {}
-                    Some(Constant::DefaultConstructor(derived)) => {
+                    Some(Constant::DefaultConstructor { derived, .. }) => {
                         let default = compile_default_constructor(*derived)
                             .expect("the default constructor compiles");
                         assert_eq!(default.is_derived_constructor(), *derived);

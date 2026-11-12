@@ -51,12 +51,24 @@ const LANGUAGE: Suite = Suite {
 };
 
 /// Die eingebauten Objekte, die es schon mit allen Eigenschaften gibt.
+/// `Function/` ist dabei, weil %Function.prototype% vollständig ist; die
+/// Tests des Konstruktors scheitern erwartet, bis `eval` kommt.
 const BUILT_INS: Suite = Suite {
     directory: "test/built-ins",
-    parts: &["Promise"],
+    parts: &["Function", "Object", "Promise"],
     selection: false,
     file: "erwartete-fehlschlaege-built-ins.txt",
     expected: include_str!("erwartete-fehlschlaege-built-ins.txt"),
+};
+
+/// Dasselbe für Anhang B: `Object.prototype.__proto__` und die
+/// Altmethoden (Anhang B.2.2).
+const ANNEX_B_BUILT_INS: Suite = Suite {
+    directory: "test/annexB/built-ins",
+    parts: &["Object"],
+    selection: false,
+    file: "erwartete-fehlschlaege-annexb-built-ins.txt",
+    expected: include_str!("erwartete-fehlschlaege-annexb-built-ins.txt"),
 };
 
 /// Eine Variante einer Datei: ein Modus, oder die ganze Datei, wenn sie
@@ -295,6 +307,11 @@ fn test262_language() {
 #[test]
 fn test262_built_ins() {
     check_suite(&BUILT_INS);
+}
+
+#[test]
+fn test262_annex_b_built_ins() {
+    check_suite(&ANNEX_B_BUILT_INS);
 }
 
 fn check_suite(suite: &Suite) {

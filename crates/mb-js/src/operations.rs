@@ -11,6 +11,7 @@
 #![forbid(unsafe_code)]
 
 use crate::agent::{Agent, Completion, ErrorKind};
+use crate::conversion::to_length;
 use crate::descriptor::PropertyDescriptor;
 use crate::function::is_constructor;
 use crate::heap::{Heap, Local, ObjectClass, Scope};
@@ -23,6 +24,10 @@ use crate::realm::{Intrinsic, RealmId};
 use crate::reference::{get_value, to_object_base};
 use crate::value::{Kind, Value};
 
+fn units(text: &str) -> Vec<u16> {
+    text.encode_utf16().collect()
+}
+
 /// IsArray (Abschnitt 7.2.2). Proxys, die das Ergebnis ihres Ziels
 /// liefern, kommen mit den Proxy-Objekten.
 pub fn is_array(heap: &Heap, value: Value<'_>) -> bool {
@@ -32,12 +37,12 @@ pub fn is_array(heap: &Heap, value: Value<'_>) -> bool {
     }
 }
 
-/// IsCallable (Abschnitt 7.2.3). Bisher haben ECMAScript-Funktionsobjekte
-/// und eingebaute Funktionen [[Call]].
+/// IsCallable (Abschnitt 7.2.3). Bisher haben ECMAScript-Funktionsobjekte,
+/// eingebaute und gebundene Funktionen [[Call]].
 pub fn is_callable(heap: &Heap, value: Value<'_>) -> bool {
     match value.kind() {
         Kind::Object(object) => match heap.object_class(object) {
-            Some(ObjectClass::Function | ObjectClass::Builtin) => true,
+            Some(ObjectClass::Function | ObjectClass::Builtin | ObjectClass::BoundFunction) => true,
             Some(
                 ObjectClass::Ordinary
                 | ObjectClass::Array
@@ -285,6 +290,165 @@ pub fn has_own_property(
     key: PropertyKey<'_>,
 ) -> Completion<bool> {
     Ok(object::get_own_property(agent, scope, object, key)?.is_some())
+}
+
+/// LengthOfArrayLike (Abschnitt 7.3.19).
+pub(crate) fn length_of_array_like(
+    agent: &mut Agent,
+    scope: &Scope,
+    object: Local<'_>,
+) -> Completion<f64> {
+    let key = agent.key_from_units(scope, &units("length"))?;
+    let length = get(agent, scope, object, key)?;
+    to_length(agent, scope, length)
+}
+
+/// CreateListFromArrayLike (Abschnitt 7.3.20) mit beliebigen Elementen.
+/// Jedes Element kostet einen Arbeitsschritt, damit eine riesige `length`
+/// am Budget scheitert.
+pub(crate) fn create_list_from_array_like<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    value: Local<'_>,
+) -> Completion<Vec<Local<'s>>> {
+    if !matches!(agent.heap().get(value).kind(), Kind::Object(_)) {
+        return Err(agent.throw_error(ErrorKind::TypeError));
+    }
+    let length = length_of_array_like(agent, scope, value)?;
+    let mut list = Vec::new();
+    let mut index: u32 = 0;
+    while f64::from(index) < length {
+        agent.spend_execution_steps(1)?;
+        list.push(get(agent, scope, value, PropertyKey::Index(index))?);
+        // Mehr Elemente als Indizes kann kein Array halten.
+        index = index
+            .checked_add(1)
+            .ok_or_else(|| agent.throw_error(ErrorKind::RangeError))?;
+    }
+    Ok(list)
+}
+
+/// Die Stufen von SetIntegrityLevel und TestIntegrityLevel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum IntegrityLevel {
+    Sealed,
+    Frozen,
+}
+
+/// SetIntegrityLevel (Abschnitt 7.3.15).
+pub(crate) fn set_integrity_level(
+    agent: &mut Agent,
+    scope: &Scope,
+    object: Local<'_>,
+    level: IntegrityLevel,
+) -> Completion<bool> {
+    if !object::prevent_extensions(agent, object)? {
+        return Ok(false);
+    }
+    let keys = object::own_property_keys(agent, scope, object)?;
+    for key in keys {
+        agent.scope(|agent, inner| -> Completion<()> {
+            let descriptor = match level {
+                IntegrityLevel::Sealed => PropertyDescriptor {
+                    configurable: Some(false),
+                    ..PropertyDescriptor::default()
+                },
+                IntegrityLevel::Frozen => {
+                    let Some(current) = object::get_own_property(agent, inner, object, key)? else {
+                        return Ok(());
+                    };
+                    PropertyDescriptor {
+                        writable: if current.is_accessor() {
+                            None
+                        } else {
+                            Some(false)
+                        },
+                        configurable: Some(false),
+                        ..PropertyDescriptor::default()
+                    }
+                }
+            };
+            define_property_or_throw(agent, inner, object, key, &descriptor)
+        })?;
+    }
+    Ok(true)
+}
+
+/// TestIntegrityLevel (Abschnitt 7.3.16).
+pub(crate) fn test_integrity_level(
+    agent: &mut Agent,
+    scope: &Scope,
+    object: Local<'_>,
+    level: IntegrityLevel,
+) -> Completion<bool> {
+    if object::is_extensible(agent, object)? {
+        return Ok(false);
+    }
+    let keys = object::own_property_keys(agent, scope, object)?;
+    for key in keys {
+        let fixed = agent.scope(|agent, inner| -> Completion<bool> {
+            let Some(current) = object::get_own_property(agent, inner, object, key)? else {
+                return Ok(true);
+            };
+            if current.configurable == Some(true) {
+                return Ok(false);
+            }
+            if level == IntegrityLevel::Frozen
+                && current.is_data()
+                && current.writable == Some(true)
+            {
+                return Ok(false);
+            }
+            Ok(true)
+        })?;
+        if !fixed {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Was EnumerableOwnProperties liefert.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EnumerableKind {
+    Key,
+    Value,
+    KeyValue,
+}
+
+/// EnumerableOwnProperties (Abschnitt 7.3.24); die Paare für
+/// [`EnumerableKind::KeyValue`] sind Arrays aus `realm`, dem aktuellen
+/// Realm. Schlüssel kommen als Zeichenketten.
+pub(crate) fn enumerable_own_properties<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    realm: RealmId,
+    object: Local<'_>,
+    kind: EnumerableKind,
+) -> Completion<Vec<Local<'s>>> {
+    let keys = object::own_property_keys(agent, scope, object)?;
+    let mut results = Vec::new();
+    for key in keys {
+        if matches!(key, PropertyKey::Symbol(_)) {
+            continue;
+        }
+        let Some(descriptor) = object::get_own_property(agent, scope, object, key)? else {
+            continue;
+        };
+        if descriptor.enumerable != Some(true) {
+            continue;
+        }
+        match kind {
+            EnumerableKind::Key => results.push(agent.key_as_value(scope, key)?),
+            EnumerableKind::Value => results.push(get(agent, scope, object, key)?),
+            EnumerableKind::KeyValue => {
+                let name = agent.key_as_value(scope, key)?;
+                let value = get(agent, scope, object, key)?;
+                results.push(create_array_from_list(agent, scope, realm, &[name, value])?);
+            }
+        }
+    }
+    Ok(results)
 }
 
 /// PrivateFieldAdd (Abschnitt 7.3.27).

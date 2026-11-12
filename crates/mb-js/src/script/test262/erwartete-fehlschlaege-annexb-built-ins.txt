@@ -1,0 +1,7 @@
+# Erwartete Fehlschläge der Test262-Dateien unter test/annexB/built-ins/, Pfade
+# relativ dazu. Ohne Modus scheitern alle Varianten der Datei, sonst
+# nur der genannte. Erzeugt von script/test262/language.rs; bei einer
+# Abweichung schreibt der Test die neue Fassung nach
+# target/test262/erwartete-fehlschlaege-annexb-built-ins.txt.
+# 1 Dateien, 0 Vorschläge übersprungen; bestanden 0 von 1 Dateien und 0 von 2 Varianten
+Object/is/emulates-undefined.js

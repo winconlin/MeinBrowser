@@ -40,8 +40,8 @@
 //! in Scripts entscheidet GlobalDeclarationInstantiation, ob es die
 //! globale Bindung gibt, und setzt dafür ein Register.
 //!
-//! Noch nicht unterstützt sind async-Generatoren, `for`-`in`, `with`,
-//! `import()`, BigInt-Literale, reguläre Ausdrücke, Templates mit Tag und
+//! Noch nicht unterstützt sind `for`-`in`, `with`, `import()`,
+//! BigInt-Literale, reguläre Ausdrücke, Templates mit Tag und
 //! Funktionsdeklarationen mit Marke (Anhang B.3.1).
 //!
 //! Klassen: Eine Klasse hat einen eigenen Bereich mit ihrem Namen als
@@ -1274,7 +1274,7 @@ impl<'a> Compiler<'a> {
             Constant::Number(number) => Some(ConstantKey::Number(number.to_bits())),
             Constant::String(units) => Some(ConstantKey::String(units.clone())),
             Constant::Name(units) => Some(ConstantKey::Name(units.clone())),
-            Constant::Function(_) | Constant::DefaultConstructor(_) => None,
+            Constant::Function(_) | Constant::DefaultConstructor { .. } => None,
         };
         if let Some(&index) = key.as_ref().and_then(|key| self.constant_index.get(key)) {
             return Ok(index);
@@ -3823,7 +3823,10 @@ impl<'a> Compiler<'a> {
                 binds_name: false,
                 outer: self.enclosing(),
             }),
-            None => Constant::DefaultConstructor(class.heritage.is_some()),
+            None => Constant::DefaultConstructor {
+                derived: class.heritage.is_some(),
+                class: id,
+            },
         };
         let function = self.constant(function)?;
         self.position(node)?;

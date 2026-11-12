@@ -22,10 +22,12 @@ use crate::agent::{Agent, Completion, ErrorKind};
 use crate::builtin::builtin_function_with_prototype;
 use crate::builtins::{self, FUNCTION_PROTOTYPE};
 use crate::descriptor::PropertyDescriptor;
+use crate::function::add_restricted_function_properties;
 use crate::heap::{Local, Persistent, Scope};
 use crate::key::PropertyKey;
 use crate::object::{
-    self, array_create, ordinary_object_create, primitive_object_create, string_create,
+    self, array_create, make_prototype_immutable, ordinary_object_create, primitive_object_create,
+    string_create,
 };
 use crate::operations::{define_property_or_throw, get, has_own_property, has_property, set};
 use crate::value::Value;
@@ -57,11 +59,16 @@ struct Binding {
 /// Die Intrinsics (Abschnitt 6.1.7.4), die es schon gibt.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Intrinsic {
-    /// %Object.prototype% (Abschnitt 20.1.3) mit `toString`.
+    /// %Object.prototype% (Abschnitt 20.1.3) mit allen Eigenschaften, auch
+    /// denen aus Anhang B.2.2.
     ObjectPrototype,
     /// %Function.prototype% (Abschnitt 20.2.3), selbst eine eingebaute
-    /// Funktion, mit `call`.
+    /// Funktion, mit allen Eigenschaften, auch `caller` und `arguments` aus
+    /// AddRestrictedFunctionProperties (Abschnitt 10.2.4).
     FunctionPrototype,
+    /// %ThrowTypeError% (Abschnitt 10.2.4.1): wirft einen TypeError, ist
+    /// nicht erweiterbar, `length` und `name` sind nicht konfigurierbar.
+    ThrowTypeError,
     /// %Array.prototype% (Abschnitt 23.1.3): ein Array mit der Länge 0.
     ArrayPrototype,
     /// %Boolean.prototype% (Abschnitt 20.3.3), ein Boolean-Objekt mit
@@ -129,6 +136,9 @@ pub enum Intrinsic {
     AggregateErrorPrototype,
     /// %Object% (Abschnitt 20.1.1).
     Object,
+    /// %Function% (Abschnitt 20.2.1), bisher ohne CreateDynamicFunction:
+    /// Aufruf und `new` enden als nicht unterstützt, bis `eval` kommt.
+    Function,
     /// %String% (Abschnitt 22.1.1).
     String,
     /// %Symbol% (Abschnitt 20.4.1) mit den bekannten Symbolen und
@@ -217,8 +227,21 @@ impl Agent {
     /// (Abschnitt 9.3.3) für die Eigenschaften, die es schon gibt, und
     /// zuletzt die Eigenschaften des Hosts
     /// ([`Host::define_global_properties`](crate::host::Host::define_global_properties)).
-    /// Scheitert das, gibt es den Realm nicht.
+    /// Scheitert das, gibt es den Realm nicht. Im Belastungsmodus des Heaps
+    /// entsteht der Realm ohne Sammlungen, eine Sammlung am Ende verschiebt
+    /// ihn dann einmal ([`Heap::pause_stress`](crate::heap::Heap::pause_stress)).
     pub fn create_realm(&mut self) -> Completion<RealmId> {
+        self.create_realm_with(true)
+    }
+
+    /// Wie [`Agent::create_realm`], aber mit Sammlungen vor jeder
+    /// Anforderung, wenn der Heap im Belastungsmodus ist.
+    #[cfg(test)]
+    pub(crate) fn create_realm_under_stress(&mut self) -> Completion<RealmId> {
+        self.create_realm_with(false)
+    }
+
+    fn create_realm_with(&mut self, pause_stress: bool) -> Completion<RealmId> {
         let realm = RealmId(self.realms.len());
         let global_object = self.scope(|agent, scope| {
             let undefined = agent.heap().local(scope, Value::UNDEFINED);
@@ -229,10 +252,19 @@ impl Agent {
             global_object,
             declarative: BTreeMap::new(),
         });
+        if pause_stress {
+            self.heap_mut().pause_stress();
+        }
         let result = self.scope(|agent, scope| initialize_realm(agent, scope, realm));
+        if pause_stress {
+            self.heap_mut().resume_stress();
+        }
         if let Err(abrupt) = result {
             self.discard_realm(realm);
             return Err(abrupt);
+        }
+        if pause_stress && self.heap().stress() {
+            self.heap_mut().collect();
         }
         Ok(realm)
     }
@@ -593,9 +625,13 @@ fn initialize_realm(agent: &mut Agent, scope: &Scope, realm: RealmId) -> Complet
 /// CreateIntrinsics (Abschnitt 9.3.2) für die Intrinsics, die es schon gibt:
 /// erst %Object.prototype% und %Function.prototype%, auf denen alle anderen
 /// aufbauen, dann die Prototypen der Arrays und der primitiven Werte, dann
-/// die eingebauten Objekte aus `builtins`.
+/// die eingebauten Objekte aus `builtins`, zuletzt `caller` und `arguments`
+/// an %Function.prototype% (Schritt 3).
 fn create_intrinsics(agent: &mut Agent, scope: &Scope, realm: RealmId) -> Completion<()> {
     let object = ordinary_object_create(agent, scope, None)?;
+    // %Object.prototype% ist ein Objekt mit unveränderlichem Prototyp
+    // (Abschnitt 20.1.3).
+    make_prototype_immutable(agent, object);
     agent.set_intrinsic(realm, Intrinsic::ObjectPrototype, object);
     let function =
         builtin_function_with_prototype(agent, scope, realm, &FUNCTION_PROTOTYPE, object)?;
@@ -616,7 +652,8 @@ fn create_intrinsics(agent: &mut Agent, scope: &Scope, realm: RealmId) -> Comple
     agent.set_intrinsic(realm, Intrinsic::StringPrototype, string);
     let symbol = ordinary_object_create(agent, scope, Some(object))?;
     agent.set_intrinsic(realm, Intrinsic::SymbolPrototype, symbol);
-    builtins::create_intrinsics(agent, scope, realm)
+    builtins::create_intrinsics(agent, scope, realm)?;
+    add_restricted_function_properties(agent, scope, realm, function)
 }
 
 /// SetDefaultGlobalBindings (Abschnitt 9.3.3) für die Werteigenschaften aus
@@ -648,6 +685,7 @@ fn set_default_global_bindings(
         ("AggregateError", Intrinsic::AggregateError),
         ("Error", Intrinsic::Error),
         ("EvalError", Intrinsic::EvalError),
+        ("Function", Intrinsic::Function),
         ("Object", Intrinsic::Object),
         ("Promise", Intrinsic::Promise),
         ("RangeError", Intrinsic::RangeError),

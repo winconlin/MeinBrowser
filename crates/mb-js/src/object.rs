@@ -208,7 +208,8 @@ pub fn get_prototype_of<'s>(
         | ObjectClass::Generator
         | ObjectClass::Promise
         | ObjectClass::AsyncFromSyncIterator
-        | ObjectClass::AsyncGenerator => {
+        | ObjectClass::AsyncGenerator
+        | ObjectClass::BoundFunction => {
             let heap = agent.heap();
             let prototype =
                 object_of(heap, object).and_then(|object| heap.object_prototype(object));
@@ -235,7 +236,8 @@ pub fn set_prototype_of(
         | ObjectClass::Generator
         | ObjectClass::Promise
         | ObjectClass::AsyncFromSyncIterator
-        | ObjectClass::AsyncGenerator => {}
+        | ObjectClass::AsyncGenerator
+        | ObjectClass::BoundFunction => {}
     }
     if let Some(prototype) = prototype {
         // Der Prototyp muss ein Objekt sein.
@@ -250,6 +252,11 @@ pub fn set_prototype_of(
     };
     if heap.object_prototype(object) == prototype {
         return Ok(true);
+    }
+    // SetImmutablePrototype (Abschnitt 10.4.7.1): nur derselbe Prototyp
+    // geht, und der ist oben schon erledigt.
+    if heap.object_prototype_immutable(object) {
+        return Ok(false);
     }
     if !heap.object_extensible(object) {
         return Ok(false);
@@ -280,7 +287,8 @@ pub fn is_extensible(agent: &mut Agent, object: Local<'_>) -> Completion<bool> {
         | ObjectClass::Generator
         | ObjectClass::Promise
         | ObjectClass::AsyncFromSyncIterator
-        | ObjectClass::AsyncGenerator => {
+        | ObjectClass::AsyncGenerator
+        | ObjectClass::BoundFunction => {
             let heap = agent.heap();
             Ok(object_of(heap, object).is_some_and(|object| heap.object_extensible(object)))
         }
@@ -301,13 +309,24 @@ pub fn prevent_extensions(agent: &mut Agent, object: Local<'_>) -> Completion<bo
         | ObjectClass::Generator
         | ObjectClass::Promise
         | ObjectClass::AsyncFromSyncIterator
-        | ObjectClass::AsyncGenerator => {
+        | ObjectClass::AsyncGenerator
+        | ObjectClass::BoundFunction => {
             let heap = agent.heap();
             if let Some(object) = object_of(heap, object) {
                 heap.prevent_object_extensions(object);
             }
             Ok(true)
         }
+    }
+}
+
+/// Macht `object` zu einem Objekt mit unveränderlichem Prototyp (Abschnitt
+/// 10.4.7): [[SetPrototypeOf]] nimmt dann nur noch den Prototyp an, den es
+/// schon hat. So ist %Object.prototype% (Abschnitt 20.1.3).
+pub(crate) fn make_prototype_immutable(agent: &Agent, object: Local<'_>) {
+    let heap = agent.heap();
+    if let Some(object) = object_of(heap, object) {
+        heap.make_object_prototype_immutable(object);
     }
 }
 
@@ -330,7 +349,8 @@ pub fn get_own_property<'s>(
         | ObjectClass::Generator
         | ObjectClass::Promise
         | ObjectClass::AsyncFromSyncIterator
-        | ObjectClass::AsyncGenerator => {
+        | ObjectClass::AsyncGenerator
+        | ObjectClass::BoundFunction => {
             Ok(ordinary_get_own_property(agent.heap(), scope, object, key))
         }
     }
@@ -384,7 +404,8 @@ pub fn define_own_property(
         | ObjectClass::Generator
         | ObjectClass::Promise
         | ObjectClass::AsyncFromSyncIterator
-        | ObjectClass::AsyncGenerator => {
+        | ObjectClass::AsyncGenerator
+        | ObjectClass::BoundFunction => {
             ordinary_define_own_property(agent, scope, object, key, descriptor)
         }
         ObjectClass::Array => array::define_own_property(agent, scope, object, key, descriptor),
@@ -863,7 +884,8 @@ pub fn own_property_keys<'s>(
         | ObjectClass::Generator
         | ObjectClass::Promise
         | ObjectClass::AsyncFromSyncIterator
-        | ObjectClass::AsyncGenerator => {}
+        | ObjectClass::AsyncGenerator
+        | ObjectClass::BoundFunction => {}
     }
     let heap = agent.heap();
     let Some(object) = object_of(heap, object) else {
