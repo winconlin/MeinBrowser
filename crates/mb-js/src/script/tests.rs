@@ -2556,6 +2556,139 @@ fn for_of_has_a_completion_value() {
 }
 
 #[test]
+fn for_in_enumerates_string_keys_in_order() {
+    check(&[
+        ("var s = ''; for (var k in {a: 1, b: 2}) s += k; s", "\"ab\""),
+        ("var s = ''; for (var k in [7, 8]) s += k; s", "\"01\""),
+        // Indizes zuerst, dann die anderen Namen in ihrer Reihenfolge.
+        (
+            "var s = ''; for (var k in {b: 1, 2: 1, a: 1, 1: 1}) s += k; s",
+            "\"12ba\"",
+        ),
+        ("var s = ''; for (var k in 'ab') s += k; s", "\"01\""),
+        ("var t = ''; for (var k in [1]) t = typeof k; t", "\"string\""),
+        (
+            "var n = 0; for (var k in null) n++; for (var k in undefined) n++; n",
+            "0",
+        ),
+        ("var n = 0; for (var k in 5) n++; n", "0"),
+        // Nicht aufzählbare Eigenschaften und Symbole zählt es nicht.
+        (
+            "var s = ''; var o = {a: 1}; \
+             Object.defineProperty(o, 'h', {value: 1, enumerable: false}); \
+             for (var k in o) s += k; s",
+            "\"a\"",
+        ),
+        (
+            "var s = ''; var o = {a: 1}; o[Symbol.iterator] = 1; for (var k in o) s += k; s",
+            "\"a\"",
+        ),
+        // Dann die Prototypen, verdeckte Namen nicht noch einmal.
+        (
+            "var s = ''; var p = {a: 1, b: 2}; var o = Object.create(p); o.b = 3; o.c = 4; \
+             for (var k in o) s += k; s",
+            "\"bca\"",
+        ),
+        (
+            "var s = ''; var p = {a: 1}; var o = Object.create(p); \
+             Object.defineProperty(o, 'a', {value: 1, enumerable: false}); \
+             for (var k in o) s += k; s",
+            "\"\"",
+        ),
+        (
+            "var s = ''; var q = {a: 1, b: 1}; var p = Object.create(q); p.b = 2; p.c = 2; \
+             var o = Object.create(p); o.c = 3; o.d = 3; for (var k in o) s += k; s",
+            "\"cdba\"",
+        ),
+        // Was während der Schleife gelöscht wird, kommt nicht mehr.
+        (
+            "var s = ''; var o = {a: 1, b: 2, c: 3}; for (var k in o) { s += k; delete o.b; } s",
+            "\"ac\"",
+        ),
+        // Die Schlüssel eines Objekts stehen fest, wenn es an der Reihe
+        // ist: Ein neuer Name im Prototyp kommt noch, einer im Objekt nicht.
+        (
+            "var s = ''; var p = {x: 1}; var o = Object.create(p); o.a = 1; \
+             for (var k in o) { s += k; o.b = 1; p.y = 1; } s",
+            "\"axy\"",
+        ),
+    ]);
+}
+
+#[test]
+fn for_in_binds_each_kind_of_target() {
+    check(&[
+        ("for (var g in {x: 1}); g", "\"x\""),
+        ("for (h in {y: 1}); h", "\"y\""),
+        ("var o = {}; for (o.p in {a: 1, b: 1}); o.p", "\"b\""),
+        ("function f() { for (var k in {a: 1, b: 1}); return k; } f()", "\"b\""),
+        ("var s = 0; for (let k in {a: 1, b: 1}) s++; s", "2"),
+        ("var s = ''; for (const k in {a: 1, b: 1}) s += k; s", "\"ab\""),
+        ("for (const k in {a: 1}) k = 2;", "TypeError"),
+        ("'use strict'; for (u in {a: 1});", "ReferenceError"),
+        // Jeder Durchlauf hat eigene Bindungen.
+        (
+            "var fs = [], i = 0; for (let k in {a: 1, b: 1}) fs[i++] = function () { return k; }; \
+             fs[0]() + fs[1]()",
+            "\"ab\"",
+        ),
+        // Die rechte Seite sieht die Namen aus dem Kopf in der TDZ.
+        ("for (let k in {a: k});", "ReferenceError"),
+        ("let k = 1; { for (let k in {a: k}); }", "ReferenceError"),
+        ("var k = 'a'; for (var k in {[k + 'b']: 1}); k", "\"ab\""),
+        // Muster zerlegen den Schlüssel.
+        ("var s = ''; for (var [a, b] in {xy: 1}) s += a + b; s", "\"xy\""),
+        ("var s = ''; for ([a, b] in {xy: 1}) s += b + a; s", "\"yx\""),
+        ("var s = ''; for (let {length: n} in {abc: 1}) s += n; s", "\"3\""),
+        // Anhang B.3.5: `var` mit Initialisierer, auch mit NamedEvaluation.
+        ("for (var k = 'init' in {}); k", "\"init\""),
+        ("for (var k = 'init' in {a: 1}); k", "\"a\""),
+        ("for (var f = function () {} in {}); f.name", "\"f\""),
+        (
+            "function g() { for (var k = 'init' in {}); return k; } g()",
+            "\"init\"",
+        ),
+        // Funktionen im Rumpf nach Anhang B.3.2.
+        (
+            "for (var k in {a: 1}) { function g() { return 'g'; } } g()",
+            "\"g\"",
+        ),
+    ]);
+}
+
+#[test]
+fn for_in_has_a_completion_value() {
+    check(&[
+        ("1; for (var k in {});", "undefined"),
+        ("for (var k in {a: 1, b: 2}) k + '!';", "\"b!\""),
+        ("1; for (var k in {a: 1}) { 2; break; }", "2"),
+        ("1; for (var k in {a: 1}) { break; }", "undefined"),
+        (
+            "1; for (var k in {a: 1, b: 1}) { if (k == 'b') continue; k; }",
+            "undefined",
+        ),
+        (
+            "var s = ''; outer: for (var i in {a: 1, b: 1}) { \
+             for (var j in {c: 1, d: 1}) { if (j == 'd') continue outer; s += i + j; } } s",
+            "\"acbc\"",
+        ),
+        (
+            "var s = ''; outer: for (var i in {a: 1, b: 1}) { \
+             for (var j in {c: 1, d: 1}) { if (j == 'd') break outer; s += i + j; } } s",
+            "\"ac\"",
+        ),
+        (
+            "function f() { for (var k in {a: 1, b: 1}) { try { return k; } finally { } } } f()",
+            "\"a\"",
+        ),
+        (
+            "var s = ''; try { for (var k in {a: 1, b: 1}) { s += k; throw 1; } } catch (e) { s += e; } s",
+            "\"a1\"",
+        ),
+    ]);
+}
+
+#[test]
 fn for_of_closes_iterators_it_leaves() {
     check_iter(&[
         (

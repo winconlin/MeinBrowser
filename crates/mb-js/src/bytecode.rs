@@ -466,6 +466,14 @@ ops! {
     IteratorClose [Register],
     /// Dasselbe für eine Ausnahme: Was `return` wirft, fällt weg.
     IteratorCloseOnThrow [Register],
+    /// EnumerateObjectProperties (Abschnitt 14.7.5.9) für den Akkumulator,
+    /// für `for`-`in`: Das Register nimmt den Aufzähler auf. Für *undefined*
+    /// und *null* ist er sofort fertig, sonst zählt er die aufzählbaren
+    /// Zeichenkettenschlüssel von ToObject und seiner Prototypkette auf.
+    ForInPrepare [Register],
+    /// Der nächste Schlüssel des Aufzählers im Register als Zeichenkette im
+    /// Akkumulator, oder ein Sprung, wenn keiner mehr kommt.
+    ForInNext [Jump, Register],
     /// Ein Element eines Array-Musters (IteratorBindingInitialization,
     /// Abschnitt 8.6.3, und IteratorDestructuringAssignmentEvaluation,
     /// Abschnitt 13.15.5.5): der nächste Wert aus dem Iterator Record ab dem

@@ -136,6 +136,8 @@ pub enum Intrinsic {
     AggregateErrorPrototype,
     /// %Object% (Abschnitt 20.1.1).
     Object,
+    /// %Array% (Abschnitt 23.1.1).
+    Array,
     /// %Function% (Abschnitt 20.2.1), bisher ohne CreateDynamicFunction:
     /// Aufruf und `new` enden als nicht unterstützt, bis `eval` kommt.
     Function,
@@ -683,6 +685,7 @@ fn set_default_global_bindings(
     }
     let constructors = [
         ("AggregateError", Intrinsic::AggregateError),
+        ("Array", Intrinsic::Array),
         ("Error", Intrinsic::Error),
         ("EvalError", Intrinsic::EvalError),
         ("Function", Intrinsic::Function),

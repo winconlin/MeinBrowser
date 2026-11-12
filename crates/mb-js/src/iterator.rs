@@ -40,7 +40,7 @@ fn is_object(agent: &Agent, value: Local<'_>) -> bool {
 /// GetMethod (Abschnitt 7.3.10) für einen beliebigen Wert, mit GetV
 /// (Abschnitt 7.3.3): ein primitiver Wert liest über den Prototyp seines
 /// Wrappers aus `realm`. `None` steht für *undefined*.
-fn get_method_of_value<'s>(
+pub(crate) fn get_method_of_value<'s>(
     agent: &mut Agent,
     scope: &'s Scope,
     realm: RealmId,
@@ -101,7 +101,7 @@ pub(crate) fn get_async_iterator<'s>(
 
 /// GetIteratorFromMethod (Abschnitt 7.4.3) mit GetIteratorDirect
 /// (Abschnitt 7.4.2).
-fn get_iterator_from_method<'s>(
+pub(crate) fn get_iterator_from_method<'s>(
     agent: &mut Agent,
     scope: &'s Scope,
     value: Local<'_>,
@@ -259,7 +259,7 @@ pub(crate) fn iterator_close_on_throw(
 /// IfAbruptCloseIterator (Abschnitt 7.4.12) für das Ergebnis eines
 /// Schritts: Eine Ausnahme schließt den Iterator und gilt dann weiter, ein
 /// erschöpftes Budget geht ohne Schließen weiter.
-fn close_if_abrupt<T>(
+pub(crate) fn close_if_abrupt<T>(
     agent: &mut Agent,
     scope: &Scope,
     iterator: Local<'_>,

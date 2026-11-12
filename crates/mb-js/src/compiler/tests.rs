@@ -1158,6 +1158,36 @@ fn for_of_bodies_hold_no_tail_calls() {
     }
 }
 
+/// `for`-`in`: Der Aufzähler liegt in einem Register, jeder Durchlauf holt
+/// einen Schlüssel oder springt hinter die Schleife; geschlossen wird
+/// nichts.
+#[test]
+fn for_in_loops_hold_their_enumerator_in_a_register() {
+    assert_eq!(
+        shape("for (var k in o) f(k);"),
+        [
+            "LdaGlobal o",
+            "ForInPrepare r2",
+            "LdaUndefined",
+            "Star r1",
+            "ForInNext @ r2",
+            "ResolveGlobal k r4",
+            "StaGlobal k r4",
+            "LdaGlobal f",
+            "Star r4",
+            "LdaUndefined",
+            "Star r5",
+            "LdaGlobal k",
+            "Star r6",
+            "Call r4 1",
+            "Star r1",
+            "JumpLoop @",
+            "Ldar r1",
+            "Return",
+        ]
+    );
+}
+
 /// Die Befehle ohne Abstände und ohne Sprungziele.
 fn shape(source: &str) -> Vec<String> {
     listing(source)
