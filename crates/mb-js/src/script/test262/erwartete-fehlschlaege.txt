@@ -3,7 +3,7 @@
 # nur der genannte. Erzeugt von script/test262/language.rs; bei einer
 # Abweichung schreibt der Test die neue Fassung nach
 # target/test262/erwartete-fehlschlaege.txt.
-# 23828 Dateien, 532 Vorschläge übersprungen; bestanden 20150 von 23296 Dateien und 38994 von 43794 Varianten
+# 23828 Dateien, 532 Vorschläge übersprungen; bestanden 20168 von 23296 Dateien und 39030 von 43794 Varianten
 arguments-object/10.5-1-s.js
 arguments-object/10.5-7-b-1-s.js
 arguments-object/10.6-13-a-2.js
@@ -621,9 +621,7 @@ expressions/class/subclass-builtins/subclass-Function.js
 expressions/class/subclass-builtins/subclass-Int16Array.js
 expressions/class/subclass-builtins/subclass-Int32Array.js
 expressions/class/subclass-builtins/subclass-Int8Array.js
-expressions/class/subclass-builtins/subclass-Map.js
 expressions/class/subclass-builtins/subclass-RegExp.js
-expressions/class/subclass-builtins/subclass-Set.js
 expressions/class/subclass-builtins/subclass-SharedArrayBuffer.js
 expressions/class/subclass-builtins/subclass-Uint16Array.js
 expressions/class/subclass-builtins/subclass-Uint32Array.js
@@ -2590,14 +2588,10 @@ statements/class/subclass/builtin-objects/GeneratorFunction/instance-name.js
 statements/class/subclass/builtin-objects/GeneratorFunction/instance-prototype.js
 statements/class/subclass/builtin-objects/GeneratorFunction/regular-subclassing.js
 statements/class/subclass/builtin-objects/GeneratorFunction/super-must-be-called.js
-statements/class/subclass/builtin-objects/Map/regular-subclassing.js
-statements/class/subclass/builtin-objects/Map/super-must-be-called.js
 statements/class/subclass/builtin-objects/Proxy/no-prototype-throws.js
 statements/class/subclass/builtin-objects/RegExp/lastIndex.js
 statements/class/subclass/builtin-objects/RegExp/regular-subclassing.js
 statements/class/subclass/builtin-objects/RegExp/super-must-be-called.js
-statements/class/subclass/builtin-objects/Set/regular-subclassing.js
-statements/class/subclass/builtin-objects/Set/super-must-be-called.js
 statements/class/subclass/builtin-objects/String/regular-subclassing.js
 statements/class/subclass/builtin-objects/TypedArray/regular-subclassing.js
 statements/class/subclass/builtin-objects/TypedArray/super-must-be-called.js
@@ -2621,9 +2615,7 @@ statements/class/subclass-builtins/subclass-Function.js
 statements/class/subclass-builtins/subclass-Int16Array.js
 statements/class/subclass-builtins/subclass-Int32Array.js
 statements/class/subclass-builtins/subclass-Int8Array.js
-statements/class/subclass-builtins/subclass-Map.js
 statements/class/subclass-builtins/subclass-RegExp.js
-statements/class/subclass-builtins/subclass-Set.js
 statements/class/subclass-builtins/subclass-SharedArrayBuffer.js
 statements/class/subclass-builtins/subclass-Uint16Array.js
 statements/class/subclass-builtins/subclass-Uint32Array.js
@@ -2700,17 +2692,7 @@ statements/for-of/int8array-mutate.js
 statements/for-of/int8array.js
 statements/for-of/iterator-as-proxy.js
 statements/for-of/iterator-next-result-type.js
-statements/for-of/map-contract-expand.js
-statements/for-of/map-contract.js
-statements/for-of/map-expand-contract.js
-statements/for-of/map-expand.js
-statements/for-of/map.js
 statements/for-of/scope-head-var-none.js
-statements/for-of/set-contract-expand.js
-statements/for-of/set-contract.js
-statements/for-of/set-expand-contract.js
-statements/for-of/set-expand.js
-statements/for-of/set.js
 statements/for-of/typedarray-backed-by-resizable-buffer-grow-before-end.js
 statements/for-of/typedarray-backed-by-resizable-buffer-grow-mid-iteration.js
 statements/for-of/typedarray-backed-by-resizable-buffer-shrink-mid-iteration.js

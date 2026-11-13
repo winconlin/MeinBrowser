@@ -116,6 +116,14 @@ pub enum Intrinsic {
     /// %Promise.prototype% (Abschnitt 27.5.5) mit `catch`, `finally` und
     /// `then`.
     PromisePrototype,
+    /// %Map.prototype% (Abschnitt 24.1.3).
+    MapPrototype,
+    /// %MapIteratorPrototype% (Abschnitt 24.1.5.2).
+    MapIteratorPrototype,
+    /// %Set.prototype% (Abschnitt 24.2.4).
+    SetPrototype,
+    /// %SetIteratorPrototype% (Abschnitt 24.2.6.2).
+    SetIteratorPrototype,
     /// %Array.prototype.values% (Abschnitt 23.1.3.38), auch @@iterator von
     /// Arrays und arguments-Objekten.
     ArrayPrototypeValues,
@@ -188,6 +196,10 @@ pub enum Intrinsic {
     Iterator,
     /// %JSON% (Abschnitt 25.5).
     Json,
+    /// %Map% (Abschnitt 24.1.1).
+    Map,
+    /// %Set% (Abschnitt 24.2.2).
+    Set,
 }
 
 impl Intrinsic {
@@ -724,11 +736,13 @@ fn set_default_global_bindings(
         ("EvalError", Intrinsic::EvalError),
         ("Function", Intrinsic::Function),
         ("Iterator", Intrinsic::Iterator),
+        ("Map", Intrinsic::Map),
         ("Number", Intrinsic::Number),
         ("Object", Intrinsic::Object),
         ("Promise", Intrinsic::Promise),
         ("RangeError", Intrinsic::RangeError),
         ("ReferenceError", Intrinsic::ReferenceError),
+        ("Set", Intrinsic::Set),
         ("String", Intrinsic::String),
         ("Symbol", Intrinsic::Symbol),
         ("SyntaxError", Intrinsic::SyntaxError),

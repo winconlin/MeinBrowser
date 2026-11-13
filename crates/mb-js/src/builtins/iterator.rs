@@ -17,7 +17,8 @@
 //! Zeichenkette *undefined*, und ~executing~ wird er nie, denn die Closure
 //! ruft keinen Code der Sprache auf (GeneratorValidate, Abschnitt
 //! 27.8.3.2). Ein Helfer hält im ersten Feld eine interne Zelle mit dem
-//! Zustand seiner Closure, die Hülle aus `Iterator.from` [[Iterated]].
+//! Zustand seiner Closure, die Hülle aus `Iterator.from` [[Iterated]]. Die
+//! Iteratoren über Maps und Sets legt [`super::collection`] an.
 
 mod constructor;
 mod helper;
@@ -39,12 +40,14 @@ use crate::value::{Kind, Value};
 
 /// Was der Iterator durchläuft: ein Objekt, eine Zeichenkette oder
 /// *undefined*, wenn er fertig ist; für einen Helfer die Zelle mit seinem
-/// Zustand, für eine Hülle [[Iterated]].[[Iterator]].
-const TARGET: usize = 0;
+/// Zustand, für eine Hülle [[Iterated]].[[Iterator]], für eine Map oder ein
+/// Set deren Tabelle.
+pub(super) const TARGET: usize = 0;
 /// Die Art des Iterators, eine der Zahlen unten.
-const KIND: usize = 1;
-/// Der nächste Index; für eine Hülle [[Iterated]].[[NextMethod]].
-const INDEX: usize = 2;
+pub(super) const KIND: usize = 1;
+/// Der nächste Index; für eine Hülle [[Iterated]].[[NextMethod]], für eine
+/// Map oder ein Set die Zelle mit der Stelle in der Tabelle.
+pub(super) const INDEX: usize = 2;
 
 /// ~key~: die Indizes eines Arrays.
 pub(super) const KEYS: i32 = 0;
@@ -58,6 +61,15 @@ const STRING: i32 = 3;
 const HELPER: i32 = 4;
 /// Eine Hülle aus `Iterator.from` mit [[Iterated]].
 const WRAP: i32 = 5;
+/// Ein Iterator über eine Map (Abschnitt 24.1.5) mit ~key~, ~value~ oder
+/// ~key+value~.
+pub(super) const MAP_KEYS: i32 = 6;
+pub(super) const MAP_VALUES: i32 = 7;
+pub(super) const MAP_ENTRIES: i32 = 8;
+/// Ein Iterator über ein Set (Abschnitt 24.2.6) mit ~value~ oder
+/// ~key+value~.
+pub(super) const SET_VALUES: i32 = 9;
+pub(super) const SET_ENTRIES: i32 = 10;
 
 static ITERATOR_PROTOTYPE_ITERATOR: Builtin = Builtin {
     name: "[Symbol.iterator]",

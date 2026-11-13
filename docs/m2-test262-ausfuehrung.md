@@ -126,17 +126,17 @@ mit `module`. Eine Panik der Engine lässt den Test immer scheitern,
 sie kann nicht erwartet werden. Jede Datei der festen Auswahl muss auch hier
 bestehen.
 
-Mit diesem Stand bestehen 20.150 von 23.296 ausgeführten Dateien und 38.994
+Mit diesem Stand bestehen 20.168 von 23.296 ausgeführten Dateien und 39.030
 von 43.794 Varianten. Seit Schritt 7 gibt es async-Funktionen, `for await`
 und async-Generatoren, seit Schritt 8a `Object` mit allen Funktionen,
 `Object.prototype` und `Function.prototype` vollständig und gebundene
 Funktionen, seit Schritt 8b `Array` vollständig und `for`-`in`, seit Schritt
 8c die Fehlerobjekte, `Symbol`, `Boolean`, `Number`, `Math` und die globalen
 Funktionen für Zahlen, seit Schritt 8d `Iterator` mit den Helfern und
-`JSON`. Seit Schritt 8c endet keine Datei der Harness mehr an
-`Math.pow`. Den meisten Dateien, die noch scheitern, fehlt `eval`: Es gibt
+`JSON`, seit Schritt 8e `Map` und `Set`. Seit Schritt 8c endet keine Datei
+der Harness mehr an `Math.pow`. Den meisten Dateien, die noch scheitern, fehlt `eval`: Es gibt
 noch keine globale Funktion `eval`, ein Aufruf endet also mit einem
-ReferenceError. Der Name steht im Quelltext von 517 der 651 Dateien, die mit
+ReferenceError. Der Name steht im Quelltext von 517 der 633 Dateien, die mit
 einem ReferenceError scheitern, und von 388 der 522 mit `Test262Error`. In
 weiteren 133 Dateien mit `Test262Error` stehen String-Objekte oder Methoden
 von `String`; ohne `String.prototype.valueOf` und `toString` wird ein
@@ -155,7 +155,7 @@ Fehlschläge gibt der Test mit `--nocapture` aus:
 | Varianten | Grund |
 | ---: | --- |
 | 1.889 | Der Übersetzer kann ein Konstrukt noch nicht (`Unsupported`) |
-| 1.142 | ReferenceError im Test |
+| 1.106 | ReferenceError im Test |
 | 840 | `Test262Error`: Eine Assertion schlug fehl |
 | 698 | Flag `module` |
 | 80 | TypeError im Test |
@@ -173,8 +173,9 @@ cargo test --locked -p mb-js script::test262::language::test262_annex_b_built_in
 
 Derselbe Läufer nimmt die Teile von `test/built-ins/`, deren eingebaute
 Objekte es schon mit allen Eigenschaften gibt: `AggregateError/`, `Array/`,
-`Boolean/`, `Error/`, `Function/`, `Iterator/`, `JSON/`, `Math/`,
-`NativeErrors/`, `Number/`, `Object/`, `Promise/`, `Symbol/` und die globalen Funktionen `isFinite/`,
+`Boolean/`, `Error/`, `Function/`, `Iterator/`, `JSON/`, `Map/`,
+`MapIteratorPrototype/`, `Math/`, `NativeErrors/`, `Number/`, `Object/`,
+`Promise/`, `Set/`, `SetIteratorPrototype/`, `Symbol/` und die globalen Funktionen `isFinite/`,
 `isNaN/`, `parseFloat/` und `parseInt/`. Ihre erwarteten Fehlschläge stehen in
 `crates/mb-js/src/script/test262/erwartete-fehlschlaege-built-ins.txt`, mit
 Pfaden relativ zu `test/built-ins/`, sonst wie oben. Dass es eine eigene
@@ -184,10 +185,10 @@ ein neuer Teil von `built-ins/` ändert nur die zweite. Ein dritter Lauf
 nimmt ebenso die Teile von `test/annexB/built-ins/`, bisher `Object/`,
 gegen `erwartete-fehlschlaege-annexb-built-ins.txt`.
 
-Von 9.752 Dateien laufen 9.610. Übersprungen werden 142 mit Vorschlägen aus
+Von 10.361 Dateien laufen 10.219. Übersprungen werden 142 mit Vorschlägen aus
 `features.txt`: 89 unter `Promise/`, 35 unter `Error/` mit
 `error-stack-accessor` und 18 unter `Iterator/prototype/join/` mit
-`Iterator.prototype.join`. Es bestehen 8.690 Dateien und 17.224 von 19.017
+`Iterator.prototype.join`. Es bestehen 9.253 Dateien und 18.345 von 20.230
 Varianten:
 
 | Teil | Dateien | Varianten |
@@ -199,11 +200,15 @@ Varianten:
 | `Function/` | 298 von 509 | 514 von 893 |
 | `Iterator/` | 624 von 666 | 1.248 von 1.332 |
 | `JSON/` | 136 von 166 | 272 von 332 |
+| `Map/` | 186 von 204 | 369 von 405 |
+| `MapIteratorPrototype/` | 11 von 11 | 22 von 22 |
 | `Math/` | 323 von 327 | 646 von 654 |
 | `NativeErrors/` | 82 von 94 | 164 von 188 |
 | `Number/` | 333 von 340 | 666 von 680 |
-| `Object/` | 3.068 von 3.411 | 6.116 von 6.802 |
+| `Object/` | 3.072 von 3.411 | 6.124 von 6.802 |
 | `Promise/` | 626 von 643 | 1.246 von 1.280 |
+| `Set/` | 351 von 383 | 700 von 764 |
+| `SetIteratorPrototype/` | 11 von 11 | 22 von 22 |
 | `Symbol/` | 93 von 98 | 182 von 192 |
 | `isFinite/` | 15 von 15 | 30 von 30 |
 | `isNaN/` | 15 von 15 | 30 von 30 |
@@ -214,10 +219,10 @@ Die eine Datei unter `annexB/built-ins/Object/` braucht `$262.IsHTMLDDA`,
 das der Host noch nicht hat, und scheitert.
 
 Seit Welle 8c endet `propertyHelper.js` nicht mehr an `Math.pow`; vorher
-scheiterten daran 1.077 Dateien. Die meisten der 920 Dateien, die jetzt noch
+scheiterten daran 1.077 Dateien. Die meisten der 966 Dateien, die jetzt noch
 scheitern, nutzen im Quelltext oder in ihren `includes` ein eingebautes
 Objekt, das noch fehlt, oder ein Konstrukt, das der Übersetzer noch nicht
-kann. Von den 422 Dateien mit einem ReferenceError im Test nennen außerhalb
+kann. Von den 419 Dateien mit einem ReferenceError im Test nennen außerhalb
 von Kommentaren 137 `Date`, 125 `Proxy`, 90 `RegExp` und 34 `Reflect`; eine
 Datei kann mehrere Namen enthalten. Seit Welle 8d gibt es `JSON`, daran
 scheiterten vorher 68 dieser Dateien. Unter `Function/` rufen
@@ -225,7 +230,7 @@ scheiterten vorher 68 dieser Dateien. Unter `Function/` rufen
 braucht, und es scheitern die 21 Dateien mit dem Feature `caller`, die die
 Erweiterung aus Abschnitt 17.1 voraussetzen. Das sind Suchen nach den
 Namen; dass es jeweils der Grund des Fehlschlags ist, ist nur für die Teile
-aus den Wellen 8c und 8d für jede Datei einzeln geprüft.
+aus den Wellen 8c bis 8e für jede Datei einzeln geprüft.
 
 Unter `Array/` ist jede der 226 gescheiterten Dateien nach dem Grund
 zugeordnet, den der Läufer meldet:
@@ -269,6 +274,16 @@ einzeln zugeordnet:
 | 1 | `Iterator/proto-from-ctor-realm.js`: der Konstruktor `Function` aus `$262.createRealm()` |
 | 1 | Ein regulärer Ausdruck als Literal in `JSON/stringify/value-tojson-not-function.js` |
 
+Unter `Map/` und `Set/` aus Welle 8e scheitern 50 Dateien, die Teile für
+ihre Iteratoren bestehen ganz. Auch hier ist jede Datei einzeln zugeordnet:
+
+| Dateien | Grund in den Teilen aus Welle 8e |
+| ---: | --- |
+| 26 | BigInt-Literale: drei unter `Map/` und 23 unter `Set/`, davon 21 zu den Methoden für Vereinigung, Schnitt und Differenz |
+| 19 | `WeakMap` und `WeakSet`: Die Methoden müssen sie als falsches *this* ablehnen (zwölf unter `Map/`, sieben unter `Set/`) |
+| 3 | Der Konstruktor `Function`: `getOrInsertComputed/different-types-function-callbackfn-does-not-throw.js` und `proto-from-ctor-realm.js` beider Konstruktoren, die ihn aus `$262.createRealm()` holen und auch `Reflect.construct` brauchen |
+| 2 | `is-a-constructor.js` beider Konstruktoren: `isConstructor.js` braucht `Reflect.construct` |
+
 Die 18 Dateien unter `Iterator/prototype/join/` überspringt der Läufer, weil
 `features.txt` `Iterator.prototype.join` noch unter den Vorschlägen führt,
 obwohl die Methode im Entwurf der Spezifikation steht und umgesetzt ist. In
@@ -290,10 +305,10 @@ Die Gründe aller Varianten:
 
 | Varianten | Grund |
 | ---: | --- |
-| 838 | ReferenceError im Test |
-| 473 | Der Übersetzer kann ein Konstrukt noch nicht oder `Function` wurde aufgerufen (`Unsupported`) |
+| 832 | ReferenceError im Test |
+| 531 | Der Übersetzer kann ein Konstrukt noch nicht oder `Function` wurde aufgerufen (`Unsupported`) |
 | 188 | Eine Datei der Harness endet als `Unsupported` |
-| 144 | `Test262Error`: Eine Assertion schlug fehl |
+| 184 | `Test262Error`: Eine Assertion schlug fehl |
 | 94 | TypeError im Test, meist der Aufruf einer Funktion, die fehlt |
 | 28 | Die Arbeitsschritte sind erschöpft |
 | 22 | Eine Datei der Harness endet mit einem ReferenceError |

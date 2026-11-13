@@ -209,7 +209,8 @@ pub fn get_prototype_of<'s>(
         | ObjectClass::Promise
         | ObjectClass::AsyncFromSyncIterator
         | ObjectClass::AsyncGenerator
-        | ObjectClass::BoundFunction => {
+        | ObjectClass::BoundFunction
+        | ObjectClass::Collection => {
             let heap = agent.heap();
             let prototype =
                 object_of(heap, object).and_then(|object| heap.object_prototype(object));
@@ -237,7 +238,8 @@ pub fn set_prototype_of(
         | ObjectClass::Promise
         | ObjectClass::AsyncFromSyncIterator
         | ObjectClass::AsyncGenerator
-        | ObjectClass::BoundFunction => {}
+        | ObjectClass::BoundFunction
+        | ObjectClass::Collection => {}
     }
     if let Some(prototype) = prototype {
         // Der Prototyp muss ein Objekt sein.
@@ -288,7 +290,8 @@ pub fn is_extensible(agent: &mut Agent, object: Local<'_>) -> Completion<bool> {
         | ObjectClass::Promise
         | ObjectClass::AsyncFromSyncIterator
         | ObjectClass::AsyncGenerator
-        | ObjectClass::BoundFunction => {
+        | ObjectClass::BoundFunction
+        | ObjectClass::Collection => {
             let heap = agent.heap();
             Ok(object_of(heap, object).is_some_and(|object| heap.object_extensible(object)))
         }
@@ -310,7 +313,8 @@ pub fn prevent_extensions(agent: &mut Agent, object: Local<'_>) -> Completion<bo
         | ObjectClass::Promise
         | ObjectClass::AsyncFromSyncIterator
         | ObjectClass::AsyncGenerator
-        | ObjectClass::BoundFunction => {
+        | ObjectClass::BoundFunction
+        | ObjectClass::Collection => {
             let heap = agent.heap();
             if let Some(object) = object_of(heap, object) {
                 heap.prevent_object_extensions(object);
@@ -350,7 +354,8 @@ pub fn get_own_property<'s>(
         | ObjectClass::Promise
         | ObjectClass::AsyncFromSyncIterator
         | ObjectClass::AsyncGenerator
-        | ObjectClass::BoundFunction => {
+        | ObjectClass::BoundFunction
+        | ObjectClass::Collection => {
             Ok(ordinary_get_own_property(agent.heap(), scope, object, key))
         }
     }
@@ -405,7 +410,8 @@ pub fn define_own_property(
         | ObjectClass::Promise
         | ObjectClass::AsyncFromSyncIterator
         | ObjectClass::AsyncGenerator
-        | ObjectClass::BoundFunction => {
+        | ObjectClass::BoundFunction
+        | ObjectClass::Collection => {
             ordinary_define_own_property(agent, scope, object, key, descriptor)
         }
         ObjectClass::Array => array::define_own_property(agent, scope, object, key, descriptor),
@@ -885,7 +891,8 @@ pub fn own_property_keys<'s>(
         | ObjectClass::Promise
         | ObjectClass::AsyncFromSyncIterator
         | ObjectClass::AsyncGenerator
-        | ObjectClass::BoundFunction => {}
+        | ObjectClass::BoundFunction
+        | ObjectClass::Collection => {}
     }
     let heap = agent.heap();
     let Some(object) = object_of(heap, object) else {

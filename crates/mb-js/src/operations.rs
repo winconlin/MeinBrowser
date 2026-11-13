@@ -53,7 +53,8 @@ pub fn is_callable(heap: &Heap, value: Value<'_>) -> bool {
                 | ObjectClass::Generator
                 | ObjectClass::Promise
                 | ObjectClass::AsyncFromSyncIterator
-                | ObjectClass::AsyncGenerator,
+                | ObjectClass::AsyncGenerator
+                | ObjectClass::Collection,
             )
             | None => false,
         },
