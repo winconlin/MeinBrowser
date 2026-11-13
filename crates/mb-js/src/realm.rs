@@ -5,8 +5,9 @@
 //! von Test262 braucht, die Iteratoren für `for`-`of` und die
 //! Ausbreitung und die Promises (siehe `builtins`); die übrigen kommen mit
 //! den eingebauten Objekten. Das globale Objekt hat die Werteigenschaften
-//! aus Abschnitt 19.1, die Konstruktoren aus Abschnitt 19.3, die es schon
-//! gibt, und die Eigenschaften des Hosts. [[GlobalThisValue]] ist immer das
+//! aus Abschnitt 19.1, die Funktionen aus 19.2, die Konstruktoren aus
+//! 19.3 und die Objekte aus 19.4, die es schon gibt, und die Eigenschaften
+//! des Hosts. [[GlobalThisValue]] ist immer das
 //! globale Objekt.
 //!
 //! Die globale Umgebung besteht wie in der Spezifikation aus einem
@@ -166,6 +167,20 @@ pub enum Intrinsic {
     AggregateError,
     /// %Promise% (Abschnitt 27.5.3).
     Promise,
+    /// %Boolean% (Abschnitt 20.3.1).
+    Boolean,
+    /// %Number% (Abschnitt 21.1.1).
+    Number,
+    /// %Math% (Abschnitt 21.3).
+    Math,
+    /// %isFinite% (Abschnitt 19.2.2).
+    IsFinite,
+    /// %isNaN% (Abschnitt 19.2.3).
+    IsNaN,
+    /// %parseFloat% (Abschnitt 19.2.4), zugleich `Number.parseFloat`.
+    ParseFloat,
+    /// %parseInt% (Abschnitt 19.2.5), zugleich `Number.parseInt`.
+    ParseInt,
 }
 
 impl Intrinsic {
@@ -186,6 +201,9 @@ pub(crate) struct Realm {
     global_object: Persistent,
     /// [[DeclarativeRecord]] der globalen Umgebung.
     declarative: BTreeMap<Vec<u16>, Binding>,
+    /// Der Zustand von `Math.random`: Jeder Realm hat seine eigene Folge
+    /// (Abschnitt 21.3.2.27).
+    random: [u64; 2],
 }
 
 /// Was GetIdentifierReference (Abschnitt 9.1.2.1) in der globalen Umgebung
@@ -253,6 +271,7 @@ impl Agent {
             intrinsics: BTreeMap::new(),
             global_object,
             declarative: BTreeMap::new(),
+            random: builtins::random_seed(),
         });
         if pause_stress {
             self.heap_mut().pause_stress();
@@ -315,6 +334,13 @@ impl Agent {
     }
 
     /// Ein Intrinsic des Realms.
+    /// Der Zustand von `Math.random` im Realm `realm`.
+    pub(crate) fn random_state(&mut self, realm: RealmId) -> Option<&mut [u64; 2]> {
+        self.realms
+            .get_mut(realm.index())
+            .map(|realm| &mut realm.random)
+    }
+
     pub fn intrinsic<'s>(
         &self,
         scope: &'s Scope,
@@ -659,8 +685,8 @@ fn create_intrinsics(agent: &mut Agent, scope: &Scope, realm: RealmId) -> Comple
 }
 
 /// SetDefaultGlobalBindings (Abschnitt 9.3.3) für die Werteigenschaften aus
-/// Abschnitt 19.1 und die Konstruktoren aus Abschnitt 19.3, die es schon
-/// gibt.
+/// Abschnitt 19.1, die Funktionen aus Abschnitt 19.2, soweit es sie gibt,
+/// die Konstruktoren aus Abschnitt 19.3, die es schon gibt, und %Math%.
 fn set_default_global_bindings(
     agent: &mut Agent,
     scope: &Scope,
@@ -683,12 +709,14 @@ fn set_default_global_bindings(
         let descriptor = PropertyDescriptor::data(value, writable, false, writable);
         define_property_or_throw(agent, scope, global, key, &descriptor)?;
     }
-    let constructors = [
+    let intrinsics = [
         ("AggregateError", Intrinsic::AggregateError),
         ("Array", Intrinsic::Array),
+        ("Boolean", Intrinsic::Boolean),
         ("Error", Intrinsic::Error),
         ("EvalError", Intrinsic::EvalError),
         ("Function", Intrinsic::Function),
+        ("Number", Intrinsic::Number),
         ("Object", Intrinsic::Object),
         ("Promise", Intrinsic::Promise),
         ("RangeError", Intrinsic::RangeError),
@@ -698,8 +726,15 @@ fn set_default_global_bindings(
         ("SyntaxError", Intrinsic::SyntaxError),
         ("TypeError", Intrinsic::TypeError),
         ("URIError", Intrinsic::URIError),
+        // Die Funktionen aus Abschnitt 19.2 und %Math% aus Abschnitt 19.4
+        // haben dieselben Attribute.
+        ("isFinite", Intrinsic::IsFinite),
+        ("isNaN", Intrinsic::IsNaN),
+        ("parseFloat", Intrinsic::ParseFloat),
+        ("parseInt", Intrinsic::ParseInt),
+        ("Math", Intrinsic::Math),
     ];
-    for (name, intrinsic) in constructors {
+    for (name, intrinsic) in intrinsics {
         let value = agent.intrinsic(scope, realm, intrinsic);
         let key = agent.key_from_units(scope, &units(name))?;
         let descriptor = PropertyDescriptor::data(value, true, false, true);

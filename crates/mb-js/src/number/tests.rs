@@ -169,3 +169,99 @@ fn comparisons_treat_nan_and_zeros_like_the_specification() {
     assert!(same(unary_minus(0.0), -0.0));
     assert!(unary_minus(f64::NAN).is_nan());
 }
+
+#[test]
+fn fixed_rounds_the_exact_value_and_ties_up() {
+    let cases = [
+        (0.0, 2, "0.00"),
+        (-0.0, 0, "0"),
+        (0.5, 0, "1"),
+        (1.5, 0, "2"),
+        (2.5, 0, "3"),
+        (1.005, 2, "1.00"),
+        (1.45, 1, "1.4"),
+        (0.000_001, 2, "0.00"),
+        (-0.000_000_1, 2, "-0.00"),
+        (0.05, 1, "0.1"),
+        (123.456, 10, "123.4560000000"),
+        (0.1, 20, "0.10000000000000000555"),
+        (1e20, 2, "100000000000000000000.00"),
+        (1_000_000_000_000_000_128.0, 0, "1000000000000000128"),
+        (99.995, 2, "100.00"),
+        (9.5, 0, "10"),
+        (-1.5, 0, "-2"),
+    ];
+    for (x, digits, expected) in cases {
+        assert_eq!(to_fixed(x, digits), expected, "{x} mit {digits}");
+    }
+}
+
+#[test]
+fn exponential_rounds_the_exact_value_and_ties_up() {
+    let cases = [
+        (123_456.0, Some(2), "1.23e+5"),
+        (0.0, Some(2), "0.00e+0"),
+        (0.0, None, "0e+0"),
+        (1.25, Some(1), "1.3e+0"),
+        (1.35, Some(1), "1.4e+0"),
+        (9.99, Some(1), "1.0e+1"),
+        (123.0, None, "1.23e+2"),
+        (-1e-7, None, "-1e-7"),
+        (1.0, Some(0), "1e+0"),
+        (5e-324, None, "5e-324"),
+        (f64::MAX, Some(3), "1.798e+308"),
+    ];
+    for (x, digits, expected) in cases {
+        assert_eq!(to_exponential(x, digits), expected, "{x} mit {digits:?}");
+    }
+}
+
+#[test]
+fn precision_switches_to_exponential_outside_its_range() {
+    let cases = [
+        (123.456, 4, "123.5"),
+        (0.000_01, 1, "0.00001"),
+        (0.000_001, 1, "0.000001"),
+        (1e-7, 1, "1e-7"),
+        (123_456.0, 2, "1.2e+5"),
+        (0.0, 3, "0.00"),
+        (0.0, 1, "0"),
+        (1.0, 1, "1"),
+        (99.99, 3, "100"),
+        (99.99, 2, "1.0e+2"),
+        (25.0, 1, "3e+1"),
+        (-1.5, 3, "-1.50"),
+        (123.0, 3, "123"),
+    ];
+    for (x, precision, expected) in cases {
+        assert_eq!(to_precision(x, precision), expected, "{x} mit {precision}");
+    }
+}
+
+#[test]
+fn other_radixes_use_as_many_digits_as_tell_a_number_apart() {
+    let cases = [
+        (255.0, 16, "ff"),
+        (-255.0, 2, "-11111111"),
+        (0.5, 2, "0.1"),
+        (3.5, 36, "3.i"),
+        (35.0, 36, "z"),
+        (0.0, 7, "0"),
+        (-0.0, 7, "0"),
+        (f64::NAN, 2, "NaN"),
+        (f64::NEG_INFINITY, 2, "-Infinity"),
+        (
+            0.1,
+            2,
+            "0.0001100110011001100110011001100110011001100110011001101",
+        ),
+        (
+            1_152_921_504_606_846_976.0,
+            2,
+            "1000000000000000000000000000000000000000000000000000000000000",
+        ),
+    ];
+    for (x, radix, expected) in cases {
+        assert_eq!(to_radix_string(x, radix), expected, "{x} zur Basis {radix}");
+    }
+}

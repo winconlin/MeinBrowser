@@ -4,18 +4,18 @@
 //!
 //! Vollständig sind %Object% mit %Object.prototype% (Welle 8a des Plans),
 //! %Function.prototype% mit gebundenen Funktionen und %Array% mit
-//! %Array.prototype% (Welle 8b); %Function% selbst wartet auf `eval`. Sonst
-//! sind es bisher die Teile, die die Harness von Test262 braucht: %String%
-//! und die Fehlerkonstruktoren mit `Error.prototype.toString`. Dazu kommen,
-//! was `for`-`of` und die Ausbreitung brauchen: die Iteratoren für Arrays
-//! und Zeichenketten mit den Methoden für @@iterator, und %Symbol% mit den
-//! bekannten Symbolen, damit Scripts
-//! eigene Iteratoren bauen können. Generatoren und async-Generatoren bringen
-//! ihre Prototypen mit `next`, `return` und `throw` mit, async-Funktionen
-//! ihren Prototyp, und `for await` braucht %AsyncIteratorPrototype% und
-//! %AsyncFromSyncIteratorPrototype%.
-//! %Promise% ist vollständig, mit %AggregateError% für `Promise.any`. Die
-//! übrigen Eigenschaften dieser Objekte und die anderen eingebauten Objekte
+//! %Array.prototype% (Welle 8b), die Fehlerkonstruktoren mit
+//! `Error.isError`, %Symbol% mit der Registry für `Symbol.for`, %Boolean%,
+//! %Number%, %Math% und die globalen Funktionen `isFinite`, `isNaN`,
+//! `parseFloat` und `parseInt` (Welle 8c); %Function% selbst wartet auf
+//! `eval`. Von %String% gibt es bisher die Teile, die die Harness von
+//! Test262 braucht. Dazu kommen, was `for`-`of` und die Ausbreitung
+//! brauchen: die Iteratoren für Arrays und Zeichenketten mit den Methoden
+//! für @@iterator. Generatoren und async-Generatoren bringen ihre Prototypen
+//! mit `next`, `return` und `throw` mit, async-Funktionen ihren Prototyp,
+//! und `for await` braucht %AsyncIteratorPrototype% und
+//! %AsyncFromSyncIteratorPrototype%. %Promise% ist vollständig, mit
+//! %AggregateError% für `Promise.any`. Die übrigen eingebauten Objekte
 //! kommen in Wellen (Schritt 8 des Plans).
 //!
 //! Wo nichts anderes steht, sind Eigenschaften eingebauter Objekte
@@ -27,10 +27,14 @@ mod array;
 mod async_function;
 mod async_generator;
 mod async_iterator;
+mod boolean;
 mod error;
 mod function;
 mod generator;
+mod global;
 mod iterator;
+mod math;
+mod number;
 mod object;
 mod promise;
 mod string;
@@ -46,6 +50,7 @@ use crate::realm::RealmId;
 
 pub(crate) use function::HAS_INSTANCE as FUNCTION_PROTOTYPE_HAS_INSTANCE;
 pub(crate) use function::PROTOTYPE as FUNCTION_PROTOTYPE;
+pub(crate) use math::random_seed;
 
 fn units(text: &str) -> Vec<u16> {
     text.encode_utf16().collect()
@@ -69,6 +74,11 @@ pub(crate) fn create_intrinsics(
     string::create(agent, scope, realm)?;
     symbol::create(agent, scope, realm)?;
     error::create(agent, scope, realm)?;
+    boolean::create(agent, scope, realm)?;
+    // %parseFloat% und %parseInt% vor %Number%, das sie übernimmt.
+    global::create(agent, scope, realm)?;
+    number::create(agent, scope, realm)?;
+    math::create(agent, scope, realm)?;
     promise::create(agent, scope, realm)
 }
 

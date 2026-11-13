@@ -226,6 +226,126 @@ fn unsigned_decimal(text: &str) -> Option<f64> {
     normalized.parse::<f64>().ok()
 }
 
+/// Leerraum für TrimString (Abschnitt 22.1.3.32.1): *WhiteSpace* und
+/// *LineTerminator*.
+fn is_trimmed(unit: u16) -> bool {
+    let c = u32::from(unit);
+    is_white_space(c) || is_line_terminator(c)
+}
+
+/// TrimString(string, ~start~): `units` ohne führenden Leerraum.
+fn trim_start(units: &[u16]) -> &[u16] {
+    let start = units
+        .iter()
+        .position(|&unit| !is_trimmed(unit))
+        .unwrap_or(units.len());
+    units.get(start..).unwrap_or_default()
+}
+
+/// Die Schritte 2 bis 5 von parseFloat (Abschnitt 19.2.4): der längste
+/// Anfang der Zeichenkette ohne führenden Leerraum, der ein
+/// *StrDecimalLiteral* ist, als Zahl, sonst NaN.
+pub(crate) fn parse_float(units: &[u16]) -> f64 {
+    // Zum Literal gehören nur Zeichen aus ASCII.
+    let text: String = trim_start(units)
+        .iter()
+        .map_while(|&unit| u8::try_from(unit).ok().filter(u8::is_ascii))
+        .map(char::from)
+        .collect();
+    let length = decimal_prefix(text.as_bytes());
+    if length == 0 {
+        return f64::NAN;
+    }
+    text.get(..length).and_then(decimal).unwrap_or(f64::NAN)
+}
+
+/// Die Länge des längsten Anfangs von `bytes`, der ein *StrDecimalLiteral*
+/// ist, 0, wenn keiner es ist.
+fn decimal_prefix(bytes: &[u8]) -> usize {
+    let digits_from = |start: usize| {
+        let count = bytes
+            .get(start..)
+            .unwrap_or_default()
+            .iter()
+            .take_while(|byte| byte.is_ascii_digit())
+            .count();
+        start.saturating_add(count)
+    };
+    let mut at = usize::from(matches!(bytes.first(), Some(b'+' | b'-')));
+    if bytes
+        .get(at..)
+        .is_some_and(|rest| rest.starts_with(b"Infinity"))
+    {
+        return at.saturating_add(8);
+    }
+    let integer_end = digits_from(at);
+    let mut has_digits = integer_end > at;
+    at = integer_end;
+    if bytes.get(at) == Some(&b'.') {
+        let fraction_end = digits_from(at.saturating_add(1));
+        has_digits |= fraction_end > at.saturating_add(1);
+        at = fraction_end;
+    }
+    if !has_digits {
+        return 0;
+    }
+    if matches!(bytes.get(at), Some(b'e' | b'E')) {
+        let mut exponent = at.saturating_add(1);
+        if matches!(bytes.get(exponent), Some(b'+' | b'-')) {
+            exponent = exponent.saturating_add(1);
+        }
+        let exponent_end = digits_from(exponent);
+        if exponent_end > exponent {
+            at = exponent_end;
+        }
+    }
+    at
+}
+
+/// Die Schritte 2 bis 16 von parseInt (Abschnitt 19.2.5) mit `radix` als
+/// Ergebnis von ToInt32. Zur Basis 10 und zu Basen, die Potenzen von 2
+/// sind, ist das Ergebnis genau gerundet, zu den übrigen Basen eine Näherung,
+/// wie Schritt 14 sie erlaubt.
+pub(crate) fn parse_int(units: &[u16], radix: i32) -> f64 {
+    let mut rest = trim_start(units);
+    let negative = rest.first() == Some(&u16::from(b'-'));
+    if matches!(rest.first(), Some(&unit) if unit == u16::from(b'-') || unit == u16::from(b'+')) {
+        rest = rest.get(1..).unwrap_or_default();
+    }
+    let (mut radix, strip_prefix) = match radix {
+        0 => (10, true),
+        16 => (16, true),
+        2..=36 => (radix.unsigned_abs(), false),
+        _ => return f64::NAN,
+    };
+    if strip_prefix
+        && rest.first() == Some(&u16::from(b'0'))
+        && matches!(rest.get(1), Some(&unit) if unit == u16::from(b'x') || unit == u16::from(b'X'))
+    {
+        rest = rest.get(2..).unwrap_or_default();
+        radix = 16;
+    }
+    let digits: String = rest
+        .iter()
+        .map_while(|&unit| {
+            let c = char::from_u32(u32::from(unit))?;
+            c.is_digit(radix).then_some(c)
+        })
+        .collect();
+    if digits.is_empty() {
+        return f64::NAN;
+    }
+    let magnitude = match radix {
+        10 => digits.parse::<f64>().unwrap_or(f64::NAN),
+        2 | 4 | 8 | 16 | 32 => from_power_of_two_radix(&digits, radix),
+        _ => digits.chars().fold(0.0, |value, c| {
+            value * f64::from(radix) + f64::from(c.to_digit(radix).unwrap_or(0))
+        }),
+    };
+    // Null mit Minus ergibt -0.
+    if negative { -magnitude } else { magnitude }
+}
+
 /// ToIntegerOrInfinity (Abschnitt 7.1.5): eine ganze Zahl oder ±∞, nie -0.
 pub fn to_integer_or_infinity(
     agent: &mut Agent,
