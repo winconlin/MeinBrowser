@@ -3,7 +3,7 @@
 # nur der genannte. Erzeugt von script/test262/language.rs; bei einer
 # Abweichung schreibt der Test die neue Fassung nach
 # target/test262/erwartete-fehlschlaege.txt.
-# 23828 Dateien, 532 Vorschläge übersprungen; bestanden 20168 von 23296 Dateien und 39030 von 43794 Varianten
+# 23828 Dateien, 532 Vorschläge übersprungen; bestanden 20207 von 23296 Dateien und 39108 von 43794 Varianten
 arguments-object/10.5-1-s.js
 arguments-object/10.5-7-b-1-s.js
 arguments-object/10.6-13-a-2.js
@@ -525,7 +525,6 @@ expressions/class/elements/derived-cls-indirect-eval-err-contains-supercall-2.js
 expressions/class/elements/derived-cls-indirect-eval-err-contains-supercall.js
 expressions/class/elements/direct-eval-err-contains-arguments.js
 expressions/class/elements/direct-eval-err-contains-newtarget.js
-expressions/class/elements/fields-multiple-definitions-static-private-methods-proxy.js
 expressions/class/elements/indirect-eval-contains-arguments.js
 expressions/class/elements/indirect-eval-err-contains-newtarget.js
 expressions/class/elements/nested-derived-cls-direct-eval-contains-superproperty-1.js
@@ -568,17 +567,9 @@ expressions/class/elements/private-derived-cls-indirect-eval-err-contains-superc
 expressions/class/elements/private-derived-cls-indirect-eval-err-contains-supercall.js
 expressions/class/elements/private-direct-eval-err-contains-arguments.js
 expressions/class/elements/private-direct-eval-err-contains-newtarget.js
-expressions/class/elements/private-fields-proxy-default-handler-throws.js
 expressions/class/elements/private-indirect-eval-contains-arguments.js
 expressions/class/elements/private-indirect-eval-err-contains-newtarget.js
-expressions/class/elements/private-methods/prod-private-async-generator.js
-expressions/class/elements/private-methods/prod-private-async-method.js
-expressions/class/elements/private-methods/prod-private-generator.js
-expressions/class/elements/private-methods/prod-private-method-initialize-order.js
-expressions/class/elements/private-methods/prod-private-method.js
 expressions/class/elements/static-field-init-with-this.js
-expressions/class/elements/static-private-fields-proxy-default-handler-throws.js
-expressions/class/elements/static-private-methods-proxy-default-handler-throws.js
 expressions/class/private-getter-brand-check-multiple-evaluations-of-class-eval-indirect.js
 expressions/class/private-getter-brand-check-multiple-evaluations-of-class-eval.js
 expressions/class/private-getter-brand-check-multiple-evaluations-of-class-function-ctor.js
@@ -1372,8 +1363,6 @@ expressions/multiplication/bigint-toprimitive.js
 expressions/multiplication/bigint-wrapped-values.js
 expressions/new/S11.2.2_A1.1.js
 expressions/new/S11.2.2_A1.2.js
-expressions/new.target/value-via-reflect-apply.js
-expressions/new.target/value-via-reflect-construct.js
 expressions/new.target/value-via-tagged-template.js
 expressions/object/11.1.5-0-1.js
 expressions/object/11.1.5-0-2.js
@@ -1384,17 +1373,11 @@ expressions/object/11.1.5_6-3-2.js
 expressions/object/11.1.5_7-3-1.js
 expressions/object/11.1.5_7-3-2.js
 expressions/object/cpn-obj-lit-computed-property-name-from-await-expression.js
-expressions/object/dstr/object-rest-proxy-get-not-called-on-dontenum-keys.js
-expressions/object/dstr/object-rest-proxy-gopd-not-called-on-excluded-keys.js
-expressions/object/dstr/object-rest-proxy-ownkeys-returned-keys-order.js
 expressions/object/literal-property-name-bigint.js
 expressions/object/method-definition/async-gen-meth-eval-var-scope-syntax-err.js
 expressions/object/method-definition/async-meth-eval-var-scope-syntax-err.js
 expressions/object/method-definition/gen-meth-eval-var-scope-syntax-err.js
 expressions/object/method-definition/meth-eval-var-scope-syntax-err.js
-expressions/object/object-spread-proxy-get-not-called-on-dontenum-keys.js
-expressions/object/object-spread-proxy-no-excluded-keys.js
-expressions/object/object-spread-proxy-ownkeys-returned-keys-order.js
 expressions/object/prop-def-id-eval-error-2.js
 expressions/object/prop-def-id-eval-error.js
 expressions/object/scope-gen-meth-body-lex-distinct.js
@@ -1412,7 +1395,6 @@ expressions/object/scope-setter-body-lex-distinc.js
 expressions/optional-chaining/call-expression.js
 expressions/optional-chaining/eval-optional-call.js
 expressions/optional-chaining/member-expression.js
-expressions/optional-chaining/new-target-optional-call.js
 expressions/postfix-decrement/S11.3.2_A4_T3.js
 expressions/postfix-decrement/S11.3.2_A5_T1.js
 expressions/postfix-decrement/S11.3.2_A5_T2.js
@@ -1489,7 +1471,6 @@ expressions/subtraction/bigint-arithmetic.js
 expressions/subtraction/bigint-errors.js
 expressions/subtraction/bigint-toprimitive.js
 expressions/subtraction/bigint-wrapped-values.js
-expressions/super/call-construct-invocation.js
 expressions/super/prop-dot-cls-val-from-eval.js
 expressions/super/prop-dot-obj-val-from-eval.js
 expressions/super/prop-expr-cls-val-from-eval.js
@@ -1545,10 +1526,8 @@ expressions/this/S11.1.1_A4.1.js
 expressions/this/S11.1.1_A4.2.js
 expressions/typeof/bigint.js
 expressions/typeof/built-in-exotic-objects-no-call.js
-expressions/typeof/built-in-ordinary-objects-no-call.js
 expressions/typeof/native-call.js
 expressions/typeof/null.js
-expressions/typeof/proxy.js
 expressions/typeof/string.js
 expressions/typeof/syntax.js
 expressions/unary-minus/S11.4.7_A1.js
@@ -2483,7 +2462,6 @@ statements/class/elements/arrow-body-private-derived-cls-indirect-eval-err-conta
 statements/class/elements/arrow-body-private-direct-eval-err-contains-arguments.js
 statements/class/elements/arrow-body-private-direct-eval-err-contains-newtarget.js
 statements/class/elements/arrow-body-private-indirect-eval-err-contains-newtarget.js
-statements/class/elements/class-field-is-observable-by-proxy.js
 statements/class/elements/derived-cls-direct-eval-contains-superproperty-1.js
 statements/class/elements/derived-cls-direct-eval-contains-superproperty-2.js
 statements/class/elements/derived-cls-direct-eval-err-contains-supercall-1.js
@@ -2546,22 +2524,14 @@ statements/class/elements/private-indirect-eval-contains-arguments.js
 statements/class/elements/private-indirect-eval-err-contains-newtarget.js
 statements/class/elements/private-method-visible-to-direct-eval-on-initializer.js
 statements/class/elements/private-method-visible-to-direct-eval.js
-statements/class/elements/private-methods/prod-private-async-generator.js
-statements/class/elements/private-methods/prod-private-async-method.js
-statements/class/elements/private-methods/prod-private-generator.js
-statements/class/elements/private-methods/prod-private-method-initialize-order.js
-statements/class/elements/private-methods/prod-private-method.js
 statements/class/elements/private-setter-visible-to-direct-eval-on-initializer.js
 statements/class/elements/private-setter-visible-to-direct-eval.js
 statements/class/elements/private-static-field-visible-to-direct-eval.js
 statements/class/elements/private-static-getter-visible-to-direct-eval.js
 statements/class/elements/private-static-method-visible-to-direct-eval.js
 statements/class/elements/private-static-setter-visible-to-direct-eval.js
-statements/class/elements/privatefield-on-proxy.js
 statements/class/elements/privatefieldget-primitive-receiver.js
 statements/class/elements/privatefieldput-primitive-receiver.js
-statements/class/elements/privategetter-on-proxy.js
-statements/class/elements/privatemethods-on-proxy.js
 statements/class/elements/privatename-not-valid-eval-earlyerr-1.js
 statements/class/elements/privatename-not-valid-eval-earlyerr-2.js
 statements/class/elements/privatename-not-valid-eval-earlyerr-3.js
@@ -2570,9 +2540,7 @@ statements/class/elements/privatename-not-valid-eval-earlyerr-5.js
 statements/class/elements/privatename-not-valid-eval-earlyerr-6.js
 statements/class/elements/privatename-not-valid-eval-earlyerr-7.js
 statements/class/elements/privatename-not-valid-eval-earlyerr-8.js
-statements/class/elements/public-class-field-initialization-is-visible-to-proxy.js
 statements/class/elements/static-field-init-with-this.js
-statements/class/elements/static-private-fields-proxy-default-handler-throws.js
 statements/class/subclass/builtin-objects/ArrayBuffer/regular-subclassing.js
 statements/class/subclass/builtin-objects/ArrayBuffer/super-must-be-called.js
 statements/class/subclass/builtin-objects/DataView/regular-subclassing.js
@@ -2588,7 +2556,6 @@ statements/class/subclass/builtin-objects/GeneratorFunction/instance-name.js
 statements/class/subclass/builtin-objects/GeneratorFunction/instance-prototype.js
 statements/class/subclass/builtin-objects/GeneratorFunction/regular-subclassing.js
 statements/class/subclass/builtin-objects/GeneratorFunction/super-must-be-called.js
-statements/class/subclass/builtin-objects/Proxy/no-prototype-throws.js
 statements/class/subclass/builtin-objects/RegExp/lastIndex.js
 statements/class/subclass/builtin-objects/RegExp/regular-subclassing.js
 statements/class/subclass/builtin-objects/RegExp/super-must-be-called.js
@@ -2600,10 +2567,6 @@ statements/class/subclass/builtin-objects/WeakMap/super-must-be-called.js
 statements/class/subclass/builtin-objects/WeakSet/regular-subclassing.js
 statements/class/subclass/builtin-objects/WeakSet/super-must-be-called.js
 statements/class/subclass/builtins.js
-statements/class/subclass/superclass-arrow-function.js
-statements/class/subclass/superclass-async-function.js
-statements/class/subclass/superclass-async-generator-function.js
-statements/class/subclass/superclass-generator-function.js
 statements/class/subclass-builtins/subclass-ArrayBuffer.js
 statements/class/subclass-builtins/subclass-BigInt64Array.js
 statements/class/subclass-builtins/subclass-BigUint64Array.js
@@ -2690,7 +2653,6 @@ statements/for-of/int32array-mutate.js
 statements/for-of/int32array.js
 statements/for-of/int8array-mutate.js
 statements/for-of/int8array.js
-statements/for-of/iterator-as-proxy.js
 statements/for-of/iterator-next-result-type.js
 statements/for-of/scope-head-var-none.js
 statements/for-of/typedarray-backed-by-resizable-buffer-grow-before-end.js
@@ -3087,7 +3049,6 @@ statements/with/unscopables-not-referenced-for-undef.js
 statements/with/unscopables-prop-get-err.js
 types/reference/get-value-prop-base-primitive-realm.js
 types/reference/put-value-prop-base-primitive-realm.js
-types/reference/put-value-prop-base-primitive.js
 types/string/S8.4_A9_T1.js
 types/string/S8.4_A9_T2.js
 types/string/S8.4_A9_T3.js

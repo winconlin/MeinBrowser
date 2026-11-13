@@ -79,7 +79,7 @@ pub(super) fn stringify<'s>(
     if is_object(agent, replacer) {
         if is_callable(agent.heap(), agent.heap().get(replacer)) {
             replacer_function = Some(replacer);
-        } else if is_array(agent.heap(), agent.heap().get(replacer)) {
+        } else if is_array(agent, replacer)? {
             property_list = Some(replacer_property_list(agent, scope, replacer)?);
         }
     }
@@ -432,6 +432,9 @@ fn property<'s>(
                 _ => {}
             }
         }
+        let array = is_object(agent, value)
+            && !is_callable(agent.heap(), agent.heap().get(value))
+            && is_array(agent, value)?;
         let heap = agent.heap();
         Ok(match heap.get(value).kind() {
             Kind::Null => Serialized::Text(units("null")),
@@ -450,7 +453,7 @@ fn property<'s>(
             Kind::Number(_) => Serialized::Text(units("null")),
             Kind::Object(_) if !is_callable(heap, heap.get(value)) => {
                 heap.set(slot, heap.get(value));
-                if is_array(heap, heap.get(value)) {
+                if array {
                     Serialized::Array(slot)
                 } else {
                     Serialized::Object(slot)

@@ -200,6 +200,10 @@ pub enum Intrinsic {
     Map,
     /// %Set% (Abschnitt 24.2.2).
     Set,
+    /// %Reflect% (Abschnitt 28.1).
+    Reflect,
+    /// %Proxy% (Abschnitt 28.2.1).
+    Proxy,
 }
 
 impl Intrinsic {
@@ -740,6 +744,7 @@ fn set_default_global_bindings(
         ("Number", Intrinsic::Number),
         ("Object", Intrinsic::Object),
         ("Promise", Intrinsic::Promise),
+        ("Proxy", Intrinsic::Proxy),
         ("RangeError", Intrinsic::RangeError),
         ("ReferenceError", Intrinsic::ReferenceError),
         ("Set", Intrinsic::Set),
@@ -748,14 +753,15 @@ fn set_default_global_bindings(
         ("SyntaxError", Intrinsic::SyntaxError),
         ("TypeError", Intrinsic::TypeError),
         ("URIError", Intrinsic::URIError),
-        // Die Funktionen aus Abschnitt 19.2 und %JSON% und %Math% aus
-        // Abschnitt 19.4 haben dieselben Attribute.
+        // Die Funktionen aus Abschnitt 19.2 und %JSON%, %Math% und
+        // %Reflect% aus Abschnitt 19.4 haben dieselben Attribute.
         ("isFinite", Intrinsic::IsFinite),
         ("isNaN", Intrinsic::IsNaN),
         ("parseFloat", Intrinsic::ParseFloat),
         ("parseInt", Intrinsic::ParseInt),
         ("JSON", Intrinsic::Json),
         ("Math", Intrinsic::Math),
+        ("Reflect", Intrinsic::Reflect),
     ];
     for (name, intrinsic) in intrinsics {
         let value = agent.intrinsic(scope, realm, intrinsic);

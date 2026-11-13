@@ -831,23 +831,23 @@ fn object_prototype_to_locale_string<'s>(
 }
 
 /// Der Teil *builtinTag* aus Object.prototype.toString.
-fn builtin_tag(agent: &Agent, object: Local<'_>) -> &'static str {
+fn builtin_tag(agent: &mut Agent, object: Local<'_>) -> Completion<&'static str> {
+    if is_array(agent, object)? {
+        return Ok("Array");
+    }
     let heap = agent.heap();
     let value = heap.get(object);
-    if is_array(heap, value) {
-        return "Array";
-    }
     let Kind::Object(reference) = value.kind() else {
-        return "Object";
+        return Ok("Object");
     };
     let class = heap.object_class(reference);
     if class == Some(ObjectClass::Arguments) {
-        return "Arguments";
+        return Ok("Arguments");
     }
     if is_callable(heap, value) {
-        return "Function";
+        return Ok("Function");
     }
-    match class {
+    Ok(match class {
         Some(ObjectClass::Error) => "Error",
         Some(ObjectClass::Primitive) => match heap.primitive_data(reference).map(Value::kind) {
             Some(Kind::Boolean(_)) => "Boolean",
@@ -857,7 +857,7 @@ fn builtin_tag(agent: &Agent, object: Local<'_>) -> &'static str {
             _ => "Object",
         },
         _ => "Object",
-    }
+    })
 }
 
 /// Object.prototype.toString ( ) (Abschnitt 20.1.3.6).
@@ -878,7 +878,7 @@ pub(super) fn object_prototype_to_string<'s>(
             .alloc_string(scope, &units("[object Null]"))?);
     }
     let object = to_object(agent, scope, arguments.realm, arguments.this)?;
-    let builtin = builtin_tag(agent, object);
+    let builtin = builtin_tag(agent, object)?;
     let symbol = agent.well_known_symbol(scope, WellKnownSymbol::ToStringTag);
     let tag = get(agent, scope, object, PropertyKey::Symbol(symbol))?;
     let mut text = units("[object ");

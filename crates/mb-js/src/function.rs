@@ -48,7 +48,9 @@ use crate::bytecode::{Code, FunctionTemplate};
 use crate::descriptor::PropertyDescriptor;
 use crate::heap::{Heap, Local, ObjectClass, OutOfMemory, Persistent, Scope};
 use crate::key::{PropertyKey, symbol_description};
-use crate::object::{INLINE, ordinary_object_create};
+use crate::object::{
+    INLINE, has_construct as proxy_has_construct, is_proxy, ordinary_object_create, proxy_target,
+};
 use crate::operations::define_property_or_throw;
 use crate::realm::{Intrinsic, RealmId};
 use crate::value::{Kind, Ref, Value};
@@ -180,13 +182,34 @@ pub(crate) fn function_environment<'h>(heap: &'h Heap, value: Value<'_>) -> Opti
 
 /// GetFunctionRealm (Abschnitt 7.3.24): der Realm eines Funktionsobjekts
 /// oder einer eingebauten Funktion, bei einer gebundenen Funktion der
-/// ihrer Zielfunktion, für andere Objekte `current`, der aktuelle. Proxys
-/// kommen mit den eingebauten Objekten.
-pub(crate) fn get_function_realm(heap: &Heap, value: Value<'_>, current: RealmId) -> RealmId {
-    match innermost_target(heap, value) {
-        Some(target) => own_realm(heap, target, current),
-        None => own_realm(heap, value, current),
+/// ihrer Zielfunktion, bei einem Proxy der seines Ziels, für andere
+/// Objekte `current`, der aktuelle. Ketten laufen in einer Schleife (RS-8).
+/// `None` steht für einen widerrufenen Proxy, wo die Spezifikation einen
+/// TypeError wirft; NewPromiseReactionJob und
+/// NewPromiseResolveThenableJob nehmen dann den aktuellen Realm.
+pub(crate) fn get_function_realm(
+    heap: &Heap,
+    value: Value<'_>,
+    current: RealmId,
+) -> Option<RealmId> {
+    let mut found = own_realm(heap, value, current);
+    let mut next = proxy_target(heap, value);
+    if let Some(target) = innermost_target(heap, value) {
+        found = own_realm(heap, target, current);
+        next = proxy_target(heap, target);
     }
+    while let Some(target) = next {
+        if target.is_null() {
+            return None;
+        }
+        found = own_realm(heap, target, current);
+        next = proxy_target(heap, target);
+        if let Some(inner) = innermost_target(heap, target) {
+            found = own_realm(heap, inner, current);
+            next = proxy_target(heap, inner);
+        }
+    }
+    Some(found)
 }
 
 fn own_realm(heap: &Heap, value: Value<'_>, current: RealmId) -> RealmId {
@@ -374,7 +397,8 @@ pub(crate) fn create_private_methods<'s>(
 }
 
 /// IsConstructor (Abschnitt 7.2.4): Funktionsobjekte, die MakeConstructor
-/// bekamen, und eingebaute Funktionen, deren Eintrag [[Construct]] nennt.
+/// bekamen, eingebaute Funktionen, deren Eintrag [[Construct]] nennt, und
+/// Proxys um einen Konstruktor.
 pub(crate) fn is_constructor(agent: &Agent, value: Value<'_>) -> bool {
     // Eine gebundene Funktion hat [[Construct]], wenn ihre Zielfunktion es
     // hat (BoundFunctionCreate, Abschnitt 10.4.1.3, Schritt 6).
@@ -387,6 +411,11 @@ pub(crate) fn is_constructor(agent: &Agent, value: Value<'_>) -> bool {
 fn has_construct(agent: &Agent, value: Value<'_>) -> bool {
     if let Some(builtin) = builtin_entry(agent, value) {
         return builtin.constructor;
+    }
+    // Ein Proxy hat [[Construct]], wenn sein Ziel es bei ProxyCreate hatte
+    // (Abschnitt 10.5.15, Schritt 7.b).
+    if is_proxy(agent.heap(), value) {
+        return proxy_has_construct(agent.heap(), value);
     }
     construction(agent, value) != Construction::None
 }

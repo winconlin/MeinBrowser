@@ -9,8 +9,8 @@
 //! %Number%, %Math% und die globalen Funktionen `isFinite`, `isNaN`,
 //! `parseFloat` und `parseInt` (Welle 8c), %Iterator% mit
 //! %Iterator.prototype% und den Iterator-Helfern und %JSON% (Welle 8d)
-//! sowie %Map% und %Set% mit ihren Prototypen und Iteratoren (Welle 8e);
-//! %Function% selbst wartet auf `eval`. Von %String% gibt es bisher die
+//! sowie %Map% und %Set% mit ihren Prototypen und Iteratoren (Welle 8e) und
+//! %Reflect% und %Proxy% (Welle 8f); %Function% selbst wartet auf `eval`. Von %String% gibt es bisher die
 //! Teile, die die Harness von Test262 braucht. Dazu kommen, was `for`-`of`
 //! und die Ausbreitung brauchen: die Iteratoren für Arrays und
 //! Zeichenketten mit den Methoden für @@iterator. Generatoren und async-Generatoren bringen ihre Prototypen
@@ -42,6 +42,8 @@ mod math;
 mod number;
 mod object;
 mod promise;
+mod proxy;
+mod reflect;
 mod set;
 mod string;
 mod symbol;
@@ -89,6 +91,8 @@ pub(crate) fn create_intrinsics(
     json::create(agent, scope, realm)?;
     map::create(agent, scope, realm)?;
     set::create(agent, scope, realm)?;
+    reflect::create(agent, scope, realm)?;
+    proxy::create(agent, scope, realm)?;
     promise::create(agent, scope, realm)
 }
 

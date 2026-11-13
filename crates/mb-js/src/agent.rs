@@ -162,6 +162,16 @@ pub struct Agent {
     runs: usize,
     /// Die Lage des Rust-Stapels beim äußersten Lauf.
     stack_start: usize,
+    /// Der Realm des laufenden Ausführungskontexts (Abschnitt 9.4, „the
+    /// current Realm Record“): der des Rahmens, dessen Befehl gerade läuft,
+    /// während einer eingebauten Funktion ihrer. *None*, solange nichts
+    /// läuft. Die meisten Operationen bekommen den aktuellen Realm als
+    /// Argument; nur die internen Methoden eines Proxys, die dem Handler
+    /// neue Objekte geben, lesen ihn hier.
+    current_realm: Option<RealmId>,
+    /// Der aktuelle Realm vor jedem Lauf, der gerade läuft; das Ende des
+    /// Laufs stellt ihn wieder her.
+    outer_realms: Vec<Option<RealmId>>,
     /// Alle aktiven Hostquoten. Verschachtelte Aufrufe belasten sie
     /// gemeinsam; eine zusätzliche Quote ersetzt keine äußere.
     execution_budgets: Vec<Rc<Budget>>,
@@ -197,6 +207,8 @@ impl Agent {
             exception: None,
             runs: 0,
             stack_start: 0,
+            current_realm: None,
+            outer_realms: Vec::new(),
             execution_budgets: Vec::new(),
             jobs: VecDeque::new(),
             collection_hasher: RandomState::new(),
@@ -434,7 +446,10 @@ impl Agent {
     /// Beginnt einen Lauf des Interpreters. Liegt er mehr als
     /// [`STACK_BUDGET`] Bytes unter dem äußersten, wirft das einen
     /// RangeError. Jeder Lauf, der beginnt, endet mit
-    /// [`Agent::leave_interpreter`], auch abrupt.
+    /// [`Agent::leave_interpreter`], auch abrupt; dann gilt wieder der
+    /// aktuelle Realm von vorher. Ein Schritt eines Proxys zählt ebenso
+    /// (siehe `object::proxy`): Er kann über seinen Handler den nächsten
+    /// Proxy fragen, ohne dass JavaScript läuft.
     pub(crate) fn enter_interpreter(&mut self) -> Completion<()> {
         self.spend_execution_steps(1)?;
         let marker = 0u8;
@@ -445,11 +460,25 @@ impl Agent {
             return Err(self.throw_error(ErrorKind::RangeError));
         }
         self.runs = self.runs.saturating_add(1);
+        self.outer_realms.push(self.current_realm);
         Ok(())
     }
 
     pub(crate) fn leave_interpreter(&mut self) {
         self.runs = self.runs.saturating_sub(1);
+        if let Some(realm) = self.outer_realms.pop() {
+            self.current_realm = realm;
+        }
+    }
+
+    /// Der aktuelle Realm, *None*, solange nichts läuft.
+    pub(crate) fn current_realm(&self) -> Option<RealmId> {
+        self.current_realm
+    }
+
+    /// Macht `realm` zum aktuellen Realm und gibt den bisherigen zurück.
+    pub(crate) fn replace_current_realm(&mut self, realm: Option<RealmId>) -> Option<RealmId> {
+        std::mem::replace(&mut self.current_realm, realm)
     }
 
     // Ausnahmen

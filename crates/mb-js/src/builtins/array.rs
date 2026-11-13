@@ -496,13 +496,17 @@ fn array_species_create<'s>(
     original: Local<'_>,
     length: f64,
 ) -> Completion<Local<'s>> {
-    if !is_array(agent.heap(), agent.heap().get(original)) {
+    if !is_array(agent, original)? {
         return array_create_in(agent, scope, realm, length);
     }
     let key = agent.key_from_units(scope, &units("constructor"))?;
     let mut constructor = get(agent, scope, original, key)?;
     if is_constructor(agent, agent.heap().get(constructor)) {
-        let other = get_function_realm(agent.heap(), agent.heap().get(constructor), realm);
+        let Some(other) = get_function_realm(agent.heap(), agent.heap().get(constructor), realm)
+        else {
+            // Ein widerrufener Proxy (GetFunctionRealm, Schritt 3.a).
+            return Err(agent.throw_error(ErrorKind::TypeError));
+        };
         if other != realm {
             // %Array% eines anderen Realms zählt wie der eigene.
             let foreign = agent.intrinsic(scope, other, Intrinsic::Array);
@@ -542,7 +546,7 @@ fn is_concat_spreadable(agent: &mut Agent, scope: &Scope, value: Local<'_>) -> C
     if !found.is_undefined() {
         return Ok(to_boolean(heap, found));
     }
-    Ok(is_array(heap, heap.get(value)))
+    is_array(agent, value)
 }
 
 /// Die Codeeinheiten einer Zeichenkette.
@@ -741,7 +745,7 @@ fn array_is_array<'s>(
     arguments: &BuiltinCall<'_, '_>,
 ) -> Completion<Local<'s>> {
     let value = arguments.argument(agent, scope, 0);
-    let found = is_array(agent.heap(), agent.heap().get(value));
+    let found = is_array(agent, value)?;
     Ok(boolean(agent, scope, found))
 }
 
@@ -1097,7 +1101,7 @@ fn flatten_into_array(
                 let index = number(agent, inner, source_index);
                 element = call(agent, inner, mapper, this_arg, &[element, index, array])?;
             }
-            if depth > 0.0 && is_array(agent.heap(), agent.heap().get(element)) {
+            if depth > 0.0 && is_array(agent, element)? {
                 let heap = agent.heap();
                 heap.set(next, heap.get(element));
                 let length = length_of_array_like(agent, inner, element)?;
