@@ -3036,3 +3036,251 @@ fn iterator_helpers_and_json_survive_collections() {
     agent.heap_mut().collect();
     agent.heap().verify().expect("gültiger Heap");
 }
+
+#[test]
+fn maps_keep_insertion_order_and_compare_with_same_value_zero() {
+    check(&[
+        (
+            "var m = new Map([[1, 'a'], ['1', 'b'], [NaN, 'c']]); m.set(-0, 'd'); \
+             m.size + ':' + m.get(1) + m.get('1') + m.get(NaN) + m.get(0) + ':' + \
+             Object.is(Array.from(m.keys())[3], 0) + ':' + m.has(+0) + m.has(2)",
+            "\"4:abcd:true:truefalse\"",
+        ),
+        (
+            "var m = new Map([[1, 1], [2, 2], [3, 3]]); m.delete(2); m.set(2, 4); m.set(1, 5); \
+             Array.from(m).join(';')",
+            "\"1,5;3,3;2,4\"",
+        ),
+        (
+            "var o = {}, s = Symbol(), m = new Map(); m.set(o, 1).set(s, 2).set({}, 3); \
+             m.get(o) + ':' + m.get(s) + ':' + m.get({}) + ':' + m.delete(o) + m.delete(o) + ':' + m.size",
+            "\"1:2:undefined:truefalse:2\"",
+        ),
+        ("Map()", "TypeError"),
+        ("new Map([1])", "TypeError"),
+        ("Map.prototype.get.call(new Set(), 1)", "TypeError"),
+        ("Map.prototype.size", "TypeError"),
+        (
+            "var m = new Map(); m.getOrInsert('a', 1) + ':' + m.getOrInsert('a', 2) + ':' + \
+             m.getOrInsertComputed('b', function (k) { m.set('b', 9); m.set('c', 0); return k + 3; }) + \
+             ':' + Array.from(m).join(';')",
+            "\"1:1:b3:a,1;b,b3;c,0\"",
+        ),
+        ("new Map().getOrInsertComputed(1, 2)", "TypeError"),
+        (
+            "var g = Map.groupBy([1, 2, 3, 4, -0, 0], function (x) { return x % 2; }); \
+             Array.from(g.keys()).join() + ':' + g.get(1).join() + ':' + g.get(0).length",
+            "\"1,0:1,3:4\"",
+        ),
+        (
+            "Map.prototype[Symbol.iterator] === Map.prototype.entries && \
+             Set.prototype[Symbol.iterator] === Set.prototype.values && \
+             Set.prototype.keys === Set.prototype.values && Map[Symbol.species] === Map",
+            "true",
+        ),
+        (
+            "Object.prototype.toString.call(new Map().keys()) + \
+             Object.prototype.toString.call(new Set().entries())",
+            "\"[object Map Iterator][object Set Iterator]\"",
+        ),
+        (
+            "class M extends Map { constructor(x) { super(x); this.extra = 1; } } \
+             var m = new M([[1, 2]]); (m instanceof M) + ':' + m.get(1) + ':' + m.extra",
+            "\"true:2:1\"",
+        ),
+    ]);
+}
+
+#[test]
+fn sets_add_delete_and_iterate() {
+    check(&[
+        (
+            "var s = new Set([1, 2, 2, NaN, NaN, -0]); s.add(3).add(1); \
+             s.size + ':' + Array.from(s).join() + ':' + s.has(0) + s.has(4) + ':' + \
+             s.delete(2) + s.delete(2) + ':' + Array.from(s.entries()).join(';')",
+            "\"5:1,2,NaN,0,3:truefalse:truefalse:1,1;NaN,NaN;0,0;3,3\"",
+        ),
+        ("Set()", "TypeError"),
+        ("Set.prototype.has.call(new Map(), 1)", "TypeError"),
+        (
+            "var added = []; var S = class extends Set { add(v) { added.push(v); return super.add(v); } }; \
+             new S('ab'); added.join()",
+            "\"a,b\"",
+        ),
+        (
+            "var closed = 0; var it = { [Symbol.iterator]() { return { next() { return { value: 1, done: false }; }, \
+             return() { closed++; return {}; } }; } }; \
+             var S = class extends Set { add() { throw 7; } }; \
+             try { new S(it); } catch (e) { e + ':' + closed }",
+            "\"7:1\"",
+        ),
+    ]);
+}
+
+/// Iteratoren und `forEach` sehen, was während des Laufs dazukommt, und
+/// überspringen, was vorher wegfällt, auch wenn die Tabelle dabei umzieht
+/// oder geleert wird.
+#[test]
+fn collection_iteration_follows_changes() {
+    check(&[
+        (
+            "var m = new Map([[1, 1], [2, 2], [3, 3]]); var seen = []; \
+             m.forEach(function (v, k) { seen.push(k); if (k === 1) { m.delete(2); m.set(4, 4); } \
+             if (k === 3) { m.delete(1); m.set(1, 1); } }); seen.join()",
+            "\"1,3,4,1\"",
+        ),
+        (
+            "var s = new Set([0]); var seen = []; \
+             for (var x of s) { seen.push(x); if (x < 100) { s.delete(x); s.add(x + 1); } } \
+             seen.length + ':' + seen[100] + ':' + s.size",
+            "\"101:100:1\"",
+        ),
+        (
+            "var s = new Set([1, 2, 3]); var it = s.values(); it.next(); s.clear(); s.add(7); \
+             var r = it.next(); r.value + ':' + r.done + ':' + it.next().done + ':' + \
+             (s.add(8), it.next().done)",
+            "\"7:false:true:true\"",
+        ),
+        (
+            "var m = new Map(); for (var i = 0; i < 20; i++) m.set(i, i); var it = m.keys(); \
+             it.next(); it.next(); for (var i = 0; i < 18; i++) m.delete(i); \
+             for (var i = 20; i < 60; i++) m.set(i, i); var rest = []; \
+             for (var k of it) rest.push(k); rest.length + ':' + rest[0] + ':' + rest[41]",
+            "\"42:18:59\"",
+        ),
+        (
+            "var s = new Set([1]); var it = s[Symbol.iterator](); \
+             Map.prototype.entries.call(new Map()).next.call(it)",
+            "TypeError",
+        ),
+        (
+            "var s = new Set([1, 2]); var a = s.values(), b = s.values(); a.next(); s.delete(1); \
+             b.next().value + ':' + a.next().value",
+            "\"2:2\"",
+        ),
+    ]);
+}
+
+#[test]
+fn set_methods_follow_the_set_record() {
+    check(&[
+        (
+            "var a = new Set([1, 2, 3]), b = new Set([3, 4]); \
+             [a.union(b), a.intersection(b), a.difference(b), a.symmetricDifference(b)] \
+             .map(function (s) { return Array.from(s).join(); }).join(';') + ':' + \
+             a.isSubsetOf(b) + new Set([3]).isSubsetOf(b) + a.isSupersetOf(new Set([1, 3])) + \
+             a.isDisjointFrom(new Set([5])) + a.isDisjointFrom(b)",
+            "\"1,2,3,4;3;1,2;1,2,4:falsetruetruetruefalse\"",
+        ),
+        (
+            "var calls = []; var other = { size: 1, has: function (v) { calls.push('has ' + v); return v === 2; }, \
+             keys: function () { calls.push('keys'); return [2, 9].values(); } }; \
+             var a = new Set([1, 2, 3]); \
+             Array.from(a.intersection(other)).join() + ':' + calls.join()",
+            "\"2:keys\"",
+        ),
+        (
+            "var calls = []; var other = { size: 10, has: function (v) { calls.push(v); return v !== 2; }, \
+             keys: function () { throw 1; } }; \
+             var a = new Set([1, 2, 3]); \
+             Array.from(a.intersection(other)).join() + ':' + calls.join()",
+            "\"1,3:1,2,3\"",
+        ),
+        (
+            "new Set().union({ size: undefined, has() {}, keys() {} })",
+            "TypeError",
+        ),
+        (
+            "new Set().union({ size: -1, has() {}, keys() {} })",
+            "RangeError",
+        ),
+        (
+            "new Set().union({ size: 1, has: 1, keys() {} })",
+            "TypeError",
+        ),
+        ("new Set().union([1])", "TypeError"),
+        (
+            "var closed = 0; var other = { size: 1, has() { return true; }, keys() { \
+             return { next() { return { value: 1, done: false }; }, return() { closed++; return {}; } }; } }; \
+             new Set([1, 2]).isDisjointFrom(other) + ':' + new Set([2, 3]).isSupersetOf(other) + ':' + closed",
+            "\"false:false:2\"",
+        ),
+        (
+            "var a = new Set([1, 2, 3]); var other = { size: Infinity, has(v) { if (v === 1) a.add(4); return true; }, \
+             keys() {} }; a.isSubsetOf(other) + ':' + Array.from(a.difference(other)).join()",
+            "\"true:\"",
+        ),
+        (
+            "var s = new Set([-0]).union({ size: 1, has() {}, keys() { return [-0, 0, NaN].values(); } }); \
+             Object.is(Array.from(s)[0], 0) + ':' + s.size",
+            "\"true:2\"",
+        ),
+    ]);
+}
+
+/// Objekte und Symbole als Schlüssel bleiben auffindbar, auch wenn der
+/// Collector sie verschiebt.
+#[test]
+fn collections_find_moved_keys() {
+    let (mut agent, realm) = agent_with(false);
+    let source = "var keys = []; var m = new Map(); var s = new Set(); \
+                  for (var i = 0; i < 300; i++) { var k = i % 3 ? {} : Symbol(); keys.push(k); \
+                  m.set(k, i); s.add(k); if (i % 7 === 0) s.add('t' + i); } \
+                  m.size + s.size";
+    assert_eq!(run(&mut agent, realm, source), "643");
+    agent.heap_mut().collect();
+    agent.heap().verify().expect("gültiger Heap");
+    let source = "keys.every(function (k, i) { return m.get(k) === i && s.has(k); }) && \
+                  !m.has({}) && s.has('t7')";
+    assert_eq!(run(&mut agent, realm, source), "true");
+    agent.heap_mut().collect();
+    let source = "for (var i = 0; i < 300; i += 2) { m.delete(keys[i]); s.delete(keys[i]); } \
+                  for (var i = 0; i < 300; i++) m.set({}, i); \
+                  keys.filter(function (k) { return m.has(k); }).length + ':' + m.size + ':' + s.size";
+    assert_eq!(run(&mut agent, realm, source), "\"150:450:193\"");
+
+    let (mut agent, realm) = agent_with(true);
+    let source = "var m = new Map(); var keys = []; \
+                  for (var i = 0; i < 100; i++) { var k = [i]; keys.push(k); m.set(k, i); } \
+                  var it = m.values(); it.next(); m.delete(keys[1]); \
+                  keys.every(function (k, i) { return i === 1 ? !m.has(k) : m.get(k) === i; }) + ':' + \
+                  it.next().value + ':' + Array.from(Map.groupBy(keys, function (k) { return k[0] % 2; }).keys()).join()";
+    assert_eq!(run(&mut agent, realm, source), "\"true:2:0,1\"");
+    agent.heap_mut().collect();
+    agent.heap().verify().expect("gültiger Heap");
+}
+
+/// Gelöschte Einträge und `clear` geben ihren Platz frei: Bleibt die
+/// Größe fast gleich, bleibt auch die Tabelle klein, über beliebig viele
+/// Einträge hinweg.
+#[test]
+fn collections_reuse_their_space() {
+    let (mut agent, realm) = agent_with(false);
+    run(&mut agent, realm, "var m = new Map(); var s = new Set();");
+    agent.heap_mut().collect();
+    let before = agent.heap().used_bytes();
+    let source = "for (var i = 0; i < 12000; i++) { m.set(i, i); m.delete(i - 10); } \
+                  for (var r = 0; r < 3; r++) { for (var i = 0; i < 4000; i++) s.add(i); s.clear(); } \
+                  m.size + ':' + m.keys().next().value + ':' + s.size";
+    assert_eq!(run(&mut agent, realm, source), "\"10:11990:0\"");
+    agent.heap_mut().collect();
+    // Ohne Umzug bräuchten die 12.000 Einträge 384 KiB.
+    let after = agent.heap().used_bytes();
+    assert!(after < before + 16 * 1024, "{before} → {after}");
+
+    let mut agent = Agent::with_options(Options {
+        limit: 4 * 1024 * 1024,
+        verify: true,
+        ..Options::default()
+    })
+    .expect("Speicher");
+    let realm = agent.create_realm().expect("Speicher");
+    assert_eq!(
+        run(&mut agent, realm, "new Set(Array(200000).keys()).size"),
+        "Abrupt(OutOfMemory)"
+    );
+    assert_eq!(
+        run(&mut agent, realm, "new Set(Array(1000).keys()).size"),
+        "1000"
+    );
+}

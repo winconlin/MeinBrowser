@@ -23,6 +23,7 @@
 
 #![forbid(unsafe_code)]
 
+use std::collections::hash_map::RandomState;
 use std::collections::{BTreeMap, VecDeque};
 use std::rc::Rc;
 
@@ -166,6 +167,10 @@ pub struct Agent {
     execution_budgets: Vec<Rc<Budget>>,
     /// Die Warteschlange der Jobs.
     jobs: VecDeque<Job>,
+    /// Die Schlüssel für die Hashwerte in den Tabellen von Maps und Sets,
+    /// je Agent zufällig. Die Reihenfolge der Einträge hängt nicht davon
+    /// ab, nur wie sie sich auf die Ketten verteilen.
+    collection_hasher: RandomState,
 }
 
 impl Agent {
@@ -194,6 +199,7 @@ impl Agent {
             stack_start: 0,
             execution_budgets: Vec::new(),
             jobs: VecDeque::new(),
+            collection_hasher: RandomState::new(),
         };
         agent.scope(|agent, scope| -> Result<(), OutOfMemory> {
             for symbol in WellKnownSymbol::ALL {
@@ -278,6 +284,11 @@ impl Agent {
         } else {
             f(self)
         }
+    }
+
+    /// Die Schlüssel für die Hashwerte der Tabellen von Maps und Sets.
+    pub(crate) fn collection_hasher(&self) -> &RandomState {
+        &self.collection_hasher
     }
 
     /// Auch null Schritte fragen ein Abbruchsignal ab. Bei mehreren

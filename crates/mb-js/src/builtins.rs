@@ -7,8 +7,9 @@
 //! %Array.prototype% (Welle 8b), die Fehlerkonstruktoren mit
 //! `Error.isError`, %Symbol% mit der Registry für `Symbol.for`, %Boolean%,
 //! %Number%, %Math% und die globalen Funktionen `isFinite`, `isNaN`,
-//! `parseFloat` und `parseInt` (Welle 8c) sowie %Iterator% mit
-//! %Iterator.prototype% und den Iterator-Helfern und %JSON% (Welle 8d);
+//! `parseFloat` und `parseInt` (Welle 8c), %Iterator% mit
+//! %Iterator.prototype% und den Iterator-Helfern und %JSON% (Welle 8d)
+//! sowie %Map% und %Set% mit ihren Prototypen und Iteratoren (Welle 8e);
 //! %Function% selbst wartet auf `eval`. Von %String% gibt es bisher die
 //! Teile, die die Harness von Test262 braucht. Dazu kommen, was `for`-`of`
 //! und die Ausbreitung brauchen: die Iteratoren für Arrays und
@@ -29,26 +30,30 @@ mod async_function;
 mod async_generator;
 mod async_iterator;
 mod boolean;
+mod collection;
 mod error;
 mod function;
 mod generator;
 mod global;
 mod iterator;
 mod json;
+mod map;
 mod math;
 mod number;
 mod object;
 mod promise;
+mod set;
 mod string;
 mod symbol;
 
 use crate::agent::{Agent, Completion};
-use crate::builtin::{Builtin, create_builtin_function};
+use crate::builtin::{Builtin, BuiltinCall, create_builtin_function};
 use crate::descriptor::PropertyDescriptor;
 use crate::heap::{Local, Scope};
 use crate::key::{PropertyKey, WellKnownSymbol};
 use crate::operations::define_property_or_throw;
 use crate::realm::RealmId;
+use crate::value::Value;
 
 pub(crate) use function::HAS_INSTANCE as FUNCTION_PROTOTYPE_HAS_INSTANCE;
 pub(crate) use function::PROTOTYPE as FUNCTION_PROTOTYPE;
@@ -82,6 +87,8 @@ pub(crate) fn create_intrinsics(
     number::create(agent, scope, realm)?;
     math::create(agent, scope, realm)?;
     json::create(agent, scope, realm)?;
+    map::create(agent, scope, realm)?;
+    set::create(agent, scope, realm)?;
     promise::create(agent, scope, realm)
 }
 
@@ -159,4 +166,72 @@ fn define_functions(
         crate::builtin::define_builtin_function(agent, scope, realm, object, builtin)?;
     }
     Ok(())
+}
+
+/// Eine eingebaute Funktion als Methode von `object` unter ihrem Namen, mit
+/// den üblichen Attributen. Das Funktionsobjekt, für Eigenschaften, die
+/// dieselbe Funktion haben, etwa @@iterator.
+fn define_method<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    realm: RealmId,
+    object: Local<'_>,
+    builtin: &'static Builtin,
+) -> Completion<Local<'s>> {
+    let function = create_builtin_function(agent, scope, realm, builtin)?;
+    let key = agent.key_from_units(scope, &units(builtin.name))?;
+    let descriptor = PropertyDescriptor::data(function, true, false, true);
+    define_property_or_throw(agent, scope, object, key, &descriptor)?;
+    Ok(function)
+}
+
+/// Ein Accessor `name` ohne Setter, konfigurierbar und nicht aufzählbar,
+/// wie `size` von Maps und Sets. Der Name des Getters steht im Eintrag,
+/// etwa `"get size"`.
+fn define_getter(
+    agent: &mut Agent,
+    scope: &Scope,
+    realm: RealmId,
+    object: Local<'_>,
+    name: &str,
+    getter: &'static Builtin,
+) -> Completion<()> {
+    let getter = create_builtin_function(agent, scope, realm, getter)?;
+    let undefined = agent.heap().local(scope, Value::UNDEFINED);
+    let key = agent.key_from_units(scope, &units(name))?;
+    let descriptor = PropertyDescriptor::accessor(getter, undefined, false, true);
+    define_property_or_throw(agent, scope, object, key, &descriptor)
+}
+
+static SPECIES: Builtin = Builtin {
+    name: "get [Symbol.species]",
+    length: 0,
+    constructor: false,
+    behaviour: species,
+};
+
+/// get C [ %Symbol.species% ] am Konstruktor `constructor`, etwa
+/// Abschnitt 24.1.2.3: ein Accessor ohne Setter, konfigurierbar und nicht
+/// aufzählbar.
+fn define_species(
+    agent: &mut Agent,
+    scope: &Scope,
+    realm: RealmId,
+    constructor: Local<'_>,
+) -> Completion<()> {
+    let getter = create_builtin_function(agent, scope, realm, &SPECIES)?;
+    let undefined = agent.heap().local(scope, Value::UNDEFINED);
+    let key = PropertyKey::Symbol(agent.well_known_symbol(scope, WellKnownSymbol::Species));
+    let descriptor = PropertyDescriptor::accessor(getter, undefined, false, true);
+    define_property_or_throw(agent, scope, constructor, key, &descriptor)
+}
+
+/// Der Getter von @@species: *this*.
+fn species<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    arguments: &BuiltinCall<'_, '_>,
+) -> Completion<Local<'s>> {
+    let heap = agent.heap();
+    Ok(heap.local(scope, heap.get(arguments.this)))
 }

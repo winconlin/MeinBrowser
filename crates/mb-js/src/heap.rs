@@ -127,6 +127,7 @@ const KIND_PROMISE: u64 = 18;
 const KIND_ASYNC_FROM_SYNC: u64 = 19;
 const KIND_ASYNC_GENERATOR: u64 = 20;
 const KIND_BOUND_FUNCTION: u64 = 21;
+const KIND_COLLECTION: u64 = 22;
 
 /// Die Kennzeichen stehen in den Bits 8 bis 31 des Kopfworts.
 const FLAG_SHIFT: u32 = 8;
@@ -164,7 +165,7 @@ fn is_value_cell(kind: u64) -> bool {
 }
 
 /// Die Arten der Objektzellen.
-const OBJECT_KINDS: [u64; 13] = [
+const OBJECT_KINDS: [u64; 14] = [
     KIND_OBJECT,
     KIND_ARRAY,
     KIND_FUNCTION,
@@ -178,6 +179,7 @@ const OBJECT_KINDS: [u64; 13] = [
     KIND_ASYNC_FROM_SYNC,
     KIND_ASYNC_GENERATOR,
     KIND_BOUND_FUNCTION,
+    KIND_COLLECTION,
 ];
 
 /// Die internen Felder eines Funktionsobjekts, Werte vor den eingebetteten
@@ -204,6 +206,9 @@ pub(crate) const ASYNC_GENERATOR_FIELDS: usize = 8;
 /// Die internen Felder einer gebundenen Funktion: [[BoundTargetFunction]],
 /// [[BoundThis]] und [[BoundArguments]].
 pub(crate) const BOUND_FUNCTION_FIELDS: usize = 3;
+/// Die internen Felder einer Map oder eines Set: die Art und die Tabelle
+/// mit [[MapData]] beziehungsweise [[SetData]].
+pub(crate) const COLLECTION_FIELDS: usize = 2;
 
 fn is_object(kind: u64) -> bool {
     OBJECT_KINDS.contains(&kind)
@@ -223,6 +228,7 @@ fn object_fields(kind: u64) -> usize {
         KIND_ASYNC_FROM_SYNC => ASYNC_FROM_SYNC_FIELDS,
         KIND_ASYNC_GENERATOR => ASYNC_GENERATOR_FIELDS,
         KIND_BOUND_FUNCTION => BOUND_FUNCTION_FIELDS,
+        KIND_COLLECTION => COLLECTION_FIELDS,
         _ => 0,
     }
 }

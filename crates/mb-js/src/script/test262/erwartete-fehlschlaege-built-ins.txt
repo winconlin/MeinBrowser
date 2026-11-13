@@ -3,7 +3,7 @@
 # nur der genannte. Erzeugt von script/test262/language.rs; bei einer
 # Abweichung schreibt der Test die neue Fassung nach
 # target/test262/erwartete-fehlschlaege-built-ins.txt.
-# 9752 Dateien, 142 Vorschläge übersprungen; bestanden 8690 von 9610 Dateien und 17224 von 19017 Varianten
+# 10361 Dateien, 142 Vorschläge übersprungen; bestanden 9253 von 10219 Dateien und 18345 von 20230 Varianten
 AggregateError/is-a-constructor.js
 AggregateError/newtarget-proto-custom.js
 AggregateError/newtarget-proto-fallback.js
@@ -529,6 +529,24 @@ JSON/stringify/value-object-proxy.js
 JSON/stringify/value-string-escape-ascii.js
 JSON/stringify/value-string-object.js
 JSON/stringify/value-tojson-not-function.js
+Map/bigint-number-same-value.js
+Map/is-a-constructor.js
+Map/proto-from-ctor-realm.js
+Map/prototype/clear/context-is-weakmap-object-throws.js
+Map/prototype/delete/context-is-weakmap-object-throws.js
+Map/prototype/entries/does-not-have-mapdata-internal-slot-weakmap.js
+Map/prototype/forEach/does-not-have-mapdata-internal-slot-weakmap.js
+Map/prototype/get/does-not-have-mapdata-internal-slot-weakmap.js
+Map/prototype/getOrInsert/does-not-have-mapdata-internal-slot-weakmap.js
+Map/prototype/getOrInsertComputed/different-types-function-callbackfn-does-not-throw.js
+Map/prototype/getOrInsertComputed/does-not-have-mapdata-internal-slot-weakmap.js
+Map/prototype/getOrInsertComputed/this-not-object-throw.js
+Map/prototype/has/does-not-have-mapdata-internal-slot-weakmap.js
+Map/prototype/keys/does-not-have-mapdata-internal-slot-weakmap.js
+Map/prototype/set/does-not-have-mapdata-internal-slot-weakmap.js
+Map/prototype/size/does-not-have-mapdata-internal-slot-weakmap.js
+Map/prototype/values/does-not-have-mapdata-internal-slot-weakmap.js
+Map/valid-keys.js
 Math/ceil/S15.8.2.6_A7.js
 Math/floor/S15.8.2.9_A7.js
 Math/round/S15.8.2.15_A6.js
@@ -843,12 +861,10 @@ Object/prototype/toString/proxy-function-async.js
 Object/prototype/toString/proxy-function.js
 Object/prototype/toString/proxy-revoked-during-get-call.js
 Object/prototype/toString/proxy-revoked.js
-Object/prototype/toString/symbol-tag-map-builtin.js
 Object/prototype/toString/symbol-tag-non-str-bigint.js
 Object/prototype/toString/symbol-tag-non-str-proxy-function.js
 Object/prototype/toString/symbol-tag-override-bigint.js
 Object/prototype/toString/symbol-tag-override-instances.js
-Object/prototype/toString/symbol-tag-set-builtin.js
 Object/prototype/toString/symbol-tag-weakmap-builtin.js
 Object/prototype/toString/symbol-tag-weakset-builtin.js
 Object/prototype/valueOf/S15.2.4.4_A1_T3.js
@@ -876,10 +892,8 @@ Object/seal/seal-generatorfunction.js
 Object/seal/seal-int16array.js
 Object/seal/seal-int32array.js
 Object/seal/seal-int8array.js
-Object/seal/seal-map.js
 Object/seal/seal-proxy.js
 Object/seal/seal-regexp.js
-Object/seal/seal-set.js
 Object/seal/seal-sharedarraybuffer.js
 Object/seal/seal-uint16array.js
 Object/seal/seal-uint32array.js
@@ -912,6 +926,38 @@ Promise/reject/ctx-non-ctor.js
 Promise/resolve/ctx-non-ctor.js
 Promise/try/ctx-non-ctor.js
 Promise/withResolvers/ctx-non-ctor.js
+Set/bigint-number-same-value.js
+Set/is-a-constructor.js
+Set/proto-from-ctor-realm.js
+Set/prototype/add/does-not-have-setdata-internal-slot-weakset.js
+Set/prototype/clear/does-not-have-setdata-internal-slot-weakset.js
+Set/prototype/delete/does-not-have-setdata-internal-slot-weakset.js
+Set/prototype/difference/called-with-object.js
+Set/prototype/difference/require-internal-slot.js
+Set/prototype/difference/size-is-a-number.js
+Set/prototype/entries/does-not-have-setdata-internal-slot-weakset.js
+Set/prototype/forEach/does-not-have-setdata-internal-slot-weakset.js
+Set/prototype/has/does-not-have-setdata-internal-slot-weakset.js
+Set/prototype/intersection/called-with-object.js
+Set/prototype/intersection/require-internal-slot.js
+Set/prototype/intersection/size-is-a-number.js
+Set/prototype/isDisjointFrom/called-with-object.js
+Set/prototype/isDisjointFrom/require-internal-slot.js
+Set/prototype/isDisjointFrom/size-is-a-number.js
+Set/prototype/isSubsetOf/called-with-object.js
+Set/prototype/isSubsetOf/require-internal-slot.js
+Set/prototype/isSubsetOf/size-is-a-number.js
+Set/prototype/isSupersetOf/called-with-object.js
+Set/prototype/isSupersetOf/require-internal-slot.js
+Set/prototype/isSupersetOf/size-is-a-number.js
+Set/prototype/symmetricDifference/called-with-object.js
+Set/prototype/symmetricDifference/require-internal-slot.js
+Set/prototype/symmetricDifference/size-is-a-number.js
+Set/prototype/union/called-with-object.js
+Set/prototype/union/require-internal-slot.js
+Set/prototype/union/size-is-a-number.js
+Set/prototype/values/does-not-have-setdata-internal-slot-weakset.js
+Set/valid-values.js
 Symbol/is-constructor.js
 Symbol/prototype/Symbol.toPrimitive/removed-symbol-wrapper-ordinary-toprimitive.js
 Symbol/prototype/description/this-val-non-symbol.js
