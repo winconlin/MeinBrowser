@@ -2954,6 +2954,34 @@ fn json_parse_stays_within_the_memory_budget() {
     );
 }
 
+/// `stringify` und `parse` mit *reviver* halten nur die Arrays und Objekte
+/// fest, die gerade offen sind: Was fertig ist und sonst niemand erreicht,
+/// kann die Speicherbereinigung freigeben. Zusammen bräuchten die 40
+/// Arrays mit je 20.000 Elementen mehr als die 4 MiB des Heaps.
+#[test]
+fn json_releases_finished_containers() {
+    let mut agent = Agent::with_options(Options {
+        limit: 4 * 1024 * 1024,
+        verify: true,
+        ..Options::default()
+    })
+    .expect("Speicher");
+    let realm = agent.create_realm().expect("Speicher");
+    let source = "JSON.stringify(Array(40), function (k, v) { \
+                    if (k === '') return v; \
+                    if (k === 'payload') return undefined; \
+                    return { payload: Array(20000).fill(0) }; \
+                  }).length";
+    assert_eq!(run(&mut agent, realm, source), "121");
+    let source = "var text = '[' + Array(40).join('{\"a\": {}}, ') + '{\"a\": {}}]'; \
+                  JSON.parse(text, function (k, v) { \
+                    if (k === 'a') return Array(20000).fill(0); \
+                    if (k === '') return v; \
+                    return undefined; \
+                  }).length";
+    assert_eq!(run(&mut agent, realm, source), "40");
+}
+
 #[test]
 fn json_raw_values() {
     check(&[
