@@ -5,10 +5,10 @@
 use super::{
     Heap, KIND_ARGUMENTS, KIND_ARRAY, KIND_ASYNC_FROM_SYNC, KIND_ASYNC_GENERATOR,
     KIND_BOUND_FUNCTION, KIND_BUILTIN, KIND_COLLECTION, KIND_ERROR, KIND_FUNCTION, KIND_GENERATOR,
-    KIND_ITERATOR, KIND_OBJECT, KIND_PRIMITIVE, KIND_PROMISE, KIND_SHAPE, KIND_SLOTS, KIND_SPARSE,
-    KIND_SYMBOL, KIND_WEAK, Local, NONE, OBJECT_REFS, OutOfMemory, Scope, cell_words, header,
-    header_flags, header_kind, header_length, is_object, is_value_cell, object_fields, packed,
-    packed_high, packed_low, to_usize, with_flags,
+    KIND_ITERATOR, KIND_OBJECT, KIND_PRIMITIVE, KIND_PROMISE, KIND_PROXY, KIND_SHAPE, KIND_SLOTS,
+    KIND_SPARSE, KIND_SYMBOL, KIND_WEAK, Local, NONE, OBJECT_REFS, OutOfMemory, Scope, cell_words,
+    header, header_flags, header_kind, header_length, is_object, is_value_cell, object_fields,
+    packed, packed_high, packed_low, to_usize, with_flags,
 };
 use crate::value::{Ref, RefKind, Value};
 
@@ -117,6 +117,11 @@ pub(crate) enum ObjectClass {
     /// [`COLLECTION_FIELDS`](super::COLLECTION_FIELDS) internen Feldern,
     /// sonst gewöhnlich.
     Collection,
+    /// Ein Proxy (Abschnitt 10.5) mit
+    /// [`PROXY_FIELDS`](super::PROXY_FIELDS) internen Feldern. Seine
+    /// internen Methoden fragen den Handler; Gestalt und Plätze trägt er
+    /// nur für private Elemente, sein Prototyp bleibt leer.
+    Proxy,
 }
 
 impl ObjectClass {
@@ -136,6 +141,7 @@ impl ObjectClass {
             ObjectClass::AsyncGenerator => KIND_ASYNC_GENERATOR,
             ObjectClass::BoundFunction => KIND_BOUND_FUNCTION,
             ObjectClass::Collection => KIND_COLLECTION,
+            ObjectClass::Proxy => KIND_PROXY,
         }
     }
 
@@ -155,6 +161,7 @@ impl ObjectClass {
             KIND_ASYNC_GENERATOR => Some(ObjectClass::AsyncGenerator),
             KIND_BOUND_FUNCTION => Some(ObjectClass::BoundFunction),
             KIND_COLLECTION => Some(ObjectClass::Collection),
+            KIND_PROXY => Some(ObjectClass::Proxy),
             _ => None,
         }
     }
@@ -652,6 +659,19 @@ impl Heap {
         value: Value<'_>,
     ) -> bool {
         self.field_word(object, KIND_COLLECTION, index)
+            .is_some_and(|word| self.store(object.offset(), word, value.bits()))
+    }
+
+    /// Ein internes Feld eines Proxys, `None` für andere Zellen.
+    pub(crate) fn proxy_field(&self, object: Ref<'_>, index: usize) -> Option<Value<'_>> {
+        let word = self.field_word(object, KIND_PROXY, index)?;
+        self.word(object.offset(), word).map(Value::from_bits)
+    }
+
+    /// Schreibt ein internes Feld eines Proxys. `false`, wenn es das Feld
+    /// nicht gibt.
+    pub(crate) fn set_proxy_field(&self, object: Ref<'_>, index: usize, value: Value<'_>) -> bool {
+        self.field_word(object, KIND_PROXY, index)
             .is_some_and(|word| self.store(object.offset(), word, value.bits()))
     }
 }

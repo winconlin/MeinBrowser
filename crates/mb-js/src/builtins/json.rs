@@ -537,7 +537,7 @@ fn start<'i, 's>(
         let result = call(agent, scope, reviver, holder, &[name, value, context])?;
         return Ok(Started::Done(result));
     }
-    let is_array = is_array(agent.heap(), agent.heap().get(value));
+    let is_array = is_array(agent, value)?;
     let heap = agent.heap();
     let [holder_slot, value_slot, context_slot] = slots;
     heap.set(holder_slot, heap.get(holder));

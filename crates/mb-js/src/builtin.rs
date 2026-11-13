@@ -100,6 +100,13 @@ impl BuiltinCall<'_, '_> {
     }
 }
 
+/// Ersetzt, was die eingebaute Funktion `function` einfängt.
+pub(crate) fn set_captures(heap: &Heap, function: Local<'_>, value: Value<'_>) {
+    if let Kind::Object(object) = heap.get(function).kind() {
+        heap.set_builtin_field(object, CAPTURES, value);
+    }
+}
+
 fn units(text: &str) -> Vec<u16> {
     text.encode_utf16().collect()
 }
@@ -216,8 +223,9 @@ pub fn define_builtin_function(
 }
 
 /// [[Call]] und [[Construct]] einer eingebauten Funktion (Abschnitte
-/// 10.3.1 und 10.3.2) mit BuiltinCallOrConstruct (Abschnitt 10.3.3). Ein
-/// Fehler der Engine aus dem Aufruf gehört zu ihrem Realm.
+/// 10.3.1 und 10.3.2) mit BuiltinCallOrConstruct (Abschnitt 10.3.3). Ihr
+/// Realm ist während des Aufrufs der aktuelle, und ein Fehler der Engine
+/// aus dem Aufruf gehört zu ihm.
 pub(crate) fn call_builtin<'s>(
     agent: &mut Agent,
     scope: &'s Scope,
@@ -240,7 +248,9 @@ pub(crate) fn call_builtin<'s>(
         arguments,
         new_target,
     };
+    let outer = agent.replace_current_realm(Some(realm));
     let result = (builtin.behaviour)(agent, scope, &call);
+    agent.replace_current_realm(outer);
     if matches!(result, Err(Abrupt::Throw)) {
         agent.set_error_realm(realm);
     }

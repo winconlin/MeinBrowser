@@ -101,10 +101,10 @@ use crate::iterator::{
 use crate::key::{PropertyKey, array_index, is_private_name};
 use crate::number;
 use crate::object::{
-    PrivateElement, array_create, create_mapped_arguments_object, create_unmapped_arguments_object,
-    define_arguments_iterator, get_prototype_of, ordinary_create_from_constructor,
-    ordinary_object_create, private_element_find, private_element_write, private_elements,
-    set_prototype_of,
+    PrivateElement, Step, array_create, create_mapped_arguments_object,
+    create_unmapped_arguments_object, define_arguments_iterator, get_prototype_of, is_proxy,
+    ordinary_create_from_constructor, ordinary_object_create, private_element_find,
+    private_element_write, private_elements, proxy_call, proxy_construct, set_prototype_of,
 };
 use crate::operations::{
     call, create_data_property_or_throw, define_property_or_throw, get, get_method, has_property,
@@ -317,7 +317,9 @@ fn returned<'s>(
 /// aufruft: ein neuer Lauf, der mit der Rückkehr der Funktion endet. Für
 /// eine eingebaute Funktion (Abschnitt 10.3.1) zählt ihr Aufruf als Lauf.
 /// Eine gebundene Funktion (Abschnitt 10.4.1.1) führt zu ihrer
-/// Zielfunktion mit dem gebundenen `this` und den gebundenen Argumenten.
+/// Zielfunktion mit dem gebundenen `this` und den gebundenen Argumenten,
+/// ein Proxy ohne Falle `apply` (Abschnitt 10.5.12) zu seinem Ziel; beides
+/// in einer Schleife (RS-8).
 pub(crate) fn call_function<'s>(
     agent: &mut Agent,
     scope: &'s Scope,
@@ -325,14 +327,39 @@ pub(crate) fn call_function<'s>(
     this: Local<'_>,
     arguments: &[Local<'_>],
 ) -> Completion<Local<'s>> {
-    if is_bound_function(agent.heap(), agent.heap().get(function)) {
-        let (target, this, arguments) = unwrap_call(agent, scope, function, this, arguments);
-        return call_unbound(agent, scope, target, this, &arguments);
+    let heap = agent.heap();
+    let value = heap.get(function);
+    if !is_bound_function(heap, value) && !is_proxy(heap, value) {
+        return call_unbound(agent, scope, function, this, arguments);
     }
-    call_unbound(agent, scope, function, this, arguments)
+    let callee = heap.local(scope, value);
+    let mut this = heap.local(scope, heap.get(this));
+    let mut arguments: Vec<Local<'s>> = arguments
+        .iter()
+        .map(|&argument| heap.local(scope, heap.get(argument)))
+        .collect();
+    loop {
+        let heap = agent.heap();
+        let value = heap.get(callee);
+        if is_bound_function(heap, value) {
+            let (target, bound_this, bound_arguments) =
+                unwrap_call(agent, scope, callee, this, &arguments);
+            let heap = agent.heap();
+            heap.set(callee, heap.get(target));
+            this = bound_this;
+            arguments = bound_arguments;
+        } else if is_proxy(heap, value) {
+            if let Step::Done(result) = proxy_call(agent, scope, callee, this, &arguments)? {
+                return Ok(result);
+            }
+        } else {
+            return call_unbound(agent, scope, callee, this, &arguments);
+        }
+    }
 }
 
-/// [`call_function`] für eine Funktion, die nicht gebunden ist.
+/// [`call_function`] für eine Funktion, die weder gebunden noch ein Proxy
+/// ist.
 fn call_unbound<'s>(
     agent: &mut Agent,
     scope: &'s Scope,
@@ -375,7 +402,9 @@ fn call_frame<'s>(
 /// Rahmen mit OrdinaryCreateFromConstructor, im aktuellen Realm `current`
 /// (Abschnitt 10.2.2, Schritt 3). Kehrt der Rahmen ohne Objekt zurück,
 /// prüft der Lauf das Ergebnis wie bei `new`. Eine gebundene Funktion
-/// (Abschnitt 10.4.1.2) führt zu ihrer Zielfunktion.
+/// (Abschnitt 10.4.1.2) führt zu ihrer Zielfunktion, ein Proxy ohne Falle
+/// `construct` (Abschnitt 10.5.13) zu seinem Ziel; beides in einer
+/// Schleife.
 pub(crate) fn construct_function<'s>(
     agent: &mut Agent,
     scope: &'s Scope,
@@ -384,15 +413,41 @@ pub(crate) fn construct_function<'s>(
     arguments: &[Local<'_>],
     new_target: Local<'_>,
 ) -> Completion<Local<'s>> {
-    if is_bound_function(agent.heap(), agent.heap().get(constructor)) {
-        let (target, arguments, new_target) =
-            unwrap_construct(agent, scope, constructor, arguments, new_target);
-        return construct_unbound(agent, scope, current, target, &arguments, new_target);
+    let heap = agent.heap();
+    let value = heap.get(constructor);
+    if !is_bound_function(heap, value) && !is_proxy(heap, value) {
+        return construct_unbound(agent, scope, current, constructor, arguments, new_target);
     }
-    construct_unbound(agent, scope, current, constructor, arguments, new_target)
+    let callee = heap.local(scope, value);
+    let mut new_target = heap.local(scope, heap.get(new_target));
+    let mut arguments: Vec<Local<'s>> = arguments
+        .iter()
+        .map(|&argument| heap.local(scope, heap.get(argument)))
+        .collect();
+    loop {
+        let heap = agent.heap();
+        let value = heap.get(callee);
+        if is_bound_function(heap, value) {
+            let (target, bound_arguments, bound_new_target) =
+                unwrap_construct(agent, scope, callee, &arguments, new_target);
+            let heap = agent.heap();
+            heap.set(callee, heap.get(target));
+            arguments = bound_arguments;
+            new_target = bound_new_target;
+        } else if is_proxy(heap, value) {
+            if let Step::Done(result) =
+                proxy_construct(agent, scope, current, callee, &arguments, new_target)?
+            {
+                return Ok(result);
+            }
+        } else {
+            return construct_unbound(agent, scope, current, callee, &arguments, new_target);
+        }
+    }
 }
 
-/// [`construct_function`] für einen Konstruktor, der nicht gebunden ist.
+/// [`construct_function`] für einen Konstruktor, der weder gebunden noch
+/// ein Proxy ist.
 fn construct_unbound<'s>(
     agent: &mut Agent,
     scope: &'s Scope,
@@ -416,14 +471,14 @@ fn construct_unbound<'s>(
 }
 
 /// Ob eine Funktion im Befehl ihres Aufrufs läuft statt in einem eigenen
-/// Rahmen: eingebaute und gebundene Funktionen.
+/// Rahmen: eingebaute und gebundene Funktionen und Proxys.
 fn runs_in_instruction(heap: &Heap, value: Value<'_>) -> bool {
-    builtin_parts(heap, value).is_some() || is_bound_function(heap, value)
+    builtin_parts(heap, value).is_some() || is_bound_function(heap, value) || is_proxy(heap, value)
 }
 
-/// [[Call]] einer eingebauten oder gebundenen Funktion im Befehl des
-/// Aufrufs. Eine gebundene Funktion führt zu einem neuen Lauf wie bei
-/// `Function.prototype.call`.
+/// [[Call]] einer eingebauten oder gebundenen Funktion oder eines Proxys im
+/// Befehl des Aufrufs. Eine gebundene Funktion und ein Proxy führen zu
+/// einem neuen Lauf wie bei `Function.prototype.call`.
 fn call_in_instruction<'s>(
     agent: &mut Agent,
     scope: &'s Scope,
@@ -431,7 +486,8 @@ fn call_in_instruction<'s>(
     this: Local<'_>,
     arguments: &[Local<'_>],
 ) -> Completion<Local<'s>> {
-    if is_bound_function(agent.heap(), agent.heap().get(callee)) {
+    let heap = agent.heap();
+    if is_bound_function(heap, heap.get(callee)) || is_proxy(heap, heap.get(callee)) {
         call_function(agent, scope, callee, this, arguments)
     } else {
         call_builtin(agent, scope, callee, this, arguments, None)
@@ -665,6 +721,7 @@ fn run(
             base: top.base,
             accumulator,
         };
+        agent.replace_current_realm(Some(top.realm));
         let flow = match agent.scope(|agent, inner| frame.step(agent, inner, &instruction)) {
             Ok(flow) => flow,
             Err(Abrupt::Throw) => {
@@ -2186,14 +2243,18 @@ impl<'c> Frame<'c, '_> {
         if runs_in_instruction(agent.heap(), agent.heap().get(constructor)) {
             // [[Construct]] einer eingebauten Funktion (Abschnitt 10.3.2):
             // `this` bleibt uninitialisiert. Eine gebundene Funktion
-            // (Abschnitt 10.4.1.2) führt zu ihrer Zielfunktion.
+            // (Abschnitt 10.4.1.2) führt zu ihrer Zielfunktion, ein Proxy
+            // (Abschnitt 10.5.13) zu seiner Falle oder seinem Ziel.
             let arguments = if spread {
                 let array = self.register(agent, scope, first.saturating_add(2));
                 spread_list(agent, scope, array)?
             } else {
                 self.call_operands(agent, scope, first, count).1
             };
-            let result = if is_bound_function(agent.heap(), agent.heap().get(constructor)) {
+            let heap = agent.heap();
+            let result = if is_bound_function(heap, heap.get(constructor))
+                || is_proxy(heap, heap.get(constructor))
+            {
                 construct_function(
                     agent,
                     scope,

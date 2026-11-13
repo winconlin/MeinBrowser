@@ -133,9 +133,10 @@ fn arrays_start_with_their_length() {
         assert!(indices(agent, scope, array).is_empty());
 
         let plain = object::ordinary_object_create(agent, scope, None).expect("Speicher");
-        assert!(is_array(agent.heap(), agent.heap().get(array)));
-        assert!(!is_array(agent.heap(), agent.heap().get(plain)));
-        assert!(!is_array(agent.heap(), Value::int32(3)));
+        let three = agent.heap().local(scope, Value::int32(3));
+        assert!(is_array(agent, array).expect("kein Fehler"));
+        assert!(!is_array(agent, plain).expect("kein Fehler"));
+        assert!(!is_array(agent, three).expect("kein Fehler"));
 
         assert!(
             object::get_prototype_of(agent, scope, array)

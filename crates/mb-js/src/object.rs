@@ -5,7 +5,7 @@
 //! benannten Eigenschaften, Array-Indizes liegen als Elemente daneben.
 //!
 //! Jede interne Methode ist eine Funktion, die nach der Art des Objekts
-//! verzweigt. Bisher gibt es gewöhnliche Objekte, Funktionsobjekte und
+//! verzweigt. Es gibt gewöhnliche Objekte, Funktionsobjekte und
 //! eingebaute Funktionen, die dieselben internen Methoden haben und dazu
 //! [[Call]] (`function`, `builtin`), Arrays, die nur [[DefineOwnProperty]]
 //! anders umsetzen (`array`), Fehlerobjekte, die sich nur durch
@@ -17,8 +17,10 @@
 //! Fassung, ohne die Prototypkette anders zu durchlaufen. Alle Arten, die
 //! [[GetOwnProperty]], [[GetPrototypeOf]], [[Get]], [[Set]] und
 //! [[HasProperty]] so umsetzen, durchlaufen die Prototypkette in einer
-//! Schleife statt rekursiv (RS-8). Kommt eine Art mit eigenen Fassungen
-//! dazu, etwa Proxy, verlässt die Schleife die Kette dort.
+//! Schleife statt rekursiv (RS-8). Nur Proxys (`proxy`) haben für alle
+//! internen Methoden eigene Fassungen. Trifft die Schleife auf einen, geht
+//! sie bei ihm weiter, und hat sein Handler keine Falle, bei seinem Ziel;
+//! auch das ohne Rekursion.
 //!
 //! Private Elemente (Abschnitt 6.2.10) liegen wie Eigenschaften in der
 //! Gestalt, mit dem privaten Namen als Schlüssel: ein Feld als beschreibbare
@@ -33,6 +35,7 @@
 mod arguments;
 mod array;
 mod primitive;
+mod proxy;
 pub(crate) mod shape;
 mod storage;
 
@@ -52,6 +55,10 @@ pub(crate) use arguments::{
 };
 pub use array::array_create;
 pub(crate) use primitive::{primitive_object_create, string_create};
+pub(crate) use proxy::{
+    Step, has_call, has_construct, is_proxy, proxy_call, proxy_construct, proxy_create,
+    proxy_target, revoke,
+};
 
 /// Eingebettete Plätze eines gewöhnlichen Objekts, eines Funktionsobjekts
 /// und eines arguments-Objekts.
@@ -172,7 +179,10 @@ pub(crate) fn get_prototype_from_constructor<'s>(
         return Ok(found);
     }
     let heap = agent.heap();
-    let realm = get_function_realm(heap, heap.get(constructor), current);
+    let Some(realm) = get_function_realm(heap, heap.get(constructor), current) else {
+        // Ein widerrufener Proxy (GetFunctionRealm, Schritt 3.a).
+        return Err(agent.throw_error(ErrorKind::TypeError));
+    };
     Ok(agent.intrinsic(scope, realm, fallback))
 }
 
@@ -196,25 +206,34 @@ pub fn get_prototype_of<'s>(
     scope: &'s Scope,
     object: Local<'_>,
 ) -> Completion<Option<Local<'s>>> {
-    match class(agent, object)? {
-        ObjectClass::Ordinary
-        | ObjectClass::Array
-        | ObjectClass::Function
-        | ObjectClass::Arguments
-        | ObjectClass::Error
-        | ObjectClass::Builtin
-        | ObjectClass::Primitive
-        | ObjectClass::Iterator
-        | ObjectClass::Generator
-        | ObjectClass::Promise
-        | ObjectClass::AsyncFromSyncIterator
-        | ObjectClass::AsyncGenerator
-        | ObjectClass::BoundFunction
-        | ObjectClass::Collection => {
-            let heap = agent.heap();
-            let prototype =
-                object_of(heap, object).and_then(|object| heap.object_prototype(object));
-            Ok(prototype.map(|prototype| heap.local(scope, Value::object(prototype))))
+    let heap = agent.heap();
+    let cursor = heap.local(scope, heap.get(object));
+    loop {
+        match class(agent, cursor)? {
+            ObjectClass::Ordinary
+            | ObjectClass::Array
+            | ObjectClass::Function
+            | ObjectClass::Arguments
+            | ObjectClass::Error
+            | ObjectClass::Builtin
+            | ObjectClass::Primitive
+            | ObjectClass::Iterator
+            | ObjectClass::Generator
+            | ObjectClass::Promise
+            | ObjectClass::AsyncFromSyncIterator
+            | ObjectClass::AsyncGenerator
+            | ObjectClass::BoundFunction
+            | ObjectClass::Collection => {
+                let heap = agent.heap();
+                let prototype =
+                    object_of(heap, cursor).and_then(|object| heap.object_prototype(object));
+                return Ok(prototype.map(|prototype| heap.local(scope, Value::object(prototype))));
+            }
+            ObjectClass::Proxy => {
+                if let Step::Done(prototype) = proxy::get_prototype_of(agent, scope, cursor)? {
+                    return Ok(prototype);
+                }
+            }
         }
     }
 }
@@ -239,8 +258,28 @@ pub fn set_prototype_of(
         | ObjectClass::AsyncFromSyncIterator
         | ObjectClass::AsyncGenerator
         | ObjectClass::BoundFunction
-        | ObjectClass::Collection => {}
+        | ObjectClass::Collection => ordinary_set_prototype_of(agent, object, prototype),
+        ObjectClass::Proxy => agent.scope(|agent, scope| {
+            let heap = agent.heap();
+            let cursor = heap.local(scope, heap.get(object));
+            loop {
+                if let Step::Done(result) = proxy::set_prototype_of(agent, cursor, prototype)? {
+                    return Ok(result);
+                }
+                if class(agent, cursor)? != ObjectClass::Proxy {
+                    return ordinary_set_prototype_of(agent, cursor, prototype);
+                }
+            }
+        }),
     }
+}
+
+/// OrdinarySetPrototypeOf (Abschnitt 10.1.2.1).
+fn ordinary_set_prototype_of(
+    agent: &mut Agent,
+    object: Local<'_>,
+    prototype: Option<Local<'_>>,
+) -> Completion<bool> {
     if let Some(prototype) = prototype {
         // Der Prototyp muss ein Objekt sein.
         class(agent, prototype)?;
@@ -268,7 +307,11 @@ pub fn set_prototype_of(
         if current == object {
             return Ok(false);
         }
-        // Alle Arten nutzen bisher das gewöhnliche [[GetPrototypeOf]].
+        // Nur ein Proxy hat ein anderes [[GetPrototypeOf]]; dort endet die
+        // Suche (Schritt 7.b.i).
+        if heap.object_class(current) == Some(ObjectClass::Proxy) {
+            break;
+        }
         cursor = heap.object_prototype(current);
     }
     heap.set_object_prototype(object, prototype);
@@ -291,11 +334,25 @@ pub fn is_extensible(agent: &mut Agent, object: Local<'_>) -> Completion<bool> {
         | ObjectClass::AsyncFromSyncIterator
         | ObjectClass::AsyncGenerator
         | ObjectClass::BoundFunction
-        | ObjectClass::Collection => {
+        | ObjectClass::Collection => Ok(ordinary_is_extensible(agent.heap(), object)),
+        ObjectClass::Proxy => agent.scope(|agent, scope| {
             let heap = agent.heap();
-            Ok(object_of(heap, object).is_some_and(|object| heap.object_extensible(object)))
-        }
+            let cursor = heap.local(scope, heap.get(object));
+            loop {
+                if let Step::Done(result) = proxy::is_extensible(agent, cursor)? {
+                    return Ok(result);
+                }
+                if class(agent, cursor)? != ObjectClass::Proxy {
+                    return Ok(ordinary_is_extensible(agent.heap(), cursor));
+                }
+            }
+        }),
     }
+}
+
+/// OrdinaryIsExtensible (Abschnitt 10.1.3.1).
+fn ordinary_is_extensible(heap: &Heap, object: Local<'_>) -> bool {
+    object_of(heap, object).is_some_and(|object| heap.object_extensible(object))
 }
 
 /// [[PreventExtensions]] (Abschnitt 10.1.4).
@@ -314,14 +371,28 @@ pub fn prevent_extensions(agent: &mut Agent, object: Local<'_>) -> Completion<bo
         | ObjectClass::AsyncFromSyncIterator
         | ObjectClass::AsyncGenerator
         | ObjectClass::BoundFunction
-        | ObjectClass::Collection => {
+        | ObjectClass::Collection => Ok(ordinary_prevent_extensions(agent.heap(), object)),
+        ObjectClass::Proxy => agent.scope(|agent, scope| {
             let heap = agent.heap();
-            if let Some(object) = object_of(heap, object) {
-                heap.prevent_object_extensions(object);
+            let cursor = heap.local(scope, heap.get(object));
+            loop {
+                if let Step::Done(result) = proxy::prevent_extensions(agent, cursor)? {
+                    return Ok(result);
+                }
+                if class(agent, cursor)? != ObjectClass::Proxy {
+                    return Ok(ordinary_prevent_extensions(agent.heap(), cursor));
+                }
             }
-            Ok(true)
-        }
+        }),
     }
+}
+
+/// OrdinaryPreventExtensions (Abschnitt 10.1.4.1).
+fn ordinary_prevent_extensions(heap: &Heap, object: Local<'_>) -> bool {
+    if let Some(object) = object_of(heap, object) {
+        heap.prevent_object_extensions(object);
+    }
+    true
 }
 
 /// Macht `object` zu einem Objekt mit unveränderlichem Prototyp (Abschnitt
@@ -357,6 +428,18 @@ pub fn get_own_property<'s>(
         | ObjectClass::BoundFunction
         | ObjectClass::Collection => {
             Ok(ordinary_get_own_property(agent.heap(), scope, object, key))
+        }
+        ObjectClass::Proxy => {
+            let heap = agent.heap();
+            let cursor = heap.local(scope, heap.get(object));
+            loop {
+                if let Step::Done(result) = proxy::get_own_property(agent, scope, cursor, key)? {
+                    return Ok(result);
+                }
+                if class(agent, cursor)? != ObjectClass::Proxy {
+                    return get_own_property(agent, scope, cursor, key);
+                }
+            }
         }
     }
 }
@@ -417,6 +500,20 @@ pub fn define_own_property(
         ObjectClass::Array => array::define_own_property(agent, scope, object, key, descriptor),
         ObjectClass::Arguments => {
             arguments::define_own_property(agent, scope, object, key, descriptor)
+        }
+        ObjectClass::Proxy => {
+            let heap = agent.heap();
+            let cursor = heap.local(scope, heap.get(object));
+            loop {
+                if let Step::Done(result) =
+                    proxy::define_own_property(agent, cursor, key, descriptor)?
+                {
+                    return Ok(result);
+                }
+                if class(agent, cursor)? != ObjectClass::Proxy {
+                    return define_own_property(agent, scope, cursor, key, descriptor);
+                }
+            }
         }
     }
 }
@@ -687,19 +784,63 @@ pub fn has_property(
     object: Local<'_>,
     key: PropertyKey<'_>,
 ) -> Completion<bool> {
-    class(agent, object)?;
-    let heap = agent.heap();
+    if class(agent, object)? != ObjectClass::Proxy {
+        match ordinary_has_property(agent.heap(), object, key, None) {
+            Found::Done(found) => return Ok(found),
+            Found::Proxy => {}
+        }
+    }
+    agent.scope(|agent, scope| {
+        let heap = agent.heap();
+        let cursor = heap.local(scope, heap.get(object));
+        loop {
+            if class(agent, cursor)? == ObjectClass::Proxy {
+                if let Step::Done(found) = proxy::has_property(agent, cursor, key)? {
+                    return Ok(found);
+                }
+                continue;
+            }
+            if let Found::Done(found) =
+                ordinary_has_property(agent.heap(), cursor, key, Some(cursor))
+            {
+                return Ok(found);
+            }
+        }
+    })
+}
+
+/// Was OrdinaryHasProperty auf der Prototypkette findet.
+enum Found {
+    Done(bool),
+    /// Ein Proxy in der Kette; er steht in `cursor`, wenn es einen gibt.
+    Proxy,
+}
+
+/// OrdinaryHasProperty (Abschnitt 10.1.7.1) bis zum ersten Proxy in der
+/// Prototypkette.
+fn ordinary_has_property(
+    heap: &Heap,
+    object: Local<'_>,
+    key: PropertyKey<'_>,
+    cursor: Option<Local<'_>>,
+) -> Found {
     let key = key_in(heap, key);
     let Some(mut current) = object_of(heap, object) else {
-        return Ok(false);
+        return Found::Done(false);
     };
     loop {
         if find_own(heap, current, key).is_some() {
-            return Ok(true);
+            return Found::Done(true);
         }
         match heap.object_prototype(current) {
+            Some(parent) if heap.object_class(parent) == Some(ObjectClass::Proxy) => {
+                if let Some(cursor) = cursor {
+                    heap.set(cursor, Value::object(parent));
+                }
+                return Found::Proxy;
+            }
             Some(parent) => current = parent,
-            None => return Ok(false),
+            None => return Found::Done(false),
         }
     }
 }
@@ -712,28 +853,64 @@ pub fn get<'s>(
     key: PropertyKey<'_>,
     receiver: Local<'_>,
 ) -> Completion<Local<'s>> {
-    class(agent, object)?;
-    let getter = {
-        let heap = agent.heap();
-        let key = key_in(heap, key);
-        let Some(mut current) = object_of(heap, object) else {
-            return Ok(heap.local(scope, Value::UNDEFINED));
-        };
-        loop {
-            match find_own(heap, current, key) {
-                Some(Own::Data { value, .. }) => return Ok(heap.local(scope, value)),
-                Some(Own::Accessor { getter, .. }) => break heap.local(scope, getter),
-                None => match heap.object_prototype(current) {
-                    Some(parent) => current = parent,
-                    None => return Ok(heap.local(scope, Value::UNDEFINED)),
-                },
-            }
+    let mut walk = match class(agent, object)? {
+        ObjectClass::Proxy => {
+            let heap = agent.heap();
+            Walk::Proxy(heap.local(scope, heap.get(object)))
         }
+        _ => ordinary_get_walk(agent.heap(), scope, object, key),
     };
-    if agent.heap().get(getter).is_undefined() {
-        return Ok(getter);
+    loop {
+        match walk {
+            Walk::Value(value) => return Ok(value),
+            Walk::Getter(getter) => {
+                if agent.heap().get(getter).is_undefined() {
+                    return Ok(getter);
+                }
+                return call(agent, scope, getter, receiver, &[]);
+            }
+            Walk::Proxy(proxy) => match proxy::get(agent, scope, proxy, key, receiver)? {
+                Step::Done(value) => return Ok(value),
+                Step::Forward if class(agent, proxy)? == ObjectClass::Proxy => {}
+                Step::Forward => walk = ordinary_get_walk(agent.heap(), scope, proxy, key),
+            },
+        }
     }
-    call(agent, scope, getter, receiver, &[])
+}
+
+/// Was OrdinaryGet auf der Prototypkette findet.
+enum Walk<'s> {
+    Value(Local<'s>),
+    Getter(Local<'s>),
+    /// Ein Proxy, an den [[Get]] weitergeht.
+    Proxy(Local<'s>),
+}
+
+/// OrdinaryGet (Abschnitt 10.1.8.1) bis zum ersten Proxy in der
+/// Prototypkette.
+fn ordinary_get_walk<'s>(
+    heap: &Heap,
+    scope: &'s Scope,
+    object: Local<'_>,
+    key: PropertyKey<'_>,
+) -> Walk<'s> {
+    let key = key_in(heap, key);
+    let Some(mut current) = object_of(heap, object) else {
+        return Walk::Value(heap.local(scope, Value::UNDEFINED));
+    };
+    loop {
+        match find_own(heap, current, key) {
+            Some(Own::Data { value, .. }) => return Walk::Value(heap.local(scope, value)),
+            Some(Own::Accessor { getter, .. }) => return Walk::Getter(heap.local(scope, getter)),
+            None => match heap.object_prototype(current) {
+                Some(parent) if heap.object_class(parent) == Some(ObjectClass::Proxy) => {
+                    return Walk::Proxy(heap.local(scope, Value::object(parent)));
+                }
+                Some(parent) => current = parent,
+                None => return Walk::Value(heap.local(scope, Value::UNDEFINED)),
+            },
+        }
+    }
 }
 
 /// Was OrdinarySet auf der Prototypkette findet.
@@ -742,6 +919,39 @@ enum Holder<'s> {
     Writable,
     ReadOnly,
     Setter(Local<'s>),
+    /// Ein Proxy, an den [[Set]] weitergeht.
+    Proxy(Local<'s>),
+}
+
+/// OrdinarySet bis zum ersten Proxy in der Prototypkette.
+fn ordinary_set_walk<'s>(
+    heap: &Heap,
+    scope: &'s Scope,
+    object: Local<'_>,
+    key: PropertyKey<'_>,
+) -> Holder<'s> {
+    let key = key_in(heap, key);
+    let Some(mut current) = object_of(heap, object) else {
+        return Holder::ReadOnly;
+    };
+    loop {
+        match find_own(heap, current, key) {
+            Some(Own::Data { attributes, .. }) if attributes & WRITABLE == 0 => {
+                return Holder::ReadOnly;
+            }
+            Some(Own::Data { .. }) => return Holder::Writable,
+            Some(Own::Accessor { setter, .. }) => return Holder::Setter(heap.local(scope, setter)),
+            None => match heap.object_prototype(current) {
+                Some(parent) if heap.object_class(parent) == Some(ObjectClass::Proxy) => {
+                    return Holder::Proxy(heap.local(scope, Value::object(parent)));
+                }
+                Some(parent) => current = parent,
+                // Ohne Eigenschaft gilt eine beschreibbare Dateneigenschaft
+                // als gefunden.
+                None => return Holder::Writable,
+            },
+        }
+    }
 }
 
 /// [[Set]] (Abschnitt 10.1.9, OrdinarySet 10.1.9.1 mit
@@ -754,33 +964,23 @@ pub fn set(
     value: Local<'_>,
     receiver: Local<'_>,
 ) -> Completion<bool> {
-    class(agent, object)?;
-    let holder = {
-        let heap = agent.heap();
-        let key = key_in(heap, key);
-        let Some(mut current) = object_of(heap, object) else {
-            return Ok(false);
-        };
-        loop {
-            match find_own(heap, current, key) {
-                Some(Own::Data { attributes, .. }) if attributes & WRITABLE == 0 => {
-                    break Holder::ReadOnly;
-                }
-                Some(Own::Data { .. }) => break Holder::Writable,
-                Some(Own::Accessor { setter, .. }) => {
-                    break Holder::Setter(heap.local(scope, setter));
-                }
-                None => match heap.object_prototype(current) {
-                    Some(parent) => current = parent,
-                    // Ohne Eigenschaft gilt eine beschreibbare
-                    // Dateneigenschaft als gefunden.
-                    None => break Holder::Writable,
-                },
-            }
+    let mut holder = match class(agent, object)? {
+        ObjectClass::Proxy => {
+            let heap = agent.heap();
+            Holder::Proxy(heap.local(scope, heap.get(object)))
         }
+        _ => ordinary_set_walk(agent.heap(), scope, object, key),
     };
+    while let Holder::Proxy(proxy) = holder {
+        match proxy::set(agent, proxy, key, value, receiver)? {
+            Step::Done(result) => return Ok(result),
+            Step::Forward if class(agent, proxy)? == ObjectClass::Proxy => {}
+            Step::Forward => holder = ordinary_set_walk(agent.heap(), scope, proxy, key),
+        }
+    }
     match holder {
-        Holder::ReadOnly => Ok(false),
+        // Die Schleife davor endet erst ohne Proxy.
+        Holder::ReadOnly | Holder::Proxy(_) => Ok(false),
         Holder::Setter(setter) => {
             if agent.heap().get(setter).is_undefined() {
                 return Ok(false);
@@ -817,6 +1017,18 @@ pub fn delete(
     object: Local<'_>,
     key: PropertyKey<'_>,
 ) -> Completion<bool> {
+    if class(agent, object)? == ObjectClass::Proxy {
+        let heap = agent.heap();
+        let cursor = heap.local(scope, heap.get(object));
+        loop {
+            if let Step::Done(result) = proxy::delete(agent, cursor, key)? {
+                return Ok(result);
+            }
+            if class(agent, cursor)? != ObjectClass::Proxy {
+                return delete(agent, scope, cursor, key);
+            }
+        }
+    }
     let Some(descriptor) = get_own_property(agent, scope, object, key)? else {
         return Ok(true);
     };
@@ -893,6 +1105,18 @@ pub fn own_property_keys<'s>(
         | ObjectClass::AsyncGenerator
         | ObjectClass::BoundFunction
         | ObjectClass::Collection => {}
+        ObjectClass::Proxy => {
+            let heap = agent.heap();
+            let cursor = heap.local(scope, heap.get(object));
+            loop {
+                if let Step::Done(keys) = proxy::own_property_keys(agent, scope, cursor)? {
+                    return Ok(keys);
+                }
+                if class(agent, cursor)? != ObjectClass::Proxy {
+                    return own_property_keys(agent, scope, cursor);
+                }
+            }
+        }
     }
     let heap = agent.heap();
     let Some(object) = object_of(heap, object) else {

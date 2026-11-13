@@ -150,6 +150,8 @@ pub const SOURCES: [Source; 9] = [
             "/test/built-ins/Number/",
             "/test/built-ins/Object/",
             "/test/built-ins/Promise/",
+            "/test/built-ins/Proxy/",
+            "/test/built-ins/Reflect/",
             "/test/built-ins/RegExp/",
             "/test/built-ins/Set/",
             "/test/built-ins/SetIteratorPrototype/",

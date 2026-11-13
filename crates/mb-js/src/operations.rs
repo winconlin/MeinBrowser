@@ -18,7 +18,8 @@ use crate::heap::{Heap, Local, ObjectClass, Scope};
 use crate::interpreter::{call_function, construct_function};
 use crate::key::{PropertyKey, WellKnownSymbol};
 use crate::object::{
-    self, PrivateElement, array_create, private_element_find, private_element_write,
+    self, PrivateElement, array_create, has_call, private_element_find, private_element_write,
+    proxy_target,
 };
 use crate::realm::{Intrinsic, RealmId};
 use crate::reference::{get_value, to_object_base};
@@ -28,21 +29,41 @@ fn units(text: &str) -> Vec<u16> {
     text.encode_utf16().collect()
 }
 
-/// IsArray (Abschnitt 7.2.2). Proxys, die das Ergebnis ihres Ziels
-/// liefern, kommen mit den Proxy-Objekten.
-pub fn is_array(heap: &Heap, value: Value<'_>) -> bool {
-    match value.kind() {
-        Kind::Object(object) => heap.object_class(object) == Some(ObjectClass::Array),
-        _ => false,
+/// IsArray (Abschnitt 7.2.2): ein Array oder ein Proxy, dessen Ziel eines
+/// ist, über eine Kette in einer Schleife. Ein widerrufener Proxy darin
+/// wirft einen TypeError.
+pub fn is_array(agent: &mut Agent, value: Local<'_>) -> Completion<bool> {
+    match array_status(agent.heap(), agent.heap().get(value)) {
+        Some(found) => Ok(found),
+        None => Err(agent.throw_error(ErrorKind::TypeError)),
     }
 }
 
-/// IsCallable (Abschnitt 7.2.3). Bisher haben ECMAScript-Funktionsobjekte,
-/// eingebaute und gebundene Funktionen [[Call]].
+/// [`is_array`] ohne den Fehler: `None` für einen widerrufenen Proxy.
+fn array_status(heap: &Heap, value: Value<'_>) -> Option<bool> {
+    let mut current = match value.kind() {
+        Kind::Object(object) => object,
+        _ => return Some(false),
+    };
+    loop {
+        match heap.object_class(current) {
+            Some(ObjectClass::Array) => return Some(true),
+            Some(ObjectClass::Proxy) => match proxy_target(heap, Value::object(current))?.kind() {
+                Kind::Object(target) => current = target,
+                _ => return None,
+            },
+            _ => return Some(false),
+        }
+    }
+}
+
+/// IsCallable (Abschnitt 7.2.3): ECMAScript-Funktionsobjekte, eingebaute
+/// und gebundene Funktionen und Proxys um eine aufrufbare Funktion.
 pub fn is_callable(heap: &Heap, value: Value<'_>) -> bool {
     match value.kind() {
         Kind::Object(object) => match heap.object_class(object) {
             Some(ObjectClass::Function | ObjectClass::Builtin | ObjectClass::BoundFunction) => true,
+            Some(ObjectClass::Proxy) => has_call(heap, value),
             Some(
                 ObjectClass::Ordinary
                 | ObjectClass::Array

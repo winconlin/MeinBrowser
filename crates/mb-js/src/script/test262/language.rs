@@ -70,6 +70,8 @@ const BUILT_INS: Suite = Suite {
         "Number",
         "Object",
         "Promise",
+        "Proxy",
+        "Reflect",
         "Set",
         "SetIteratorPrototype",
         "Symbol",

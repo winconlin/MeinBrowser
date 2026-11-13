@@ -3284,3 +3284,283 @@ fn collections_reuse_their_space() {
         "1000"
     );
 }
+
+#[test]
+fn proxies_forward_to_their_target_or_ask_the_handler() {
+    check(&[
+        (
+            "var t = {a: 1}; var p = new Proxy(t, {}); p.b = 2; delete p.a; \
+             [t.b, 'a' in t, Object.keys(p).join(), typeof p].join()",
+            "\"2,false,b,object\"",
+        ),
+        (
+            "var p = new Proxy({}, { get: function (t, k, r) { return k + (r === p); } }); p.x",
+            "\"xtrue\"",
+        ),
+        (
+            "var log = []; var h = { has: function (t, k) { log.push(k); return k === 'x'; } }; \
+             var p = new Proxy({}, h); [('x' in p), ('y' in p), Reflect.has(p, 1), log.join()].join()",
+            "\"true,false,false,x,y,1\"",
+        ),
+        (
+            "var d; var p = new Proxy({}, { defineProperty: function (t, k, desc) { \
+             d = desc; return Reflect.defineProperty(t, k, desc); } }); p.x = 1; \
+             [d.value, d.writable, d.enumerable, d.configurable, p.x].join()",
+            "\"1,true,true,true,1\"",
+        ),
+        (
+            "var p = new Proxy({a: 1, b: 2}, { ownKeys: function () { return ['b', 'a', 'c']; } }); \
+             var s = ''; for (var k in p) s += k; s + ':' + Object.keys(p).join()",
+            "\"ba:b,a\"",
+        ),
+        (
+            "var p = new Proxy({}, { getPrototypeOf: function () { return Array.prototype; } }); \
+             [p instanceof Array, Array.isArray(p)].join()",
+            "\"true,false\"",
+        ),
+        (
+            "var p = new Proxy({}, { deleteProperty: function () { return false; } }); \
+             (function () { 'use strict'; try { delete p.x; return 'kein Fehler'; } \
+             catch (e) { return e instanceof TypeError; } })()",
+            "true",
+        ),
+        (
+            "var log = []; var p = new Proxy({}, { set: function (t, k, v, r) { log.push(r === o); \
+             return Reflect.set(t, k, v, r); } }); var o = Object.create(p); o.y = 1; \
+             [log.join(), o.hasOwnProperty('y'), Object.keys(p).length].join()",
+            "\"true,true,0\"",
+        ),
+        (
+            "var o = Object.create(new Proxy({}, { get: function (t, k) { return 'aus ' + String(k); } })); \
+             o.x",
+            "\"aus x\"",
+        ),
+    ]);
+}
+
+#[test]
+fn proxy_traps_keep_the_invariants_of_their_target() {
+    let throws = |body: &str| {
+        format!("try {{ {body}; 'kein Fehler' }} catch (e) {{ e instanceof TypeError }}")
+    };
+    let cases = [
+        "var t = Object.freeze({x: 1}); new Proxy(t, { get: function () { return 2; } }).x",
+        "var t = {}; Object.defineProperty(t, 'x', { get: undefined }); \
+         new Proxy(t, { get: function () { return 1; } }).x",
+        "var t = Object.freeze({x: 1}); 'x' in new Proxy(t, { has: function () { return false; } })",
+        "var t = Object.preventExtensions({x: 1}); \
+         'x' in new Proxy(t, { has: function () { return false; } })",
+        "var t = Object.freeze({x: 1}); new Proxy(t, { set: function () { return true; } }).x = 2",
+        "var t = {}; Object.defineProperty(t, 'x', { value: 1 }); \
+         delete new Proxy(t, { deleteProperty: function () { return true; } }).x",
+        "var t = {}; Object.defineProperty(t, 'x', { value: 1 }); \
+         Reflect.ownKeys(new Proxy(t, { ownKeys: function () { return []; } }))",
+        "Reflect.ownKeys(new Proxy({}, { ownKeys: function () { return ['a', 'a']; } }))",
+        "Reflect.ownKeys(new Proxy({}, { ownKeys: function () { return [1]; } }))",
+        "var t = Object.preventExtensions({}); \
+         Reflect.ownKeys(new Proxy(t, { ownKeys: function () { return ['a']; } }))",
+        "Object.getOwnPropertyDescriptor(new Proxy({}, { getOwnPropertyDescriptor: function () { \
+         return { value: 1, configurable: false }; } }), 'x')",
+        "Object.getOwnPropertyDescriptor(new Proxy({}, { getOwnPropertyDescriptor: function () { \
+         return 1; } }), 'x')",
+        "Object.defineProperty(new Proxy({}, { defineProperty: function () { return true; } }), \
+         'x', { value: 1, configurable: false })",
+        "Object.isExtensible(new Proxy({}, { isExtensible: function () { return false; } }))",
+        "Object.preventExtensions(new Proxy({}, { preventExtensions: function () { return true; } }))",
+        "var t = Object.preventExtensions({}); \
+         Object.getPrototypeOf(new Proxy(t, { getPrototypeOf: function () { return Array.prototype; } }))",
+        "var t = Object.preventExtensions({}); Reflect.setPrototypeOf(new Proxy(t, { \
+         setPrototypeOf: function () { return true; } }), Array.prototype)",
+        "new (new Proxy(function () {}, { construct: function () { return 1; } }))()",
+        "new Proxy({}, { get: 1 }).x",
+        "new Proxy(1, {})",
+        "Proxy({}, {})",
+    ];
+    let cases: Vec<(String, &str)> = cases.iter().map(|body| (throws(body), "true")).collect();
+    let cases: Vec<(&str, &str)> = cases
+        .iter()
+        .map(|(source, expected)| (source.as_str(), *expected))
+        .collect();
+    check(&cases);
+}
+
+#[test]
+fn proxies_call_construct_and_revoke() {
+    check(&[
+        (
+            "var p = new Proxy(function (a, b) { return a + b; }, \
+             { apply: function (t, th, args) { return t.apply(th, args) * 2; } }); \
+             [p(1, 2), typeof p, typeof new Proxy({}, {}), p.length].join()",
+            "\"6,function,object,2\"",
+        ),
+        (
+            "var C = new Proxy(function () { this.x = 1; }, {}); var o = new C(); \
+             [o.x, o instanceof C, Object.getPrototypeOf(o) === C.prototype].join()",
+            "\"1,true,true\"",
+        ),
+        (
+            "class A extends new Proxy(class { constructor() { this.a = new.target; } }, {}) {} \
+             new A().a === A",
+            "true",
+        ),
+        (
+            "var log = []; var C = new Proxy(function () {}, { construct: function (t, args, nt) { \
+             log.push(args.length, nt === C); return { made: true }; } }); new C(1, 2).made + ',' + log",
+            "\"true,2,true\"",
+        ),
+        (
+            "var f = new Proxy(function () { return this; }, {}); \
+             var g = f.bind(7); [g() == 7, Function.prototype.toString.call(f)].join()",
+            "\"true,function () { [native code] }\"",
+        ),
+        (
+            "[Array.isArray(new Proxy([], {})), JSON.stringify(new Proxy([1, {a: 2}], {})), \
+             Object.prototype.toString.call(new Proxy([], {})), \
+             Object.prototype.toString.call(new Proxy(function () {}, {})), \
+             [].concat(new Proxy([1, 2], {})).length].join()",
+            "\"true,[1,{\\\"a\\\":2}],[object Array],[object Function],2\"",
+        ),
+        (
+            "var r = Proxy.revocable({}, {}); var first = r.revoke(); r.revoke(); \
+             var e; try { r.proxy.x; } catch (error) { e = error; } \
+             [first, e instanceof TypeError, typeof r.proxy, r.revoke.name === '', r.revoke.length].join()",
+            "\",true,object,true,0\"",
+        ),
+        (
+            "var r = Proxy.revocable(function () {}, {}); r.revoke(); \
+             var e; try { Array.isArray(Proxy.revocable([], {}).proxy) && (function () { \
+             var s = Proxy.revocable([], {}); s.revoke(); return Array.isArray(s.proxy); })(); } \
+             catch (error) { e = error; } [typeof r.proxy, e instanceof TypeError].join()",
+            "\"function,true\"",
+        ),
+        (
+            "var r = Proxy.revocable(function () {}, {}); r.revoke(); \
+             try { Reflect.construct(Object, [], r.proxy); 'kein Fehler' } \
+             catch (e) { e instanceof TypeError }",
+            "true",
+        ),
+        (
+            "class B { constructor(o) { return o; } } \
+             class C extends B { #x = 1; static has(o) { return #x in o; } } \
+             var p = new Proxy({}, {}); new C(p); [C.has(p), C.has({})].join()",
+            "\"true,false\"",
+        ),
+        (
+            "var p = new Proxy({}, {}); var o = {}; Object.setPrototypeOf(o, p); \
+             Object.setPrototypeOf(p, o) && Object.getPrototypeOf(p) === o",
+            "true",
+        ),
+    ]);
+}
+
+#[test]
+fn reflect_calls_the_internal_methods() {
+    check(&[
+        (
+            "Reflect.ownKeys({b: 1, a: 2, 1: 0, [Symbol.iterator]: 3}).map(String).join()",
+            "\"1,b,a,Symbol(Symbol.iterator)\"",
+        ),
+        (
+            "function F() { this.nt = new.target; } function G() {} var o = Reflect.construct(F, [], G); \
+             [o.nt === G, Object.getPrototypeOf(o) === G.prototype, Reflect.apply(Math.max, null, [1, 3, 2])].join()",
+            "\"true,true,3\"",
+        ),
+        (
+            "var o = {}; Object.defineProperty(o, 'x', { value: 1 }); \
+             [Reflect.defineProperty(o, 'x', { value: 2 }), Reflect.defineProperty(o, 'y', { value: 3 }), \
+             Reflect.deleteProperty(o, 'x'), Reflect.deleteProperty(o, 'y')].join()",
+            "\"false,true,false,false\"",
+        ),
+        (
+            "var o = { get x() { return this.y; } }; var r = { y: 5 }; \
+             [Reflect.get(o, 'x'), Reflect.get(o, 'x', r), Reflect.set(o, 'z', 1, r), r.z, o.z].join()",
+            "\",5,true,1,\"",
+        ),
+        (
+            "[Reflect.setPrototypeOf(Object.preventExtensions({}), {}), \
+             Reflect.setPrototypeOf({}, null), Reflect.isExtensible(Object.seal({})), \
+             Reflect.preventExtensions({}), Reflect.getPrototypeOf([]) === Array.prototype, \
+             Reflect.getOwnPropertyDescriptor({x: 1}, 'x').writable, \
+             Object.prototype.toString.call(Reflect)].join()",
+            "\"false,true,false,true,true,true,[object Reflect]\"",
+        ),
+        (
+            "var e = []; for (var f of [function () { Reflect.getPrototypeOf(1); }, \
+             function () { Reflect.construct(function () {}, [], Math.max); }, \
+             function () { Reflect.apply({}, null, []); }, \
+             function () { Reflect.setPrototypeOf({}, 1); }]) { \
+             try { f(); e.push('kein Fehler'); } catch (error) { e.push(error instanceof TypeError); } } e.join()",
+            "\"true,true,true,true\"",
+        ),
+    ]);
+}
+
+/// Die Objekte für den Handler entstehen im aktuellen Realm: dem des
+/// Rahmens, dessen Befehl die interne Methode auslöst, oder dem der
+/// eingebauten Funktion, die sie auslöst.
+#[test]
+fn proxies_create_objects_in_the_current_realm() {
+    let (mut agent, realm) = agent_with(false);
+    let other = agent.create_realm().expect("Speicher");
+    agent.scope(|agent, scope| {
+        let global = agent.global_object(scope, realm);
+        let value = agent.global_object(scope, other);
+        let key = agent
+            .key_from_units(scope, &units("other"))
+            .expect("Speicher");
+        create_data_property_or_throw(agent, scope, global, key, value).expect("Eigenschaft");
+    });
+    let source = "var d; var p = new other.Proxy({}, { defineProperty: other.Reflect.defineProperty }); \
+                  var q = new other.Proxy({}, { defineProperty: function (t, k, desc) { d = desc; return true; } }); \
+                  p.a = 0; q.a = 0; \
+                  var f = new other.Proxy(other.Object, { apply: other.Array.of }); \
+                  [Object.getPrototypeOf(d) === Object.prototype, \
+                  f()[2].constructor === Array, \
+                  other.Array.prototype.map.call([1], f)[0][2].constructor === other.Array, \
+                  [1].map(f)[0][2].constructor === Array].join()";
+    assert_eq!(run(&mut agent, realm, source), "\"true,true,true,true\"");
+}
+
+/// Ketten von Proxys ohne Fallen laufen in Schleifen; ein Handler, der ein
+/// Proxy mit einem Proxy als Handler ist, endet an der Grenze des Stapels.
+#[test]
+fn proxy_chains_run_on_a_small_stack() {
+    let thread = std::thread::Builder::new()
+        .stack_size(1 << 20)
+        .spawn(|| {
+            let (mut agent, realm) = agent_with(false);
+            let source = "var p = {x: 1}; var f = function () { return 7; }; var a = []; \
+                          for (var i = 0; i < 5000; i++) { p = new Proxy(p, {}); f = new Proxy(f, {}); \
+                          a = new Proxy(a, {}); } \
+                          var C = new Proxy(function () { this.y = 2; }, {}); \
+                          for (var i = 0; i < 5000; i++) C = new Proxy(C, {}); \
+                          [p.x, 'x' in p, f(), Array.isArray(a), new C().y, Object.keys(p).join()].join()";
+            assert_eq!(run(&mut agent, realm, source), "\"1,true,7,true,2,x\"");
+            let source = "var h = {}; for (var i = 0; i < 20000; i++) h = new Proxy({}, h); \
+                          try { h.x; 'kein Fehler' } catch (e) { e instanceof RangeError }";
+            assert_eq!(run(&mut agent, realm, source), "true");
+            let source = "var o = {}; var p = new Proxy({}, {}); Object.setPrototypeOf(o, p); \
+                          Object.setPrototypeOf(p, o); o.x";
+            assert_eq!(run(&mut agent, realm, source), "Abrupt(Exhausted(Steps))");
+        })
+        .expect("Faden");
+    assert!(thread.join().is_ok());
+}
+
+#[test]
+fn proxies_survive_moving_collections() {
+    let (mut agent, realm) = agent_with(true);
+    let source = "var log = []; var t = {a: 1}; \
+                  var p = new Proxy(t, { get: function (t, k, r) { log.push(String(k)); return Reflect.get(t, k, r); }, \
+                  ownKeys: function (t) { return Reflect.ownKeys(t).concat(['b']); }, \
+                  getOwnPropertyDescriptor: function (t, k) { return k === 'b' ? \
+                  { value: 2, enumerable: true, configurable: true } : Reflect.getOwnPropertyDescriptor(t, k); } }); \
+                  var f = new Proxy(function () { return [].slice.call(arguments); }, {}); \
+                  JSON.stringify(p) + ':' + f(1, 2).join() + ':' + log.join()";
+    assert_eq!(
+        run(&mut agent, realm, source),
+        "\"{\\\"a\\\":1}:1,2:toJSON,a,b\""
+    );
+    agent.heap_mut().collect();
+    agent.heap().verify().expect("gültiger Heap");
+}

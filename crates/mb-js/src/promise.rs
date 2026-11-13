@@ -713,7 +713,8 @@ fn enqueue_reaction_job(
     let cell = agent.heap_mut().alloc_slots(scope, REACTION_JOB_SLOTS)?;
     let heap = agent.heap();
     let callback = heap.get(handler);
-    let job_realm = (!callback.is_undefined()).then(|| get_function_realm(heap, callback, realm));
+    let job_realm = (!callback.is_undefined())
+        .then(|| get_function_realm(heap, callback, realm).unwrap_or(realm));
     if let Kind::Internal(job) = heap.get(cell).kind() {
         let [promise, resolve, reject] = capability;
         let values = [
@@ -746,7 +747,7 @@ fn enqueue_thenable_job(
 ) -> Completion<()> {
     let cell = agent.heap_mut().alloc_slots(scope, THENABLE_JOB_SLOTS)?;
     let heap = agent.heap();
-    let job_realm = get_function_realm(heap, heap.get(then), realm);
+    let job_realm = get_function_realm(heap, heap.get(then), realm).unwrap_or(realm);
     if let Kind::Internal(job) = heap.get(cell).kind() {
         let values = [
             Value::int32(THENABLE_JOB),
