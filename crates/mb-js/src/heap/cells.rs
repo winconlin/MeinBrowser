@@ -21,6 +21,9 @@ const EXTENSIBLE_FLAG: u32 = 1;
 const IMMUTABLE_PROTOTYPE_FLAG: u32 = 2;
 /// Kennzeichen eines Symbols, das ein privater Name ist (Abschnitt 6.2.12).
 const PRIVATE_FLAG: u32 = 1;
+/// Kennzeichen eines Symbols aus der GlobalSymbolRegistry (Abschnitt
+/// 20.4.2.2).
+const REGISTERED_FLAG: u32 = 2;
 
 /// Die Arten der Zellen aus Werten.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -232,6 +235,20 @@ impl Heap {
     pub(crate) fn mark_private_symbol(&self, symbol: Ref<'_>) {
         if let Some(head) = self.symbol_header(symbol) {
             let head = with_flags(head, header_flags(head) | PRIVATE_FLAG);
+            self.write(symbol.offset(), 0, head);
+        }
+    }
+
+    /// Ob das Symbol in der GlobalSymbolRegistry steht.
+    pub(crate) fn is_registered_symbol(&self, symbol: Ref<'_>) -> bool {
+        self.symbol_header(symbol)
+            .is_some_and(|head| header_flags(head) & REGISTERED_FLAG != 0)
+    }
+
+    /// Kennzeichnet ein neues Symbol als Eintrag der GlobalSymbolRegistry.
+    pub(crate) fn mark_registered_symbol(&self, symbol: Ref<'_>) {
+        if let Some(head) = self.symbol_header(symbol) {
+            let head = with_flags(head, header_flags(head) | REGISTERED_FLAG);
             self.write(symbol.offset(), 0, head);
         }
     }

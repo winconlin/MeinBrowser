@@ -1,6 +1,6 @@
-//! Fehlerobjekte (Abschnitt 20.5): %Error%, die sechs %NativeError%
-//! (Abschnitt 20.5.6) und %AggregateError% (Abschnitt 20.5.7) mit ihren
-//! Prototypen und `Error.prototype.toString`.
+//! Fehlerobjekte (Abschnitt 20.5): %Error% mit `Error.isError`, die sechs
+//! %NativeError% (Abschnitt 20.5.6) und %AggregateError% (Abschnitt
+//! 20.5.7) mit ihren Prototypen und `Error.prototype.toString`.
 //!
 //! Die Prototypen sind gewöhnliche Objekte, keine Fehlerobjekte, mit dem
 //! Namen in `name` und der leeren Zeichenkette in `message` (Abschnitte
@@ -16,7 +16,7 @@ use crate::builtin::{
 };
 use crate::conversion::to_string;
 use crate::descriptor::PropertyDescriptor;
-use crate::heap::{Local, Scope};
+use crate::heap::{Local, ObjectClass, Scope};
 use crate::iterator::{get_iterator, iterator_step_value};
 use crate::object::{error_create, get_prototype_from_constructor, ordinary_object_create};
 use crate::operations::{
@@ -24,7 +24,7 @@ use crate::operations::{
     get, has_property,
 };
 use crate::realm::{Intrinsic, RealmId};
-use crate::value::Kind;
+use crate::value::{Kind, Value};
 
 static ERROR: Builtin = Builtin {
     name: "Error",
@@ -39,6 +39,13 @@ static AGGREGATE_ERROR: Builtin = Builtin {
     constructor: true,
     behaviour: aggregate_error,
 };
+
+static CONSTRUCTOR_FUNCTIONS: [Builtin; 1] = [Builtin {
+    name: "isError",
+    length: 1,
+    constructor: false,
+    behaviour: is_error,
+}];
 
 static PROTOTYPE_FUNCTIONS: [Builtin; 1] = [Builtin {
     name: "toString",
@@ -117,6 +124,7 @@ pub(super) fn create(agent: &mut Agent, scope: &Scope, realm: RealmId) -> Comple
     let prototype = error_prototype(agent, scope, object_prototype, "Error")?;
     let constructor = create_builtin_function(agent, scope, realm, &ERROR)?;
     link_constructor(agent, scope, constructor, prototype)?;
+    define_functions(agent, scope, realm, constructor, &CONSTRUCTOR_FUNCTIONS)?;
     define_functions(agent, scope, realm, prototype, &PROTOTYPE_FUNCTIONS)?;
     agent.set_intrinsic(realm, Intrinsic::Error, constructor);
     agent.set_intrinsic(realm, Intrinsic::ErrorPrototype, prototype);
@@ -326,6 +334,22 @@ fn uri_error<'s>(
     arguments: &BuiltinCall<'_, '_>,
 ) -> Completion<Local<'s>> {
     construct(agent, scope, arguments, Intrinsic::URIErrorPrototype)
+}
+
+/// Error.isError ( arg ) (Abschnitt 20.5.2.1): ob `arg` ein Objekt mit
+/// [[ErrorData]] ist.
+fn is_error<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    arguments: &BuiltinCall<'_, '_>,
+) -> Completion<Local<'s>> {
+    let value = arguments.argument(agent, scope, 0);
+    let heap = agent.heap();
+    let error = match heap.get(value).kind() {
+        Kind::Object(object) => heap.object_class(object) == Some(ObjectClass::Error),
+        _ => false,
+    };
+    Ok(heap.local(scope, Value::boolean(error)))
 }
 
 /// Error.prototype.toString ( ) (Abschnitt 20.5.3.4).

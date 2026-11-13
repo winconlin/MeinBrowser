@@ -4,6 +4,10 @@
 
 #![forbid(unsafe_code)]
 
+mod format;
+
+pub(crate) use format::{to_exponential, to_fixed, to_precision, to_radix_string};
+
 /// Number::unaryMinus (Abschnitt 6.1.6.1.1). NaN bleibt NaN, sonst wechselt
 /// das Vorzeichen.
 pub fn unary_minus(number: f64) -> f64 {

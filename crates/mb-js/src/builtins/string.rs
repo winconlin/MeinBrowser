@@ -2,12 +2,13 @@
 //! `iterator`). Die übrigen Methoden von %String.prototype% kommen mit der
 //! Welle für Zeichenketten.
 
-use super::{define_symbol_function, iterator::STRING_ITERATOR, link_constructor, units};
+use super::symbol::symbol_descriptive_string;
+use super::{define_symbol_function, iterator::STRING_ITERATOR, link_constructor};
 use crate::agent::{Agent, Completion};
 use crate::builtin::{Builtin, BuiltinCall, create_builtin_function};
 use crate::conversion::to_string;
 use crate::heap::{Local, Scope};
-use crate::key::{WellKnownSymbol, symbol_description};
+use crate::key::WellKnownSymbol;
 use crate::object::{get_prototype_from_constructor, string_create};
 use crate::realm::{Intrinsic, RealmId};
 use crate::value::Kind;
@@ -44,17 +45,10 @@ fn string<'s>(
     let text = match arguments.arguments.first() {
         None => agent.heap_mut().alloc_string(scope, &[])?,
         Some(&value) => {
-            if arguments.new_target.is_none() {
-                let heap = agent.heap();
-                if let Kind::Symbol(symbol) = heap.get(value).kind() {
-                    // SymbolDescriptiveString (Abschnitt 20.4.3.3.1).
-                    let mut text = units("Symbol(");
-                    if let Kind::String(description) = symbol_description(heap, symbol).kind() {
-                        text.extend(heap.string_units(description));
-                    }
-                    text.push(u16::from(b')'));
-                    return Ok(agent.heap_mut().alloc_string(scope, &text)?);
-                }
+            if arguments.new_target.is_none()
+                && matches!(agent.heap().get(value).kind(), Kind::Symbol(_))
+            {
+                return symbol_descriptive_string(agent, scope, value);
             }
             to_string(agent, scope, value)?
         }

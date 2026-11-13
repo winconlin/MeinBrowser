@@ -464,3 +464,58 @@ fn int32_and_numeric_go_through_to_number() {
         assert_eq!(thrown(agent, scope), Some(ErrorKind::TypeError));
     });
 }
+
+#[test]
+fn parse_float_reads_the_longest_decimal_prefix() {
+    let cases: [(&str, f64); 14] = [
+        ("  2.5abc", 2.5),
+        ("-.5e-3x", -0.0005),
+        ("Infinityx", f64::INFINITY),
+        ("-Infinity", f64::NEG_INFINITY),
+        ("1e", 1.0),
+        ("1e+", 1.0),
+        ("1.", 1.0),
+        ("0x10", 0.0),
+        ("1_000", 1.0),
+        ("\u{a0}\u{2028}12", 12.0),
+        ("-0", -0.0),
+        (".e1", f64::NAN),
+        ("", f64::NAN),
+        ("\u{661}\u{662}", f64::NAN),
+    ];
+    for (text, expected) in cases {
+        let units: Vec<u16> = text.encode_utf16().collect();
+        let found = parse_float(&units);
+        assert!(
+            found.to_bits() == expected.to_bits() || (found.is_nan() && expected.is_nan()),
+            "{text:?}: {found}"
+        );
+    }
+}
+
+#[test]
+fn parse_int_reads_digits_of_its_radix() {
+    let cases: [(&str, i32, f64); 13] = [
+        ("0x1f", 0, 31.0),
+        ("0X1f", 16, 31.0),
+        ("0x1f", 10, 0.0),
+        (" -12px", 0, -12.0),
+        ("-0", 0, -0.0),
+        ("z", 36, 35.0),
+        ("11", 2, 3.0),
+        ("12", 1, f64::NAN),
+        ("12", 37, f64::NAN),
+        ("", 0, f64::NAN),
+        ("0x", 0, f64::NAN),
+        ("9007199254740993", 10, 9_007_199_254_740_992.0),
+        ("+7", -0, 7.0),
+    ];
+    for (text, radix, expected) in cases {
+        let units: Vec<u16> = text.encode_utf16().collect();
+        let found = parse_int(&units, radix);
+        assert!(
+            found.to_bits() == expected.to_bits() || (found.is_nan() && expected.is_nan()),
+            "{text:?} zur Basis {radix}: {found}"
+        );
+    }
+}

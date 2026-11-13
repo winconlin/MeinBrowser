@@ -144,6 +144,9 @@ pub struct Agent {
     empty_shape: Persistent,
     /// Die bekannten Symbole, die alle Realms teilen.
     symbols: BTreeMap<WellKnownSymbol, Persistent>,
+    /// Die GlobalSymbolRegistry (Abschnitt 20.4.2.2), die alle Realms
+    /// teilen, nach [[Key]]. Ihre Symbole leben so lange wie der Agent.
+    registered_symbols: BTreeMap<Vec<u16>, Persistent>,
     pub(crate) realms: Vec<Realm>,
     /// Die gemeinsamen Daten der Funktionen, nach ihrer Nummer.
     pub(crate) functions: Vec<SharedFunction>,
@@ -180,6 +183,7 @@ impl Agent {
             atoms: BTreeMap::new(),
             empty_shape,
             symbols: BTreeMap::new(),
+            registered_symbols: BTreeMap::new(),
             realms: Vec::new(),
             functions: Vec::new(),
             builtins: Vec::new(),
@@ -307,6 +311,28 @@ impl Agent {
             .get(&symbol)
             .map_or(Value::UNDEFINED, |handle| self.heap.get_persistent(handle));
         self.heap.local(scope, value)
+    }
+
+    /// Das Symbol der GlobalSymbolRegistry mit dem [[Key]] `key`, beim
+    /// ersten Mal neu mit `key` als Beschreibung (Schritte 2 bis 6 von
+    /// Symbol.for, Abschnitt 20.4.2.2).
+    pub(crate) fn registered_symbol<'s>(
+        &mut self,
+        scope: &'s Scope,
+        key: &[u16],
+    ) -> Result<Local<'s>, OutOfMemory> {
+        if let Some(handle) = self.registered_symbols.get(key) {
+            let symbol = self.heap.get_persistent(handle);
+            return Ok(self.heap.local(scope, symbol));
+        }
+        let description = self.heap.alloc_string(scope, key)?;
+        let symbol = self.new_symbol(scope, Some(description))?;
+        if let Kind::Symbol(cell) = self.heap.get(symbol).kind() {
+            self.heap.mark_registered_symbol(cell);
+        }
+        let handle = self.heap.persist(symbol);
+        self.registered_symbols.insert(key.to_vec(), handle);
+        Ok(symbol)
     }
 
     // Atome

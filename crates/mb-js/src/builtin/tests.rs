@@ -722,7 +722,7 @@ fn builtins_survive_collections() {
         var frozen = Object.freeze(Object.fromEntries([['k', 'v']])); \
         e.cause[2] + e.message + String(e) + Object.prototype.toString.call(s) + \
         call.call(function (x) { 'use strict'; return x; }, 0, 'z') + String(tag) + \
-        (Object(1).constructor === Object) + bound('r') + bound.name + \
+        (Object(1).constructor === Number) + bound('r') + bound.name + \
         Object.keys(frozen)[0] + Object.isFrozen(frozen) + \
         Object.getOwnPropertyDescriptor(frozen, 'k').value";
     assert_eq!(
@@ -790,9 +790,10 @@ fn symbol_holds_the_well_known_symbols() {
             assert!(same(agent, value, expected), "{name}");
             assert_eq!(attributes, READ_ONLY, "{name}");
         }
+        // `length`, `name`, `prototype`, `for` und `keyFor`.
         assert_eq!(
             keys(agent, scope, constructor).len(),
-            3 + WellKnownSymbol::ALL.len()
+            5 + WellKnownSymbol::ALL.len()
         );
     });
 }
@@ -2111,5 +2112,278 @@ fn function_prototype_methods_and_bound_functions_follow_the_spec() {
              || Object.prototype.hasOwnProperty.call(f, 'arguments')",
             "false",
         ),
+    ]);
+}
+
+#[test]
+fn number_formats_round_like_the_specification() {
+    check(&[
+        ("(1.005).toFixed(2)", "\"1.00\""),
+        (
+            "(0.5).toFixed(0) + (2.5).toFixed(0) + (-1.5).toFixed(0)",
+            "\"13-2\"",
+        ),
+        ("(1e21).toFixed(2)", "\"1e+21\""),
+        ("(0.000001).toFixed(7)", "\"0.0000010\""),
+        ("(123.456).toExponential()", "\"1.23456e+2\""),
+        ("(1.25).toExponential(1)", "\"1.3e+0\""),
+        (
+            "(0).toPrecision(3) + ' ' + (1e-7).toPrecision(2)",
+            "\"0.00 1.0e-7\"",
+        ),
+        ("(123.456).toPrecision()", "\"123.456\""),
+        (
+            "(255).toString(16) + (-255).toString(36) + (0.5).toString(2)",
+            "\"ff-730.1\"",
+        ),
+        ("(-0).toString(2)", "\"0\""),
+        ("NaN.toFixed(200)", "RangeError"),
+        ("NaN.toExponential(200)", "\"NaN\""),
+        ("Infinity.toPrecision(0)", "\"Infinity\""),
+        ("(1).toPrecision(0)", "RangeError"),
+        ("(1).toString(37)", "RangeError"),
+        ("(1).toString(undefined)", "\"1\""),
+        ("Number.prototype.toString.call('1')", "TypeError"),
+        ("Number.prototype.valueOf.call(new Number(4))", "4"),
+        ("(12345.678).toLocaleString()", "\"12345.678\""),
+        (
+            "var log = ''; (1).toFixed({ valueOf: function () { log += 'f'; return 1; } }); log",
+            "\"f\"",
+        ),
+    ]);
+}
+
+#[test]
+fn number_converts_and_classifies() {
+    check(&[
+        ("Number('0x10') + Number('  12  ') + Number()", "28"),
+        ("Number('1_0')", "NaN"),
+        ("new Number(5) + 1", "6"),
+        ("typeof new Number(5)", "\"object\""),
+        (
+            "Object.prototype.toString.call(new Number(5))",
+            "\"[object Number]\"",
+        ),
+        (
+            "Number.isInteger(5) && !Number.isInteger(5.5) && !Number.isInteger('5')",
+            "true",
+        ),
+        (
+            "Number.isSafeInteger(2 ** 53 - 1) && !Number.isSafeInteger(2 ** 53)",
+            "true",
+        ),
+        ("Number.isNaN('x') || !Number.isNaN(NaN)", "false"),
+        ("Number.isFinite('1')", "false"),
+        (
+            "Number.parseInt === parseInt && Number.parseFloat === parseFloat",
+            "true",
+        ),
+        (
+            "Number.MAX_SAFE_INTEGER === 2 ** 53 - 1 && Number.EPSILON === 2 ** -52 \
+             && Number.MIN_VALUE === 5e-324 && Number.MAX_VALUE === 1.7976931348623157e308",
+            "true",
+        ),
+        (
+            "var d = Object.getOwnPropertyDescriptor(Number, 'NaN'); \
+             d.writable || d.enumerable || d.configurable",
+            "false",
+        ),
+        ("Number.prototype.valueOf()", "0"),
+    ]);
+}
+
+#[test]
+fn global_functions_parse_and_test_numbers() {
+    check(&[
+        ("parseInt('  -0x1F')", "-31"),
+        ("parseInt('0x1F', 10)", "0"),
+        ("parseInt('z', 36) + parseInt('11', 2)", "38"),
+        ("1 / parseInt('-0')", "-Infinity"),
+        ("parseInt('12', 1)", "NaN"),
+        ("parseInt('9007199254740993')", "9007199254740992"),
+        (
+            "parseFloat('3.5e2px') + parseFloat('.5') + parseFloat('-.5e-1')",
+            "350.45",
+        ),
+        ("parseFloat('Infinityx') + parseFloat('1e')", "Infinity"),
+        ("parseFloat('x1')", "NaN"),
+        (
+            "var log = ''; parseInt({ toString: function () { log += 's'; return '7'; } }, \
+             { valueOf: function () { log += 'r'; return 10; } }) + log",
+            "\"7sr\"",
+        ),
+        ("isNaN('abc') && isNaN(undefined) && !isNaN('1')", "true"),
+        (
+            "isFinite('1') && !isFinite('Infinity') && !isFinite(NaN)",
+            "true",
+        ),
+        ("isNaN(Symbol())", "TypeError"),
+    ]);
+}
+
+#[test]
+fn math_functions_follow_their_special_cases() {
+    check(&[
+        ("1 / Math.round(-0.5)", "-Infinity"),
+        (
+            "Math.round(2.5) + Math.round(-2.5) + Math.round(0.49999999999999994)",
+            "1",
+        ),
+        ("Math.max()", "-Infinity"),
+        ("Math.min()", "Infinity"),
+        ("1 / Math.max(-0, 0) + 1 / Math.min(0, -0)", "NaN"),
+        ("1 / Math.max(-0, 0)", "Infinity"),
+        ("1 / Math.min(0, -0)", "-Infinity"),
+        ("Math.max(1, NaN, 2)", "NaN"),
+        (
+            "var log = ''; Math.max(NaN, { valueOf: function () { log += 'v'; return 1; } }); log",
+            "\"v\"",
+        ),
+        ("Math.hypot(3, 4) + Math.hypot() + Math.hypot(-2)", "7"),
+        ("Math.hypot(NaN, Infinity)", "Infinity"),
+        ("Math.hypot(1e300, 1e300, 1e300) > 1e300", "true"),
+        ("Math.pow(1, Infinity)", "NaN"),
+        ("Math.clz32(1) + Math.clz32(0)", "63"),
+        ("Math.imul(0xffffffff, 5)", "-5"),
+        ("1 / Math.sign(-0)", "-Infinity"),
+        ("Math.sign(-3) + Math.sign(7)", "0"),
+        ("Math.fround(5.5) + Math.fround(5.05)", "10.550000190734863"),
+        ("Math.f16round(65519.99) + Math.f16round(65520)", "Infinity"),
+        ("Math.f16round(65519.99)", "65504"),
+        (
+            "Math.f16round(2 ** -25) + Math.f16round(1.5 * 2 ** -25)",
+            "5.960464477539063e-8",
+        ),
+        ("Math.f16round(1.0009765625 + 2 ** -12)", "1.0009765625"),
+        (
+            "Math.atan2(0, -0) === Math.PI && 1 / Math.atan2(-0, 0) === -Infinity",
+            "true",
+        ),
+        ("Object.prototype.toString.call(Math)", "\"[object Math]\""),
+        (
+            "var ok = true; for (var i = 0; i < 100; i++) { var r = Math.random(); \
+             if (!(r >= 0 && r < 1)) ok = false; } ok",
+            "true",
+        ),
+    ]);
+}
+
+#[test]
+fn math_sum_precise_rounds_once_and_checks_every_value() {
+    check(&[
+        ("Math.sumPrecise([0.1, 0.2])", "0.30000000000000004"),
+        ("Math.sumPrecise([1e20, 0.1, -1e20])", "0.1"),
+        ("Math.sumPrecise([1, 1e100, 1, -1e100])", "2"),
+        ("1 / Math.sumPrecise([])", "-Infinity"),
+        ("1 / Math.sumPrecise([-0, -0])", "-Infinity"),
+        ("1 / Math.sumPrecise([-0, 0])", "Infinity"),
+        ("Math.sumPrecise([Infinity, -Infinity])", "NaN"),
+        (
+            "Math.sumPrecise([1.7976931348623157e308, 1.7976931348623157e308])",
+            "Infinity",
+        ),
+        ("Math.sumPrecise([NaN, 'x'])", "TypeError"),
+        ("Math.sumPrecise()", "TypeError"),
+        (
+            "var closed = false; var it = { [Symbol.iterator]() { return { \
+               next() { return { done: false, value: '1' }; }, \
+               return() { closed = true; return {}; } }; } }; \
+             try { Math.sumPrecise(it); } catch (e) { closed && e instanceof TypeError }",
+            "true",
+        ),
+    ]);
+}
+
+#[test]
+fn symbols_have_a_registry_and_prototype_methods() {
+    check(&[
+        ("Symbol.for('a') === Symbol.for('a')", "true"),
+        ("Symbol.for('a') === Symbol('a')", "false"),
+        ("Symbol.keyFor(Symbol.for('k'))", "\"k\""),
+        ("Symbol.keyFor(Symbol('k'))", "undefined"),
+        ("Symbol.keyFor(Symbol.iterator)", "undefined"),
+        ("Symbol.keyFor('k')", "TypeError"),
+        ("Symbol.for().description", "\"undefined\""),
+        (
+            "Symbol('x').description + Symbol().description",
+            "\"xundefined\"",
+        ),
+        (
+            "Symbol('x').toString() + Object(Symbol()).toString()",
+            "\"Symbol(x)Symbol()\"",
+        ),
+        (
+            "var s = Symbol(); Object(s).valueOf() === s && s[Symbol.toPrimitive]() === s",
+            "true",
+        ),
+        ("Symbol.prototype.valueOf.call({})", "TypeError"),
+        (
+            "Object.getOwnPropertyDescriptor(Symbol.prototype, 'description').get.call(1)",
+            "TypeError",
+        ),
+        (
+            "Object.prototype.toString.call(Symbol())",
+            "\"[object Symbol]\"",
+        ),
+        (
+            "var d = Object.getOwnPropertyDescriptor(Symbol.prototype, Symbol.toPrimitive); \
+             d.writable + ',' + d.configurable + ',' + d.value.name",
+            "\"false,true,[Symbol.toPrimitive]\"",
+        ),
+        ("String(Symbol('s'))", "\"Symbol(s)\""),
+    ]);
+}
+
+#[test]
+fn the_symbol_registry_is_shared_by_realms_and_survives_collections() {
+    for stress in [false, true] {
+        let (mut agent, first) = agent_with(stress);
+        let second = agent.create_realm().expect("Speicher");
+        share(&mut agent, first, second, "other", "Symbol.for('shared')");
+        assert_eq!(
+            run(
+                &mut agent,
+                first,
+                "for (var i = 0; i < 50; i++) Symbol.for('x' + i); \
+                 Symbol.for('shared') === other && Symbol.keyFor(other) === 'shared'"
+            ),
+            "true"
+        );
+    }
+}
+
+#[test]
+fn booleans_and_error_is_error() {
+    check(&[
+        (
+            "Boolean('') || Boolean(0) || Boolean(NaN) || Boolean()",
+            "false",
+        ),
+        ("Boolean(new Boolean(false))", "true"),
+        ("typeof new Boolean(false)", "\"object\""),
+        ("new Boolean(1).valueOf() === true", "true"),
+        (
+            "true.toString() + false.toString() + new Boolean(0).toString()",
+            "\"truefalsefalse\"",
+        ),
+        ("Boolean.prototype.toString.call(1)", "TypeError"),
+        ("Boolean.prototype.valueOf()", "false"),
+        (
+            "Object.prototype.toString.call(new Boolean(1))",
+            "\"[object Boolean]\"",
+        ),
+        (
+            "Error.isError(new TypeError()) && Error.isError(new AggregateError([]))",
+            "true",
+        ),
+        (
+            "Error.isError(Object.create(Error.prototype)) || Error.isError(Error)",
+            "false",
+        ),
+        (
+            "Error.isError({ __proto__: RangeError.prototype, message: '' })",
+            "false",
+        ),
+        ("Error.isError()", "false"),
     ]);
 }
