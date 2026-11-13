@@ -1,11 +1,18 @@
 //! Ein kleiner JSON-Leser (RFC 8259) für Rohdaten wie `encodings.json`, für
 //! Testdaten und später für Manifeste.
 //!
-//! Die Verschachtelungstiefe ist begrenzt (RS-8), Fehler nennen die Stelle.
-//! Einzelne Surrogate in `\u`-Escapes werden zu U+FFFD, wie bei der
-//! Umwandlung in einen `USVString` in WebIDL.
+//! Den Text zerlegt [`tree`], derselbe Zerleger, den `JSON.parse` der
+//! JavaScript-Engine nutzt (architektur.md 4.4). Er kommt ohne Rekursion
+//! aus; die Werte hier sind aber verschachtelt, darum ist die Tiefe
+//! begrenzt (RS-8). Fehler nennen die Stelle in Bytes. Einzelne Surrogate
+//! in `\u`-Escapes werden zu U+FFFD, wie bei der Umwandlung in einen
+//! `USVString` in WebIDL.
 
 #![forbid(unsafe_code)]
+
+pub mod tree;
+
+use tree::{Limits, Node, Rejected, Tree};
 
 /// Ein JSON-Wert. Zahlen bleiben Text, so wie sie dastehen.
 #[derive(Debug, PartialEq)]
@@ -75,230 +82,82 @@ impl std::error::Error for Error {}
 /// Die größte erlaubte Verschachtelungstiefe.
 const MAX_DEPTH: usize = 64;
 
-/// Liest einen JSON-Text.
+/// Liest einen JSON-Text mit dem Zerleger aus [`tree`], den auch
+/// `JSON.parse` der JavaScript-Engine nutzt.
 pub fn parse(text: &str) -> Result<Value, Error> {
-    let mut parser = Parser {
-        bytes: text.as_bytes(),
-        position: 0,
+    let units: Vec<u16> = text.encode_utf16().collect();
+    let limits = Limits {
+        nodes: usize::MAX,
+        depth: MAX_DEPTH,
     };
-    let value = parser.value(0)?;
-    parser.skip_whitespace();
-    if parser.position != parser.bytes.len() {
-        return Err(parser.error("Zeichen nach dem Ende des Werts"));
-    }
-    Ok(value)
-}
-
-struct Parser<'a> {
-    bytes: &'a [u8],
-    position: usize,
-}
-
-impl Parser<'_> {
-    fn error(&self, message: &'static str) -> Error {
+    let tree = tree::parse(&units, limits).map_err(|rejected| {
+        let (position, message) = match rejected {
+            Rejected::Invalid { position, message } => (position, message),
+            Rejected::TooDeep { position } => (position, "zu tief verschachtelt"),
+            Rejected::TooLarge => (units.len(), "zu viele Werte"),
+        };
         Error {
-            position: self.position,
+            position: byte_position(text, position),
             message,
         }
-    }
+    })?;
+    Ok(build(&tree, &units))
+}
 
-    fn peek(&self) -> Option<u8> {
-        self.bytes.get(self.position).copied()
-    }
-
-    fn next(&mut self) -> Option<u8> {
-        let byte = self.peek()?;
-        self.position += 1;
-        Some(byte)
-    }
-
-    fn skip_whitespace(&mut self) {
-        while matches!(self.peek(), Some(b' ' | b'\t' | b'\n' | b'\r')) {
-            self.position += 1;
+/// Die Stelle in Bytes zur Stelle `unit` in UTF-16-Codeeinheiten.
+fn byte_position(text: &str, unit: usize) -> usize {
+    let mut units = 0;
+    for (index, character) in text.char_indices() {
+        if units >= unit {
+            return index;
         }
+        units += character.len_utf16();
     }
+    text.len()
+}
 
-    fn starts_with(&self, expected: &[u8]) -> bool {
-        self.bytes
-            .get(self.position..)
-            .is_some_and(|rest| rest.starts_with(expected))
-    }
-
-    fn expect(&mut self, expected: &[u8]) -> Result<(), Error> {
-        if self.starts_with(expected) {
-            self.position += expected.len();
-            Ok(())
-        } else {
-            Err(self.error("unerwartetes Zeichen"))
-        }
-    }
-
-    fn value(&mut self, depth: usize) -> Result<Value, Error> {
-        if depth > MAX_DEPTH {
-            return Err(self.error("zu tief verschachtelt"));
-        }
-        self.skip_whitespace();
-        match self.peek() {
-            Some(b'{') => self.object(depth),
-            Some(b'[') => self.array(depth),
-            Some(b'"') => self.string().map(Value::String),
-            Some(b't') => self.expect(b"true").map(|()| Value::Bool(true)),
-            Some(b'f') => self.expect(b"false").map(|()| Value::Bool(false)),
-            Some(b'n') => self.expect(b"null").map(|()| Value::Null),
-            Some(b'-' | b'0'..=b'9') => self.number().map(Value::Number),
-            Some(_) => Err(self.error("unerwartetes Zeichen")),
-            None => Err(self.error("Text endet zu früh")),
-        }
-    }
-
-    fn object(&mut self, depth: usize) -> Result<Value, Error> {
-        self.expect(b"{")?;
-        let mut members = Vec::new();
-        self.skip_whitespace();
-        if self.peek() == Some(b'}') {
-            self.position += 1;
-            return Ok(Value::Object(members));
-        }
-        loop {
-            self.skip_whitespace();
-            if self.peek() != Some(b'"') {
-                return Err(self.error("Schlüssel erwartet"));
+/// Baut die Werte aus dem Baum, von hinten nach vorn: Die Kinder eines
+/// Knotens stehen hinter ihm und sind also schon fertig. Einzelne Surrogate
+/// werden zu U+FFFD, wie bei der Umwandlung in einen `USVString`.
+fn build(tree: &Tree, units: &[u16]) -> Value {
+    let mut values: Vec<Option<Value>> = Vec::new();
+    values.resize_with(tree.nodes.len(), || None);
+    for (index, node) in tree.nodes.iter().enumerate().rev() {
+        let value = match node {
+            Node::Null => Value::Null,
+            Node::Boolean(boolean) => Value::Bool(*boolean),
+            Node::Number(_) => {
+                let (start, end) = tree.ranges.get(index).copied().unwrap_or_default();
+                let text = units.get(start..end).unwrap_or_default();
+                Value::Number(String::from_utf16_lossy(text))
             }
-            let key = self.string()?;
-            self.skip_whitespace();
-            self.expect(b":")?;
-            let value = self.value(depth + 1)?;
-            members.push((key, value));
-            self.skip_whitespace();
-            match self.next() {
-                Some(b',') => {}
-                Some(b'}') => return Ok(Value::Object(members)),
-                _ => return Err(self.error("`,` oder `}` erwartet")),
-            }
+            Node::String(text) => Value::String(String::from_utf16_lossy(text)),
+            Node::Array(elements) => Value::Array(
+                elements
+                    .iter()
+                    .map(|&child| take(&mut values, child))
+                    .collect(),
+            ),
+            Node::Object(members) => Value::Object(
+                members
+                    .iter()
+                    .map(|(key, child)| (String::from_utf16_lossy(key), take(&mut values, *child)))
+                    .collect(),
+            ),
+        };
+        if let Some(slot) = values.get_mut(index) {
+            *slot = Some(value);
         }
     }
+    take(&mut values, 0)
+}
 
-    fn array(&mut self, depth: usize) -> Result<Value, Error> {
-        self.expect(b"[")?;
-        let mut items = Vec::new();
-        self.skip_whitespace();
-        if self.peek() == Some(b']') {
-            self.position += 1;
-            return Ok(Value::Array(items));
-        }
-        loop {
-            items.push(self.value(depth + 1)?);
-            self.skip_whitespace();
-            match self.next() {
-                Some(b',') => {}
-                Some(b']') => return Ok(Value::Array(items)),
-                _ => return Err(self.error("`,` oder `]` erwartet")),
-            }
-        }
-    }
-
-    fn number(&mut self) -> Result<String, Error> {
-        let start = self.position;
-        if self.peek() == Some(b'-') {
-            self.position += 1;
-        }
-        match self.next() {
-            Some(b'0') => {}
-            Some(b'1'..=b'9') => self.digits(),
-            _ => return Err(self.error("Ziffer erwartet")),
-        }
-        if self.peek() == Some(b'.') {
-            self.position += 1;
-            self.digit()?;
-            self.digits();
-        }
-        if matches!(self.peek(), Some(b'e' | b'E')) {
-            self.position += 1;
-            if matches!(self.peek(), Some(b'+' | b'-')) {
-                self.position += 1;
-            }
-            self.digit()?;
-            self.digits();
-        }
-        let text = self.bytes.get(start..self.position).unwrap_or_default();
-        Ok(String::from_utf8_lossy(text).into_owned())
-    }
-
-    fn digit(&mut self) -> Result<(), Error> {
-        match self.next() {
-            Some(b'0'..=b'9') => Ok(()),
-            _ => Err(self.error("Ziffer erwartet")),
-        }
-    }
-
-    fn digits(&mut self) {
-        while matches!(self.peek(), Some(b'0'..=b'9')) {
-            self.position += 1;
-        }
-    }
-
-    fn string(&mut self) -> Result<String, Error> {
-        self.expect(b"\"")?;
-        let mut text = String::new();
-        loop {
-            let start = self.position;
-            while matches!(self.peek(), Some(byte) if byte != b'"' && byte != b'\\' && byte >= 0x20)
-            {
-                self.position += 1;
-            }
-            // Die Eingabe ist ein &str, die Grenzen liegen vor ASCII-Zeichen.
-            let run = self.bytes.get(start..self.position).unwrap_or_default();
-            text.push_str(&String::from_utf8_lossy(run));
-            match self.next() {
-                Some(b'"') => return Ok(text),
-                Some(b'\\') => text.push(self.escape()?),
-                Some(_) => return Err(self.error("Steuerzeichen in Zeichenkette")),
-                None => return Err(self.error("Zeichenkette ohne Ende")),
-            }
-        }
-    }
-
-    fn escape(&mut self) -> Result<char, Error> {
-        Ok(match self.next() {
-            Some(b'"') => '"',
-            Some(b'\\') => '\\',
-            Some(b'/') => '/',
-            Some(b'b') => '\u{8}',
-            Some(b'f') => '\u{c}',
-            Some(b'n') => '\n',
-            Some(b'r') => '\r',
-            Some(b't') => '\t',
-            Some(b'u') => {
-                let unit = self.hex4()?;
-                if (0xD800..0xDC00).contains(&unit) && self.starts_with(b"\\u") {
-                    // Nur ein folgendes niedriges Surrogat gehört dazu, sonst
-                    // wird das nächste Escape für sich gelesen.
-                    let saved = self.position;
-                    self.position += 2;
-                    let low = self.hex4()?;
-                    if (0xDC00..0xE000).contains(&low) {
-                        let pair = char::decode_utf16([unit, low]).next();
-                        return Ok(pair.and_then(Result::ok).unwrap_or('\u{FFFD}'));
-                    }
-                    self.position = saved;
-                }
-                char::from_u32(u32::from(unit)).unwrap_or('\u{FFFD}')
-            }
-            _ => return Err(self.error("ungültige Escape-Sequenz")),
-        })
-    }
-
-    fn hex4(&mut self) -> Result<u16, Error> {
-        let digits = self
-            .bytes
-            .get(self.position..self.position + 4)
-            .filter(|digits| digits.iter().all(u8::is_ascii_hexdigit))
-            .ok_or_else(|| self.error("vier Hexziffern erwartet"))?;
-        let text = std::str::from_utf8(digits).map_err(|_| self.error("Hexziffern"))?;
-        let value = u16::from_str_radix(text, 16).map_err(|_| self.error("Hexziffern"))?;
-        self.position += 4;
-        Ok(value)
-    }
+/// Nimmt den fertigen Wert des Knotens `index` heraus.
+fn take(values: &mut [Option<Value>], index: usize) -> Value {
+    values
+        .get_mut(index)
+        .and_then(Option::take)
+        .unwrap_or(Value::Null)
 }
 
 #[cfg(test)]
@@ -343,6 +202,18 @@ mod tests {
             string(r#""\ud800\ud83d\ude00""#).as_deref(),
             Some("\u{FFFD}😀")
         );
+    }
+
+    #[test]
+    fn depth_is_limited_and_positions_are_bytes() {
+        let deepest = "[".repeat(65) + &"]".repeat(65);
+        assert!(parse(&deepest).is_ok());
+        let deeper = "[".repeat(66) + &"]".repeat(66);
+        assert_eq!(
+            parse(&deeper).map_err(|error| (error.position, error.message)),
+            Err((65, "zu tief verschachtelt"))
+        );
+        assert_eq!(parse("[\"ä\", ]").map_err(|error| error.position), Err(7));
     }
 
     #[test]

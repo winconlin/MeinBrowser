@@ -2,7 +2,8 @@
 //! mit `source` (JSON.parse source text access), `JSON.stringify`,
 //! `JSON.rawJSON` und `JSON.isRawJSON`.
 //!
-//! [`text`] prüft und zerlegt den Text ohne den Parser der Sprache. Aus
+//! Den Text prüft und zerlegt der Zerleger aus [`mb_json::tree`], den
+//! auch `mb-json` nutzt, ohne den Parser der Sprache. Aus
 //! dem Baum entstehen die Werte von oben nach unten mit einem Stapel; mit
 //! *reviver* merkt sich jeder Knoten für Arrays und Objekte das Objekt, das
 //! aus ihm entstand. Das ist der JSON Parse Record (Abschnitt 25.5.2.2):
@@ -14,11 +15,9 @@
 //! [[IsRawJSON]] ist ein Kennzeichen im Kopfwort des Objekts.
 
 mod stringify;
-mod text;
 
 use std::collections::BTreeMap;
 
-use self::text::{Node, Parsed, Rejected};
 use super::{define_functions, define_to_string_tag, units};
 use crate::agent::{Abrupt, Agent, Completion, ErrorKind};
 use crate::builtin::{Builtin, BuiltinCall};
@@ -35,6 +34,7 @@ use crate::operations::{
 };
 use crate::realm::{Intrinsic, RealmId};
 use crate::value::{Kind, Value};
+use mb_json::tree::{self, Limits, Node, Rejected, Tree};
 
 /// Die Bytes eines Werts im Heap: ein Wort aus 64 Bit.
 const VALUE_BYTES: usize = 8;
@@ -96,11 +96,16 @@ fn string_units(agent: &Agent, value: Local<'_>) -> Vec<u16> {
 /// Zerleger hört dann auf, und das Parsen endet mit
 /// [`Abrupt::OutOfMemory`], auch wenn der Text weiter hinten ungültig
 /// wäre.
-fn parse_json(agent: &mut Agent, text: &[u16]) -> Completion<Parsed> {
-    let max_nodes = (agent.heap().limit() / VALUE_BYTES).saturating_add(1);
-    match text::parse(text, max_nodes) {
+fn parse_json(agent: &mut Agent, text: &[u16]) -> Completion<Tree> {
+    let limits = Limits {
+        nodes: (agent.heap().limit() / VALUE_BYTES).saturating_add(1),
+        depth: usize::MAX,
+    };
+    match tree::parse(text, limits) {
         Ok(parsed) => Ok(parsed),
-        Err(Rejected::Invalid(_)) => Err(agent.throw_error(ErrorKind::SyntaxError)),
+        Err(Rejected::Invalid { .. } | Rejected::TooDeep { .. }) => {
+            Err(agent.throw_error(ErrorKind::SyntaxError))
+        }
         Err(Rejected::TooLarge) => Err(Abrupt::OutOfMemory),
     }
 }
@@ -194,7 +199,7 @@ fn materialize<'s>(
     agent: &mut Agent,
     scope: &'s Scope,
     realm: RealmId,
-    parsed: &Parsed,
+    parsed: &Tree,
     keep: bool,
 ) -> Completion<(Local<'s>, BTreeMap<usize, Local<'s>>)> {
     let mut objects = BTreeMap::new();
@@ -271,7 +276,7 @@ fn create_node<'s>(
     agent: &mut Agent,
     scope: &'s Scope,
     realm: RealmId,
-    parsed: &Parsed,
+    parsed: &Tree,
     node: usize,
 ) -> Completion<Created<'s>> {
     let heap = agent.heap();
@@ -297,7 +302,7 @@ fn create_node<'s>(
 
 /// Die JSON Parse Records: der Baum, der Text und die Objekte der Knoten.
 struct Records<'r, 's> {
-    parsed: &'r Parsed,
+    parsed: &'r Tree,
     source: &'r [u16],
     objects: &'r BTreeMap<usize, Local<'s>>,
 }

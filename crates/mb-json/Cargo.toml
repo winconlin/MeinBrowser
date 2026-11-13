@@ -1,6 +1,6 @@
 [package]
 name = "mb-json"
-description = "JSON-Leser (RFC 8259) für Rohdaten, Testdaten und später Manifeste"
+description = "JSON-Zerleger (RFC 8259, ECMA-404) für JSON.parse, Rohdaten, Testdaten und später Manifeste"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
