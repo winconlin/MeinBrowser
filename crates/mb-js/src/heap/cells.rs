@@ -19,6 +19,9 @@ const EXTENSIBLE_FLAG: u32 = 1;
 /// Ein Objekt mit unveränderlichem Prototyp (Abschnitt 10.4.7), bisher nur
 /// %Object.prototype%.
 const IMMUTABLE_PROTOTYPE_FLAG: u32 = 2;
+/// Kennzeichen eines Objekts mit [[IsRawJSON]] (Abschnitt 25.5.3). Der
+/// Slot hat keinen Wert; nur ob es ihn gibt, zählt.
+const RAW_JSON_FLAG: u32 = 4;
 /// Kennzeichen eines Symbols, das ein privater Name ist (Abschnitt 6.2.12).
 const PRIVATE_FLAG: u32 = 1;
 /// Kennzeichen eines Symbols aus der GlobalSymbolRegistry (Abschnitt
@@ -404,6 +407,20 @@ impl Heap {
     pub(crate) fn make_object_prototype_immutable(&self, object: Ref<'_>) {
         if let Some(head) = self.object_header(object) {
             let head = with_flags(head, header_flags(head) | IMMUTABLE_PROTOTYPE_FLAG);
+            self.write(object.offset(), 0, head);
+        }
+    }
+
+    /// Ob das Objekt [[IsRawJSON]] hat.
+    pub(crate) fn object_is_raw_json(&self, object: Ref<'_>) -> bool {
+        self.object_header(object)
+            .is_some_and(|head| header_flags(head) & RAW_JSON_FLAG != 0)
+    }
+
+    /// Gibt dem Objekt [[IsRawJSON]]; das lässt sich nicht zurücknehmen.
+    pub(crate) fn mark_raw_json(&self, object: Ref<'_>) {
+        if let Some(head) = self.object_header(object) {
+            let head = with_flags(head, header_flags(head) | RAW_JSON_FLAG);
             self.write(object.offset(), 0, head);
         }
     }

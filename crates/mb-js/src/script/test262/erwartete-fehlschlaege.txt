@@ -3,7 +3,7 @@
 # nur der genannte. Erzeugt von script/test262/language.rs; bei einer
 # Abweichung schreibt der Test die neue Fassung nach
 # target/test262/erwartete-fehlschlaege.txt.
-# 23828 Dateien, 532 Vorschläge übersprungen; bestanden 20149 von 23296 Dateien und 38992 von 43794 Varianten
+# 23828 Dateien, 532 Vorschläge übersprungen; bestanden 20150 von 23296 Dateien und 38994 von 43794 Varianten
 arguments-object/10.5-1-s.js
 arguments-object/10.5-7-b-1-s.js
 arguments-object/10.6-13-a-2.js
@@ -742,7 +742,6 @@ expressions/concatenation/S9.8_A1_T2.js
 expressions/conditional/S11.12_A1.js
 expressions/conditional/tco-cond.js
 expressions/conditional/tco-pos.js
-expressions/delete/11.4.1-4.a-10.js
 expressions/delete/11.4.1-4.a-5.js
 expressions/delete/11.4.1-4.a-6.js
 expressions/delete/11.4.1-4.a-7.js

@@ -141,6 +141,8 @@ pub const SOURCES: [Source; 9] = [
             "/test/built-ins/Boolean/",
             "/test/built-ins/Error/",
             "/test/built-ins/Function/",
+            "/test/built-ins/Iterator/",
+            "/test/built-ins/JSON/",
             "/test/built-ins/Math/",
             "/test/built-ins/NativeErrors/",
             "/test/built-ins/Number/",
