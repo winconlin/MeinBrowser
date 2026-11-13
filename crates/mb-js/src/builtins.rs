@@ -7,11 +7,12 @@
 //! %Array.prototype% (Welle 8b), die Fehlerkonstruktoren mit
 //! `Error.isError`, %Symbol% mit der Registry für `Symbol.for`, %Boolean%,
 //! %Number%, %Math% und die globalen Funktionen `isFinite`, `isNaN`,
-//! `parseFloat` und `parseInt` (Welle 8c); %Function% selbst wartet auf
-//! `eval`. Von %String% gibt es bisher die Teile, die die Harness von
-//! Test262 braucht. Dazu kommen, was `for`-`of` und die Ausbreitung
-//! brauchen: die Iteratoren für Arrays und Zeichenketten mit den Methoden
-//! für @@iterator. Generatoren und async-Generatoren bringen ihre Prototypen
+//! `parseFloat` und `parseInt` (Welle 8c) sowie %Iterator% mit
+//! %Iterator.prototype% und den Iterator-Helfern und %JSON% (Welle 8d);
+//! %Function% selbst wartet auf `eval`. Von %String% gibt es bisher die
+//! Teile, die die Harness von Test262 braucht. Dazu kommen, was `for`-`of`
+//! und die Ausbreitung brauchen: die Iteratoren für Arrays und
+//! Zeichenketten mit den Methoden für @@iterator. Generatoren und async-Generatoren bringen ihre Prototypen
 //! mit `next`, `return` und `throw` mit, async-Funktionen ihren Prototyp,
 //! und `for await` braucht %AsyncIteratorPrototype% und
 //! %AsyncFromSyncIteratorPrototype%. %Promise% ist vollständig, mit
@@ -33,6 +34,7 @@ mod function;
 mod generator;
 mod global;
 mod iterator;
+mod json;
 mod math;
 mod number;
 mod object;
@@ -79,6 +81,7 @@ pub(crate) fn create_intrinsics(
     global::create(agent, scope, realm)?;
     number::create(agent, scope, realm)?;
     math::create(agent, scope, realm)?;
+    json::create(agent, scope, realm)?;
     promise::create(agent, scope, realm)
 }
 

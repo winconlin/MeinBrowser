@@ -806,7 +806,32 @@ fn iterator_prototypes_inherit_from_iterator_prototype() {
         let iterator = agent.intrinsic(scope, realm, Intrinsic::IteratorPrototype);
         let parent = prototype_of(agent, scope, iterator);
         assert!(same(agent, parent, object));
-        assert_eq!(keys(agent, scope, iterator), ["Symbol"]);
+        // Die Methoden, dann der Accessor `constructor` und die Symbole
+        // @@iterator, @@dispose und @@toStringTag.
+        assert_eq!(
+            keys(agent, scope, iterator),
+            [
+                "chunks",
+                "drop",
+                "every",
+                "filter",
+                "find",
+                "flatMap",
+                "forEach",
+                "includes",
+                "join",
+                "map",
+                "reduce",
+                "some",
+                "take",
+                "toArray",
+                "windows",
+                "constructor",
+                "Symbol",
+                "Symbol",
+                "Symbol"
+            ]
+        );
         let (method, attributes) = symbol_data(agent, scope, iterator, WellKnownSymbol::Iterator);
         assert_eq!(attributes, HIDDEN);
         let (name, _) = data(agent, scope, method, "name");
@@ -2386,4 +2411,600 @@ fn booleans_and_error_is_error() {
         ),
         ("Error.isError()", "false"),
     ]);
+}
+
+#[test]
+fn iterator_constructor_and_prototype_accessors() {
+    check(&[
+        (
+            "try { Iterator() } catch (e) { e instanceof TypeError }",
+            "true",
+        ),
+        (
+            "try { new Iterator() } catch (e) { e instanceof TypeError }",
+            "true",
+        ),
+        (
+            "class Sub extends Iterator {} var m = new Sub(); \
+             (Object.getPrototypeOf(Sub.prototype) === Iterator.prototype) && m instanceof Iterator",
+            "true",
+        ),
+        ("Iterator.prototype.constructor === Iterator", "true"),
+        ("Iterator.prototype[tag]", "\"Iterator\""),
+        (
+            "var d = Object.getOwnPropertyDescriptor(Iterator.prototype, 'constructor'); \
+             typeof d.get + typeof d.set + d.enumerable + d.configurable",
+            "\"functionfunctionfalsetrue\"",
+        ),
+        (
+            "var o = Object.create(Iterator.prototype); o.constructor = 5; o[tag] = 'x'; \
+             o.hasOwnProperty('constructor') + ':' + o.constructor + ':' + o[tag] + ':' + \
+             (Iterator.prototype.constructor === Iterator)",
+            "\"true:5:x:true\"",
+        ),
+        (
+            "try { Iterator.prototype.constructor = 1; 'kein Fehler' } \
+             catch (e) { e instanceof TypeError }",
+            "true",
+        ),
+        (
+            "var d = Object.getOwnPropertyDescriptor(Iterator, 'prototype'); \
+             d.writable || d.enumerable || d.configurable",
+            "false",
+        ),
+        (
+            "Object.prototype.toString.call([].values().map(function (x) { return x; }))",
+            "\"[object Iterator Helper]\"",
+        ),
+        (
+            "var n = 0; Iterator.prototype[Symbol.dispose].call({ return: function () { n++; } }); n",
+            "1",
+        ),
+        ("Iterator.prototype[Symbol.dispose].call({})", "undefined"),
+    ]);
+}
+
+#[test]
+fn iterator_from_wraps_only_foreign_iterators() {
+    check(&[
+        ("var a = [1].values(); Iterator.from(a) === a", "true"),
+        (
+            "var f = Iterator.from({ next: function () { return { value: 7, done: false }; } }); \
+             Object.getPrototypeOf(f) !== Iterator.prototype && f.take(2).toArray().join()",
+            "\"7,7\"",
+        ),
+        ("Iterator.from('ab').toArray().join()", "\"a,b\""),
+        (
+            "try { Iterator.from(1) } catch (e) { e instanceof TypeError }",
+            "true",
+        ),
+        (
+            "var f = Iterator.from({ next: function () {} }); f.return().done",
+            "true",
+        ),
+        (
+            "var f = Iterator.from({ next: function () {}, return: function () { return 'r'; } }); \
+             f.return()",
+            "\"r\"",
+        ),
+        (
+            "var f = Iterator.from({ next: function () {} }); \
+             try { f.next.call({}) } catch (e) { e instanceof TypeError }",
+            "true",
+        ),
+    ]);
+}
+
+#[test]
+fn iterator_helpers_are_lazy_and_count() {
+    check(&[
+        (
+            "[1, 2, 3].values().map(function (x, i) { return x * 10 + i; }).toArray().join()",
+            "\"10,21,32\"",
+        ),
+        (
+            "[1, 2, 3, 4].values().filter(function (x) { return x % 2; }).toArray().join()",
+            "\"1,3\"",
+        ),
+        (
+            "[1, 2, 3].values().drop(1).take(1).toArray().join()",
+            "\"2\"",
+        ),
+        (
+            "[1, 2, 3].values().drop(Infinity).toArray().length + ':' + \
+             [1, 2, 3].values().take(Infinity).toArray().length",
+            "\"0:3\"",
+        ),
+        (
+            "[[1, 2], [], [3]].values().flatMap(function (x) { return x; }).toArray().join()",
+            "\"1,2,3\"",
+        ),
+        (
+            "try { [1].values().flatMap(function () { return 'ab'; }).next() } \
+             catch (e) { e instanceof TypeError }",
+            "true",
+        ),
+        (
+            "var log = []; var h = [1, 2].values().map(function (x) { log.push(x); return x; }); \
+             log.length + ':' + h.next().value + ':' + log.join()",
+            "\"0:1:1\"",
+        ),
+        (
+            "try { [1].values().map(1) } catch (e) { e instanceof TypeError }",
+            "true",
+        ),
+        (
+            "try { [1].values().take(NaN) } catch (e) { e instanceof RangeError }",
+            "true",
+        ),
+        (
+            "try { [1].values().drop(-1) } catch (e) { e instanceof RangeError }",
+            "true",
+        ),
+        (
+            "try { Iterator.prototype.map.call(1, function () {}) } \
+             catch (e) { e instanceof TypeError }",
+            "true",
+        ),
+    ]);
+}
+
+#[test]
+fn iterator_helpers_close_their_source() {
+    let source = "var closed = 0; \
+        function source() { \
+          var s = Object.create(Iterator.prototype); \
+          s.next = function () { return { value: 1, done: false }; }; \
+          s.return = function () { closed++; return {}; }; \
+          return s; \
+        }";
+    check(&[
+        (
+            &format!(
+                "{source} var h = source().map(function (x) {{ return x; }}); h.return(); h.return(); closed"
+            ),
+            "1",
+        ),
+        (
+            &format!("{source} var h = source().take(1); h.next(); h.next().done + ':' + closed"),
+            "\"true:1\"",
+        ),
+        (
+            &format!(
+                "{source} var h = source().filter(function () {{ return true; }}); h.next(); h.return(); closed"
+            ),
+            "1",
+        ),
+        (
+            &format!(
+                "{source} try {{ source().map(function () {{ throw 1; }}).next() }} catch (e) {{}} closed"
+            ),
+            "1",
+        ),
+        (
+            &format!("{source} try {{ source().map(1) }} catch (e) {{}} closed"),
+            "1",
+        ),
+        (
+            &format!("{source} source().some(function (x) {{ return x; }}) + ':' + closed"),
+            "\"true:1\"",
+        ),
+        (
+            &format!(
+                "{source} var inner = source(); \
+                var h = [0].values().flatMap(function () {{ return inner; }}); \
+                h.next(); h.return(); closed"
+            ),
+            "1",
+        ),
+    ]);
+}
+
+#[test]
+fn iterator_helpers_guard_their_state() {
+    check(&[
+        (
+            "var it = [1, 2].values().map(function () { return it.next(); }); \
+             try { it.next() } catch (e) { e instanceof TypeError }",
+            "true",
+        ),
+        (
+            "var it = [1].values().map(function (x) { return x; }); it.next(); it.next(); \
+             it.next().done",
+            "true",
+        ),
+        (
+            "var h = [1].values().map(function (x) { return x; }); \
+             try { h.next.call([].values()) } catch (e) { e instanceof TypeError }",
+            "true",
+        ),
+        // Eine Kette aus Helfern ruft sich in Rust auf; zu tief wird ein
+        // RangeError, kein Überlauf des Stapels.
+        (
+            "var it = [1].values(); \
+             for (var i = 0; i < 20000; i++) it = it.map(function (x) { return x; }); \
+             try { it.next(); 'kein Fehler' } catch (e) { e instanceof RangeError }",
+            "true",
+        ),
+    ]);
+}
+
+#[test]
+fn iterator_chunks_and_windows() {
+    check(&[
+        (
+            "[1, 2, 3, 4, 5].values().chunks(2).toArray().map(function (a) { return a.join('+'); }).join()",
+            "\"1+2,3+4,5\"",
+        ),
+        (
+            "[1, 2, 3, 4, 5].values().windows(3).toArray().map(function (a) { return a.join('+'); }).join()",
+            "\"1+2+3,2+3+4,3+4+5\"",
+        ),
+        ("[1, 2].values().windows(3).toArray().length", "0"),
+        (
+            "[1, 2].values().windows(3, 'allow-partial').toArray()[0].join()",
+            "\"1,2\"",
+        ),
+        (
+            "var r = []; for (var i = 0; i < 40; i++) r.push(i); \
+             r.values().windows(20).toArray()[20].join()",
+            "\"20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39\"",
+        ),
+        (
+            "try { [1].values().chunks(0) } catch (e) { e instanceof RangeError }",
+            "true",
+        ),
+        (
+            "try { [1].values().chunks(2 ** 32) } catch (e) { e instanceof RangeError }",
+            "true",
+        ),
+        (
+            "try { [1].values().windows(1.5) } catch (e) { e instanceof TypeError }",
+            "true",
+        ),
+        (
+            "try { [1].values().windows('2') } catch (e) { e instanceof TypeError }",
+            "true",
+        ),
+        (
+            "try { [1].values().windows(2, 'x') } catch (e) { e instanceof TypeError }",
+            "true",
+        ),
+    ]);
+}
+
+#[test]
+fn iterator_eager_methods() {
+    check(&[
+        (
+            "[1, 2, 3].values().every(function (x) { return x > 0; }) + ':' + \
+             [1, 2, 3].values().some(function (x) { return x > 2; }) + ':' + \
+             [1, 2, 3].values().find(function (x) { return x > 1; })",
+            "\"true:true:2\"",
+        ),
+        (
+            "var log = []; [1, 2].values().forEach(function (x, i) { log.push(x + '@' + i); }); \
+             log.join()",
+            "\"1@0,2@1\"",
+        ),
+        (
+            "[1, 2, 3].values().reduce(function (a, b) { return a + b; })",
+            "6",
+        ),
+        (
+            "[1, 2].values().reduce(function (a, b, i) { return a + b + i; }, 10)",
+            "14",
+        ),
+        (
+            "[1].values().reduce(function (a, b) { return a + b; }, undefined)",
+            "NaN",
+        ),
+        (
+            "try { [].values().reduce(function () {}) } catch (e) { e instanceof TypeError }",
+            "true",
+        ),
+        (
+            "[NaN].values().includes(NaN) + ':' + [1, 2, 3].values().includes(1, 1) + ':' + \
+             [1, 2, 3].values().includes(3, Infinity) + ':' + [-0].values().includes(0)",
+            "\"true:false:false:true\"",
+        ),
+        (
+            "try { [1].values().includes(1, -1) } catch (e) { e instanceof RangeError }",
+            "true",
+        ),
+        (
+            "try { [1].values().includes(1, 0.5) } catch (e) { e instanceof TypeError }",
+            "true",
+        ),
+        ("[1, 2].values().toArray().join()", "\"1,2\""),
+        (
+            "[1, null, undefined, 'a'].values().join() + ':' + [1, 2].values().join(' - ') + \
+             ':' + [].values().join('x') + ':' + [[1, 2]].values().join(';')",
+            "\"1,,,a:1 - 2::1,2\"",
+        ),
+        (
+            "var closed = 0; var it = { next: function () { return { value: 1 }; }, \
+             return: function () { closed++; return {}; } }; \
+             Object.setPrototypeOf(it, Iterator.prototype); \
+             var bad = { toString: function () { throw 1; } }; \
+             try { it.join(bad) } catch (e) { closed += e; } \
+             var next = 0; it.next = function () { next++; return { value: bad }; }; \
+             try { it.join() } catch (e) { closed += 10 * e; } closed + ':' + next",
+            "\"13:1\"",
+        ),
+    ]);
+}
+
+#[test]
+fn iterator_concat_zip_and_zip_keyed() {
+    check(&[
+        (
+            "Iterator.concat([1, 2], [], [3]).toArray().join()",
+            "\"1,2,3\"",
+        ),
+        ("Iterator.concat().next().done", "true"),
+        (
+            "try { Iterator.concat(1) } catch (e) { e instanceof TypeError }",
+            "true",
+        ),
+        (
+            "try { Iterator.concat({}) } catch (e) { e instanceof TypeError }",
+            "true",
+        ),
+        (
+            "Iterator.zip([[1, 2], [3, 4, 5]]).toArray().map(String).join('|')",
+            "\"1,3|2,4\"",
+        ),
+        (
+            "Iterator.zip([[1, 2], [3]], { mode: 'longest', padding: ['a', 'b'] }).toArray() \
+             .map(String).join('|')",
+            "\"1,3|2,b\"",
+        ),
+        (
+            "try { Iterator.zip([[1, 2], [3]], { mode: 'strict' }).toArray() } \
+             catch (e) { e instanceof TypeError }",
+            "true",
+        ),
+        (
+            "Iterator.zip([[1], [2]], { mode: 'strict' }).toArray().length",
+            "1",
+        ),
+        (
+            "try { Iterator.zip([], { mode: 'x' }) } catch (e) { e instanceof TypeError }",
+            "true",
+        ),
+        (
+            "try { Iterator.zip([], null) } catch (e) { e instanceof TypeError }",
+            "true",
+        ),
+        (
+            "try { Iterator.zip([1]) } catch (e) { e instanceof TypeError }",
+            "true",
+        ),
+        (
+            "var z = Iterator.zipKeyed({ a: [1], b: [2, 3] }, { mode: 'longest' }).toArray(); \
+             z.length + ':' + z[1].a + ':' + z[1].b + ':' + (Object.getPrototypeOf(z[0]) === null)",
+            "\"2:undefined:3:true\"",
+        ),
+        (
+            "Object.keys(Iterator.zipKeyed({ b: [1], a: [2], c: undefined }).next().value).join()",
+            "\"b,a\"",
+        ),
+        (
+            "var closed = 0; var it = [1].values(); \
+             it.return = function () { closed++; return {}; }; \
+             Iterator.zip([[1, 2], it]).toArray(); closed",
+            "0",
+        ),
+        (
+            "var closed = 0; var it = [1, 2].values(); \
+             it.return = function () { closed++; return {}; }; \
+             Iterator.zip([[1], it]).toArray(); closed",
+            "1",
+        ),
+    ]);
+}
+
+#[test]
+fn json_parse_builds_values_and_revives() {
+    check(&[
+        (
+            "var v = JSON.parse('{\"a\": [1, 2, {\"b\": null}], \"c\": \"d\", \"a\": 5}'); v.a + v.c",
+            "\"5d\"",
+        ),
+        (
+            "JSON.parse(' [1, \"2\", true, null, -0.5e1] ').join('|')",
+            "\"1|2|true||-5\"",
+        ),
+        ("1 / JSON.parse('-0')", "-Infinity"),
+        ("JSON.parse('\"\\\\u00e4\\\\n\"') === '\\u00e4\\n'", "true"),
+        ("JSON.parse('{\"__proto__\": 1}').__proto__", "1"),
+        (
+            "Object.keys(JSON.parse('{\"b\": 1, \"a\": 2, \"b\": 3}')).join()",
+            "\"b,a\"",
+        ),
+        ("JSON.parse(1)", "1"),
+        (
+            "JSON.parse({ toString: function () { return '[]'; } }).length",
+            "0",
+        ),
+        (
+            "try { JSON.parse(\"{'a': 1}\") } catch (e) { e instanceof SyntaxError }",
+            "true",
+        ),
+        (
+            "try { JSON.parse('[1,]') } catch (e) { e instanceof SyntaxError }",
+            "true",
+        ),
+        (
+            "try { JSON.parse('') } catch (e) { e instanceof SyntaxError }",
+            "true",
+        ),
+        (
+            "JSON.parse('{\"a\": [1, 2], \"b\": 3}', function (k, v) { \
+               return typeof v === 'number' ? v + 1 : v; }).a.join()",
+            "\"2,3\"",
+        ),
+        (
+            "var log = []; JSON.parse('{\"a\": -1.50, \"b\": \"x\\\\u0041\", \"c\": [true]}', \
+               function (k, v, c) { log.push(k + '=' + c.source); return v; }); log.join(' ')",
+            "\"a=-1.50 b=\\\"x\\\\u0041\\\" 0=true c=undefined =undefined\"",
+        ),
+        (
+            "var log = []; JSON.parse('[1, 2]', function (k, v, c) { \
+               if (k === '0') this[1] = 3; log.push(k + '=' + c.source); return v; }); log.join(' ')",
+            "\"0=1 1=undefined =undefined\"",
+        ),
+        (
+            "var x = JSON.parse('[1, [2, 3]]', function (k, v) { return k === '0' ? undefined : v; }); \
+             x.length + ':' + (0 in x) + ':' + JSON.stringify(x)",
+            "\"2:false:[null,[null,3]]\"",
+        ),
+        (
+            "var s = ''; for (var i = 0; i < 10000; i++) s += '['; \
+             for (var i = 0; i < 10000; i++) s += ']'; \
+             var v = JSON.parse(s); var d = 0; while (v.length) { v = v[0]; d++; } d",
+            "9999",
+        ),
+    ]);
+}
+
+#[test]
+fn json_stringify_serializes_iteratively() {
+    check(&[
+        (
+            "JSON.stringify({ a: [1, 'x', null, true, undefined], b: { c: undefined, d: function () {} } })",
+            "\"{\\\"a\\\":[1,\\\"x\\\",null,true,null],\\\"b\\\":{}}\"",
+        ),
+        (
+            "JSON.stringify([1, [2]], null, 2)",
+            "\"[\\n  1,\\n  [\\n    2\\n  ]\\n]\"",
+        ),
+        (
+            "JSON.stringify({ a: 1 }, null, '--------------')",
+            "\"{\\n----------\\\"a\\\": 1\\n}\"",
+        ),
+        (
+            "JSON.stringify({ a: [] , b: {} }, null, new Number(1))",
+            "\"{\\n \\\"a\\\": [],\\n \\\"b\\\": {}\\n}\"",
+        ),
+        (
+            "JSON.stringify('\\u2028\\ud800\\udc00\\ud800\"\\\\\\n\\u0001')",
+            "\"\\\"\\u{2028}\u{10000}\\\\ud800\\\\\\\"\\\\\\\\\\\\n\\\\u0001\\\"\"",
+        ),
+        (
+            "var a = []; a[0] = a; try { JSON.stringify(a) } catch (e) { e instanceof TypeError }",
+            "true",
+        ),
+        ("var a = [1]; JSON.stringify([a, a])", "\"[[1],[1]]\""),
+        (
+            "JSON.stringify({ a: 1, b: 2, c: 3, 1: 4 }, ['c', 'a', 1, 'c'])",
+            "\"{\\\"c\\\":3,\\\"a\\\":1,\\\"1\\\":4}\"",
+        ),
+        (
+            "JSON.stringify({ a: 1, b: [2] }, function (k, v) { return typeof v === 'number' ? v * 10 : v; })",
+            "\"{\\\"a\\\":10,\\\"b\\\":[20]}\"",
+        ),
+        (
+            "JSON.stringify({ toJSON: function (k) { return 'key:' + k; } })",
+            "\"\\\"key:\\\"\"",
+        ),
+        (
+            "JSON.stringify(new Number(3)) + JSON.stringify(new Boolean(false)) + JSON.stringify(NaN) + \
+             JSON.stringify(-0)",
+            "\"3falsenull0\"",
+        ),
+        (
+            "JSON.stringify(undefined) === undefined && JSON.stringify(function () {}) === undefined",
+            "true",
+        ),
+        ("JSON.stringify(Symbol())", "undefined"),
+        (
+            "var o = {}; var c = o; for (var i = 0; i < 10000; i++) { c.a = {}; c = c.a; } \
+             JSON.stringify(o).length",
+            "60002",
+        ),
+    ]);
+}
+
+/// Ein Baum, der nie als Werte ins Speicherbudget passt, endet schon im
+/// Zerleger mit OutOfMemory, hier noch vor dem Komma am Ende, das sonst
+/// einen SyntaxError ergäbe.
+#[test]
+fn json_parse_stays_within_the_memory_budget() {
+    let mut agent = Agent::with_options(Options {
+        limit: 4 * 1024 * 1024,
+        verify: true,
+        ..Options::default()
+    })
+    .expect("Speicher");
+    let realm = agent.create_realm().expect("Speicher");
+    let source = "var small = '[' + Array(1001).join('0,') + '0]'; \
+                  JSON.parse(small).length";
+    assert_eq!(run(&mut agent, realm, source), "1001");
+    let source = "try { JSON.parse('[' + Array(1001).join('0,') + ']') } \
+                  catch (e) { e instanceof SyntaxError }";
+    assert_eq!(run(&mut agent, realm, source), "true");
+    // Der Text selbst passt ins Budget.
+    let source = "var large = '[' + Array(600001).join('0,') + ']'; large.length";
+    assert_eq!(run(&mut agent, realm, source), "1200002");
+    assert_eq!(
+        run(&mut agent, realm, "JSON.parse(large)"),
+        "Abrupt(OutOfMemory)"
+    );
+}
+
+#[test]
+fn json_raw_values() {
+    check(&[
+        (
+            "var r = JSON.rawJSON('123.40'); JSON.isRawJSON(r) + ':' + Object.isFrozen(r) + ':' + \
+             Object.getPrototypeOf(r) + ':' + r.rawJSON + ':' + JSON.stringify({ n: r, m: [r] })",
+            "\"true:true:null:123.40:{\\\"n\\\":123.40,\\\"m\\\":[123.40]}\"",
+        ),
+        (
+            "JSON.isRawJSON({ rawJSON: '1' }) || JSON.isRawJSON(1) || JSON.isRawJSON()",
+            "false",
+        ),
+        ("JSON.rawJSON('\"a\"').rawJSON", "\"\\\"a\\\"\""),
+        ("JSON.rawJSON(null).rawJSON", "\"null\""),
+        (
+            "try { JSON.rawJSON('[1]') } catch (e) { e instanceof SyntaxError }",
+            "true",
+        ),
+        (
+            "try { JSON.rawJSON(' 1') } catch (e) { e instanceof SyntaxError }",
+            "true",
+        ),
+        (
+            "try { JSON.rawJSON('') } catch (e) { e instanceof SyntaxError }",
+            "true",
+        ),
+        (
+            "try { JSON.rawJSON('1a') } catch (e) { e instanceof SyntaxError }",
+            "true",
+        ),
+        ("Object.prototype.toString.call(JSON)", "\"[object JSON]\""),
+    ]);
+}
+
+#[test]
+fn iterator_helpers_and_json_survive_collections() {
+    let (mut agent, realm) = agent_with(true);
+    define_tag(&mut agent, realm);
+    let source = "var h = [1, 2, 3, 4, 5].values().map(function (x) { return [x, String(x)]; }) \
+        .flatMap(function (p) { return p; }).chunks(3); \
+        var w = Iterator.zipKeyed({ a: h, b: [1, 2, 3].values().windows(2) }, { mode: 'longest' }) \
+        .toArray(); \
+        var text = JSON.stringify(w, null, 1); \
+        var back = JSON.parse(text, function (k, v, c) { return c.source !== undefined ? k + c.source : v; }); \
+        back.length + ':' + JSON.stringify(back[0]) + ':' + JSON.stringify(back[3]) + ':' + \
+        Iterator.concat([], [7]).toArray().join() + ':' + \
+        JSON.stringify(JSON.rawJSON('1e3'))";
+    assert_eq!(
+        run(&mut agent, realm, source),
+        "\"4:{\\\"a\\\":[\\\"01\\\",\\\"1\\\\\\\"1\\\\\\\"\\\",\\\"22\\\"],\\\"b\\\":[\\\"01\\\",\\\"12\\\"]}:{\\\"a\\\":[\\\"0\\\\\\\"5\\\\\\\"\\\"]}:7:1e3\""
+    );
+    agent.heap_mut().collect();
+    agent.heap().verify().expect("gültiger Heap");
 }

@@ -61,6 +61,8 @@ const BUILT_INS: Suite = Suite {
         "Boolean",
         "Error",
         "Function",
+        "Iterator",
+        "JSON",
         "Math",
         "NativeErrors",
         "Number",

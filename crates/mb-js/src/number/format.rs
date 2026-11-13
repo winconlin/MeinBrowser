@@ -156,7 +156,11 @@ pub(crate) fn to_precision(x: f64, precision: usize) -> String {
     if e == p.saturating_sub(1) {
         return format!("{sign}{m}");
     }
-    if let Ok(integral) = usize::try_from(e.saturating_add(1)) {
+    // e ≥ 0: e + 1 Stellen vor dem Komma; sonst „0.“, −(e + 1) Nullen und
+    // die Ziffern, auch für e = −1.
+    if e >= 0
+        && let Ok(integral) = usize::try_from(e.saturating_add(1))
+    {
         let (a, b) = m.split_at(integral.min(m.len()));
         return format!("{sign}{a}.{b}");
     }

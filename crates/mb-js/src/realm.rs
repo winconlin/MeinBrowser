@@ -82,9 +82,12 @@ pub enum Intrinsic {
     StringPrototype,
     /// %Symbol.prototype% (Abschnitt 20.4.3).
     SymbolPrototype,
-    /// %Iterator.prototype% (Abschnitt 27.1.3.3), bisher nur mit
-    /// @@iterator.
+    /// %Iterator.prototype% (Abschnitt 27.1.3.3).
     IteratorPrototype,
+    /// %IteratorHelperPrototype% (Abschnitt 27.1.2.1).
+    IteratorHelperPrototype,
+    /// %WrapForValidIteratorPrototype% (Abschnitt 27.1.3.2.2.1).
+    WrapForValidIteratorPrototype,
     /// %ArrayIteratorPrototype% (Abschnitt 23.1.5.2).
     ArrayIteratorPrototype,
     /// %StringIteratorPrototype% (Abschnitt 22.1.5.1).
@@ -181,6 +184,10 @@ pub enum Intrinsic {
     ParseFloat,
     /// %parseInt% (Abschnitt 19.2.5), zugleich `Number.parseInt`.
     ParseInt,
+    /// %Iterator% (Abschnitt 27.1.3.1).
+    Iterator,
+    /// %JSON% (Abschnitt 25.5).
+    Json,
 }
 
 impl Intrinsic {
@@ -716,6 +723,7 @@ fn set_default_global_bindings(
         ("Error", Intrinsic::Error),
         ("EvalError", Intrinsic::EvalError),
         ("Function", Intrinsic::Function),
+        ("Iterator", Intrinsic::Iterator),
         ("Number", Intrinsic::Number),
         ("Object", Intrinsic::Object),
         ("Promise", Intrinsic::Promise),
@@ -726,12 +734,13 @@ fn set_default_global_bindings(
         ("SyntaxError", Intrinsic::SyntaxError),
         ("TypeError", Intrinsic::TypeError),
         ("URIError", Intrinsic::URIError),
-        // Die Funktionen aus Abschnitt 19.2 und %Math% aus Abschnitt 19.4
-        // haben dieselben Attribute.
+        // Die Funktionen aus Abschnitt 19.2 und %JSON% und %Math% aus
+        // Abschnitt 19.4 haben dieselben Attribute.
         ("isFinite", Intrinsic::IsFinite),
         ("isNaN", Intrinsic::IsNaN),
         ("parseFloat", Intrinsic::ParseFloat),
         ("parseInt", Intrinsic::ParseInt),
+        ("JSON", Intrinsic::Json),
         ("Math", Intrinsic::Math),
     ];
     for (name, intrinsic) in intrinsics {

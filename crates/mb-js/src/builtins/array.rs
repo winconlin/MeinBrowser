@@ -546,7 +546,7 @@ fn is_concat_spreadable(agent: &mut Agent, scope: &Scope, value: Local<'_>) -> C
 }
 
 /// Die Codeeinheiten einer Zeichenkette.
-fn units_of(agent: &Agent, value: Local<'_>) -> Vec<u16> {
+pub(super) fn units_of(agent: &Agent, value: Local<'_>) -> Vec<u16> {
     let heap = agent.heap();
     match heap.get(value).kind() {
         Kind::String(string) => heap.string_units(string),
@@ -556,7 +556,7 @@ fn units_of(agent: &Agent, value: Local<'_>) -> Vec<u16> {
 
 /// Hängt `units` an eine wachsende Zeichenkette an, solange sie ins
 /// Speicherbudget passt.
-fn append(agent: &Agent, text: &mut Vec<u16>, units: &[u16]) -> Completion<()> {
+pub(super) fn append(agent: &Agent, text: &mut Vec<u16>, units: &[u16]) -> Completion<()> {
     let heap = agent.heap();
     let bytes = text
         .len()

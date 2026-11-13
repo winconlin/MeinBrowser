@@ -232,6 +232,12 @@ fn precision_switches_to_exponential_outside_its_range() {
         (25.0, 1, "3e+1"),
         (-1.5, 3, "-1.50"),
         (123.0, 3, "123"),
+        // e = −1 behält die Null vor dem Komma, auch wenn erst das Runden
+        // den Exponenten dorthin bringt.
+        (0.12, 2, "0.12"),
+        (-0.5, 2, "-0.50"),
+        (0.5, 1, "0.5"),
+        (0.099_99, 2, "0.10"),
     ];
     for (x, precision, expected) in cases {
         assert_eq!(to_precision(x, precision), expected, "{x} mit {precision}");

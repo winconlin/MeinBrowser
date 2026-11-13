@@ -1,11 +1,14 @@
-//! %Iterator.prototype% (Abschnitt 27.1.3.3), bisher nur mit @@iterator,
-//! und die Iteratoren für Arrays (Abschnitt 23.1.5) und Zeichenketten
-//! (Abschnitt 22.1.5) mit ihren Prototypen. Den Konstruktor %Iterator% und
-//! die Hilfsmethoden wie `map` gibt es noch nicht.
+//! %Iterator% und %Iterator.prototype% (Abschnitt 27.1.3) mit allen
+//! Helfern, %IteratorHelperPrototype% (Abschnitt 27.1.2.1) und
+//! %WrapForValidIteratorPrototype% (Abschnitt 27.1.3.2.2.1), dazu die
+//! Iteratoren für Arrays (Abschnitt 23.1.5) und Zeichenketten (Abschnitt
+//! 22.1.5) mit ihren Prototypen. Den Konstruktor und seine Funktionen
+//! enthält [`constructor`], die Methoden des Prototyps [`prototype`], die
+//! Objekte, die `map` und die anderen Helfer anlegen, [`helper`].
 //!
-//! Beide Iteratoren sind Objekte der Art [`ObjectClass::Iterator`] mit
-//! drei internen Feldern: was sie durchlaufen, ihre Art und der nächste
-//! Index. Für Arrays sind das [[IteratedArrayLike]],
+//! Alle diese Iteratoren sind Objekte der Art [`ObjectClass::Iterator`] mit
+//! drei internen Feldern; was sie bedeuten, hängt von der Art im zweiten
+//! Feld ab. Für Arrays sind es [[IteratedArrayLike]],
 //! [[ArrayLikeIterationKind]] und [[ArrayLikeNextIndex]]. Den Iterator für
 //! Zeichenketten beschreibt die Spezifikation als Generator aus einer
 //! Closure (CreateIteratorFromClosure, Abschnitt 27.8.3.8); er hält
@@ -13,27 +16,34 @@
 //! festhält. Die Art steht für [[GeneratorBrand]], ~completed~ für eine
 //! Zeichenkette *undefined*, und ~executing~ wird er nie, denn die Closure
 //! ruft keinen Code der Sprache auf (GeneratorValidate, Abschnitt
-//! 27.8.3.2).
+//! 27.8.3.2). Ein Helfer hält im ersten Feld eine interne Zelle mit dem
+//! Zustand seiner Closure, die Hülle aus `Iterator.from` [[Iterated]].
+
+mod constructor;
+mod helper;
+mod prototype;
 
 use super::{define_functions, define_symbol_function, define_to_string_tag};
 use crate::agent::{Agent, Completion, ErrorKind};
-use crate::builtin::{Builtin, BuiltinCall};
+use crate::builtin::{Builtin, BuiltinCall, create_builtin_function};
 use crate::conversion::{to_length, to_property_key};
+use crate::descriptor::PropertyDescriptor;
 use crate::heap::{Local, ObjectClass, OutOfMemory, Scope};
 use crate::iterator::create_iterator_result_object;
 use crate::key::{PropertyKey, WellKnownSymbol};
 use crate::number;
 use crate::object::{INLINE, array_create, ordinary_object_create};
-use crate::operations::{create_data_property_or_throw, get};
+use crate::operations::{create_data_property_or_throw, define_property_or_throw, get};
 use crate::realm::{Intrinsic, RealmId};
 use crate::value::{Kind, Value};
 
 /// Was der Iterator durchläuft: ein Objekt, eine Zeichenkette oder
-/// *undefined*, wenn er fertig ist.
+/// *undefined*, wenn er fertig ist; für einen Helfer die Zelle mit seinem
+/// Zustand, für eine Hülle [[Iterated]].[[Iterator]].
 const TARGET: usize = 0;
 /// Die Art des Iterators, eine der Zahlen unten.
 const KIND: usize = 1;
-/// Der nächste Index.
+/// Der nächste Index; für eine Hülle [[Iterated]].[[NextMethod]].
 const INDEX: usize = 2;
 
 /// ~key~: die Indizes eines Arrays.
@@ -44,6 +54,10 @@ pub(super) const VALUES: i32 = 1;
 pub(super) const ENTRIES: i32 = 2;
 /// Die Codepunkte einer Zeichenkette.
 const STRING: i32 = 3;
+/// Ein Iterator Helper (Abschnitt 27.1.2).
+const HELPER: i32 = 4;
+/// Eine Hülle aus `Iterator.from` mit [[Iterated]].
+const WRAP: i32 = 5;
 
 static ITERATOR_PROTOTYPE_ITERATOR: Builtin = Builtin {
     name: "[Symbol.iterator]",
@@ -86,7 +100,51 @@ pub(super) fn create(agent: &mut Agent, scope: &Scope, realm: RealmId) -> Comple
         WellKnownSymbol::Iterator,
         &ITERATOR_PROTOTYPE_ITERATOR,
     )?;
+    define_functions(agent, scope, realm, prototype, &prototype::FUNCTIONS)?;
+    define_symbol_function(
+        agent,
+        scope,
+        realm,
+        prototype,
+        WellKnownSymbol::Dispose,
+        &prototype::DISPOSE,
+    )?;
     agent.set_intrinsic(realm, Intrinsic::IteratorPrototype, prototype);
+    // `constructor` und @@toStringTag sind Accessoren, nicht aufzählbar
+    // und konfigurierbar (Abschnitte 27.1.3.3.2 und 27.1.3.3.18).
+    let accessors = [
+        (
+            agent.key_from_units(scope, &units("constructor"))?,
+            &prototype::CONSTRUCTOR_GETTER,
+            &prototype::CONSTRUCTOR_SETTER,
+        ),
+        (
+            PropertyKey::Symbol(agent.well_known_symbol(scope, WellKnownSymbol::ToStringTag)),
+            &prototype::TAG_GETTER,
+            &prototype::TAG_SETTER,
+        ),
+    ];
+    for (key, getter, setter) in accessors {
+        let getter = create_builtin_function(agent, scope, realm, getter)?;
+        let setter = create_builtin_function(agent, scope, realm, setter)?;
+        let descriptor = PropertyDescriptor::accessor(getter, setter, false, true);
+        define_property_or_throw(agent, scope, prototype, key, &descriptor)?;
+    }
+    // Iterator.prototype ist weder beschreibbar noch aufzählbar noch
+    // konfigurierbar (Abschnitt 27.1.3.2.3).
+    let constructor = create_builtin_function(agent, scope, realm, &constructor::CONSTRUCTOR)?;
+    let key = agent.key_from_units(scope, &units("prototype"))?;
+    let descriptor = PropertyDescriptor::data(prototype, false, false, false);
+    define_property_or_throw(agent, scope, constructor, key, &descriptor)?;
+    define_functions(agent, scope, realm, constructor, &constructor::FUNCTIONS)?;
+    agent.set_intrinsic(realm, Intrinsic::Iterator, constructor);
+    let helper = ordinary_object_create(agent, scope, Some(prototype))?;
+    define_functions(agent, scope, realm, helper, &helper::FUNCTIONS)?;
+    define_to_string_tag(agent, scope, helper, "Iterator Helper")?;
+    agent.set_intrinsic(realm, Intrinsic::IteratorHelperPrototype, helper);
+    let wrap = ordinary_object_create(agent, scope, Some(prototype))?;
+    define_functions(agent, scope, realm, wrap, &constructor::WRAP_FUNCTIONS)?;
+    agent.set_intrinsic(realm, Intrinsic::WrapForValidIteratorPrototype, wrap);
     let families: [(Intrinsic, &'static [Builtin], &str); 2] = [
         (
             Intrinsic::ArrayIteratorPrototype,

@@ -116,6 +116,46 @@ pub(crate) fn get_iterator_from_method<'s>(
     Ok((iterator, next))
 }
 
+/// GetIteratorDirect (Abschnitt 7.4.2): der Wert der Eigenschaft `next`
+/// des Objekts `iterator`.
+pub(crate) fn get_iterator_direct<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    iterator: Local<'_>,
+) -> Completion<Local<'s>> {
+    let key = agent.key_from_units(scope, &units("next"))?;
+    get(agent, scope, iterator, key)
+}
+
+/// GetIteratorFlattenable (Abschnitt 7.4.5): mit `iterate_strings` für
+/// ~iterate-string-primitives~ nimmt es auch Zeichenketten an, sonst nur
+/// Objekte. Ein Objekt ohne @@iterator ist selbst der Iterator. `realm`
+/// ist der aktuelle Realm für GetMethod auf einer Zeichenkette.
+pub(crate) fn get_iterator_flattenable<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    realm: RealmId,
+    value: Local<'_>,
+    iterate_strings: bool,
+) -> Completion<(Local<'s>, Local<'s>)> {
+    match agent.heap().get(value).kind() {
+        Kind::Object(_) => {}
+        Kind::String(_) if iterate_strings => {}
+        _ => return Err(agent.throw_error(ErrorKind::TypeError)),
+    }
+    let symbol = agent.well_known_symbol(scope, WellKnownSymbol::Iterator);
+    let method = get_method_of_value(agent, scope, realm, value, PropertyKey::Symbol(symbol))?;
+    let iterator = match method {
+        Some(method) => call(agent, scope, method, value, &[])?,
+        None => agent.heap().local(scope, agent.heap().get(value)),
+    };
+    if !is_object(agent, iterator) {
+        return Err(agent.throw_error(ErrorKind::TypeError));
+    }
+    let next = get_iterator_direct(agent, scope, iterator)?;
+    Ok((iterator, next))
+}
+
 /// CreateAsyncFromSyncIterator (Abschnitt 27.1.5.1) mit
 /// %AsyncFromSyncIteratorPrototype% aus `realm`, dem aktuellen Realm: der
 /// neue Iterator und der Wert seiner Eigenschaft `next`.
@@ -256,7 +296,39 @@ pub(crate) fn iterator_close_on_throw(
     }
 }
 
-/// IfAbruptCloseIterator (Abschnitt 7.4.12) für das Ergebnis eines
+/// IteratorCloseAll (Abschnitt 7.4.12): schließt `iterators` in
+/// umgekehrter Reihenfolge. Ist `completion` eine Ausnahme oder wirft eines
+/// der Schließen, fallen alle späteren Fehler weg, und die erste Ausnahme
+/// gilt; ein erschöpftes Budget geht sofort weiter.
+pub(crate) fn iterator_close_all(
+    agent: &mut Agent,
+    scope: &Scope,
+    iterators: &[Local<'_>],
+    completion: Completion<()>,
+) -> Completion<()> {
+    let mut thrown = match completion {
+        Ok(()) => None,
+        Err(Abrupt::Throw) => Some(agent.take_thrown_for_rethrow(scope)?),
+        Err(other) => return Err(other),
+    };
+    for &iterator in iterators.iter().rev() {
+        if thrown.is_some() {
+            iterator_close_on_throw(agent, scope, iterator)?;
+            continue;
+        }
+        match iterator_close(agent, scope, iterator) {
+            Ok(()) => {}
+            Err(Abrupt::Throw) => thrown = Some(agent.take_thrown_for_rethrow(scope)?),
+            Err(other) => return Err(other),
+        }
+    }
+    match thrown {
+        Some(value) => Err(agent.rethrow(value)),
+        None => Ok(()),
+    }
+}
+
+/// IfAbruptCloseIterator (Abschnitt 7.4.13) für das Ergebnis eines
 /// Schritts: Eine Ausnahme schließt den Iterator und gilt dann weiter, ein
 /// erschöpftes Budget geht ohne Schließen weiter.
 pub(crate) fn close_if_abrupt<T>(
