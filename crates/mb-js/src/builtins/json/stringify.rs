@@ -39,6 +39,7 @@ enum Serialized<'s> {
 
 /// Ein offenes Array oder Objekt.
 struct Open<'s> {
+    /// Das Handle der Tiefe, in der es offen ist (siehe [`slot`]).
     value: Local<'s>,
     /// Die Schlüssel von SerializeJSONObject; für ein Array leer.
     keys: Vec<Vec<u16>>,
@@ -188,15 +189,35 @@ fn index_key<'s>(agent: &mut Agent, scope: &'s Scope, index: f64) -> Completion<
     Ok(agent.key_from_units(scope, &text)?)
 }
 
+/// Das Handle für das Array oder Objekt, das in der Tiefe `depth` offen
+/// ist. Jede Tiefe hat ein eigenes, das jedes neue Array oder Objekt dort
+/// überschreibt; so hält `stringify` nur die offenen fest und nicht alle,
+/// die es schon serialisiert hat.
+fn slot<'s>(
+    agent: &Agent,
+    scope: &'s Scope,
+    slots: &mut Vec<Local<'s>>,
+    depth: usize,
+) -> Local<'s> {
+    if let Some(&slot) = slots.get(depth) {
+        return slot;
+    }
+    let slot = agent.heap().local(scope, Value::UNDEFINED);
+    slots.push(slot);
+    slot
+}
+
 /// SerializeJSONProperty(state, "", wrapper) ohne Rekursion.
-fn serialize(
+fn serialize<'s>(
     agent: &mut Agent,
-    scope: &Scope,
+    scope: &'s Scope,
     state: &mut State<'_>,
     wrapper: Local<'_>,
 ) -> Completion<Option<Vec<u16>>> {
-    let mut stack: Vec<Open<'_>> = Vec::new();
-    let first = property(agent, scope, state, wrapper, &[])?;
+    let mut stack: Vec<Open<'s>> = Vec::new();
+    let mut slots: Vec<Local<'s>> = Vec::new();
+    let root = slot(agent, scope, &mut slots, 0);
+    let first = property(agent, state, wrapper, &[], root)?;
     // Was ein fertiges Array oder Objekt dem umgebenden übergibt.
     let mut finished: Option<(Vec<u16>, Option<Vec<u16>>)> = None;
     match first {
@@ -204,7 +225,7 @@ fn serialize(
         Serialized::Text(text) => return Ok(Some(text)),
         Serialized::Array(value) | Serialized::Object(value) => {
             let is_array = matches!(first, Serialized::Array(_));
-            open(agent, scope, state, &mut stack, value, is_array, Vec::new())?;
+            open(agent, state, &mut stack, value, is_array, Vec::new())?;
         }
     }
     loop {
@@ -232,6 +253,7 @@ fn serialize(
             let Some(done) = stack.pop() else {
                 return Ok(None);
             };
+            agent.heap().set(done.value, Value::UNDEFINED);
             let text = close(state, &done)?;
             finished = Some((done.key, Some(text)));
             continue;
@@ -239,13 +261,14 @@ fn serialize(
         top.next = top.next.saturating_add(1);
         let holder = top.value;
         agent.spend_execution_steps(1)?;
-        let result = property(agent, scope, state, holder, &key)?;
+        let child = slot(agent, scope, &mut slots, stack.len());
+        let result = property(agent, state, holder, &key, child)?;
         match result {
             Serialized::Nothing => finished = Some((key, None)),
             Serialized::Text(text) => finished = Some((key, Some(text))),
-            Serialized::Array(value) => open(agent, scope, state, &mut stack, value, true, key)?,
+            Serialized::Array(value) => open(agent, state, &mut stack, value, true, key)?,
             Serialized::Object(value) => {
-                open(agent, scope, state, &mut stack, value, false, key)?;
+                open(agent, state, &mut stack, value, false, key)?;
             }
         }
     }
@@ -284,7 +307,6 @@ fn add(
 /// Länge holen.
 fn open<'s>(
     agent: &mut Agent,
-    scope: &'s Scope,
     state: &mut State<'_>,
     stack: &mut Vec<Open<'s>>,
     value: Local<'s>,
@@ -309,7 +331,7 @@ fn open<'s>(
         key,
     };
     if is_array {
-        entry.length = length_of_array_like(agent, scope, value)?;
+        entry.length = agent.scope(|agent, inner| length_of_array_like(agent, inner, value))?;
     } else if let Some(list) = &state.property_list {
         entry.keys = list.clone();
     } else {
@@ -367,13 +389,14 @@ fn close(state: &mut State<'_>, done: &Open<'_>) -> Completion<Vec<u16>> {
 }
 
 /// SerializeJSONProperty (Abschnitt 25.5.4.2) bis auf das Serialisieren
-/// von Arrays und Objekten, das der Aufrufer übernimmt.
+/// von Arrays und Objekten, das der Aufrufer übernimmt. Ein Array oder
+/// Objekt kommt in `slot`.
 fn property<'s>(
     agent: &mut Agent,
-    scope: &'s Scope,
     state: &State<'_>,
     holder: Local<'_>,
     key: &[u16],
+    slot: Local<'s>,
 ) -> Completion<Serialized<'s>> {
     agent.scope(|agent, inner| -> Completion<Serialized<'s>> {
         let property_key = agent.key_from_units(inner, key)?;
@@ -426,11 +449,11 @@ fn property<'s>(
             }
             Kind::Number(_) => Serialized::Text(units("null")),
             Kind::Object(_) if !is_callable(heap, heap.get(value)) => {
-                let outer = heap.local(scope, heap.get(value));
+                heap.set(slot, heap.get(value));
                 if is_array(heap, heap.get(value)) {
-                    Serialized::Array(outer)
+                    Serialized::Array(slot)
                 } else {
-                    Serialized::Object(outer)
+                    Serialized::Object(slot)
                 }
             }
             _ => Serialized::Nothing,

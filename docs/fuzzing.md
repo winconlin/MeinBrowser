@@ -38,7 +38,7 @@ Das Fuzzing-Lockfile legt die vollständigen Entwicklungsabhängigkeiten fest, d
 | `gif` | Erstes GIF-Einzelbild mit LZW, Paletten und Interlacing |
 | `deflate` | Deflate- und zlib-Dekoder |
 | `font` | sfnt-/OpenType-Leser und begrenzte Glyphenabfragen |
-| `json` | JSON-Parser |
+| `json` | JSON-Parser aus `mb-json`, den auch `JSON.parse` nutzt |
 | `encoding` | Zeichenkodierungen und Streaming-Dekodierung |
 | `unicode` | Normalisierung und weitere vorhandene Unicode-Algorithmen |
 | `page` | Eine Seite mit Stylesheets und Bildern laden, Kaskade, Layout und Zeichnen in zwei Viewports |

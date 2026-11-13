@@ -1,27 +1,27 @@
-//! Der Teil von ParseJSON (Abschnitt 25.5.2.1), der prüft, ob ein Text
-//! gültiges JSON nach ECMA-404 ist, und ihn in einen Baum zerlegt.
+//! Der gemeinsame Zerleger für JSON nach ECMA-404 und RFC 8259: Er prüft
+//! einen Text aus UTF-16-Codeeinheiten und zerlegt ihn in einen Baum.
+//! [`crate::parse`] baut daraus [`crate::Value`], die JavaScript-Engine
+//! daraus die Werte von `JSON.parse` (ParseJSON, ECMA-262 Abschnitt
+//! 25.5.2.1).
 //!
-//! Die Spezifikation prüft den Text gegen ECMA-404 und wertet ihn dann als
-//! Script `(text);` aus; für gültiges JSON ergibt das dieselben Werte wie
-//! dieser Baum: Literale, Zahlen nach StringToNumber, Zeichenketten mit
-//! ihren Escapes, Arrays und Objekte, bei denen ein späterer gleicher
-//! Schlüssel den früheren Wert überschreibt (ohne die Sonderrolle von
-//! `__proto__` in Objektliteralen). Die Engine braucht dafür weder Lexer
-//! noch Parser der Sprache.
+//! Für gültiges JSON ergibt der Baum dieselben Werte wie die Auswertung
+//! als Script in ParseJSON: Literale, Zahlen nach StringToNumber,
+//! Zeichenketten mit ihren Escapes, Arrays und Objekte. Doppelte Schlüssel
+//! bleiben mit ihrer Reihenfolge erhalten; was daraus wird, entscheidet,
+//! wer den Baum liest.
 //!
 //! Der Zerleger arbeitet ohne Rekursion mit einem Stapel offener Arrays
-//! und Objekte; jede Tiefe ist erlaubt. Er arbeitet auf den Codeeinheiten:
-//! Außerhalb von Zeichenketten sind nur ASCII-Zeichen gültig, und in
-//! Zeichenketten gehen Codeeinheiten unverändert durch, auch einzelne
-//! Surrogate, die StringToCodePoints als Codepunkte liest.
+//! und Objekte. Er arbeitet auf den Codeeinheiten: Außerhalb von
+//! Zeichenketten sind nur ASCII-Zeichen gültig, und in Zeichenketten gehen
+//! Codeeinheiten unverändert durch, auch einzelne Surrogate.
 //!
-//! Der Baum liegt außerhalb des Heaps. Damit er nicht ohne Grenze wächst,
-//! nimmt der Zerleger höchstens so viele Knoten, wie der Aufrufer erlaubt;
-//! [`super`] erlaubt so viele, wie als Werte ins Speicherbudget passen.
+//! Wie tief der Baum werden und wie viele Knoten er haben darf, bestimmt
+//! der Aufrufer mit [`Limits`].
 
-/// Ein Wert des Baums. Kinder sind Indizes in [`Parsed::nodes`].
+/// Ein Wert des Baums. Kinder sind Indizes in [`Tree::nodes`] und stehen
+/// immer hinter ihrem Elternknoten.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) enum Node {
+pub enum Node {
     Null,
     Boolean(bool),
     Number(f64),
@@ -37,17 +37,41 @@ pub(crate) enum Node {
 /// Knoten gehört der Bereich seiner Codeeinheiten im Text, für Zahlen mit
 /// dem Minus davor.
 #[derive(Debug, Default)]
-pub(crate) struct Parsed {
-    pub(crate) nodes: Vec<Node>,
-    pub(crate) ranges: Vec<(usize, usize)>,
+pub struct Tree {
+    pub nodes: Vec<Node>,
+    pub ranges: Vec<(usize, usize)>,
+}
+
+/// Grenzen für den Baum.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Limits {
+    /// Die größte Zahl der Knoten.
+    pub nodes: usize,
+    /// Die größte Tiefe eines Knotens; die Wurzel hat die Tiefe 0, die
+    /// Elemente und Werte eines Arrays oder Objekts der Tiefe n die Tiefe
+    /// n + 1.
+    pub depth: usize,
+}
+
+impl Limits {
+    /// Keine Grenzen außer dem Speicher.
+    pub const NONE: Limits = Limits {
+        nodes: usize::MAX,
+        depth: usize::MAX,
+    };
 }
 
 /// Warum der Zerleger aufgab.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Rejected {
-    /// Der Text ist kein gültiges JSON; die Zahl ist die Stelle (in
-    /// Codeeinheiten), an der das auffiel.
-    Invalid(usize),
+pub enum Rejected {
+    /// Der Text ist kein gültiges JSON. `position` ist die Stelle in
+    /// Codeeinheiten, an der das auffiel.
+    Invalid {
+        position: usize,
+        message: &'static str,
+    },
+    /// Ein Knoten an der Stelle `position` läge tiefer als erlaubt.
+    TooDeep { position: usize },
     /// Der Baum hätte mehr Knoten, als erlaubt sind.
     TooLarge,
 }
@@ -70,18 +94,22 @@ const COMMA: u16 = 0x2C;
 const MINUS: u16 = 0x2D;
 const COLON: u16 = 0x3A;
 const BACKSLASH: u16 = 0x5C;
+/// Die Meldungen, die mehrere Stellen geben.
+const UNEXPECTED: &str = "unerwartetes Zeichen";
+const DIGIT: &str = "Ziffer erwartet";
+
 const OPEN_BRACKET: u16 = 0x5B;
 const CLOSE_BRACKET: u16 = 0x5D;
 const OPEN_BRACE: u16 = 0x7B;
 const CLOSE_BRACE: u16 = 0x7D;
 
-/// Zerlegt `text` in einen Baum aus höchstens `max_nodes` Knoten.
-pub(crate) fn parse(text: &[u16], max_nodes: usize) -> Result<Parsed, Rejected> {
+/// Zerlegt `text` in einen Baum innerhalb von `limits`.
+pub fn parse(text: &[u16], limits: Limits) -> Result<Tree, Rejected> {
     let mut parser = Parser {
         text,
         position: 0,
-        max_nodes,
-        parsed: Parsed::default(),
+        limits,
+        parsed: Tree::default(),
         open: Vec::new(),
         key: None,
     };
@@ -92,8 +120,8 @@ pub(crate) fn parse(text: &[u16], max_nodes: usize) -> Result<Parsed, Rejected> 
 struct Parser<'t> {
     text: &'t [u16],
     position: usize,
-    max_nodes: usize,
-    parsed: Parsed,
+    limits: Limits,
+    parsed: Tree,
     /// Die offenen Arrays und Objekte, innerstes zuletzt.
     open: Vec<usize>,
     /// Der Schlüssel, zu dem der nächste Wert gehört.
@@ -105,8 +133,11 @@ impl Parser<'_> {
         self.text.get(self.position).copied()
     }
 
-    fn invalid<T>(&self) -> Result<T, Rejected> {
-        Err(Rejected::Invalid(self.position))
+    fn invalid<T>(&self, message: &'static str) -> Result<T, Rejected> {
+        Err(Rejected::Invalid {
+            position: self.position,
+            message,
+        })
     }
 
     fn skip_whitespace(&mut self) {
@@ -122,7 +153,7 @@ impl Parser<'_> {
     /// Erwartet `unit` an der aktuellen Stelle.
     fn expect(&mut self, unit: u16) -> Result<(), Rejected> {
         if self.peek() != Some(unit) {
-            return self.invalid();
+            return self.invalid(UNEXPECTED);
         }
         self.advance();
         Ok(())
@@ -140,7 +171,7 @@ impl Parser<'_> {
                         return if self.position == self.text.len() {
                             Ok(())
                         } else {
-                            self.invalid()
+                            self.invalid("Zeichen nach dem Ende des Werts")
                         };
                     };
                     let is_object = matches!(self.parsed.nodes.get(top), Some(Node::Object(_)));
@@ -155,7 +186,8 @@ impl Parser<'_> {
                         }
                         Some(CLOSE_BRACKET) if !is_object => self.close(top),
                         Some(CLOSE_BRACE) if is_object => self.close(top),
-                        _ => return self.invalid(),
+                        _ if is_object => return self.invalid("`,` oder `}` erwartet"),
+                        _ => return self.invalid("`,` oder `]` erwartet"),
                     }
                 }
             }
@@ -174,7 +206,7 @@ impl Parser<'_> {
     /// Ein Schlüssel mit dem Doppelpunkt danach.
     fn member_key(&mut self) -> Result<(), Rejected> {
         if self.peek() != Some(QUOTE) {
-            return self.invalid();
+            return self.invalid("Schlüssel erwartet");
         }
         let key = self.string()?;
         self.skip_whitespace();
@@ -225,7 +257,8 @@ impl Parser<'_> {
                 self.literal("null")?;
                 Node::Null
             }
-            _ => return self.invalid(),
+            Some(_) => return self.invalid(UNEXPECTED),
+            None => return self.invalid("Text endet zu früh"),
         };
         let index = self.add(node, start)?;
         if let Some(range) = self.parsed.ranges.get_mut(index) {
@@ -237,8 +270,11 @@ impl Parser<'_> {
     /// Hängt einen Knoten an das innerste offene Array oder Objekt.
     fn add(&mut self, node: Node, start: usize) -> Result<usize, Rejected> {
         let index = self.parsed.nodes.len();
-        if index >= self.max_nodes {
+        if index >= self.limits.nodes {
             return Err(Rejected::TooLarge);
+        }
+        if self.open.len() > self.limits.depth {
+            return Err(Rejected::TooDeep { position: start });
         }
         self.parsed.nodes.push(node);
         self.parsed.ranges.push((start, start));
@@ -247,11 +283,11 @@ impl Parser<'_> {
                 Some(Node::Array(elements)) => elements.push(index),
                 Some(Node::Object(members)) => {
                     let Some(key) = self.key.take() else {
-                        return self.invalid();
+                        return self.invalid(UNEXPECTED);
                     };
                     members.push((key, index));
                 }
-                _ => return self.invalid(),
+                _ => return self.invalid(UNEXPECTED),
             }
         }
         Ok(index)
@@ -284,12 +320,12 @@ impl Parser<'_> {
             Some(0x31..=0x39) => {
                 self.digits();
             }
-            _ => return self.invalid(),
+            _ => return self.invalid(DIGIT),
         }
         if self.peek() == Some(0x2E) {
             self.advance();
             if self.digits() == 0 {
-                return self.invalid();
+                return self.invalid(DIGIT);
             }
         }
         if matches!(self.peek(), Some(0x45 | 0x65)) {
@@ -298,7 +334,7 @@ impl Parser<'_> {
                 self.advance();
             }
             if self.digits() == 0 {
-                return self.invalid();
+                return self.invalid(DIGIT);
             }
         }
         // Nur ASCII-Ziffern und Zeichen, die die std ebenso liest; sie
@@ -308,7 +344,7 @@ impl Parser<'_> {
             .iter()
             .filter_map(|&unit| char::from_u32(u32::from(unit)))
             .collect();
-        ascii.parse::<f64>().or_else(|_| self.invalid())
+        ascii.parse::<f64>().or_else(|_| self.invalid(DIGIT))
     }
 
     /// Eine Zeichenkette ab ihrem `"`: ihr Inhalt mit aufgelösten Escapes.
@@ -317,7 +353,7 @@ impl Parser<'_> {
         let mut units = Vec::new();
         loop {
             let Some(unit) = self.peek() else {
-                return self.invalid();
+                return self.invalid("Zeichenkette ohne Ende");
             };
             match unit {
                 QUOTE => {
@@ -345,7 +381,7 @@ impl Parser<'_> {
                                     .and_then(|c| c.to_digit(16))
                                     .and_then(|digit| u16::try_from(digit).ok())
                                 else {
-                                    return self.invalid();
+                                    return self.invalid("vier Hexziffern erwartet");
                                 };
                                 // Vier Hexziffern passen in 16 Bit.
                                 value = (value << 4) | digit;
@@ -354,13 +390,13 @@ impl Parser<'_> {
                             units.push(value);
                             continue;
                         }
-                        _ => return self.invalid(),
+                        _ => return self.invalid("ungültige Escape-Sequenz"),
                     };
                     self.advance();
                     units.push(escaped);
                 }
                 // Steuerzeichen müssen escapet sein.
-                0x00..=0x1F => return self.invalid(),
+                0x00..=0x1F => return self.invalid("Steuerzeichen in Zeichenkette"),
                 _ => {
                     self.advance();
                     units.push(unit);
@@ -379,7 +415,7 @@ mod tests {
     }
 
     fn nodes(text: &str) -> Vec<Node> {
-        parse(&units(text), usize::MAX).expect("gültig").nodes
+        parse(&units(text), Limits::NONE).expect("gültig").nodes
     }
 
     #[test]
@@ -395,7 +431,7 @@ mod tests {
             vec![Node::String(units("aä\n/\""))]
         );
         // Ein einzelnes Surrogat geht unverändert durch.
-        let parsed = parse(&[QUOTE, 0xD800, QUOTE], usize::MAX).expect("gültig");
+        let parsed = parse(&[QUOTE, 0xD800, QUOTE], Limits::NONE).expect("gültig");
         assert_eq!(parsed.nodes, vec![Node::String(vec![0xD800])]);
     }
 
@@ -416,7 +452,7 @@ mod tests {
 
     #[test]
     fn ranges_cover_the_source_text() {
-        let parsed = parse(&units(r#"{"x": -1.5, "y": "s"}"#), usize::MAX).expect("gültig");
+        let parsed = parse(&units(r#"{"x": -1.5, "y": "s"}"#), Limits::NONE).expect("gültig");
         assert_eq!(parsed.ranges, vec![(0, 21), (6, 10), (17, 20)]);
     }
 
@@ -449,7 +485,10 @@ mod tests {
             "\"a",
         ] {
             assert!(
-                matches!(parse(&units(text), usize::MAX), Err(Rejected::Invalid(_))),
+                matches!(
+                    parse(&units(text), Limits::NONE),
+                    Err(Rejected::Invalid { .. })
+                ),
                 "{text:?}"
             );
         }
@@ -459,15 +498,61 @@ mod tests {
     fn deep_nesting_needs_no_recursion() {
         let mut text = "[".repeat(100_000);
         text.push_str(&"]".repeat(100_000));
-        let parsed = parse(&units(&text), usize::MAX).expect("gültig");
+        let parsed = parse(&units(&text), Limits::NONE).expect("gültig");
         assert_eq!(parsed.nodes.len(), 100_000);
     }
 
     #[test]
+    fn the_tree_stays_within_its_depth_limit() {
+        let depth = |depth| Limits {
+            nodes: usize::MAX,
+            depth,
+        };
+        let text = units("[[1]]");
+        assert!(parse(&text, depth(2)).is_ok());
+        assert_eq!(
+            parse(&text, depth(1)).map(|_| ()),
+            Err(Rejected::TooDeep { position: 2 })
+        );
+    }
+
+    #[test]
+    fn failures_name_the_place_and_the_reason() {
+        let failure = |text: &str| match parse(&units(text), Limits::NONE) {
+            Err(Rejected::Invalid { position, message }) => Some((position, message)),
+            _ => None,
+        };
+        assert_eq!(failure("[1,]"), Some((3, "unerwartetes Zeichen")));
+        assert_eq!(failure("[1 2]"), Some((3, "`,` oder `]` erwartet")));
+        assert_eq!(failure("{\"a\": 1 2}"), Some((8, "`,` oder `}` erwartet")));
+        assert_eq!(failure("{1: 2}"), Some((1, "Schlüssel erwartet")));
+        assert_eq!(
+            failure("[1] 2"),
+            Some((4, "Zeichen nach dem Ende des Werts"))
+        );
+        assert_eq!(failure("["), Some((1, "Text endet zu früh")));
+        assert_eq!(failure("-a"), Some((1, "Ziffer erwartet")));
+        assert_eq!(failure("\"a"), Some((2, "Zeichenkette ohne Ende")));
+        assert_eq!(failure("\"\\x\""), Some((2, "ungültige Escape-Sequenz")));
+        assert_eq!(failure("\"\\u12\""), Some((5, "vier Hexziffern erwartet")));
+        assert_eq!(
+            failure("\"\t\""),
+            Some((1, "Steuerzeichen in Zeichenkette"))
+        );
+    }
+
+    #[test]
     fn the_tree_stays_within_its_node_limit() {
+        let nodes = |nodes| Limits {
+            nodes,
+            depth: usize::MAX,
+        };
         let text = units(r#"[1, {"a": [2]}]"#);
-        assert_eq!(parse(&text, 5).expect("gültig").nodes.len(), 5);
-        assert_eq!(parse(&text, 4).map(|_| ()), Err(Rejected::TooLarge));
-        assert_eq!(parse(&units("1"), 0).map(|_| ()), Err(Rejected::TooLarge));
+        assert_eq!(parse(&text, nodes(5)).expect("gültig").nodes.len(), 5);
+        assert_eq!(parse(&text, nodes(4)).map(|_| ()), Err(Rejected::TooLarge));
+        assert_eq!(
+            parse(&units("1"), nodes(0)).map(|_| ()),
+            Err(Rejected::TooLarge)
+        );
     }
 }

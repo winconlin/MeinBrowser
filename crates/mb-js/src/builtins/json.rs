@@ -2,7 +2,8 @@
 //! mit `source` (JSON.parse source text access), `JSON.stringify`,
 //! `JSON.rawJSON` und `JSON.isRawJSON`.
 //!
-//! [`text`] prüft und zerlegt den Text ohne den Parser der Sprache. Aus
+//! Den Text prüft und zerlegt der Zerleger aus [`mb_json::tree`], den
+//! auch `mb-json` nutzt, ohne den Parser der Sprache. Aus
 //! dem Baum entstehen die Werte von oben nach unten mit einem Stapel; mit
 //! *reviver* merkt sich jeder Knoten für Arrays und Objekte das Objekt, das
 //! aus ihm entstand. Das ist der JSON Parse Record (Abschnitt 25.5.2.2):
@@ -14,11 +15,9 @@
 //! [[IsRawJSON]] ist ein Kennzeichen im Kopfwort des Objekts.
 
 mod stringify;
-mod text;
 
 use std::collections::BTreeMap;
 
-use self::text::{Node, Parsed, Rejected};
 use super::{define_functions, define_to_string_tag, units};
 use crate::agent::{Abrupt, Agent, Completion, ErrorKind};
 use crate::builtin::{Builtin, BuiltinCall};
@@ -35,6 +34,7 @@ use crate::operations::{
 };
 use crate::realm::{Intrinsic, RealmId};
 use crate::value::{Kind, Value};
+use mb_json::tree::{self, Limits, Node, Rejected, Tree};
 
 /// Die Bytes eines Werts im Heap: ein Wort aus 64 Bit.
 const VALUE_BYTES: usize = 8;
@@ -96,11 +96,16 @@ fn string_units(agent: &Agent, value: Local<'_>) -> Vec<u16> {
 /// Zerleger hört dann auf, und das Parsen endet mit
 /// [`Abrupt::OutOfMemory`], auch wenn der Text weiter hinten ungültig
 /// wäre.
-fn parse_json(agent: &mut Agent, text: &[u16]) -> Completion<Parsed> {
-    let max_nodes = (agent.heap().limit() / VALUE_BYTES).saturating_add(1);
-    match text::parse(text, max_nodes) {
+fn parse_json(agent: &mut Agent, text: &[u16]) -> Completion<Tree> {
+    let limits = Limits {
+        nodes: (agent.heap().limit() / VALUE_BYTES).saturating_add(1),
+        depth: usize::MAX,
+    };
+    match tree::parse(text, limits) {
         Ok(parsed) => Ok(parsed),
-        Err(Rejected::Invalid(_)) => Err(agent.throw_error(ErrorKind::SyntaxError)),
+        Err(Rejected::Invalid { .. } | Rejected::TooDeep { .. }) => {
+            Err(agent.throw_error(ErrorKind::SyntaxError))
+        }
         Err(Rejected::TooLarge) => Err(Abrupt::OutOfMemory),
     }
 }
@@ -194,7 +199,7 @@ fn materialize<'s>(
     agent: &mut Agent,
     scope: &'s Scope,
     realm: RealmId,
-    parsed: &Parsed,
+    parsed: &Tree,
     keep: bool,
 ) -> Completion<(Local<'s>, BTreeMap<usize, Local<'s>>)> {
     let mut objects = BTreeMap::new();
@@ -271,7 +276,7 @@ fn create_node<'s>(
     agent: &mut Agent,
     scope: &'s Scope,
     realm: RealmId,
-    parsed: &Parsed,
+    parsed: &Tree,
     node: usize,
 ) -> Completion<Created<'s>> {
     let heap = agent.heap();
@@ -297,7 +302,7 @@ fn create_node<'s>(
 
 /// Die JSON Parse Records: der Baum, der Text und die Objekte der Knoten.
 struct Records<'r, 's> {
-    parsed: &'r Parsed,
+    parsed: &'r Tree,
     source: &'r [u16],
     objects: &'r BTreeMap<usize, Local<'s>>,
 }
@@ -351,7 +356,8 @@ impl Records<'_, '_> {
 }
 
 /// Ein Aufruf von InternalizeJSONProperty, der gerade die Eigenschaften
-/// seines Werts durchläuft.
+/// seines Werts durchläuft. `holder`, `value` und `context` sind die
+/// Handles seiner Tiefe (siehe [`frame_slots`]).
 struct Internalizing<'s> {
     holder: Local<'s>,
     name: Vec<u16>,
@@ -369,11 +375,34 @@ struct Internalizing<'s> {
 }
 
 /// Was der Anfang von InternalizeJSONProperty ergab.
-enum Started<'s> {
+enum Started<'i, 's> {
     /// Der Wert ist kein Objekt: das Ergebnis von *reviver*.
-    Done(Local<'s>),
+    Done(Local<'i>),
     /// Seine Eigenschaften sind noch zu durchlaufen.
     Open(Internalizing<'s>),
+}
+
+/// Die Handles für `holder`, `value` und `context` des Aufrufs in der Tiefe
+/// `depth`. Jede Tiefe hat eigene, die jeder neue Aufruf dort überschreibt
+/// und ein fertiger leert; so hält der Durchlauf nur fest, was gerade
+/// offen ist.
+fn frame_slots<'s>(
+    agent: &Agent,
+    scope: &'s Scope,
+    slots: &mut Vec<[Local<'s>; 3]>,
+    depth: usize,
+) -> [Local<'s>; 3] {
+    if let Some(&found) = slots.get(depth) {
+        return found;
+    }
+    let heap = agent.heap();
+    let created = [
+        heap.local(scope, Value::UNDEFINED),
+        heap.local(scope, Value::UNDEFINED),
+        heap.local(scope, Value::UNDEFINED),
+    ];
+    slots.push(created);
+    created
 }
 
 /// InternalizeJSONProperty(root, "", reviver, snapshot) (Abschnitt
@@ -387,9 +416,10 @@ fn internalize<'s>(
     reviver: Local<'s>,
 ) -> Completion<Local<'s>> {
     let mut stack: Vec<Internalizing<'s>> = Vec::new();
+    let mut slots: Vec<[Local<'s>; 3]> = Vec::new();
+    let first = frame_slots(agent, scope, &mut slots, 0);
     match start(
         agent,
-        scope,
         scope,
         realm,
         records,
@@ -397,6 +427,7 @@ fn internalize<'s>(
         &[],
         Some(0),
         reviver,
+        first,
     )? {
         Started::Done(result) => return Ok(result),
         Started::Open(frame) => stack.push(frame),
@@ -432,6 +463,10 @@ fn internalize<'s>(
                 apply(agent, inner, done.holder, &done.name, result)?;
                 Ok(None)
             })?;
+            let heap = agent.heap();
+            for slot in [done.holder, done.value, done.context] {
+                heap.set(slot, Value::UNDEFINED);
+            }
             if let Some(result) = returned {
                 return Ok(result);
             }
@@ -445,9 +480,10 @@ fn internalize<'s>(
         top.next = top.next.saturating_add(1);
         let holder = top.value;
         agent.spend_execution_steps(1)?;
+        let child = frame_slots(agent, scope, &mut slots, stack.len());
         let opened = agent.scope(|agent, inner| -> Completion<Option<Internalizing<'s>>> {
             match start(
-                agent, inner, scope, realm, records, holder, &key, record, reviver,
+                agent, inner, realm, records, holder, &key, record, reviver, child,
             )? {
                 Started::Done(result) => {
                     apply(agent, inner, holder, &key, result)?;
@@ -464,25 +500,31 @@ fn internalize<'s>(
 }
 
 /// Die Schritte 1 bis 4 von InternalizeJSONProperty für `holder` und
-/// `name`; für einen Wert, der kein Objekt ist, auch Schritt 5. Handles,
-/// die den Durchlauf überdauern, kommen nach `outer`.
+/// `name`; für einen Wert, der kein Objekt ist, auch Schritt 5. Ein Wert,
+/// der ein Objekt ist, kommt mit `holder` und `context` in `slots`.
+///
+/// Danach braucht kein Aufruf mehr das Objekt aus dem Knoten `record`;
+/// sein Handle wird geleert, damit es nicht länger lebt als ohne Records.
 #[allow(clippy::too_many_arguments)]
-fn start<'s>(
+fn start<'i, 's>(
     agent: &mut Agent,
-    scope: &Scope,
-    outer: &'s Scope,
+    scope: &'i Scope,
     realm: RealmId,
     records: &Records<'_, '_>,
     holder: Local<'_>,
     name: &[u16],
     record: Option<usize>,
     reviver: Local<'_>,
-) -> Completion<Started<'s>> {
+    slots: [Local<'s>; 3],
+) -> Completion<Started<'i, 's>> {
     let key = agent.key_from_units(scope, name)?;
     let value = get(agent, scope, holder, key)?;
     let prototype = agent.intrinsic(scope, realm, Intrinsic::ObjectPrototype);
     let context = ordinary_object_create(agent, scope, Some(prototype))?;
     let matched = record.filter(|&node| records.same_value(agent, node, value));
+    if let Some(object) = record.and_then(|node| records.objects.get(&node)) {
+        agent.heap().set(*object, Value::UNDEFINED);
+    }
     if let Some(node) = matched
         && !is_object(agent, value)
     {
@@ -493,16 +535,19 @@ fn start<'s>(
     if !is_object(agent, value) {
         let name = agent.heap_mut().alloc_string(scope, name)?;
         let result = call(agent, scope, reviver, holder, &[name, value, context])?;
-        let heap = agent.heap();
-        return Ok(Started::Done(heap.local(outer, heap.get(result))));
+        return Ok(Started::Done(result));
     }
     let is_array = is_array(agent.heap(), agent.heap().get(value));
     let heap = agent.heap();
+    let [holder_slot, value_slot, context_slot] = slots;
+    heap.set(holder_slot, heap.get(holder));
+    heap.set(value_slot, heap.get(value));
+    heap.set(context_slot, heap.get(context));
     let mut frame = Internalizing {
-        holder: heap.local(outer, heap.get(holder)),
+        holder: holder_slot,
         name: name.to_vec(),
-        value: heap.local(outer, heap.get(value)),
-        context: heap.local(outer, heap.get(context)),
+        value: value_slot,
+        context: context_slot,
         keys: Vec::new(),
         length: 0.0,
         is_array,
