@@ -74,6 +74,8 @@ const BUILT_INS: Suite = Suite {
         "Reflect",
         "Set",
         "SetIteratorPrototype",
+        "String",
+        "StringIteratorPrototype",
         "Symbol",
         "isFinite",
         "isNaN",
@@ -86,10 +88,11 @@ const BUILT_INS: Suite = Suite {
 };
 
 /// Dasselbe für Anhang B: `Object.prototype.__proto__` und die
-/// Altmethoden (Anhang B.2.2).
+/// Altmethoden von `Object.prototype`, dazu die zusätzlichen Eigenschaften
+/// von `String.prototype` (Anhang B.2.2).
 const ANNEX_B_BUILT_INS: Suite = Suite {
     directory: "test/annexB/built-ins",
-    parts: &["Object"],
+    parts: &["Object", "String"],
     selection: false,
     file: "erwartete-fehlschlaege-annexb-built-ins.txt",
     expected: include_str!("erwartete-fehlschlaege-annexb-built-ins.txt"),
