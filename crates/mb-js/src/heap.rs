@@ -129,6 +129,7 @@ const KIND_ASYNC_GENERATOR: u64 = 20;
 const KIND_BOUND_FUNCTION: u64 = 21;
 const KIND_COLLECTION: u64 = 22;
 const KIND_PROXY: u64 = 23;
+const KIND_REGEXP: u64 = 24;
 
 /// Die Kennzeichen stehen in den Bits 8 bis 31 des Kopfworts.
 const FLAG_SHIFT: u32 = 8;
@@ -166,7 +167,7 @@ fn is_value_cell(kind: u64) -> bool {
 }
 
 /// Die Arten der Objektzellen.
-const OBJECT_KINDS: [u64; 15] = [
+const OBJECT_KINDS: [u64; 16] = [
     KIND_OBJECT,
     KIND_ARRAY,
     KIND_FUNCTION,
@@ -182,6 +183,7 @@ const OBJECT_KINDS: [u64; 15] = [
     KIND_BOUND_FUNCTION,
     KIND_COLLECTION,
     KIND_PROXY,
+    KIND_REGEXP,
 ];
 
 /// Die internen Felder eines Funktionsobjekts, Werte vor den eingebetteten
@@ -214,6 +216,10 @@ pub(crate) const COLLECTION_FIELDS: usize = 2;
 /// Die internen Felder eines Proxys: [[ProxyTarget]], [[ProxyHandler]] und
 /// ob er [[Call]] und [[Construct]] hat.
 pub(crate) const PROXY_FIELDS: usize = 3;
+/// Die internen Felder eines regulären Ausdrucks: [[OriginalSource]],
+/// [[OriginalFlags]] und die Nummer seines Programms, die für
+/// [[RegExpRecord]] und [[RegExpMatcher]] steht.
+pub(crate) const REGEXP_FIELDS: usize = 3;
 
 fn is_object(kind: u64) -> bool {
     OBJECT_KINDS.contains(&kind)
@@ -235,6 +241,7 @@ fn object_fields(kind: u64) -> usize {
         KIND_BOUND_FUNCTION => BOUND_FUNCTION_FIELDS,
         KIND_COLLECTION => COLLECTION_FIELDS,
         KIND_PROXY => PROXY_FIELDS,
+        KIND_REGEXP => REGEXP_FIELDS,
         _ => 0,
     }
 }

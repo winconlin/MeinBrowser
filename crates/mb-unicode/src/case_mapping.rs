@@ -55,6 +55,19 @@ pub fn to_uppercase(input: &[u32]) -> Vec<u32> {
     output
 }
 
+/// Die Abbildung eines Codepunkts auf Großbuchstaben ohne Bedingung, `None`
+/// für alle, die bleiben, wie sie sind. So rechnet toUppercase für einen
+/// einzelnen Codepunkt.
+pub fn uppercase_mapping(code_point: u32) -> Option<&'static [u32]> {
+    mapping(&UPPERCASE, code_point)
+}
+
+/// Alle Codepunkte, die [`uppercase_mapping`] ändert, mit ihrer Abbildung,
+/// aufsteigend nach Codepunkt.
+pub fn uppercase_mappings() -> impl Iterator<Item = (u32, &'static [u32])> {
+    UPPERCASE.iter().copied()
+}
+
 /// Die Bedingung Final_Sigma (Unicode-Standard, Tabelle 3-17) für das
 /// Zeichen an der Stelle `index`: Davor steht ein Zeichen mit Cased, von
 /// ihm höchstens durch Zeichen mit Case_Ignorable getrennt, und danach
@@ -142,6 +155,20 @@ mod tests {
         assert_eq!(to_lowercase(&[0xD800, 0x41]), [0xD800, 0x61]);
         assert_eq!(to_uppercase(&[0x61, 0xDFFF]), [0x41, 0xDFFF]);
         assert_eq!(to_lowercase(&[0x11_0000]), [0x11_0000]);
+    }
+
+    #[test]
+    fn uppercase_mappings_of_single_code_points() {
+        assert_eq!(uppercase_mapping(0x61), Some(&[0x41][..]));
+        assert_eq!(uppercase_mapping(0xDF), Some(&[0x53, 0x53][..]));
+        assert_eq!(uppercase_mapping(0x41), None);
+        assert_eq!(uppercase_mapping(0xD800), None);
+        let all: Vec<(u32, &[u32])> = uppercase_mappings().collect();
+        assert!(all.windows(2).all(|pair| pair[0].0 < pair[1].0));
+        for &(source, mapping) in &all {
+            assert_eq!(uppercase_mapping(source), Some(mapping));
+            assert_eq!(to_uppercase(&[source]), mapping);
+        }
     }
 
     #[test]

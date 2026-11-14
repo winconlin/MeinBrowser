@@ -322,6 +322,20 @@ def main():
     write("js", "deep", "(" * 300 + "a" + ")" * 300)
     write("js", "utf16le-surrogate", struct.pack("<8H", *b"x = '", 0xD800, *b"';"))
     write("js", "regexp", r"(?<a>x)|(?<a>[\p{L}--\q{ab|c}])\k<a>{2,3}?(?i-m:\u{1F600}.)(?<=\b[^\d])\1")
+
+    def regexp(name, flags, pattern, subject):
+        # Flags as bits in the order dgimsuvy, then pattern, NUL, subject (src/regexp.rs).
+        bits = sum(1 << "dgimsuvy".index(flag) for flag in flags)
+        write("regexp", name, bytes([bits]) + pattern.encode() + b"\0" + subject.encode())
+    regexp("groups", "dg", r"(?<x>a)|(b)\k<x>", "xaby")
+    regexp("unicode-case", "iu", r"\u{1F600}|[^\p{Lu}]", "A\U0001f600b")
+    regexp("class-sets", "v", r"[\p{L}--[a-z]]+|\q{ab|c}", "abc\u00c4\u00d6")
+    regexp("lookaround", "y", r"(?<=a)b\1(c)?(?!d)", "abc")
+    regexp("quantifiers", "s", r"(a|ab)*?c{2,3}.$", "ababccc\n")
+    regexp("multiline", "gm", r"^\w+\b|\B$", "one\ntwo\r\nthree")
+    regexp("modifiers", "", r"(?i:a)(?-i:B)", "AB")
+    regexp("invalid", "", r"(?<a>x)(?<a>y)", "xy")
+    regexp("backtracking", "", r"(a*)*b", "a" * 30)
     part = b"\x1f\x1f"  # PART_SEPARATOR in src/lib.rs
     write("page", "document", "<!doctype html><style>@media (max-width: 400px) { p { margin: 0 } }"
           " p { border: 2px dashed red; padding: 4px; font-style: italic }"

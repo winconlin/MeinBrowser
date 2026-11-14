@@ -3321,6 +3321,11 @@ impl<'a> Compiler<'a> {
                 let constant = self.string(atom)?;
                 self.emit(Op::LdaConstant, &[constant])
             }
+            Node::RegExp { body, flags } => {
+                let body = self.string(body)?;
+                let flags = self.string(flags)?;
+                self.emit(Op::CreateRegExp, &[body, flags])
+            }
             Node::Boolean(true) => self.emit(Op::LdaTrue, &[]),
             Node::Boolean(false) => self.emit(Op::LdaFalse, &[]),
             Node::Null => self.emit(Op::LdaNull, &[]),

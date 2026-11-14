@@ -184,6 +184,7 @@ pub fn generate(sources: &Sources<'_>) -> Result<String, String> {
         "Case_Ignorable",
         count,
     )?;
+    let case_folding = case_folding(sources.case_folding)?;
     let tables = Tables {
         general: runs(&category_of),
         classes: runs(&class_of),
@@ -199,7 +200,8 @@ pub fn generate(sources: &Sources<'_>) -> Result<String, String> {
         decompositions,
         compatibility,
         compositions,
-        case_folding: case_folding(sources.case_folding)?,
+        case_folding: case_folding.full,
+        simple_case_folding: case_folding.simple,
         lowercase,
         uppercase,
         category_names,
@@ -405,12 +407,25 @@ fn flags(file: &str, text: &str, property: &str, count: usize) -> Result<Vec<boo
     Ok(flag_of)
 }
 
-/// Die vollständige Faltung aus `CaseFolding.txt`: die Einträge mit Status
-/// `C` und `F`. Die einfachen (`S`) und die türkischen (`T`) bleiben weg.
-fn case_folding(text: &str) -> Result<BTreeMap<u32, Vec<u32>>, String> {
+/// Die Faltungen aus `CaseFolding.txt`.
+struct CaseFolding {
+    /// Die vollständige Faltung: die Einträge mit Status `C` und `F`.
+    full: BTreeMap<u32, Vec<u32>>,
+    /// Die Einträge mit Status `S`. Zusammen mit denen mit Status `C` sind
+    /// sie die einfache Faltung (scf).
+    simple: BTreeMap<u32, u32>,
+}
+
+/// Liest `CaseFolding.txt`. Die türkischen Einträge (`T`) bleiben weg.
+/// Geprüft wird, was `mb-unicode` für die einfache Faltung annimmt: Ein
+/// Eintrag mit `C` bildet auf genau einen Codepunkt ab, einer mit `F` auf
+/// mehrere, und einen mit `S` gibt es nur neben einem mit `F`.
+fn case_folding(text: &str) -> Result<CaseFolding, String> {
     let file = "CaseFolding.txt";
     let (_, data) = ucd::parse_property_file(file, text)?;
     let mut folding = BTreeMap::new();
+    let mut simple = BTreeMap::new();
+    let mut full_only = BTreeSet::new();
     for line in &data {
         let code_point = line.first;
         let [status, mapping, ..] = line.fields.as_slice() else {
@@ -421,10 +436,11 @@ fn case_folding(text: &str) -> Result<BTreeMap<u32, Vec<u32>>, String> {
                 "{file}: unerwarteter Bereich ab U+{code_point:04X}"
             ));
         }
-        match status.as_str() {
-            "C" | "F" => {}
-            "S" | "T" => continue,
-            _ => return Err(format!("{file}: unbekannter Status {status:?}")),
+        if !matches!(status.as_str(), "C" | "F" | "S" | "T") {
+            return Err(format!("{file}: unbekannter Status {status:?}"));
+        }
+        if status == "T" {
+            continue;
         }
         let mapping = mapping
             .split_whitespace()
@@ -434,14 +450,45 @@ fn case_folding(text: &str) -> Result<BTreeMap<u32, Vec<u32>>, String> {
         if mapping.is_empty() {
             return Err(format!("{file}: leere Abbildung für U+{code_point:04X}"));
         }
-        if folding.insert(code_point, mapping).is_some() {
+        let single = match mapping.as_slice() {
+            [target] => Some(*target),
+            _ => None,
+        };
+        let fits = match status.as_str() {
+            "C" | "S" => single.is_some(),
+            _ => single.is_none(),
+        };
+        if !fits {
+            return Err(format!(
+                "{file}: U+{code_point:04X} mit Status {status} und {} Codepunkten",
+                mapping.len()
+            ));
+        }
+        let doubled = match (status.as_str(), single) {
+            ("S", Some(target)) => simple.insert(code_point, target).is_some(),
+            _ => {
+                if status == "F" {
+                    full_only.insert(code_point);
+                }
+                folding.insert(code_point, mapping).is_some()
+            }
+        };
+        if doubled {
             return Err(format!("{file}: U+{code_point:04X} doppelt"));
         }
     }
     if folding.is_empty() {
         return Err(format!("{file} enthält keine Faltung"));
     }
-    Ok(folding)
+    if let Some(code_point) = simple.keys().find(|key| !full_only.contains(key)) {
+        return Err(format!(
+            "{file}: U+{code_point:04X} mit Status S, aber ohne Status F"
+        ));
+    }
+    Ok(CaseFolding {
+        full: folding,
+        simple,
+    })
 }
 
 /// Die Abbildungen auf Klein- und Großbuchstaben für die Default Case
@@ -674,6 +721,7 @@ struct Tables {
     compatibility: BTreeMap<u32, Vec<u32>>,
     compositions: Vec<(u32, u32, u32)>,
     case_folding: BTreeMap<u32, Vec<u32>>,
+    simple_case_folding: BTreeMap<u32, u32>,
     lowercase: CaseMapping,
     uppercase: CaseMapping,
     category_names: BTreeMap<String, String>,
@@ -892,6 +940,29 @@ fn emit(
     )?;
     writeln!(out, "/// bleiben, wie sie sind.")?;
     emit_sequences(&mut out, "CASE_FOLDING", &tables.case_folding)?;
+    writeln!(out)?;
+    writeln!(
+        out,
+        "/// Einfache Faltung der Groß- und Kleinschreibung, wo sie von der"
+    )?;
+    writeln!(
+        out,
+        "/// vollständigen abweicht (Status S in `CaseFolding.txt`), nach Codepunkt"
+    )?;
+    writeln!(
+        out,
+        "/// sortiert. Sonst gilt der Eintrag in `CASE_FOLDING`, wenn er aus genau"
+    )?;
+    writeln!(out, "/// einem Codepunkt besteht (Status C).")?;
+    writeln!(
+        out,
+        "pub static SIMPLE_CASE_FOLDING: [(u32, u32); {}] = [",
+        tables.simple_case_folding.len()
+    )?;
+    for (code_point, target) in &tables.simple_case_folding {
+        writeln!(out, "    (0x{code_point:04X}, 0x{target:04X}),")?;
+    }
+    writeln!(out, "];")?;
     writeln!(out)?;
     writeln!(
         out,
@@ -1248,6 +1319,11 @@ mod tests {
              (0x0041, &[0x0061]),\n    (0x00DF, &[0x0073, 0x0073]),\n    \
              (0x1E9E, &[0x0073, 0x0073]),\n];\n"
         ));
+        // Die einfache Faltung steht für sich.
+        assert!(source.contains(
+            "pub static SIMPLE_CASE_FOLDING: [(u32, u32); 1] = [\n    \
+             (0x1E9E, 0x00DF),\n];\n"
+        ));
     }
 
     #[test]
@@ -1287,6 +1363,12 @@ mod tests {
             "0041..0042; C; 0061;\n",
             "0041; C; 0061;\n0041; F; 0061;\n",
             "0041; S; 0061;\n",
+            // C und S mit mehreren Codepunkten, F mit einem, S ohne F.
+            "0041; C; 0061 0062;\n",
+            "0041; F; 0061;\n",
+            "0041; F; 0061 0062;\n0041; S; 0061 0062;\n",
+            "0041; C; 0061;\n0042; S; 0062;\n",
+            "0041; F; 0061 0062;\n0041; S; 0061;\n0041; S; 0061;\n",
         ] {
             let mut broken = sources(UNICODE_DATA, VALUE_ALIASES);
             broken.case_folding = case_folding;

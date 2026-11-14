@@ -3859,10 +3859,10 @@ fn string_methods_replace_and_split() {
              ['a1b'.replace(1, 'x'), 'a1b'.split(1).join('|')].join()",
             "\"axb,a|b\"",
         ),
-        // RegExpCreate fehlt noch; ToString(this) kommt davor.
-        ("'abc'.match('b')", "Unsupported(0)"),
-        ("'abc'.search('b')", "Unsupported(0)"),
-        ("'abc'.matchAll('b')", "Unsupported(0)"),
+        // RegExpCreate legt das Muster an; ToString(this) kommt davor.
+        ("var m = 'abc'.match('b'); m[0] + m.index", "\"b1\""),
+        ("'abc'.search('b')", "1"),
+        ("[...'abab'.matchAll('b')].length", "2"),
         (
             "String.prototype.match.call({ toString: function () { throw 5; } }, 'b')",
             "throw 5",
@@ -3994,4 +3994,189 @@ fn string_methods_survive_collections() {
     );
     agent.heap_mut().collect();
     agent.heap().verify().expect("gültiger Heap");
+}
+
+#[test]
+fn regexp_literals_and_exec() {
+    check(&[
+        ("typeof /a/", "\"object\""),
+        ("/a/ !== /a/", "true"),
+        ("Object.getPrototypeOf(/a/) === RegExp.prototype", "true"),
+        (
+            "var r = /b(c)?/; var m = r.exec('abd'); [m.index, m.input, m[0], m[1], m.length, m.groups].join()",
+            "\"1,abd,b,,2,\"",
+        ),
+        ("/x/.exec('abc')", "null"),
+        (
+            "Object.keys(/a/.exec('a')).join()",
+            "\"0,index,input,groups\"",
+        ),
+        (
+            "var m = /(?<y>\\d{4})-(?<m>\\d\\d)/.exec('am 2026-11'); [m.groups.y, m.groups.m, Object.getPrototypeOf(m.groups)].join()",
+            "\"2026,11,\"",
+        ),
+        (
+            "var m = /(?:(?<x>a)|(?<x>b))c/.exec('bc'); [m[1], m[2], m.groups.x, Object.keys(m.groups).join()].join('|')",
+            "\"|b|b|x\"",
+        ),
+        (
+            "var m = /a(b)?(?<n>c)/d.exec('xac'); [m.indices[0], m.indices[1], m.indices[2], m.indices.groups.n].join('|')",
+            "\"1,3||2,3|2,3\"",
+        ),
+        (
+            "var r = /a/g; [r.exec('aa').index, r.lastIndex, r.exec('aa').index, r.lastIndex, r.exec('aa'), r.lastIndex].join()",
+            "\"0,1,1,2,,0\"",
+        ),
+        (
+            "var r = /a/y; r.lastIndex = 1; [r.test('ba'), r.lastIndex, r.test('ba'), r.lastIndex].join()",
+            "\"true,2,false,0\"",
+        ),
+        (
+            "var r = /a/; r.lastIndex = 5; [r.test('a'), r.lastIndex].join()",
+            "\"true,5\"",
+        ),
+        ("/\\u{1F600}/u.exec('x\\u{1F600}').index", "1"),
+        ("var r = /./gu; r.exec('\\u{1F600}'); r.lastIndex", "2"),
+        ("/(?<=\\$)\\d+/.exec('kostet $42')[0]", "\"42\""),
+        ("/\\p{Lu}+/u.exec('abCDe')[0]", "\"CD\""),
+        ("/[\\p{L}--[a-z]]+/v.exec('abcÄÖx')[0]", "\"ÄÖ\""),
+    ]);
+}
+
+#[test]
+fn regexp_constructor_and_properties() {
+    check(&[
+        ("new RegExp('a+', 'gi').toString()", "\"/a+/gi\""),
+        ("RegExp('a', 'y').flags", "\"y\""),
+        ("var r = /a/g; RegExp(r) === r", "true"),
+        ("var r = /a/g; new RegExp(r) === r", "false"),
+        ("var r = /a/g; RegExp(r, 'i').toString()", "\"/a/i\""),
+        ("new RegExp(/a/gimsuyd).flags", "\"dgimsuy\""),
+        ("new RegExp(/[a]/v).unicodeSets", "true"),
+        ("new RegExp().source", "\"(?:)\""),
+        ("new RegExp('/').source", "\"\\\\/\""),
+        ("new RegExp('\\n').toString()", "\"/\\\\n/\""),
+        (
+            "var o = {source: 'b', flags: 'g'}; o[Symbol.match] = true; new RegExp(o).toString()",
+            "\"/b/g\"",
+        ),
+        ("new RegExp('(')", "SyntaxError"),
+        ("new RegExp('a', 'gg')", "SyntaxError"),
+        ("new RegExp('a', 'uv')", "SyntaxError"),
+        ("new RegExp('a', 'x')", "SyntaxError"),
+        ("RegExp.prototype.global", "undefined"),
+        ("RegExp.prototype.source", "\"(?:)\""),
+        ("RegExp.prototype.flags", "\"\""),
+        ("RegExp.prototype.toString()", "\"/(?:)/\""),
+        (
+            "Object.getOwnPropertyDescriptor(RegExp.prototype, 'global').get.call({})",
+            "TypeError",
+        ),
+        ("RegExp.prototype.exec.call({}, 'a')", "TypeError"),
+        (
+            "var d = Object.getOwnPropertyDescriptor(/a/, 'lastIndex'); [d.value, d.writable, d.enumerable, d.configurable].join()",
+            "\"0,true,false,false\"",
+        ),
+        ("RegExp[Symbol.species] === RegExp", "true"),
+        (
+            "[RegExp.length, RegExp.name, RegExp.prototype[Symbol.split].name, RegExp.prototype[Symbol.replace].length].join()",
+            "\"2,RegExp,[Symbol.split],2\"",
+        ),
+        (
+            "Object.getOwnPropertyNames(RegExp.prototype).join()",
+            "\"constructor,exec,dotAll,flags,global,hasIndices,ignoreCase,multiline,source,sticky,test,toString,unicode,unicodeSets,compile\"",
+        ),
+        (
+            "var r = /a/g; r.lastIndex = 3; r.compile('b', 'i'); [r.source, r.flags, r.lastIndex].join()",
+            "\"b,i,0\"",
+        ),
+        ("/a/.compile(/b/g, 'i')", "TypeError"),
+        (
+            "class R extends RegExp {} var r = new R('a'); [r instanceof R, r.test('a')].join()",
+            "\"true,true\"",
+        ),
+        ("RegExp.escape('a.b*c')", "\"\\\\x61\\\\.b\\\\*c\""),
+        ("RegExp.escape('1 -_')", "\"\\\\x31\\\\x20\\\\x2d_\""),
+        (
+            "RegExp.escape('\\n\\u2028\\ud800ä')",
+            "\"\\\\n\\\\u2028\\\\ud800ä\"",
+        ),
+        ("RegExp.escape(1)", "TypeError"),
+        (
+            "Object.prototype.toString.call(/a/[Symbol.matchAll](''))",
+            "\"[object RegExp String Iterator]\"",
+        ),
+    ]);
+}
+
+#[test]
+fn regexp_symbol_methods() {
+    check(&[
+        ("'a1b22c333'.match(/\\d+/g).join()", "\"1,22,333\""),
+        ("'abc'.match(/x/g)", "null"),
+        ("'abc'.match(/b/).index", "1"),
+        ("'abc'.match('b+')[0]", "\"b\""),
+        ("''.match(/(?:)/g).length", "1"),
+        ("'\\u{1F600}'.match(/(?:)/gu).length", "2"),
+        ("'\\u{1F600}'.match(/(?:)/g).length", "3"),
+        (
+            "[...'a1b2'.matchAll(/[a-z](\\d)/g)].map(m => m[1] + '@' + m.index).join()",
+            "\"1@0,2@2\"",
+        ),
+        ("'ab'.matchAll(/a/)", "TypeError"),
+        ("[...'aXbX'.matchAll('X')].length", "2"),
+        ("'abc'.search(/c/)", "2"),
+        ("'abc'.search('x')", "-1"),
+        (
+            "var r = /b/g; r.lastIndex = 2; ['abc'.search(r), r.lastIndex].join()",
+            "\"1,2\"",
+        ),
+        ("'aaa'.replace(/a/, 'b')", "\"baa\""),
+        ("'aaa'.replace(/a/g, 'b')", "\"bbb\""),
+        (
+            "'abc'.replace(/(b)/, '[$1|$&|$`|$\\'|$$|$2]')",
+            "\"a[b|b|a|c|$|$2]c\"",
+        ),
+        (
+            "'2026-11'.replace(/(?<y>\\d+)-(?<m>\\d+)/, '$<m>/$<y>')",
+            "\"11/2026\"",
+        ),
+        (
+            "'abc'.replace(/b/g, (m, i, s) => m.toUpperCase() + i + s.length)",
+            "\"aB13c\"",
+        ),
+        (
+            "'abc'.replace(/(?<x>b)/, function () { return typeof arguments[4]; })",
+            "\"aobjectc\"",
+        ),
+        ("'aaa'.replaceAll(/a/g, 'b')", "\"bbb\""),
+        ("'aaa'.replaceAll(/a/, 'b')", "TypeError"),
+        ("'xax'.replace(/(?:)/g, '-')", "\"-x-a-x-\""),
+        ("'a,b,,c'.split(/,/).join('|')", "\"a|b||c\""),
+        ("'a1b2c'.split(/(\\d)/).join('|')", "\"a|1|b|2|c\""),
+        ("'abc'.split(/(?:)/).join('|')", "\"a|b|c\""),
+        ("'abc'.split(/b/, 1).join('|')", "\"a\""),
+        ("''.split(/a/).length", "1"),
+        ("''.split(/(?:)/).length", "0"),
+        (
+            "'A<B>bold</B>and<CODE>coded</CODE>'.split(/<(\\/)?([^<>]+)>/).length",
+            "13",
+        ),
+        ("'\\u{1F600}'.split(/(?:)/u).length", "1"),
+        ("/a*?/[Symbol.split]('ab').join()", "\"a,b\""),
+        ("/a*/[Symbol.split]('ab').join()", "\",b\""),
+        (
+            "var r = /a/; r.exec = function () { return {index: 1, 0: 'x', length: 1}; }; 'abc'.replace(r, 'Y')",
+            "\"aYc\"",
+        ),
+        (
+            "var r = /a/; r.exec = function () { return 1; }; r.test('a')",
+            "TypeError",
+        ),
+        ("var r = /a/; r.exec = null; r.test('a')", "true"),
+        (
+            "RegExp.prototype.test.call({exec() { return null; }}, 'a')",
+            "false",
+        ),
+    ]);
 }

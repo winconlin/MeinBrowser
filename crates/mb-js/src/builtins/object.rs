@@ -849,6 +849,7 @@ fn builtin_tag(agent: &mut Agent, object: Local<'_>) -> Completion<&'static str>
     }
     Ok(match class {
         Some(ObjectClass::Error) => "Error",
+        Some(ObjectClass::RegExp) => "RegExp",
         Some(ObjectClass::Primitive) => match heap.primitive_data(reference).map(Value::kind) {
             Some(Kind::Boolean(_)) => "Boolean",
             Some(Kind::Number(_)) => "Number",

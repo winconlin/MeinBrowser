@@ -1,9 +1,10 @@
 //! Muster regulärer Ausdrücke nach ECMA-262, Abschnitt 22.2.1, mit den
 //! Erweiterungen für Webbrowser aus Anhang B.1.2 und allen frühen Fehlern.
 //!
-//! [`parse`] liest ein Muster zu seinen Flags zu einem Baum, aus dem die
-//! Engine später ihre Automaten baut; der Parser für Scripts prüft damit die
-//! Literale.
+//! [`parse`] liest ein Muster zu seinen Flags zu einem Baum; der Parser für
+//! Scripts prüft damit die Literale. Aus dem Baum übersetzt [`compile`] ein
+//! Programm ([`program`]), das [`matcher`] gegen eine Eingabe abgleicht;
+//! [`cache`] hält die Programme eines Agents.
 //!
 //! - Ohne `u` und `v` sind die Zeichen eines Musters Codeeinheiten, mit
 //!   ihnen Codepunkte: Ersatzpaare werden zusammengefasst, einzelne Surrogate
@@ -30,7 +31,12 @@ use std::collections::BTreeMap;
 
 use crate::lexer::{is_identifier_part, is_identifier_start};
 
+pub(crate) mod cache;
+pub(crate) mod charset;
 mod class;
+pub(crate) mod compile;
+pub(crate) mod matcher;
+pub(crate) mod program;
 mod property;
 #[cfg(test)]
 mod tests;

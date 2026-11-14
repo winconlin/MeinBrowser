@@ -30,6 +30,22 @@ pub fn general_category(code_point: u32) -> GeneralCategory {
     lookup(&tables::GENERAL_CATEGORY, code_point).unwrap_or(GeneralCategory::Unassigned)
 }
 
+/// Alle Abschnitte mit gleicher allgemeiner Kategorie, aufsteigend und
+/// lückenlos von U+0000 bis U+10FFFF: der erste und der letzte Codepunkt
+/// und die Kategorie.
+pub fn general_category_sections() -> impl Iterator<Item = (u32, u32, GeneralCategory)> {
+    let table = &tables::GENERAL_CATEGORY;
+    let ends = table
+        .iter()
+        .skip(1)
+        .map(|&(start, _)| start.saturating_sub(1))
+        .chain([MAX_CODE_POINT]);
+    table
+        .iter()
+        .zip(ends)
+        .map(|(&(start, category), end)| (start, end, category))
+}
+
 /// Die kanonische Kombinationsklasse eines Codepunkts, 0 für alle Zeichen,
 /// die bei der Normalisierung nicht umsortiert werden.
 pub fn canonical_combining_class(code_point: u32) -> u8 {
@@ -119,6 +135,24 @@ mod tests {
     #[test]
     fn version() {
         assert_eq!(UNICODE_VERSION, (18, 0, 0));
+    }
+
+    #[test]
+    fn category_sections_cover_every_code_point() {
+        let sections: Vec<(u32, u32, GeneralCategory)> = general_category_sections().collect();
+        assert_eq!(sections.first().map(|section| section.0), Some(0));
+        assert_eq!(
+            sections.last().map(|section| section.1),
+            Some(MAX_CODE_POINT)
+        );
+        for pair in sections.windows(2) {
+            assert_eq!(pair[0].1 + 1, pair[1].0);
+        }
+        for &(start, end, category) in &sections {
+            assert!(start <= end);
+            assert_eq!(general_category(start), category);
+            assert_eq!(general_category(end), category);
+        }
     }
 
     #[test]

@@ -7,8 +7,13 @@ use super::{Error, ErrorKind, Node, Parser, Result};
 /// Eine Eigenschaft mit ihrem Wert, jeweils mit dem kanonischen Namen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Property {
-    /// Ein Wert von General_Category, auch eine Gruppe, als Kurzname.
+    /// Ein Wert von General_Category, auch eine Gruppe, als Kurzname,
+    /// ohne den Namen der Eigenschaft geschrieben wie in `\p{Lu}`.
     GeneralCategory(&'static str),
+    /// Dasselbe mit dem Namen der Eigenschaft wie in `\p{gc=Lu}`. Die
+    /// beiden Formen unterscheidet CompileToCharSet (Abschnitt 22.2.2.9):
+    /// Nur für diese folgt MaybeSimpleCaseFolding.
+    NamedGeneralCategory(&'static str),
     /// Ein Wert von Script als Kurzname.
     Script(&'static str),
     /// Ein Wert von Script_Extensions als Kurzname.
@@ -163,7 +168,7 @@ impl Parser<'_> {
                 let value = |find: fn(&str) -> Option<&'static str>| find(&value).ok_or(invalid);
                 match name.as_str() {
                     "General_Category" | "gc" => {
-                        Property::GeneralCategory(value(mb_unicode::general_category_value)?)
+                        Property::NamedGeneralCategory(value(mb_unicode::general_category_value)?)
                     }
                     "Script" | "sc" => Property::Script(value(mb_unicode::script_value)?),
                     "Script_Extensions" | "scx" => {

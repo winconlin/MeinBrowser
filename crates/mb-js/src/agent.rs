@@ -181,6 +181,8 @@ pub struct Agent {
     /// je Agent zufällig. Die Reihenfolge der Einträge hängt nicht davon
     /// ab, nur wie sie sich auf die Ketten verteilen.
     collection_hasher: RandomState,
+    /// Die übersetzten Programme der regulären Ausdrücke.
+    pub(crate) regexps: crate::regexp::cache::Programs,
 }
 
 impl Agent {
@@ -212,6 +214,7 @@ impl Agent {
             execution_budgets: Vec::new(),
             jobs: VecDeque::new(),
             collection_hasher: RandomState::new(),
+            regexps: crate::regexp::cache::Programs::default(),
         };
         agent.scope(|agent, scope| -> Result<(), OutOfMemory> {
             for symbol in WellKnownSymbol::ALL {

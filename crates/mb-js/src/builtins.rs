@@ -10,10 +10,9 @@
 //! `parseFloat` und `parseInt` (Welle 8c), %Iterator% mit
 //! %Iterator.prototype% und den Iterator-Helfern und %JSON% (Welle 8d)
 //! sowie %Map% und %Set% mit ihren Prototypen und Iteratoren (Welle 8e),
-//! %Reflect% und %Proxy% (Welle 8f) und %String% mit %String.prototype%
-//! (Welle 8g); %Function% selbst wartet auf `eval`, und `match`, `matchAll`
-//! und `search` von %String.prototype% legen ihr Muster erst an, wenn es
-//! die Engine für reguläre Ausdrücke gibt. Dazu kommen, was `for`-`of` und
+//! %Reflect% und %Proxy% (Welle 8f), %String% mit %String.prototype% und
+//! %RegExp% mit %RegExp.prototype% und %RegExpStringIteratorPrototype%
+//! (Welle 8g); %Function% selbst wartet auf `eval`. Dazu kommen, was `for`-`of` und
 //! die Ausbreitung brauchen: die Iteratoren für Arrays und Zeichenketten
 //! mit den Methoden für @@iterator. Generatoren und async-Generatoren bringen ihre Prototypen
 //! mit `next`, `return` und `throw` mit, async-Funktionen ihren Prototyp,
@@ -46,6 +45,7 @@ mod object;
 mod promise;
 mod proxy;
 mod reflect;
+mod regexp;
 mod set;
 mod string;
 mod symbol;
@@ -62,6 +62,7 @@ use crate::value::Value;
 pub(crate) use function::HAS_INSTANCE as FUNCTION_PROTOTYPE_HAS_INSTANCE;
 pub(crate) use function::PROTOTYPE as FUNCTION_PROTOTYPE;
 pub(crate) use math::random_seed;
+pub(crate) use regexp::regexp_create as create_regexp;
 
 fn units(text: &str) -> Vec<u16> {
     text.encode_utf16().collect()
@@ -83,6 +84,7 @@ pub(crate) fn create_intrinsics(
     async_function::create(agent, scope, realm)?;
     array::create(agent, scope, realm)?;
     string::create(agent, scope, realm)?;
+    regexp::create(agent, scope, realm)?;
     symbol::create(agent, scope, realm)?;
     error::create(agent, scope, realm)?;
     boolean::create(agent, scope, realm)?;

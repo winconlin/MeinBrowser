@@ -18,7 +18,8 @@
 //! ruft keinen Code der Sprache auf (GeneratorValidate, Abschnitt
 //! 27.8.3.2). Ein Helfer hält im ersten Feld eine interne Zelle mit dem
 //! Zustand seiner Closure, die Hülle aus `Iterator.from` [[Iterated]]. Die
-//! Iteratoren über Maps und Sets legt [`super::collection`] an.
+//! Iteratoren über Maps und Sets legt [`super::collection`] an, die über
+//! die Treffer eines regulären Ausdrucks [`super::regexp`].
 
 mod constructor;
 mod helper;
@@ -70,6 +71,9 @@ pub(super) const MAP_ENTRIES: i32 = 8;
 /// ~key+value~.
 pub(super) const SET_VALUES: i32 = 9;
 pub(super) const SET_ENTRIES: i32 = 10;
+/// Ein Iterator aus `RegExp.prototype[@@matchAll]` (Abschnitt 22.2.9): diese
+/// Zahl, dazu 1 für [[Global]] und 2 für [[Unicode]], also 11 bis 14.
+pub(super) const REGEXP_STRING: i32 = 11;
 
 static ITERATOR_PROTOTYPE_ITERATOR: Builtin = Builtin {
     name: "[Symbol.iterator]",
@@ -207,7 +211,12 @@ pub(super) fn iterator_create<'s>(
 /// Das interne Feld `index` des Iterators `this`, `None`, wenn `this` kein
 /// Iterator ist. Nach jedem Aufruf, der Speicher anfordern kann, ist es neu
 /// zu lesen.
-fn field<'s>(agent: &Agent, scope: &'s Scope, this: Local<'_>, index: usize) -> Option<Local<'s>> {
+pub(super) fn field<'s>(
+    agent: &Agent,
+    scope: &'s Scope,
+    this: Local<'_>,
+    index: usize,
+) -> Option<Local<'s>> {
     let heap = agent.heap();
     let Kind::Object(object) = heap.get(this).kind() else {
         return None;
@@ -216,7 +225,7 @@ fn field<'s>(agent: &Agent, scope: &'s Scope, this: Local<'_>, index: usize) -> 
     Some(heap.local(scope, value))
 }
 
-fn set_field(agent: &Agent, this: Local<'_>, index: usize, value: Value<'_>) {
+pub(super) fn set_field(agent: &Agent, this: Local<'_>, index: usize, value: Value<'_>) {
     let heap = agent.heap();
     if let Kind::Object(object) = heap.get(this).kind() {
         heap.set_iterator_field(object, index, value);
@@ -224,7 +233,7 @@ fn set_field(agent: &Agent, this: Local<'_>, index: usize, value: Value<'_>) {
 }
 
 /// Die Art des Iterators `this`, `None` für andere Werte.
-fn kind_of(agent: &Agent, scope: &Scope, this: Local<'_>) -> Option<i32> {
+pub(super) fn kind_of(agent: &Agent, scope: &Scope, this: Local<'_>) -> Option<i32> {
     let kind = field(agent, scope, this, KIND)?;
     agent.heap().get(kind).as_int32()
 }
