@@ -3744,6 +3744,13 @@ fn string_methods_cut_join_and_pad() {
              w.trim().length, '\\u180Ea\\u200B'.trim().length].join()",
             "\"a b,18,18,0,3\"",
         ),
+        // Nur Leerraum: Jede der drei Methoden lässt nichts übrig.
+        (
+            "var w = ' \\t\\n\\u2028'; [w.trim().length, w.trimStart().length, w.trimEnd().length, \
+             w.trimLeft().length, w.trimRight().length, ''.trimEnd().length, \
+             ' a'.trimEnd().length, 'a '.trimStart().length].join()",
+            "\"0,0,0,0,0,0,2,2\"",
+        ),
     ]);
 }
 

@@ -476,8 +476,9 @@ fn substring_between<'s>(
     substring(agent, scope, string, from, to)
 }
 
-/// Die Stellen des ersten und nach dem letzten Zeichen, das kein Leerraum
-/// ist; für nur Leerraum zweimal die Länge.
+/// Die Stelle des ersten Zeichens, das kein Leerraum ist, und die nach dem
+/// letzten. Für nur Leerraum sind es die Länge und 0, damit an jedem Ende
+/// für sich alles wegfällt.
 fn trimmed_range(agent: &Agent, string: Local<'_>) -> (usize, usize) {
     let length = length_of(agent, string);
     let space = |index: &usize| unit_at(agent, string, *index).is_some_and(is_trimmed);
@@ -485,7 +486,7 @@ fn trimmed_range(agent: &Agent, string: Local<'_>) -> (usize, usize) {
     let end = (start..length)
         .rev()
         .find(|index| !space(index))
-        .map_or(start, |last| last.saturating_add(1));
+        .map_or(0, |last| last.saturating_add(1));
     (start, end)
 }
 
