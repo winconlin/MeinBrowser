@@ -1,12 +1,15 @@
 //! Die Unicode-Tabellen für `mb-unicode`: allgemeine Kategorie, kanonische
-//! Kombinationsklasse und kanonische Zerlegungen aus `UnicodeData.txt`,
-//! Ausnahmen der Komposition aus `CompositionExclusions.txt`, Bidi-Klasse und
-//! Joining-Type aus den abgeleiteten Dateien, Zeilenumbruchklasse aus
-//! `LineBreak.txt`, East_Asian_Width aus `EastAsianWidth.txt`,
-//! Extended_Pictographic aus `emoji-data.txt`, ID_Start und ID_Continue aus
+//! Kombinationsklasse, kanonische Zerlegungen und Kompatibilitätszerlegungen
+//! aus `UnicodeData.txt`, Ausnahmen der Komposition aus
+//! `CompositionExclusions.txt`, Bidi-Klasse und Joining-Type aus den
+//! abgeleiteten Dateien, Zeilenumbruchklasse aus `LineBreak.txt`,
+//! East_Asian_Width aus `EastAsianWidth.txt`, Extended_Pictographic aus
+//! `emoji-data.txt`, ID_Start, ID_Continue, Cased und Case_Ignorable aus
 //! `DerivedCoreProperties.txt`, die Faltung der Groß- und Kleinschreibung
-//! aus `CaseFolding.txt`, Namen der Werte aus `PropertyValueAliases.txt`,
-//! dort auch alle Namen der Werte von General_Category und Script.
+//! aus `CaseFolding.txt`, die Abbildungen auf Klein- und Großbuchstaben aus
+//! `UnicodeData.txt` und `SpecialCasing.txt`, Namen der Werte aus
+//! `PropertyValueAliases.txt`, dort auch alle Namen der Werte von
+//! General_Category und Script.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
@@ -47,6 +50,7 @@ pub struct Sources<'a> {
     pub emoji_data: &'a str,
     pub derived_core_properties: &'a str,
     pub case_folding: &'a str,
+    pub special_casing: &'a str,
 }
 
 /// Eine Eigenschaft mit Aufzählungswerten, wie sie in `tables.rs` landet.
@@ -72,6 +76,7 @@ pub fn run(read: &dyn Fn(&str) -> Result<String, String>) -> Result<String, Stri
         emoji_data: &read("emoji-data.txt")?,
         derived_core_properties: &read("DerivedCoreProperties.txt")?,
         case_folding: &read("CaseFolding.txt")?,
+        special_casing: &read("SpecialCasing.txt")?,
     })
 }
 
@@ -91,6 +96,9 @@ pub fn generate(sources: &Sources<'_>) -> Result<String, String> {
     let mut category_of = vec![unassigned; count];
     let mut class_of = vec![0u8; count];
     let mut decompositions = BTreeMap::new();
+    let mut compatibility = BTreeMap::new();
+    let mut simple_lowercase = BTreeMap::new();
+    let mut simple_uppercase = BTreeMap::new();
     for entry in &entries {
         let category = find(&categories, &entry.general_category)?;
         let range = index(entry.first)?..=index(entry.last)?;
@@ -105,11 +113,23 @@ pub fn generate(sources: &Sources<'_>) -> Result<String, String> {
         if !entry.canonical_decomposition.is_empty() {
             decompositions.insert(entry.first, entry.canonical_decomposition.clone());
         }
+        if !entry.compatibility_decomposition.is_empty() {
+            compatibility.insert(entry.first, entry.compatibility_decomposition.clone());
+        }
+        if let Some(lowercase) = entry.simple_lowercase {
+            simple_lowercase.insert(entry.first, lowercase);
+        }
+        if let Some(uppercase) = entry.simple_uppercase {
+            simple_uppercase.insert(entry.first, uppercase);
+        }
     }
     let (_, exclusions) =
         ucd::parse_property_file("CompositionExclusions.txt", sources.composition_exclusions)?;
     let compositions = compositions(&decompositions, &exclusions, &class_of)?;
+    let compatibility = compatibility_decompositions(&decompositions, &compatibility)?;
     let decompositions = full_decompositions(&decompositions)?;
+    let (lowercase, uppercase) =
+        case_mappings(&simple_lowercase, &simple_uppercase, sources.special_casing)?;
     let bidi_of = fill(
         "DerivedBidiClass.txt",
         sources.bidi_classes,
@@ -152,6 +172,18 @@ pub fn generate(sources: &Sources<'_>) -> Result<String, String> {
         "ID_Continue",
         count,
     )?;
+    let cased_of = flags(
+        "DerivedCoreProperties.txt",
+        sources.derived_core_properties,
+        "Cased",
+        count,
+    )?;
+    let case_ignorable_of = flags(
+        "DerivedCoreProperties.txt",
+        sources.derived_core_properties,
+        "Case_Ignorable",
+        count,
+    )?;
     let tables = Tables {
         general: runs(&category_of),
         classes: runs(&class_of),
@@ -162,9 +194,14 @@ pub fn generate(sources: &Sources<'_>) -> Result<String, String> {
         pictographic: runs(&pictographic_of),
         id_start: runs(&id_start_of),
         id_continue: runs(&id_continue_of),
+        cased: runs(&cased_of),
+        case_ignorable: runs(&case_ignorable_of),
         decompositions,
+        compatibility,
         compositions,
         case_folding: case_folding(sources.case_folding)?,
+        lowercase,
+        uppercase,
         category_names,
         script_names,
     };
@@ -407,6 +444,119 @@ fn case_folding(text: &str) -> Result<BTreeMap<u32, Vec<u32>>, String> {
     Ok(folding)
 }
 
+/// Die Abbildungen auf Klein- und Großbuchstaben für die Default Case
+/// Conversion (Unicode-Standard, Abschnitt 3.13): die Abbildungen ohne
+/// Bedingung aus `SpecialCasing.txt`, sonst Simple_Lowercase_Mapping und
+/// Simple_Uppercase_Mapping aus `UnicodeData.txt`. Abbildungen auf das
+/// Zeichen selbst bleiben weg. Die Zeilen mit einer Sprache gelten nur dort
+/// und bleiben weg; die einzige Bedingung ohne Sprache ist Final_Sigma für
+/// U+03A3, die `mb-unicode` selbst prüft.
+fn case_mappings(
+    simple_lowercase: &BTreeMap<u32, u32>,
+    simple_uppercase: &BTreeMap<u32, u32>,
+    special_casing: &str,
+) -> Result<(CaseMapping, CaseMapping), String> {
+    let file = "SpecialCasing.txt";
+    let (_, data) = ucd::parse_property_file(file, special_casing)?;
+    let single = |simple: &BTreeMap<u32, u32>| -> CaseMapping {
+        simple
+            .iter()
+            .map(|(&code_point, &mapping)| (code_point, vec![mapping]))
+            .collect()
+    };
+    let mut lowercase = single(simple_lowercase);
+    let mut uppercase = single(simple_uppercase);
+    let mut final_sigma = false;
+    let mut unconditional = BTreeSet::new();
+    for line in &data {
+        let code_point = line.first;
+        let [lower, _, upper, rest @ ..] = line.fields.as_slice() else {
+            return Err(format!("{file}: U+{code_point:04X} ohne Abbildungen"));
+        };
+        if line.last != code_point {
+            return Err(format!(
+                "{file}: unerwarteter Bereich ab U+{code_point:04X}"
+            ));
+        }
+        let parse = |mapping: &str| {
+            mapping
+                .split_whitespace()
+                .map(ucd::parse_code_point)
+                .collect::<Result<Vec<u32>, String>>()
+                .map_err(|message| format!("{file}: {message}"))
+        };
+        let condition = rest.first().map_or("", String::as_str);
+        let language = condition
+            .split_whitespace()
+            .next()
+            .is_some_and(|first| first.bytes().all(|byte| byte.is_ascii_lowercase()));
+        if language {
+            continue;
+        }
+        if condition == "Final_Sigma" {
+            // `mb-unicode` kennt genau diese Zeile.
+            if code_point != 0x03A3 || parse(lower)? != [0x03C2] || final_sigma {
+                return Err(format!(
+                    "{file}: unerwartete Zeile mit Final_Sigma für U+{code_point:04X}"
+                ));
+            }
+            final_sigma = true;
+            continue;
+        }
+        if !condition.is_empty() {
+            return Err(format!("{file}: unbekannte Bedingung {condition:?}"));
+        }
+        if !unconditional.insert(code_point) {
+            return Err(format!("{file}: U+{code_point:04X} doppelt"));
+        }
+        for (mapping, target) in [(lower, &mut lowercase), (upper, &mut uppercase)] {
+            let mapping = parse(mapping)?;
+            if mapping.is_empty() {
+                return Err(format!("{file}: leere Abbildung für U+{code_point:04X}"));
+            }
+            if mapping == [code_point] {
+                target.remove(&code_point);
+            } else {
+                target.insert(code_point, mapping);
+            }
+        }
+    }
+    if !final_sigma {
+        return Err(format!("{file} nennt Final_Sigma nicht"));
+    }
+    for mapping in [&mut lowercase, &mut uppercase] {
+        mapping.retain(|&code_point, mapping| *mapping != [code_point]);
+    }
+    Ok((lowercase, uppercase))
+}
+
+/// Die vollständigen Kompatibilitätszerlegungen für NFKD: Jede Zerlegung,
+/// kanonisch oder nicht, wird so lange weiter zerlegt, bis kein Teil mehr
+/// eine hat. Die Tabelle nennt nur die Zeichen, bei denen das Ergebnis von
+/// der vollständigen kanonischen Zerlegung abweicht.
+fn compatibility_decompositions(
+    canonical: &BTreeMap<u32, Vec<u32>>,
+    compatibility: &BTreeMap<u32, Vec<u32>>,
+) -> Result<BTreeMap<u32, Vec<u32>>, String> {
+    if let Some(code_point) = compatibility
+        .keys()
+        .find(|code_point| canonical.contains_key(code_point))
+    {
+        return Err(format!("U+{code_point:04X} hat zwei Zerlegungen"));
+    }
+    let both: BTreeMap<u32, Vec<u32>> = canonical
+        .iter()
+        .chain(compatibility)
+        .map(|(&code_point, decomposition)| (code_point, decomposition.clone()))
+        .collect();
+    let with_compatibility = full_decompositions(&both)?;
+    let without = full_decompositions(canonical)?;
+    Ok(with_compatibility
+        .into_iter()
+        .filter(|(code_point, decomposition)| without.get(code_point) != Some(decomposition))
+        .collect())
+}
+
 /// Die vollständigen kanonischen Zerlegungen: Jede Zerlegung wird so lange
 /// weiter zerlegt, bis kein Teil mehr eine Zerlegung hat.
 fn full_decompositions(
@@ -504,6 +654,9 @@ fn predicate(long: &str) -> String {
     format!("is_{}", long.to_lowercase())
 }
 
+/// Eine Abbildung von Codepunkten auf Folgen von Codepunkten.
+type CaseMapping = BTreeMap<u32, Vec<u32>>;
+
 /// Die Tabellen, die `emit` schreibt.
 struct Tables {
     general: Vec<(u32, usize)>,
@@ -515,9 +668,14 @@ struct Tables {
     pictographic: Vec<(u32, bool)>,
     id_start: Vec<(u32, bool)>,
     id_continue: Vec<(u32, bool)>,
+    cased: Vec<(u32, bool)>,
+    case_ignorable: Vec<(u32, bool)>,
     decompositions: BTreeMap<u32, Vec<u32>>,
+    compatibility: BTreeMap<u32, Vec<u32>>,
     compositions: Vec<(u32, u32, u32)>,
     case_folding: BTreeMap<u32, Vec<u32>>,
+    lowercase: CaseMapping,
+    uppercase: CaseMapping,
     category_names: BTreeMap<String, String>,
     script_names: BTreeMap<String, String>,
 }
@@ -690,6 +848,21 @@ fn emit(
     writeln!(out)?;
     writeln!(
         out,
+        "/// Vollständige Kompatibilitätszerlegung (NFKD) jedes Zeichens, bei dem sie"
+    )?;
+    writeln!(
+        out,
+        "/// von der vollständigen kanonischen Zerlegung abweicht, nach Codepunkt"
+    )?;
+    writeln!(out, "/// sortiert.")?;
+    emit_sequences(
+        &mut out,
+        "COMPATIBILITY_DECOMPOSITION",
+        &tables.compatibility,
+    )?;
+    writeln!(out)?;
+    writeln!(
+        out,
         "/// Primäre Komposita: zwei Codepunkte und das Zeichen, zu dem sie sich"
     )?;
     writeln!(
@@ -719,6 +892,44 @@ fn emit(
     )?;
     writeln!(out, "/// bleiben, wie sie sind.")?;
     emit_sequences(&mut out, "CASE_FOLDING", &tables.case_folding)?;
+    writeln!(out)?;
+    writeln!(
+        out,
+        "/// Abbildung auf Kleinbuchstaben für die Default Case Conversion: die"
+    )?;
+    writeln!(
+        out,
+        "/// Abbildungen ohne Bedingung aus `SpecialCasing.txt`, sonst"
+    )?;
+    writeln!(
+        out,
+        "/// Simple_Lowercase_Mapping, nach Codepunkt sortiert. Alle anderen"
+    )?;
+    writeln!(
+        out,
+        "/// Codepunkte bleiben, wie sie sind. Final_Sigma prüft `case_mapping`."
+    )?;
+    emit_sequences(&mut out, "LOWERCASE", &tables.lowercase)?;
+    writeln!(out)?;
+    writeln!(
+        out,
+        "/// Abbildung auf Großbuchstaben, aufgebaut wie oben mit"
+    )?;
+    writeln!(out, "/// Simple_Uppercase_Mapping.")?;
+    emit_sequences(&mut out, "UPPERCASE", &tables.uppercase)?;
+    writeln!(out)?;
+    writeln!(
+        out,
+        "/// Cased (Unicode-Standard, D135): Anfang jedes Abschnitts und ob seine"
+    )?;
+    writeln!(out, "/// Codepunkte die Eigenschaft haben.")?;
+    emit_flags(&mut out, "CASED", &tables.cased)?;
+    writeln!(out)?;
+    writeln!(
+        out,
+        "/// Case_Ignorable (Unicode-Standard, D136), aufgebaut wie oben."
+    )?;
+    emit_flags(&mut out, "CASE_IGNORABLE", &tables.case_ignorable)?;
     Ok(out)
 }
 
@@ -890,8 +1101,14 @@ mod tests {
                                 0041..0042    ; ID_Continue # L&   [2]\n\
                                 0300          ; ID_Continue # Mn\n\
                                 0041..0042    ; XID_Start # L&   [2]\n\
+                                0041..0042    ; Cased # L&   [2]\n\
+                                0300          ; Case_Ignorable # Mn\n\
                                 # @missing: 0000..10FFFF; InCB; None\n\
                                 094D          ; InCB; Linker # Mn\n";
+
+    const SPECIAL_CASING: &str = "00DF; 00DF; 0053 0073; 0053 0053; # LATIN SMALL LETTER SHARP S\n\
+                                  03A3; 03C2; 03A3; 03A3; Final_Sigma; # GREEK CAPITAL LETTER SIGMA\n\
+                                  0049; 0131; 0049; 0049; tr Not_Before_Dot; # LATIN CAPITAL LETTER I\n";
 
     const CASE_FOLDING: &str = "0041; C; 0061; # LATIN CAPITAL LETTER A\n\
                                 0049; T; 0131; # LATIN CAPITAL LETTER I\n\
@@ -911,6 +1128,7 @@ mod tests {
             emoji_data: EMOJI,
             derived_core_properties: DERIVED_CORE,
             case_folding: CASE_FOLDING,
+            special_casing: SPECIAL_CASING,
         }
     }
 
@@ -1074,6 +1292,60 @@ mod tests {
             broken.case_folding = case_folding;
             assert!(generate(&broken).is_err(), "{case_folding:?}");
         }
+    }
+
+    #[test]
+    fn case_mappings_and_compatibility_decompositions() {
+        // U+1EA7 bekommt hier eine erfundene Kompatibilitätszerlegung, die
+        // über U+1EA6 und U+00C2 weiter zerlegt wird.
+        let data = format!(
+            "{UNICODE_DATA}1EA7;A WITH CIRCUMFLEX AND GRAVE;Lo;0;L;<compat> 1EA6 0042;;;;N;;;1EA6;;\n"
+        );
+        let source = generate(&sources(&data, VALUE_ALIASES)).expect("gültige Daten");
+        assert!(source.contains(
+            "pub static COMPATIBILITY_DECOMPOSITION: [(u32, &[u32]); 1] = [\n    \
+             (0x1EA7, &[0x0041, 0x0302, 0x0300, 0x0042]),\n];\n"
+        ));
+        // U+00DF bleibt klein, wie es ist, und wird groß zu zwei Zeichen; die
+        // Zeile für Türkisch zählt nicht.
+        assert!(source.contains(
+            "pub static LOWERCASE: [(u32, &[u32]); 5] = [\n    \
+             (0x0041, &[0x0061]),\n    (0x0042, &[0x0062]),\n    \
+             (0x00C0, &[0x00E0]),\n    (0x00C2, &[0x00E2]),\n    \
+             (0x1EA6, &[0x1EA7]),\n];\n"
+        ));
+        assert!(source.contains(
+            "pub static UPPERCASE: [(u32, &[u32]); 2] = [\n    \
+             (0x00DF, &[0x0053, 0x0053]),\n    (0x1EA7, &[0x1EA6]),\n];\n"
+        ));
+        assert!(source.contains(
+            "pub static CASED: [(u32, bool); 3] = [\n    \
+             (0x0000, false),\n    (0x0041, true),\n    (0x0043, false),\n];\n"
+        ));
+        assert!(source.contains(
+            "pub static CASE_IGNORABLE: [(u32, bool); 3] = [\n    \
+             (0x0000, false),\n    (0x0300, true),\n    (0x0301, false),\n];\n"
+        ));
+        for special_casing in [
+            // Ohne Final_Sigma.
+            "00DF; 00DF; 0053 0073; 0053 0053;\n",
+            // Final_Sigma an einem anderen Zeichen und doppelt.
+            "0041; 0061; 0041; 0041; Final_Sigma;\n",
+            "03A3; 03C2; 03A3; 03A3; Final_Sigma;\n03A3; 03C2; 03A3; 03A3; Final_Sigma;\n",
+            // Eine Bedingung, die `mb-unicode` nicht kennt.
+            "03A3; 03C2; 03A3; 03A3; Final_Sigma;\n0041; 0061; 0041; 0041; After_I;\n",
+            "03A3; 03C2; 03A3; 03A3; Final_Sigma;\n00DF; 00DF; 0053 0073;\n",
+            "03A3; 03C2; 03A3; 03A3; Final_Sigma;\n00DF; ; 0053 0073; 0053 0053;\n",
+            "03A3; 03C2; 03A3; 03A3; Final_Sigma;\n00DF..00E0; 00DF; 0053 0073; 0053 0053;\n",
+            "03A3; 03C2; 03A3; 03A3; Final_Sigma;\n00DF; 00DF; 0053; 0053;\n00DF; 00DF; 0053; 0053;\n",
+        ] {
+            let mut broken = sources(UNICODE_DATA, VALUE_ALIASES);
+            broken.special_casing = special_casing;
+            assert!(generate(&broken).is_err(), "{special_casing:?}");
+        }
+        let mut broken = sources(UNICODE_DATA, VALUE_ALIASES);
+        broken.derived_core_properties = "0041 ; ID_Start\n0041 ; ID_Continue\n0041 ; Cased\n";
+        assert!(generate(&broken).is_err(), "ohne Case_Ignorable");
     }
 
     #[test]

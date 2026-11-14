@@ -18,7 +18,30 @@ pub struct UnicodeDataEntry {
     /// Die kanonische Zerlegung eine Ebene tief, leer ohne Zerlegung oder bei
     /// einer Kompatibilitätszerlegung (`<compat> …`).
     pub canonical_decomposition: Vec<u32>,
+    /// Die Kompatibilitätszerlegung eine Ebene tief, also die Zerlegung
+    /// hinter einer Marke wie `<compat>` oder `<super>`, sonst leer.
+    pub compatibility_decomposition: Vec<u32>,
+    /// Simple_Uppercase_Mapping, wenn das Zeichen eine hat.
+    pub simple_uppercase: Option<u32>,
+    /// Simple_Lowercase_Mapping, wenn das Zeichen eine hat.
+    pub simple_lowercase: Option<u32>,
 }
+
+impl UnicodeDataEntry {
+    /// Ob der Eintrag weder Zerlegungen noch Abbildungen der Groß- und
+    /// Kleinschreibung hat, wie es für Bereiche gelten muss.
+    fn is_plain(&self) -> bool {
+        self.canonical_decomposition.is_empty()
+            && self.compatibility_decomposition.is_empty()
+            && self.simple_uppercase.is_none()
+            && self.simple_lowercase.is_none()
+    }
+}
+
+/// Die Felder mit Simple_Uppercase_Mapping und Simple_Lowercase_Mapping
+/// (UAX #44, Abschnitt 5.1), ab 0 gezählt.
+const SIMPLE_UPPERCASE: usize = 12;
+const SIMPLE_LOWERCASE: usize = 13;
 
 /// Liest `UnicodeData.txt`. Die Einträge müssen aufsteigend sortiert sein und
 /// dürfen sich nicht überlappen.
@@ -55,14 +78,33 @@ pub fn parse_unicode_data(text: &str) -> Result<Vec<UnicodeDataEntry>, String> {
         if general_category.is_empty() {
             return Err(error("allgemeine Kategorie fehlt"));
         }
-        let canonical_decomposition = if decomposition.starts_with('<') {
-            Vec::new()
-        } else {
-            decomposition
-                .split_whitespace()
+        let code_points = |text: &str| {
+            text.split_whitespace()
                 .map(parse_code_point)
                 .collect::<Result<Vec<u32>, String>>()
-                .map_err(|message| error(&message))?
+                .map_err(|message| error(&message))
+        };
+        let (canonical_decomposition, compatibility_decomposition) =
+            match decomposition.strip_prefix('<') {
+                None => (code_points(decomposition)?, Vec::new()),
+                Some(tagged) => {
+                    let (_, mapping) = tagged
+                        .split_once('>')
+                        .ok_or_else(|| error("Marke der Zerlegung ohne Ende"))?;
+                    let mapping = code_points(mapping)?;
+                    if mapping.is_empty() {
+                        return Err(error("Kompatibilitätszerlegung ohne Codepunkte"));
+                    }
+                    (Vec::new(), mapping)
+                }
+            };
+        let simple_mapping = |field: usize| -> Result<Option<u32>, String> {
+            match fields.get(field).copied().unwrap_or_default() {
+                "" => Ok(None),
+                text => parse_code_point(text)
+                    .map(Some)
+                    .map_err(|message| error(&message)),
+            }
         };
         let mut entry = UnicodeDataEntry {
             first: code_point,
@@ -70,6 +112,9 @@ pub fn parse_unicode_data(text: &str) -> Result<Vec<UnicodeDataEntry>, String> {
             general_category: (*general_category).to_owned(),
             canonical_combining_class,
             canonical_decomposition,
+            compatibility_decomposition,
+            simple_uppercase: simple_mapping(SIMPLE_UPPERCASE)?,
+            simple_lowercase: simple_mapping(SIMPLE_LOWERCASE)?,
         };
         if let Some(range) = name.strip_suffix(", Last>") {
             let Some((first_name, first_line, first)) = open_range.take() else {
@@ -82,8 +127,8 @@ pub fn parse_unicode_data(text: &str) -> Result<Vec<UnicodeDataEntry>, String> {
             }
             if first.general_category != entry.general_category
                 || first.canonical_combining_class != entry.canonical_combining_class
-                || !first.canonical_decomposition.is_empty()
-                || !entry.canonical_decomposition.is_empty()
+                || !first.is_plain()
+                || !entry.is_plain()
             {
                 return Err(error("Anfang und Ende des Bereichs haben andere Werte"));
             }
@@ -270,6 +315,41 @@ mod tests {
         assert_eq!(decompositions, [&[][..], &[0x41, 0x300], &[0xC5]]);
         let broken = "00C0;A WITH GRAVE;Lu;0;L;0041 XYZ;;;;N;;;;00E0;\n";
         assert!(parse_unicode_data(broken).is_err());
+    }
+
+    #[test]
+    fn reads_compatibility_decompositions_and_case_mappings() {
+        let text = "00A8;DIAERESIS;Sk;0;ON;<compat> 0020 0308;;;;N;;;;;\n\
+                    00C0;A WITH GRAVE;Lu;0;L;0041 0300;;;;N;;;;00E0;\n\
+                    00E0;A WITH GRAVE;Ll;0;L;0061 0300;;;;N;;;00C0;;00C0\n";
+        let entries = parse_unicode_data(text).expect("gültige Daten");
+        let found: Vec<(&[u32], Option<u32>, Option<u32>)> = entries
+            .iter()
+            .map(|entry| {
+                (
+                    entry.compatibility_decomposition.as_slice(),
+                    entry.simple_uppercase,
+                    entry.simple_lowercase,
+                )
+            })
+            .collect();
+        assert_eq!(
+            found,
+            [
+                (&[0x20, 0x308][..], None, None),
+                (&[][..], None, Some(0xE0)),
+                (&[][..], Some(0xC0), None),
+            ]
+        );
+        for broken in [
+            "00A8;DIAERESIS;Sk;0;ON;<compat 0020 0308;;;;N;;;;;\n",
+            "00A8;DIAERESIS;Sk;0;ON;<compat>;;;;N;;;;;\n",
+            "00C0;A WITH GRAVE;Lu;0;L;;;;;N;;;;XYZ;\n",
+            "3400;<X, First>;Lo;0;L;;;;;N;;;;;\n4DBF;<X, Last>;Lo;0;L;;;;;N;;;;3400;\n",
+            "3400;<X, First>;Lo;0;L;<compat> 0041;;;;N;;;;;\n4DBF;<X, Last>;Lo;0;L;;;;;N;;;;;\n",
+        ] {
+            assert!(parse_unicode_data(broken).is_err(), "{broken:?}");
+        }
     }
 
     #[test]
