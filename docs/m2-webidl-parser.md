@@ -5,6 +5,7 @@ Auf den [Tokenizer](m2-webidl-lexer.md) baut nun
 und liefert einen flachen Arena-Syntaxbaum mit Produktionsnamen, Tokenarten
 und UTF-8-Byte-Ranges. Die unveränderte Quelle bleibt geliehen. Darauf baut
 inzwischen der [quellenübergreifende Namensindex](m2-webidl-index.md) auf.
+Die [Memberbeschreibung](m2-webidl-members.md) ergänzt erste Member-Regeln.
 Vollständige Typ-/Memberprüfung, Auswertung der Extended Attributes und
 Binding-Generierung fehlen weiterhin.
 
@@ -123,9 +124,10 @@ der Lexer geprüft. Es gelten die äußeren Grenzen aus [fuzzing.md](fuzzing.md)
    Standardstand prüfen. Generierte Tabellen nur über `datagen` ändern.
 2. Baum und Quoten prüfen, insbesondere leere Produktionen, Trivia-Ranges,
    Grenzen vor dem Anlegen neuer Knoten und gemeinsam verwendete Budgets.
-3. Den inzwischen vorhandenen [Namensindex](m2-webidl-index.md) prüfen und
-   darauf die normalisierte Typ-/Member-IR aufbauen. Definitionen, Partials,
-   Includes, Eltern und benannte Typen sind bereits verbunden; vollständige
+3. Den [Namensindex](m2-webidl-index.md) und die inzwischen vorhandene
+   [Memberbeschreibung](m2-webidl-members.md) prüfen. Darauf die normalisierte
+   Typbeschreibung aufbauen. Definitionen, Partials, Includes, Eltern und
+   benannte Typen sind bereits verbunden; vollständige
    Typ-/Member-, Defaultwert- und Extended-Attribute-Prüfung fehlen.
    Syntaxbaum und Namensindex garantieren noch keine gültige Web-API.
 4. Darauf den eigenen Binding-Generator mit Argumentprüfung, Konversionen,

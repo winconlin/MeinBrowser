@@ -1,0 +1,1 @@
+callback F = undefined (long value, DOMString _value);

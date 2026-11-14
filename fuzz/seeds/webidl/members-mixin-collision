@@ -1,0 +1,1 @@
+interface X { attribute long value; }; interface mixin M { undefined value(); }; X includes M;

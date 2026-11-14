@@ -9,6 +9,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use mb_webidl::index::{self, Error, Limits};
+use mb_webidl::members;
 
 fn main() -> ExitCode {
     match run(std::env::args_os().skip(1)) {
@@ -26,7 +27,7 @@ fn run(args: impl Iterator<Item = OsString>) -> Result<(), String> {
     for arg in args {
         if arg == "--help" || arg == "-h" {
             println!(
-                "Aufruf: cargo run -p webidl-check -- DATEI.idl [WEITERE.idl ...]\nPrüft Syntax, Definitionsnamen, Partials, Typverweise, Includes und Vererbung.\nAlle benötigten Definitionen gemeinsam angeben.\nKein vollständiger WebIDL-Validator; erzeugt keine Bindings."
+                "Aufruf: cargo run -p webidl-check -- DATEI.idl [WEITERE.idl ...]\nPrüft Syntax, Namen, Verweise, Vererbung und erste Member-Regeln.\nAlle benötigten Definitionen gemeinsam angeben.\nKein vollständiger WebIDL-Validator; erzeugt keine Bindings."
             );
             return Ok(());
         }
@@ -48,7 +49,19 @@ fn run(args: impl Iterator<Item = OsString>) -> Result<(), String> {
         sources.push(source);
     }
     let borrowed: Vec<_> = sources.iter().map(String::as_str).collect();
-    let index = index::build(&borrowed).map_err(|error| diagnostic(&paths, &sources, &error))?;
+    let budget = index::Budget::new(index::DEFAULT_STEPS + members::DEFAULT_STEPS);
+    let index = index::build_within(&borrowed, limits, &budget)
+        .map_err(|error| diagnostic(&paths, &sources, &error))?;
+    let members =
+        members::build_within(&index, members::Limits::default(), &budget).map_err(|error| {
+            positioned_error(
+                &paths,
+                &sources,
+                &error.kind,
+                error.location.as_ref(),
+                error.previous.as_ref(),
+            )
+        })?;
     let fragments: usize = index
         .definitions()
         .map(|(_, definition)| definition.fragments.len())
@@ -62,7 +75,13 @@ fn run(args: impl Iterator<Item = OsString>) -> Result<(), String> {
         index.includes().len()
     );
     println!(
-        "Member, Overloads, Typformen, Defaultwerte, Extended Attributes und Bindings benötigen weitere Prüfung."
+        "{} Member, {} Argumente, {} Enumwerte erfasst und auf die unterstützten Namensregeln geprüft.",
+        members.len(),
+        members.argument_count(),
+        members.value_count()
+    );
+    println!(
+        "Typformen, Werte, Extended Attributes, Overload-Unterscheidbarkeit und Bindings benötigen weitere Prüfung."
     );
     Ok(())
 }
@@ -83,18 +102,34 @@ fn read_bounded(reader: impl Read, maximum: usize) -> io::Result<String> {
 }
 
 fn diagnostic(paths: &[OsString], sources: &[String], error: &Error) -> String {
+    positioned_error(
+        paths,
+        sources,
+        &error.kind,
+        error.location.as_ref(),
+        error.previous.as_ref(),
+    )
+}
+
+fn positioned_error(
+    paths: &[OsString],
+    sources: &[String],
+    kind: &impl std::fmt::Debug,
+    location: Option<&index::Location>,
+    previous: Option<&index::Location>,
+) -> String {
     let position = |at: &index::Location| {
         let before = &sources[at.source][..at.span.start];
         let line = before.bytes().filter(|&b| b == b'\n').count() + 1;
         let column = before.rsplit('\n').next().unwrap_or("").chars().count() + 1;
         format!("{}:{line}:{column}", Path::new(&paths[at.source]).display())
     };
-    let mut message = match &error.location {
-        Some(at) => format!("{}: {:?}", position(at), error.kind),
-        None => format!("{:?}", error.kind),
+    let mut message = match location {
+        Some(at) => format!("{}: {kind:?}", position(at)),
+        None => format!("{kind:?}"),
     };
-    if let Some(previous) = &error.previous {
-        message.push_str(&format!(" (erste Definition: {})", position(previous)));
+    if let Some(previous) = previous {
+        message.push_str(&format!(" (erste Deklaration: {})", position(previous)));
     }
     message
 }
@@ -123,7 +158,7 @@ mod tests {
             index::build(&sources.iter().map(String::as_str).collect::<Vec<_>>()).unwrap_err();
         assert_eq!(
             diagnostic(&paths, &sources, &error),
-            "two.idl:2:13: DuplicateDefinition (erste Definition: one.idl:1:11)"
+            "two.idl:2:13: DuplicateDefinition (erste Deklaration: one.idl:1:11)"
         );
         let sources = [
             "interface X {};".to_owned(),
@@ -132,5 +167,26 @@ mod tests {
         let error =
             index::build(&sources.iter().map(String::as_str).collect::<Vec<_>>()).unwrap_err();
         assert!(diagnostic(&paths, &sources, &error).starts_with("two.idl:1:17:"));
+    }
+    #[test]
+    fn member_diagnostic_identifies_both_declarations_across_sources() {
+        let paths = ["base.idl".into(), "partial.idl".into()];
+        let sources = [
+            "interface X { attribute long value; };".to_owned(),
+            "partial interface X { attribute long _value; };".to_owned(),
+        ];
+        let index = index::build(&sources.iter().map(String::as_str).collect::<Vec<_>>()).unwrap();
+        let error = members::build(&index).unwrap_err();
+        let text = positioned_error(
+            &paths,
+            &sources,
+            &error.kind,
+            error.location.as_ref(),
+            error.previous.as_ref(),
+        );
+        assert_eq!(
+            text,
+            "partial.idl:1:38: DuplicateMember (erste Deklaration: base.idl:1:30)"
+        );
     }
 }
