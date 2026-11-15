@@ -10,6 +10,7 @@
 #![forbid(unsafe_code)]
 
 pub mod case_folding;
+pub mod case_mapping;
 pub mod idna;
 pub mod line_breaking;
 pub mod normalization;

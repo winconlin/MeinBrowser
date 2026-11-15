@@ -523,10 +523,17 @@ fn string_objects_have_index_properties_and_length() {
         let prototype = agent.intrinsic(scope, realm, Intrinsic::StringPrototype);
         let found = prototype_of(agent, scope, object);
         assert!(same(agent, found, prototype));
-        assert_eq!(
-            keys(agent, scope, prototype),
-            ["length", "constructor", "Symbol"]
-        );
+        // Die Reihenfolge der Abschnitte 22.1.3 und B.2.2, am Ende
+        // @@iterator.
+        let expected = "length constructor at charAt charCodeAt codePointAt concat endsWith \
+                        includes indexOf isWellFormed lastIndexOf localeCompare match matchAll \
+                        normalize padEnd padStart repeat replace replaceAll search slice split \
+                        startsWith substring toLocaleLowerCase toLocaleUpperCase toLowerCase \
+                        toString toUpperCase toWellFormed trim trimEnd trimStart valueOf substr \
+                        anchor big blink bold fixed fontcolor fontsize italics link small strike \
+                        sub sup trimLeft trimRight Symbol";
+        let expected: Vec<&str> = expected.split_whitespace().collect();
+        assert_eq!(keys(agent, scope, prototype), expected);
     });
 }
 
@@ -3560,6 +3567,430 @@ fn proxies_survive_moving_collections() {
     assert_eq!(
         run(&mut agent, realm, source),
         "\"{\\\"a\\\":1}:1,2:toJSON,a,b\""
+    );
+    agent.heap_mut().collect();
+    agent.heap().verify().expect("gültiger Heap");
+}
+
+#[test]
+fn string_functions_build_strings_from_numbers_and_templates() {
+    check(&[
+        ("String.fromCharCode(0x48, 105, 0x10021)", "\"Hi!\""),
+        ("String.fromCharCode(-1, 65).charCodeAt(0)", "65535"),
+        ("String.fromCharCode()", "\"\""),
+        ("String.fromCodePoint(0x61, 0x1F600).length", "3"),
+        (
+            "var s = String.fromCodePoint(0x1F600, 0xDC00); \
+             [s.charCodeAt(0), s.charCodeAt(1), s.charCodeAt(2)].join()",
+            "\"55357,56832,56320\"",
+        ),
+        ("String.fromCodePoint('0x41', [66], -0).length", "3"),
+        ("String.fromCodePoint(1.5)", "RangeError"),
+        ("String.fromCodePoint(0x110000)", "RangeError"),
+        ("String.fromCodePoint(-1)", "RangeError"),
+        ("String.fromCodePoint(Infinity)", "RangeError"),
+        ("String.fromCodePoint(65, NaN)", "RangeError"),
+        ("String.raw({ raw: ['a', 'b', 'c'] }, 1, 2, 3)", "\"a1b2c\""),
+        ("String.raw({ raw: 'abc' }, '-')", "\"a-bc\""),
+        (
+            "String.raw({ raw: { length: 2, 0: 'x', 1: 'y' } })",
+            "\"xy\"",
+        ),
+        ("String.raw({ raw: [] }, 1)", "\"\""),
+        ("String.raw({ raw: { length: -1 } })", "\"\""),
+        ("String.raw()", "TypeError"),
+        ("String.raw({})", "TypeError"),
+        (
+            "[String.fromCharCode.length, String.fromCodePoint.length, String.raw.length].join()",
+            "\"1,1,1\"",
+        ),
+    ]);
+}
+
+#[test]
+fn string_methods_read_code_units_and_code_points() {
+    check(&[
+        (
+            "['abc'.at(0), 'abc'.at(-1), 'abc'.at(3), 'abc'.at(-4), 'abc'.at(Infinity), \
+             'abc'.at()].join()",
+            "\"a,c,,,,a\"",
+        ),
+        (
+            "['abc'.charAt(1), 'abc'.charAt(3), 'abc'.charAt(-1), 'abc'.charAt(), \
+             'abc'.charAt(1.9)].join('|')",
+            "\"b|||a|b\"",
+        ),
+        (
+            "['abc'.charCodeAt(1), 'abc'.charCodeAt(3), 'abc'.charCodeAt(-Infinity), \
+             'abc'.charCodeAt('1')].join()",
+            "\"98,NaN,NaN,98\"",
+        ),
+        (
+            "var s = 'a\\uD83D\\uDE00\\uD83D'; [s.codePointAt(0), s.codePointAt(1), \
+             s.codePointAt(2), s.codePointAt(3), s.codePointAt(4)].join()",
+            "\"97,128512,56832,55357,\"",
+        ),
+        ("String.prototype.at.call(123, 1)", "\"2\""),
+        ("String.prototype.charAt.call(null)", "TypeError"),
+        ("String.prototype.at.call(undefined)", "TypeError"),
+        (
+            "'abc'.charAt({ valueOf: function () { throw 4; } })",
+            "throw 4",
+        ),
+        (
+            "['a'.toString(), new String('b').valueOf(), \
+             String.prototype.toString.call(new String('c')), String.prototype.valueOf()].join('|')",
+            "\"a|b|c|\"",
+        ),
+        ("String.prototype.toString.call(1)", "TypeError"),
+        ("String.prototype.valueOf.call({})", "TypeError"),
+        ("String.prototype.toString.call(new Number(1))", "TypeError"),
+    ]);
+}
+
+#[test]
+fn string_methods_search_for_strings() {
+    check(&[
+        (
+            "['abcabc'.indexOf('c'), 'abcabc'.indexOf('c', 3), 'abcabc'.indexOf('c', -5), \
+             'abcabc'.indexOf(''), 'abcabc'.indexOf('', 9), 'abcabc'.indexOf('d'), \
+             'abcabc'.indexOf('abcabcd')].join()",
+            "\"2,5,2,0,6,-1,-1\"",
+        ),
+        (
+            "['abcabc'.lastIndexOf('c'), 'abcabc'.lastIndexOf('c', 4), \
+             'abcabc'.lastIndexOf('c', 1), 'abcabc'.lastIndexOf(''), 'abcabc'.lastIndexOf('', 2), \
+             'abcabc'.lastIndexOf('a', -3), 'abcabc'.lastIndexOf('abc', NaN), \
+             'ab'.lastIndexOf('abc')].join()",
+            "\"5,2,-1,6,2,0,3,-1\"",
+        ),
+        (
+            "['abc'.includes('bc'), 'abc'.includes('bc', 2), 'abc'.includes(''), \
+             'undefined'.includes()].join()",
+            "\"true,false,true,true\"",
+        ),
+        (
+            "['abc'.startsWith('ab'), 'abc'.startsWith('bc', 1), 'abc'.startsWith('bc', 2), \
+             'abc'.startsWith('', 9), 'abc'.startsWith('abcd')].join()",
+            "\"true,true,false,true,false\"",
+        ),
+        (
+            "['abc'.endsWith('bc'), 'abc'.endsWith('ab', 2), 'abc'.endsWith('ab', 1), \
+             'abc'.endsWith('', -1), 'abc'.endsWith('xabc')].join()",
+            "\"true,true,false,true,false\"",
+        ),
+        // IsRegExp entscheidet allein nach @@match.
+        (
+            "var r = {}; r[Symbol.match] = true; var e = []; \
+             for (var m of ['includes', 'startsWith', 'endsWith']) { \
+             try { 'a'[m](r); e.push('kein Fehler'); } \
+             catch (error) { e.push(error instanceof TypeError); } } e.join()",
+            "\"true,true,true\"",
+        ),
+        (
+            "var r = { toString: function () { return 'b'; } }; r[Symbol.match] = 0; \
+             'abc'.includes(r)",
+            "true",
+        ),
+        // Lange gesuchte Folgen nehmen den Weg über die Tabelle der Ränder.
+        (
+            "var s = 'ab'.repeat(40) + 'c' + 'ab'.repeat(40); \
+             [s.indexOf('ab'.repeat(20) + 'c'), s.lastIndexOf('b'.concat('ab'.repeat(20))), \
+             s.indexOf('ab'.repeat(41)), s.includes('ab'.repeat(40) + 'c' + 'ab'.repeat(40))].join()",
+            "\"40,120,-1,true\"",
+        ),
+    ]);
+}
+
+#[test]
+fn string_methods_cut_join_and_pad() {
+    check(&[
+        (
+            "['abcdef'.slice(1, 3), 'abcdef'.slice(-2), 'abcdef'.slice(4, 2), \
+             'abcdef'.slice(-Infinity, 2), 'abcdef'.slice(2, undefined)].join()",
+            "\"bc,ef,,ab,cdef\"",
+        ),
+        (
+            "['abcdef'.substring(3, 1), 'abcdef'.substring(-1, 2), 'abcdef'.substring(4), \
+             'abcdef'.substring(NaN, Infinity)].join()",
+            "\"bc,ab,ef,abcdef\"",
+        ),
+        (
+            "['abcdef'.substr(1, 2), 'abcdef'.substr(-2), 'abcdef'.substr(-2, 1), \
+             'abcdef'.substr(2, -1), 'abcdef'.substr(9), 'abcdef'.substr(-Infinity, 2), \
+             'abcdef'.substr(1, Infinity)].join()",
+            "\"bc,ef,e,,,ab,bcdef\"",
+        ),
+        (
+            "['a'.concat('b', 1, null), 'a'.concat(), String.prototype.concat.call(1, 2)].join()",
+            "\"ab1null,a,12\"",
+        ),
+        (
+            "['ab'.repeat(3), 'ab'.repeat(0), ''.repeat(1e300), 'ab'.repeat(1.9)].join('|')",
+            "\"ababab|||ab\"",
+        ),
+        ("'a'.repeat(-1)", "RangeError"),
+        ("'a'.repeat(Infinity)", "RangeError"),
+        (
+            "['ab'.padStart(5), 'ab'.padEnd(5, 'xyz'), 'ab'.padStart(7, 'xyz'), 'ab'.padEnd(1), \
+             'ab'.padStart(5, ''), 'ab'.padEnd(4, 0)].join('|')",
+            "\"   ab|abxyz|xyzxyab|ab|ab|ab00\"",
+        ),
+        // Leerraum sind WhiteSpace und LineTerminator; U+180E und U+200B
+        // gehören nicht dazu.
+        (
+            "var w = '\\t\\n\\v\\f\\r \\u00A0\\u1680\\u2000\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF'; \
+             var s = w + 'a b' + w; [s.trim(), s.trimStart().length, s.trimEnd().length, \
+             w.trim().length, '\\u180Ea\\u200B'.trim().length].join()",
+            "\"a b,18,18,0,3\"",
+        ),
+        // Nur Leerraum: Jede der drei Methoden lässt nichts übrig.
+        (
+            "var w = ' \\t\\n\\u2028'; [w.trim().length, w.trimStart().length, w.trimEnd().length, \
+             w.trimLeft().length, w.trimRight().length, ''.trimEnd().length, \
+             ' a'.trimEnd().length, 'a '.trimStart().length].join()",
+            "\"0,0,0,0,0,0,2,2\"",
+        ),
+    ]);
+}
+
+#[test]
+fn string_methods_map_case_and_normalize() {
+    check(&[
+        (
+            "['Straße'.toUpperCase(), 'ÀÉ'.toLowerCase(), 'ΟΔΟΣ'.toLowerCase(), \
+             'İ'.toLowerCase().length, 'ǆ'.toUpperCase(), 'ß'.toLocaleUpperCase(), \
+             'I'.toLocaleLowerCase(), 'aZ09'.toUpperCase(), 'aZ09'.toLowerCase()].join()",
+            "\"STRASSE,àé,οδος,2,Ǆ,SS,i,AZ09,az09\"",
+        ),
+        // Einzelne Surrogate bleiben, Ersatzpaare zählen als ein Zeichen.
+        (
+            "var s = 'a\\uD800B'.toUpperCase(); [s.length, s.charCodeAt(1), s.charAt(0), \
+             'ä\\uDC00'.toLowerCase().charCodeAt(1), \
+             '\\uD801\\uDC00'.toLowerCase().codePointAt(0)].join()",
+            "\"3,55296,A,56320,66600\"",
+        ),
+        (
+            "var s = '\\u1E9B\\u0323'; [s.normalize() === '\\u1E9B\\u0323', \
+             s.normalize('NFD') === '\\u017F\\u0323\\u0307', s.normalize('NFKC') === '\\u1E69', \
+             s.normalize('NFKD') === 's\\u0323\\u0307', \
+             s.normalize(undefined) === s.normalize('NFC'), 'abc'.normalize('NFKD')].join()",
+            "\"true,true,true,true,true,abc\"",
+        ),
+        ("'a'.normalize('nfc')", "RangeError"),
+        ("'a'.normalize(null)", "RangeError"),
+        (
+            "var s = '\\uD800\\u00C5\\uDC00'.normalize('NFD'); \
+             [s.length, s.charCodeAt(0), s.charCodeAt(1), s.charCodeAt(2), s.charCodeAt(3)].join()",
+            "\"4,55296,65,778,56320\"",
+        ),
+        // Kanonisch gleichwertige Zeichenketten ergeben 0.
+        (
+            "['a'.localeCompare('b'), 'b'.localeCompare('a'), 'a'.localeCompare('a'), \
+             '\\u212B'.localeCompare('A\\u030A'), '\\u1E0B\\u0323'.localeCompare('\\u1E0D\\u0307'), \
+             'a'.localeCompare(), 'é'.localeCompare('f'), 'ab'.localeCompare('a')].join()",
+            "\"-1,1,0,0,0,-1,-1,1\"",
+        ),
+        (
+            "['abc'.isWellFormed(), 'a\\uD83D\\uDE00'.isWellFormed(), 'a\\uD83D'.isWellFormed(), \
+             '\\uDE00a'.isWellFormed(), ''.isWellFormed()].join()",
+            "\"true,true,false,false,true\"",
+        ),
+        (
+            "var s = 'a\\uD83Db\\uDE00\\uD83D\\uDE00'.toWellFormed(); [s.length, s.charCodeAt(1), \
+             s.charCodeAt(3), s.codePointAt(4), 'ok'.toWellFormed()].join()",
+            "\"6,65533,65533,128512,ok\"",
+        ),
+    ]);
+}
+
+#[test]
+fn string_methods_replace_and_split() {
+    check(&[
+        (
+            "['abcabc'.replace('b', 'X'), 'abc'.replace('d', 'X'), 'abc'.replace('', '-'), \
+             'abc'.replace('b', '[$&|$`|$\\'|$$|$1|$01|$<a>|$]'), \
+             'abc'.replace('b', function (m, p, s) { return m + p + s; }), \
+             'abc'.replace('b')].join(' ')",
+            "\"aXcabc abc -abc a[b|a|c|$|$1|$01|$<a>|$]c ab1abcc aundefinedc\"",
+        ),
+        (
+            "['abcabc'.replaceAll('b', 'X'), 'abc'.replaceAll('', '-'), \
+             'aaa'.replaceAll('aa', 'b'), 'abab'.replaceAll('b', '$`'), \
+             'abab'.replaceAll('ab', function (m, p) { return p; }), \
+             'x'.replaceAll('y', 'z')].join(' ')",
+            "\"aXcaXc -a-b-c- ba aaaaba 02 x\"",
+        ),
+        (
+            "['a,b,c'.split(','), 'a,b,c'.split(',', 2), 'abc'.split(''), 'abc'.split('', 2), \
+             'abc'.split(), 'abc'.split(undefined, 0), ''.split(''), ''.split('a'), \
+             'abc'.split('abc'), 'a--b'.split('-')].map(function (a) { \
+             return a.length + ':' + a.join('|'); }).join(' ')",
+            "\"3:a|b|c 2:a|b 3:a|b|c 2:a|b 1:abc 0: 0: 1: 2:| 3:a||b\"",
+        ),
+        ("Array.isArray('a'.split('b'))", "true"),
+        // Ein Objekt mit der passenden Methode bekommt den Aufruf.
+        (
+            "var p = { tag: 'p', flags: 'g' }; \
+             for (var k of ['match', 'matchAll', 'replace', 'search', 'split']) { \
+             p[Symbol[k]] = (function (k) { return function () { \
+             return k + ':' + this.tag + ':' + [].join.call(arguments); }; })(k); } \
+             ['s'.match(p), 's'.matchAll(p), 's'.replace(p, 'r'), 's'.replaceAll(p, 'r'), \
+             's'.search(p), 's'.split(p, 3)].join(' ')",
+            "\"match:p:s matchAll:p:s replace:p:s,r replace:p:s,r search:p:s split:p:s,3\"",
+        ),
+        // `matchAll` und `replaceAll` verlangen von einem regulären
+        // Ausdruck das Flag `g`.
+        (
+            "var p = { flags: 'i' }; p[Symbol.match] = true; \
+             p[Symbol.replace] = function () { return 1; }; var e = []; \
+             for (var m of ['matchAll', 'replaceAll']) { \
+             try { 's'[m](p, ''); e.push('kein Fehler'); } \
+             catch (error) { e.push(error instanceof TypeError); } } \
+             p.flags = 'gi'; e.push('s'.replaceAll(p, '')); e.join()",
+            "\"true,true,1\"",
+        ),
+        // Bei primitiven Werten fragt niemand nach der Methode.
+        (
+            "Object.defineProperty(Number.prototype, Symbol.replace, \
+             { get: function () { throw 1; } }); \
+             Object.defineProperty(Number.prototype, Symbol.split, \
+             { get: function () { throw 2; } }); \
+             ['a1b'.replace(1, 'x'), 'a1b'.split(1).join('|')].join()",
+            "\"axb,a|b\"",
+        ),
+        // RegExpCreate fehlt noch; ToString(this) kommt davor.
+        ("'abc'.match('b')", "Unsupported(0)"),
+        ("'abc'.search('b')", "Unsupported(0)"),
+        ("'abc'.matchAll('b')", "Unsupported(0)"),
+        (
+            "String.prototype.match.call({ toString: function () { throw 5; } }, 'b')",
+            "throw 5",
+        ),
+        ("String.prototype.replace.call(null, 'a', 'b')", "TypeError"),
+        ("String.prototype.split.call(undefined, 'a')", "TypeError"),
+    ]);
+}
+
+#[test]
+fn string_methods_from_annex_b_wrap_html() {
+    check(&[
+        (
+            "['a'.anchor('b\"c'), 'a'.big(), 'a'.blink(), 'a'.bold(), 'a'.fixed(), \
+             'a'.fontcolor('red'), 'a'.fontsize(7), 'a'.italics(), 'a'.link('u'), 'a'.small(), \
+             'a'.strike(), 'a'.sub(), 'a'.sup()].join(' ')",
+            "\"<a name=\\\"b&quot;c\\\">a</a> <big>a</big> <blink>a</blink> <b>a</b> <tt>a</tt> \
+             <font color=\\\"red\\\">a</font> <font size=\\\"7\\\">a</font> <i>a</i> \
+             <a href=\\\"u\\\">a</a> <small>a</small> <strike>a</strike> <sub>a</sub> \
+             <sup>a</sup>\"",
+        ),
+        (
+            "'a'.link('\"\"x\"')",
+            "\"<a href=\\\"&quot;&quot;x&quot;\\\">a</a>\"",
+        ),
+        ("'a'.link()", "\"<a href=\\\"undefined\\\">a</a>\""),
+        ("String.prototype.anchor.call(undefined)", "TypeError"),
+        (
+            "[String.prototype.trimLeft === String.prototype.trimStart, \
+             String.prototype.trimRight === String.prototype.trimEnd, \
+             String.prototype.trimLeft.name, String.prototype.trimRight.name].join()",
+            "\"true,true,trimStart,trimEnd\"",
+        ),
+    ]);
+}
+
+/// Was länger als 2³² − 1 Codeeinheiten würde, wirft einen RangeError; was
+/// nicht ins Speicherbudget passt, endet, bevor der Puffer dafür entsteht.
+#[test]
+fn strings_stay_within_their_limits() {
+    let small = || {
+        let mut agent = Agent::with_options(Options {
+            limit: 4 * 1024 * 1024,
+            verify: true,
+            ..Options::default()
+        })
+        .expect("Speicher");
+        let realm = agent.create_realm().expect("Speicher");
+        (agent, realm)
+    };
+    let (mut agent, realm) = small();
+    for source in [
+        "'ab'.repeat(2 ** 31)",
+        "'a'.repeat(2 ** 32)",
+        "'a'.repeat(2 ** 60)",
+        "'a'.padEnd(2 ** 32)",
+        "'a'.padStart(2 ** 53)",
+    ] {
+        assert_eq!(run(&mut agent, realm, source), "RangeError", "{source}");
+    }
+    for (source, expected) in [
+        ("''.repeat(2 ** 40)", "\"\""),
+        ("'a'.padEnd(2 ** 40, '')", "\"a\""),
+        ("'a'.repeat(1 << 20).length", "1048576"),
+        ("'ab'.padStart(1 << 20, 'xy').slice(-3)", "\"yab\""),
+    ] {
+        assert_eq!(run(&mut agent, realm, source), expected, "{source}");
+    }
+    for source in [
+        "'a'.repeat(2 ** 31)",
+        "'a'.padEnd(2 ** 30)",
+        "'ab'.padStart(2 ** 31, 'xy')",
+        "var s = 'a'.repeat(1 << 20); s.concat(s, s, s)",
+        "var s = 'a'.repeat(1 << 19); s.replaceAll('a', 'bbbbbbbb')",
+        "var s = 'a'.repeat(1 << 19); s.replace('a', '$\\'$\\'$\\'$\\'$\\'$\\'$\\'$\\'')",
+        "var s = '\\uFDFA'.repeat(1 << 18); s.normalize('NFKD')",
+        "var s = '\\u0390'.repeat(1 << 20); s.toUpperCase()",
+        "var s = 'a'.repeat(1 << 20); s.link(s)",
+    ] {
+        let (mut agent, realm) = small();
+        assert_eq!(
+            run(&mut agent, realm, source),
+            "Abrupt(OutOfMemory)",
+            "{source}"
+        );
+    }
+}
+
+/// Jede Fundstelle und jedes Element kostet einen Arbeitsschritt.
+#[test]
+fn string_loops_spend_execution_steps() {
+    use crate::agent::{Budget, Exhausted};
+    use std::rc::Rc;
+
+    for source in [
+        "'a'.repeat(5000).split('')",
+        "'a,'.repeat(5000).split(',')",
+        "'a'.repeat(5000).replaceAll('a', 'b')",
+        "String.raw({ raw: { length: 2 ** 53 - 1 } })",
+    ] {
+        let (mut agent, realm) = agent_with(false);
+        let budget = Rc::new(Budget::new(2000));
+        let result = agent.scope(|agent, scope| {
+            agent
+                .evaluate_script_within(scope, realm, &units(source), budget)
+                .map(|_| ())
+        });
+        assert_eq!(
+            result,
+            Err(ScriptError::Abrupt(Abrupt::Exhausted(Exhausted::Steps))),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn string_methods_survive_collections() {
+    let (mut agent, realm) = agent_with(true);
+    let source = "var s = 'Äb,cd,ef'; var parts = s.split(','); \
+                  var r = s.replaceAll(',', function (m, p) { return '<' + p + '>'; }); \
+                  [parts.length, parts[2], r, s.toUpperCase(), s.normalize('NFD').length, \
+                  s.padStart(10, 'xy'), String.raw({ raw: parts }, 1, 2), \
+                  s.concat(parts[0], parts[1]), s.link(parts[0]), s.at(-1), \
+                  String.fromCodePoint(0x1F600).codePointAt(0)].join(' ')";
+    assert_eq!(
+        run(&mut agent, realm, source),
+        "\"3 ef Äb<2>cd<5>ef ÄB,CD,EF 9 xyÄb,cd,ef Äb1cd2ef Äb,cd,efÄbcd \
+         <a href=\\\"Äb\\\">Äb,cd,ef</a> f 128512\""
     );
     agent.heap_mut().collect();
     agent.heap().verify().expect("gültiger Heap");

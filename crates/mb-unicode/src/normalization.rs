@@ -1,12 +1,11 @@
 //! Normalisierung nach UAX #15: kanonische Zerlegung (NFD) und kanonische
-//! Komposition (NFC).
+//! Komposition (NFC), dazu die Kompatibilitätsformen NFKD und NFKC.
 //!
-//! Die Kompatibilitätsformen NFKD und NFKC fehlen noch; IDNA bringt seine
-//! Abbildungen selbst mit. Die Funktionen auf Codepunkten nehmen auch
-//! einzelne Surrogate an und lassen sie unverändert (RS-9).
+//! IDNA bringt seine Abbildungen selbst mit. Die Funktionen auf Codepunkten
+//! nehmen auch einzelne Surrogate an und lassen sie unverändert (RS-9).
 
 use crate::canonical_combining_class;
-use crate::tables::{CANONICAL_COMPOSITION, CANONICAL_DECOMPOSITION};
+use crate::tables::{CANONICAL_COMPOSITION, CANONICAL_DECOMPOSITION, COMPATIBILITY_DECOMPOSITION};
 
 // Hangul-Silben werden berechnet (Unicode-Standard, Abschnitt 3.12).
 const S_BASE: u32 = 0xAC00;
@@ -41,11 +40,31 @@ fn to_string(code_points: Vec<u32>) -> String {
     code_points.into_iter().filter_map(char::from_u32).collect()
 }
 
+/// Die Kompatibilitätszerlegung (NFKD) einer Zeichenkette.
+pub fn nfkd(text: &str) -> String {
+    to_string(decompose_compatible(text.chars().map(u32::from)))
+}
+
+/// Die Kompatibilitätszerlegung mit kanonischer Komposition (NFKC) einer
+/// Zeichenkette.
+pub fn nfkc(text: &str) -> String {
+    to_string(compose_compatible(text.chars().map(u32::from)))
+}
+
 /// Kanonische Zerlegung und Sortierung nach Kombinationsklasse.
 pub fn decompose(input: impl IntoIterator<Item = u32>) -> Vec<u32> {
+    decompose_with(input, false)
+}
+
+/// Kompatibilitätszerlegung und Sortierung nach Kombinationsklasse (NFKD).
+pub fn decompose_compatible(input: impl IntoIterator<Item = u32>) -> Vec<u32> {
+    decompose_with(input, true)
+}
+
+fn decompose_with(input: impl IntoIterator<Item = u32>, compatible: bool) -> Vec<u32> {
     let mut output = Vec::new();
     for code_point in input {
-        decompose_one(code_point, &mut output);
+        decompose_one(code_point, compatible, &mut output);
     }
     // Canonical Ordering: Jede Folge von Zeichen mit Klasse ungleich 0 wird
     // stabil nach Klasse sortiert.
@@ -55,8 +74,9 @@ pub fn decompose(input: impl IntoIterator<Item = u32>) -> Vec<u32> {
     output
 }
 
-/// Hängt die vollständige kanonische Zerlegung eines Codepunkts an.
-fn decompose_one(code_point: u32, output: &mut Vec<u32>) {
+/// Hängt die vollständige Zerlegung eines Codepunkts an, die kanonische
+/// oder mit `compatible` die für NFKD.
+fn decompose_one(code_point: u32, compatible: bool, output: &mut Vec<u32>) {
     if let Some(index) = code_point
         .checked_sub(S_BASE)
         .filter(|&index| index < S_COUNT)
@@ -69,19 +89,41 @@ fn decompose_one(code_point: u32, output: &mut Vec<u32>) {
         }
         return;
     }
-    let found = CANONICAL_DECOMPOSITION.binary_search_by_key(&code_point, |&(key, _)| key);
-    match found
-        .ok()
-        .and_then(|found| CANONICAL_DECOMPOSITION.get(found))
-    {
-        Some(&(_, parts)) => output.extend_from_slice(parts),
+    // Die Tabelle für NFKD nennt nur die Zeichen, deren Zerlegung von der
+    // kanonischen abweicht.
+    let compatible = compatible
+        .then(|| decomposition(&COMPATIBILITY_DECOMPOSITION, code_point))
+        .flatten();
+    match compatible.or_else(|| decomposition(&CANONICAL_DECOMPOSITION, code_point)) {
+        Some(parts) => output.extend_from_slice(parts),
         None => output.push(code_point),
     }
 }
 
+/// Die Zerlegung eines Codepunkts aus einer nach Codepunkt sortierten
+/// Tabelle.
+fn decomposition(
+    table: &'static [(u32, &'static [u32])],
+    code_point: u32,
+) -> Option<&'static [u32]> {
+    let found = table
+        .binary_search_by_key(&code_point, |&(key, _)| key)
+        .ok()?;
+    table.get(found).map(|&(_, parts)| parts)
+}
+
 /// Kanonische Zerlegung, dann Komposition (UAX #15, Abschnitt 1.3).
 pub fn compose(input: impl IntoIterator<Item = u32>) -> Vec<u32> {
-    let decomposed = decompose(input);
+    compose_decomposed(decompose(input))
+}
+
+/// Kompatibilitätszerlegung, dann kanonische Komposition (NFKC).
+pub fn compose_compatible(input: impl IntoIterator<Item = u32>) -> Vec<u32> {
+    compose_decomposed(decompose_compatible(input))
+}
+
+/// Die kanonische Komposition einer zerlegten und sortierten Folge.
+fn compose_decomposed(decomposed: Vec<u32>) -> Vec<u32> {
     let mut output: Vec<u32> = Vec::with_capacity(decomposed.len());
     // Position des letzten Starters und Klasse des letzten Zeichens danach.
     let mut starter: Option<usize> = None;
@@ -155,6 +197,25 @@ mod tests {
         assert!(!is_nfc("A\u{300}"));
         // Einzelne Surrogate bleiben, wie sie sind.
         assert_eq!(compose([0xD800, 0x41, 0x300]), [0xD800, 0xC0]);
+        assert_eq!(compose_compatible([0xD800, 0xFB01]), [0xD800, 0x66, 0x69]);
+    }
+
+    #[test]
+    fn compatibility_forms() {
+        // Ligatur, Kreiszahl und hochgestellte Ziffer.
+        assert_eq!(nfkd("\u{FB01}\u{2460}\u{B2}"), "fi12");
+        assert_eq!(nfkc("\u{FB01}\u{2460}\u{B2}"), "fi12");
+        // Die kanonischen Formen lassen sie stehen.
+        assert_eq!(nfd("\u{FB01}"), "\u{FB01}");
+        assert_eq!(nfc("\u{FB01}"), "\u{FB01}");
+        // U+1E9B hat eine kanonische Zerlegung mit einem Zeichen, das selbst
+        // eine Kompatibilitätszerlegung hat.
+        assert_eq!(nfd("\u{1E9B}"), "\u{17F}\u{307}");
+        assert_eq!(nfkd("\u{1E9B}"), "s\u{307}");
+        assert_eq!(nfkc("\u{1E9B}"), "\u{1E61}");
+        // Hangul bleibt berechnet.
+        assert_eq!(nfkd("\u{D4DB}"), "\u{1111}\u{1171}\u{11B6}");
+        assert_eq!(nfkc("\u{1111}\u{1171}\u{11B6}"), "\u{D4DB}");
     }
 
     /// Ein Feld der Testdatei: Codepunkte, durch Leerzeichen getrennt.
@@ -186,8 +247,7 @@ mod tests {
             let [source, nfc, nfd, nfkc, nfkd] = columns.as_slice() else {
                 panic!("Zeile ohne fünf Spalten: {line}");
             };
-            // Die Invarianten aus dem Kopf der Datei, soweit sie NFC und NFD
-            // betreffen.
+            // Die Invarianten aus dem Kopf der Datei.
             for input in [source, nfc, nfd] {
                 assert_eq!(&compose(input.iter().copied()), nfc, "NFC: {line}");
                 assert_eq!(&decompose(input.iter().copied()), nfd, "NFD: {line}");
@@ -195,6 +255,12 @@ mod tests {
             for input in [nfkc, nfkd] {
                 assert_eq!(&compose(input.iter().copied()), nfkc, "NFC: {line}");
                 assert_eq!(&decompose(input.iter().copied()), nfkd, "NFD: {line}");
+            }
+            for input in [source, nfc, nfd, nfkc, nfkd] {
+                let composed = compose_compatible(input.iter().copied());
+                assert_eq!(&composed, nfkc, "NFKC: {line}");
+                let decomposed = decompose_compatible(input.iter().copied());
+                assert_eq!(&decomposed, nfkd, "NFKD: {line}");
             }
             if part == "Part1"
                 && let [code_point] = source.as_slice()
@@ -209,6 +275,10 @@ mod tests {
             if char::from_u32(code_point).is_some() {
                 assert_eq!(compose([code_point]), [code_point], "U+{code_point:04X}");
                 assert_eq!(decompose([code_point]), [code_point], "U+{code_point:04X}");
+                let composed = compose_compatible([code_point]);
+                assert_eq!(composed, [code_point], "U+{code_point:04X}");
+                let decomposed = decompose_compatible([code_point]);
+                assert_eq!(decomposed, [code_point], "U+{code_point:04X}");
             }
         }
     }

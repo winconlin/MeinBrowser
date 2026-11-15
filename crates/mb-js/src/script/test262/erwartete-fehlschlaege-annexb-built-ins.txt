@@ -3,5 +3,12 @@
 # nur der genannte. Erzeugt von script/test262/language.rs; bei einer
 # Abweichung schreibt der Test die neue Fassung nach
 # target/test262/erwartete-fehlschlaege-annexb-built-ins.txt.
-# 1 Dateien, 0 Vorschläge übersprungen; bestanden 0 von 1 Dateien und 0 von 2 Varianten
+# 112 Dateien, 0 Vorschläge übersprungen; bestanden 104 von 112 Dateien und 208 von 224 Varianten
 Object/is/emulates-undefined.js
+String/prototype/match/custom-matcher-emulates-undefined.js
+String/prototype/matchAll/custom-matcher-emulates-undefined.js
+String/prototype/replace/custom-replacer-emulates-undefined.js
+String/prototype/replaceAll/custom-replacer-emulates-undefined.js
+String/prototype/search/custom-searcher-emulates-undefined.js
+String/prototype/split/custom-splitter-emulates-undefined.js
+String/prototype/substr/start-and-length-as-numbers.js

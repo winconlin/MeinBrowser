@@ -228,7 +228,7 @@ fn unsigned_decimal(text: &str) -> Option<f64> {
 
 /// Leerraum für TrimString (Abschnitt 22.1.3.32.1): *WhiteSpace* und
 /// *LineTerminator*.
-fn is_trimmed(unit: u16) -> bool {
+pub(crate) fn is_trimmed(unit: u16) -> bool {
     let c = u32::from(unit);
     is_white_space(c) || is_line_terminator(c)
 }

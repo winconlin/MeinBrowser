@@ -9,11 +9,13 @@
 //! %Number%, %Math% und die globalen Funktionen `isFinite`, `isNaN`,
 //! `parseFloat` und `parseInt` (Welle 8c), %Iterator% mit
 //! %Iterator.prototype% und den Iterator-Helfern und %JSON% (Welle 8d)
-//! sowie %Map% und %Set% mit ihren Prototypen und Iteratoren (Welle 8e) und
-//! %Reflect% und %Proxy% (Welle 8f); %Function% selbst wartet auf `eval`. Von %String% gibt es bisher die
-//! Teile, die die Harness von Test262 braucht. Dazu kommen, was `for`-`of`
-//! und die Ausbreitung brauchen: die Iteratoren für Arrays und
-//! Zeichenketten mit den Methoden für @@iterator. Generatoren und async-Generatoren bringen ihre Prototypen
+//! sowie %Map% und %Set% mit ihren Prototypen und Iteratoren (Welle 8e),
+//! %Reflect% und %Proxy% (Welle 8f) und %String% mit %String.prototype%
+//! (Welle 8g); %Function% selbst wartet auf `eval`, und `match`, `matchAll`
+//! und `search` von %String.prototype% legen ihr Muster erst an, wenn es
+//! die Engine für reguläre Ausdrücke gibt. Dazu kommen, was `for`-`of` und
+//! die Ausbreitung brauchen: die Iteratoren für Arrays und Zeichenketten
+//! mit den Methoden für @@iterator. Generatoren und async-Generatoren bringen ihre Prototypen
 //! mit `next`, `return` und `throw` mit, async-Funktionen ihren Prototyp,
 //! und `for await` braucht %AsyncIteratorPrototype% und
 //! %AsyncFromSyncIteratorPrototype%. %Promise% ist vollständig, mit
