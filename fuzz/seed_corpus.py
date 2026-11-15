@@ -255,6 +255,15 @@ def main():
     write("webidl", "index-escaped-names", 'interface _interface {}; partial interface _interface { attribute _interface value; }; interface mixin _mixin {}; _interface includes _mixin;')
     write("webidl", "index-duplicate-definition", 'interface Example {}; dictionary _Example {};')
     write("webidl", "index-unknown-type", 'interface Example { undefined run(Missing value); };')
+    write("webidl", "members-valid", 'interface X { constructor(); undefined run(optional long count = 0, DOMString... rest); }; dictionary D { required long value; }; enum E {"on","off"};')
+    write("webidl", "members-dictionary-duplicate", 'dictionary A { long value; }; dictionary B : A { long _value; };')
+    write("webidl", "members-mixin-collision", 'interface X { attribute long value; }; interface mixin M { undefined value(); }; X includes M;')
+    write("webidl", "members-argument-duplicate", 'callback F = undefined (long value, DOMString _value);')
+    write("webidl", "members-enum-duplicate", 'enum E {"on","on"};')
+    write("webidl", "members-partial-overload", 'interface X { undefined run(); }; partial interface X { undefined run(long value); };')
+    write("webidl", "members-variadic-not-last", 'interface X { undefined run(long... values, long other); };')
+    write("webidl", "members-reserved-name", 'interface X { static attribute long prototype; };')
+
 
     write("html", "document", "<!doctype html><table><tr><td>x</table><template><p>y</template>")
     write("html", "text-modes", "<textarea>&amp;</textarea><script>'<&'</script><svg><title>x</title></svg>")

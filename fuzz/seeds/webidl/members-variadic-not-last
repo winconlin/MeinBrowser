@@ -1,0 +1,1 @@
+interface X { undefined run(long... values, long other); };

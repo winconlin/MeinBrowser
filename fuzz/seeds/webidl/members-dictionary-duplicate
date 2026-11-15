@@ -1,0 +1,1 @@
+dictionary A { long value; }; dictionary B : A { long _value; };

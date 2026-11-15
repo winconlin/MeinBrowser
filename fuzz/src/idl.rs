@@ -1,8 +1,8 @@
 //! Source partitioning, progress and token-isolation checks for WebIDL.
 
-use mb_webidl::index;
 use mb_webidl::lexer::{Kind, Lexer};
 use mb_webidl::parser::{self, Budget, Document, ErrorKind, Kind as NodeKind, Limits};
+use mb_webidl::{index, members};
 
 pub fn webidl(data: &[u8]) {
     if data.len() > crate::MAX_INPUT {
@@ -13,6 +13,7 @@ pub fn webidl(data: &[u8]) {
     syntax(&source);
     names(&[&source]);
     name_model(data);
+    member_model(data);
 }
 
 fn tokens(source: &str) {
@@ -128,7 +129,32 @@ fn names(sources: &[&str]) {
     };
     let budget = Budget::new(75_000);
     match index::build_within(sources, limits, &budget) {
-        Ok(index) => check_index(&index),
+        Ok(index) => {
+            check_index(&index);
+            match members::build_within(
+                &index,
+                members::Limits {
+                    records: 1024,
+                    visits: 4096,
+                },
+                &budget,
+            ) {
+                Ok(model) => check_members(&index, &model),
+                Err(error) => {
+                    for location in error.location.iter().chain(error.previous.iter()) {
+                        assert!(
+                            sources
+                                .get(location.source)
+                                .and_then(|s| s.get(location.span.clone()))
+                                .is_some()
+                        );
+                    }
+                    if let members::ErrorKind::Exhausted(reason) = error.kind {
+                        assert_eq!(budget.exhausted(), Some(reason));
+                    }
+                }
+            }
+        }
         Err(error) => {
             for location in error.location.iter().chain(error.previous.iter()) {
                 assert!(
@@ -319,6 +345,218 @@ fn name_model(data: &[u8]) {
     assert_eq!(error.kind, index::ErrorKind::InheritanceCycle);
 }
 
+fn check_members(index: &index::Index<'_>, model: &members::Members<'_>) {
+    let mut member_count = 0;
+    let mut argument_count = 0;
+    let mut value_count = 0;
+    for (id, definition) in index.definitions() {
+        let args = |signature: &members::Signature| {
+            let args = model.arguments(signature).expect("local argument range");
+            let mut seen = std::collections::BTreeSet::new();
+            for (n, arg) in args.iter().enumerate() {
+                assert!(seen.insert(arg.identifier.name));
+                let document = index
+                    .document(arg.identifier.location.source)
+                    .expect("argument source");
+                assert!(document.node(arg.ty).is_some());
+                assert_eq!(
+                    document.node(arg.attributes).unwrap().kind,
+                    NodeKind::Production("ExtendedAttributeList")
+                );
+                let raw = document
+                    .source()
+                    .get(arg.identifier.location.span.clone())
+                    .expect("argument name");
+                assert_eq!(raw.strip_prefix('_').unwrap_or(raw), arg.identifier.name);
+                if arg.variadic {
+                    assert_eq!(n + 1, args.len());
+                    assert!(arg.optional);
+                    assert!(arg.default.is_none());
+                }
+                if let Some(default) = arg.default {
+                    assert_eq!(
+                        document.node(default).unwrap().kind,
+                        NodeKind::Production("DefaultValue")
+                    );
+                }
+            }
+            args.len()
+        };
+        for member in model.members(id).expect("local member range") {
+            member_count += 1;
+            assert!(definition.fragments.contains(&member.fragment));
+            let document = index
+                .document(member.location.source)
+                .expect("member source");
+            assert!(
+                document
+                    .source()
+                    .get(member.location.span.clone())
+                    .is_some()
+            );
+            assert_eq!(
+                document.node(member.attributes).unwrap().kind,
+                NodeKind::Production("ExtendedAttributeList")
+            );
+            for ty in member.types.iter().flatten() {
+                assert!(matches!(
+                    document.node(*ty).unwrap().kind,
+                    NodeKind::Production("Type" | "TypeWithExtendedAttributes" | "ConstType")
+                ));
+            }
+            if let Some(identifier) = &member.identifier {
+                let raw = document
+                    .source()
+                    .get(identifier.location.span.clone())
+                    .expect("member identifier");
+                assert_eq!(raw.strip_prefix('_').unwrap_or(raw), identifier.name);
+            }
+            if let Some(signature) = &member.signature {
+                argument_count += args(signature);
+            }
+        }
+        if let Some(callback) = model.callback(id) {
+            argument_count += args(callback);
+        }
+        let mut values = std::collections::BTreeSet::new();
+        for value in model.values(id).expect("local enum range") {
+            value_count += 1;
+            assert!(values.insert(value.value));
+            let document = index.document(value.location.source).unwrap();
+            let raw = document
+                .source()
+                .get(value.location.span.clone())
+                .expect("enum span");
+            assert_eq!(&raw[1..raw.len() - 1], value.value);
+        }
+    }
+    assert_eq!(member_count, model.len());
+    assert_eq!(argument_count, model.argument_count());
+    assert_eq!(value_count, model.value_count());
+}
+
+// Eigenes Orakel für Member über zwei Quellen. Jede Variante fügt genau
+// einen bekannten Fehler in einen sonst gültigen kleinen Entwurf ein.
+fn member_model(data: &[u8]) {
+    let count = usize::from(data.first().copied().unwrap_or(0) % 7) + 2;
+    let mode = data.get(1).copied().unwrap_or(0) % 8;
+    let mut early = String::from("dictionary D0 { long root; }; ");
+    for n in 1..count {
+        early.push_str(&format!(
+            "dictionary D{n} : D{} {{ long field{n}; }}; ",
+            n - 1
+        ));
+    }
+    early.push_str("enum Mode { \"on\", \"off\" }; interface mixin A { readonly attribute long a; }; partial interface Host { undefined extra(long value); }; Host includes A;");
+    let mut late = String::from(
+        "interface Host { undefined run(optional long count = 0, DOMString... rest); }; interface mixin B { attribute long b; }; Host includes B;",
+    );
+    let expected = match mode {
+        1 => {
+            early = early.replace(&format!("long field{};", count - 1), "long root;");
+            Some(members::ErrorKind::DuplicateDictionaryMember)
+        }
+        2 => {
+            late = late.replace("DOMString... rest", "DOMString... _count");
+            Some(members::ErrorKind::DuplicateArgument)
+        }
+        3 => {
+            early = early.replace("\"off\"", "\"on\"");
+            Some(members::ErrorKind::DuplicateEnumValue)
+        }
+        4 => {
+            early = early.replace("undefined extra", "undefined run");
+            Some(members::ErrorKind::CrossFragmentOverload)
+        }
+        5 => {
+            late = late.replace("attribute long b", "attribute long a");
+            Some(members::ErrorKind::DuplicateMember)
+        }
+        6 => {
+            late = late.replace("attribute long b", "attribute long _constructor");
+            Some(members::ErrorKind::ReservedIdentifier)
+        }
+        7 => {
+            late = late.replace(
+                "optional long count = 0, DOMString... rest",
+                "long... rest, long count",
+            );
+            Some(members::ErrorKind::VariadicNotLast)
+        }
+        _ => None,
+    };
+    let budget = Budget::new(100_000);
+    let index = index::build_within(
+        &[&early, &late],
+        index::Limits {
+            sources: 2,
+            source_bytes: 8192,
+            nodes: 8192,
+            records: 1024,
+            parser: Limits {
+                source_bytes: 8192,
+                nodes: 8192,
+                pending: 8192,
+            },
+        },
+        &budget,
+    )
+    .expect("linked member model");
+    let result = members::build_within(
+        &index,
+        members::Limits {
+            records: 1024,
+            visits: 4096,
+        },
+        &budget,
+    );
+    match expected {
+        Some(kind) => assert_eq!(
+            result.expect_err("one known invalid declaration").kind,
+            kind
+        ),
+        None => {
+            let model = result.expect("valid member model");
+            check_members(&index, &model);
+            assert_eq!(model.len(), count + 4);
+            assert_eq!(model.argument_count(), 3);
+            assert_eq!(model.value_count(), 2);
+            let host = model.members(index.find("Host").unwrap()).unwrap();
+            assert_eq!(host.len(), 2);
+            assert_eq!(host[0].identifier.as_ref().unwrap().name, "extra");
+            assert_eq!(host[1].identifier.as_ref().unwrap().name, "run");
+            let args = model
+                .arguments(host[1].signature.as_ref().unwrap())
+                .unwrap();
+            assert!(args[0].optional && !args[0].variadic && args[0].default.is_some());
+            assert!(args[1].optional && args[1].variadic && args[1].default.is_none());
+            assert_eq!(
+                model
+                    .values(index.find("Mode").unwrap())
+                    .unwrap()
+                    .iter()
+                    .map(|v| v.value)
+                    .collect::<Vec<_>>(),
+                ["on", "off"]
+            );
+            for n in 0..count {
+                let fields = model
+                    .members(index.find(&format!("D{n}")).unwrap())
+                    .unwrap();
+                assert_eq!(fields.len(), 1);
+                assert_eq!(
+                    fields[0].identifier.as_ref().unwrap().name,
+                    if n == 0 {
+                        "root".to_owned()
+                    } else {
+                        format!("field{n}")
+                    }
+                );
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -341,6 +579,15 @@ mod tests {
             "interface X {}; X includes Missing;",
         ] {
             names(&[source]);
+        }
+    }
+
+    #[test]
+    fn generated_member_models_cover_valid_graphs_and_seven_independent_errors() {
+        for count in 0..7 {
+            for mode in 0..8 {
+                member_model(&[count, mode]);
+            }
         }
     }
 

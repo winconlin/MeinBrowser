@@ -3,8 +3,10 @@
 `mb_webidl::index` ergänzt den [Syntaxparser](m2-webidl-parser.md) um einen
 quellenübergreifenden Namensindex. Er führt Grunddefinitionen und Partials
 zusammen und löst benannte Typen, Vererbung und Includes auf. Die vollständigen
-Syntaxbäume bleiben erhalten. Eine normalisierte Typ-/Member-IR, vollständige
-semantische Validierung und Binding-Generierung stehen noch aus.
+Syntaxbäume bleiben erhalten. Darauf baut inzwischen die strukturierte
+[Memberbeschreibung mit ersten Prüfungen](m2-webidl-members.md) auf. Eine
+normalisierte Typbeschreibung, vollständige semantische Validierung und
+Binding-Generierung stehen noch aus.
 
 ## Standard und Umfang
 
@@ -26,7 +28,7 @@ Folgende Schritte sind implementiert:
   keine Typen und werden getrennt indiziert; doppelte Mixin-Grunddefinitionen
   werden ebenfalls abgelehnt. Reservierte Namen `constructor` und `toString`
   werden bei benannten Definitionen auch nach dem Entschärfen des Escape
-  abgelehnt. Die entsprechenden Member-Regeln folgen separat.
+  abgelehnt. Weitere Member-Regeln prüft anschließend `mb_webidl::members`.
 - Partials mit der passenden Grunddefinition verbinden, auch wenn diese
   später oder in einer anderen Quelle steht. Fehlende Grunddefinitionen und
   abweichende Definitionsarten ergeben Fehler.
@@ -87,8 +89,10 @@ cargo run --locked -p webidl-check -- api.idl dependencies.idl
 ```
 
 Es meldet die Anzahl aufgelöster Definitionen, Fragmente, Typverweise und
-Includes. Ein erfolgreicher Lauf bestätigt die oben genannten Prüfungen;
-er erzeugt keine Bindings und bestätigt keine vollständige WebIDL-Gültigkeit.
+Includes. Anschließend läuft die [Member-Prüfung](m2-webidl-members.md) mit
+weiteren Zählern und derselben Arbeitsquote. Ein erfolgreicher Lauf bestätigt
+die jeweils dokumentierten Prüfungen; er erzeugt keine Bindings und bestätigt
+keine vollständige WebIDL-Gültigkeit.
 
 ## Gemeinsame Grenzen und iterative Graphen
 
@@ -165,11 +169,12 @@ mutierte Korpora bleiben nach [SECURITY.md](../SECURITY.md) und
    die besondere Typedef-Regel gegen den angegebenen Standardstand prüfen.
    Die fehlende vollständige Member-Reihenfolge über Dokumentgrenzen ist im
    Standard weiterhin [Issue 432](https://github.com/whatwg/webidl/issues/432).
-2. Auf dem Index eine normalisierte, ebenfalls begrenzte Typ-/Member-IR
-   aufbauen. Zu prüfen sind noch Member-Namen und Kollisionen auch über
-   Partials/Mixins, Dictionary-Mitglieder einschließlich Vererbung, Enums,
-   Argumente, Overload-Auflösung, erlaubte Typkombinationen, Nullable-/Union-
-   Regeln, konstante Werte und Defaults sowie Extended Attributes.
+2. Die inzwischen vorhandene [Memberbeschreibung](m2-webidl-members.md)
+   prüfen: Member-Namen und Kollisionen über Partials/Mixins, Dictionary-Felder
+   einschließlich Vererbung, Enumduplikate und erste Argument-/Overload-Regeln
+   sind implementiert. Eine normalisierte Typbeschreibung, vollständige
+   Overload-Auflösung, erlaubte Typkombinationen, Nullable-/Union-Regeln,
+   konstante Werte und Defaults sowie Extended Attributes bleiben offen.
 3. Erst nach diesen Prüfungen Bindings mit Argumentprüfung, Konversionen,
    Ausnahmen und Prototypen erzeugen. Mixin-Member benötigen pro Host-Interface
    eigene JavaScript-Funktionsobjekte; gemeinsam indizierter Quellcode bedeutet
