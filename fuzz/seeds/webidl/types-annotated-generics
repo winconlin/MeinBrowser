@@ -1,0 +1,1 @@
+interface Item {}; typedef [Tag] FrozenArray<sequence<[Element] Item?>> Values; interface X { readonly attribute Values values; };
