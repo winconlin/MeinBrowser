@@ -2,7 +2,7 @@
 
 use mb_webidl::lexer::{Kind, Lexer};
 use mb_webidl::parser::{self, Budget, Document, ErrorKind, Kind as NodeKind, Limits};
-use mb_webidl::{index, members};
+use mb_webidl::{index, members, types};
 
 pub fn webidl(data: &[u8]) {
     if data.len() > crate::MAX_INPUT {
@@ -14,6 +14,7 @@ pub fn webidl(data: &[u8]) {
     names(&[&source]);
     name_model(data);
     member_model(data);
+    type_model(data);
 }
 
 fn tokens(source: &str) {
@@ -139,7 +140,34 @@ fn names(sources: &[&str]) {
                 },
                 &budget,
             ) {
-                Ok(model) => check_members(&index, &model),
+                Ok(model) => {
+                    check_members(&index, &model);
+                    match types::build_within(
+                        &index,
+                        &model,
+                        types::Limits {
+                            source_nodes: 8192,
+                            types: 1024,
+                            edges: 2048,
+                        },
+                        &budget,
+                    ) {
+                        Ok(types) => check_types(&index, &model, &types),
+                        Err(error) => {
+                            if let Some(at) = error.location {
+                                assert!(
+                                    sources
+                                        .get(at.source)
+                                        .and_then(|s| s.get(at.span))
+                                        .is_some()
+                                );
+                            }
+                            if let types::ErrorKind::Exhausted(reason) = error.kind {
+                                assert_eq!(budget.exhausted(), Some(reason));
+                            }
+                        }
+                    }
+                }
                 Err(error) => {
                     for location in error.location.iter().chain(error.previous.iter()) {
                         assert!(
@@ -557,6 +585,186 @@ fn member_model(data: &[u8]) {
     }
 }
 
+fn check_types(index: &index::Index<'_>, model: &members::Members<'_>, types: &types::Types) {
+    for (id, ty) in types.iter() {
+        let document = index.document(ty.location.source).expect("type source");
+        assert!(document.source().get(ty.location.span.clone()).is_some());
+        assert!(
+            document
+                .node(ty.location.node.expect("type node"))
+                .is_some()
+        );
+        let children = types.children(id).expect("local child range");
+        for &child in children {
+            assert!(child < id);
+            assert!(types.get(child).is_some());
+        }
+        match ty.kind {
+            types::Kind::Atom(_) | types::Kind::Named(_) => assert!(children.is_empty()),
+            types::Kind::Union => assert!(children.len() >= 2),
+            _ => assert_eq!(children.len(), 1),
+        }
+        if let types::Kind::Named(target) = ty.kind {
+            assert!(index.definition(target).is_some());
+        }
+        if let types::Kind::Annotated { attributes } = ty.kind {
+            assert_eq!(
+                document.node(attributes).unwrap().kind,
+                NodeKind::Production("ExtendedAttributeList")
+            );
+        }
+        assert!(types.category(id).is_some());
+    }
+    for (id, definition) in index.definitions() {
+        if definition.kind == index::DefinitionKind::Typedef {
+            assert!(types.typedef(id).is_some());
+        }
+        let check_signature = |signature: &members::Signature, source| {
+            if let Some(result) = signature.result {
+                assert!(types.at(source, result).is_some());
+            }
+            for arg in model.arguments(signature).unwrap() {
+                assert!(types.at(arg.identifier.location.source, arg.ty).is_some());
+            }
+        };
+        for member in model.members(id).unwrap() {
+            for &node in member.types.iter().flatten() {
+                assert!(types.at(member.location.source, node).is_some());
+            }
+            if let Some(signature) = &member.signature {
+                check_signature(signature, member.location.source);
+            }
+        }
+        if let Some(signature) = model.callback(id) {
+            check_signature(signature, definition.location.source);
+        }
+    }
+}
+
+// Typformen und Fehler werden aus einem eigenen kleinen Schema abgeleitet.
+// Die erwartete verschachtelte Form wird nicht mit dem Typaufbau berechnet.
+fn type_model(data: &[u8]) {
+    let depth = usize::from(data.first().copied().unwrap_or(0) % 8);
+    let mode = data.get(1).copied().unwrap_or(0) % 8;
+    let mut early = String::from(
+        "typedef unsigned long Count; dictionary Options { long n; }; interface Item {}; ",
+    );
+    let shape = format!(
+        "[Tag] FrozenArray<{}Count{}>",
+        "sequence<".repeat(depth),
+        ">".repeat(depth)
+    );
+    let mut late = format!(
+        "typedef {shape} Container; interface Host {{ readonly attribute Container values; undefined run(optional Count n = 0); }};"
+    );
+    let expected = match mode {
+        1 => {
+            late = late.replace(&shape, "sequence<Count>");
+            Some(types::ErrorKind::AttributeType)
+        }
+        2 => {
+            early.push_str("typedef long? Base; ");
+            late = late.replace(&shape, "Base?");
+            Some(types::ErrorKind::NullableType)
+        }
+        3 => {
+            late = late.replace(&shape, "(long? or DOMString?)");
+            Some(types::ErrorKind::UnionType)
+        }
+        4 => {
+            early.push_str("typedef DOMString Text; ");
+            late = late.replace("undefined run", "const Text invalid = 1; undefined run");
+            Some(types::ErrorKind::ConstantType)
+        }
+        5 => {
+            late = late.replace("optional Count n = 0", "Options? value");
+            Some(types::ErrorKind::NullableDictionary)
+        }
+        6 => {
+            late = late
+                .replace(&shape, "Promise<Count>")
+                .replace("readonly attribute", "attribute");
+            Some(types::ErrorKind::AttributePromiseReadonly)
+        }
+        7 => {
+            early.push_str("typedef any Anything; ");
+            late = late.replace(&shape, "(Anything or DOMString)");
+            Some(types::ErrorKind::UnionType)
+        }
+        _ => None,
+    };
+    let budget = Budget::new(100_000);
+    let index = index::build_within(
+        &[&early, &late],
+        index::Limits {
+            sources: 2,
+            source_bytes: 8192,
+            nodes: 8192,
+            records: 1024,
+            parser: Limits {
+                source_bytes: 8192,
+                nodes: 8192,
+                pending: 8192,
+            },
+        },
+        &budget,
+    )
+    .expect("linked type model");
+    let members = members::build_within(
+        &index,
+        members::Limits {
+            records: 1024,
+            visits: 4096,
+        },
+        &budget,
+    )
+    .expect("valid member model");
+    let result = types::build_within(
+        &index,
+        &members,
+        types::Limits {
+            source_nodes: 8192,
+            types: 1024,
+            edges: 2048,
+        },
+        &budget,
+    );
+    if let Some(kind) = expected {
+        assert_eq!(result.expect_err("one known invalid type").kind, kind);
+    } else {
+        let types = result.expect("valid bounded type graph");
+        check_types(&index, &members, &types);
+        let mut node = types.typedef(index.find("Container").unwrap()).unwrap();
+        assert!(matches!(
+            types.get(node).unwrap().kind,
+            types::Kind::Annotated { .. }
+        ));
+        node = types.children(node).unwrap()[0];
+        assert_eq!(
+            types.get(node).unwrap().kind,
+            types::Kind::Generic(types::Generic::FrozenArray)
+        );
+        node = types.children(node).unwrap()[0];
+        for _ in 0..depth {
+            assert_eq!(
+                types.get(node).unwrap().kind,
+                types::Kind::Generic(types::Generic::Sequence)
+            );
+            node = types.children(node).unwrap()[0];
+        }
+        assert_eq!(
+            types.get(node).unwrap().kind,
+            types::Kind::Named(index.find("Count").unwrap())
+        );
+        assert_eq!(types.category(node), Some(types::Category::Primitive));
+        let primitive = types.typedef(index.find("Count").unwrap()).unwrap();
+        assert_eq!(
+            types.get(primitive).unwrap().kind,
+            types::Kind::Atom(types::Atom::Primitive(types::Primitive::UnsignedLong))
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -587,6 +795,15 @@ mod tests {
         for count in 0..7 {
             for mode in 0..8 {
                 member_model(&[count, mode]);
+            }
+        }
+    }
+
+    #[test]
+    fn generated_type_models_have_independent_shapes_and_invalid_type_expectations() {
+        for depth in 0..8 {
+            for mode in 0..8 {
+                type_model(&[depth, mode]);
             }
         }
     }

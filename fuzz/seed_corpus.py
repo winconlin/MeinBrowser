@@ -263,6 +263,15 @@ def main():
     write("webidl", "members-partial-overload", 'interface X { undefined run(); }; partial interface X { undefined run(long value); };')
     write("webidl", "members-variadic-not-last", 'interface X { undefined run(long... values, long other); };')
     write("webidl", "members-reserved-name", 'interface X { static attribute long prototype; };')
+    write("webidl", "types-annotated-generics", 'interface Item {}; typedef [Tag] FrozenArray<sequence<[Element] Item?>> Values; interface X { readonly attribute Values values; };')
+    write("webidl", "types-attribute-alias", 'typedef sequence<long> Values; interface X { attribute Values value; };')
+    write("webidl", "types-nullable-alias", 'typedef long? Maybe; typedef Maybe? Invalid;')
+    write("webidl", "types-union-nullable", 'typedef (long? or DOMString?) Invalid;')
+    write("webidl", "types-constant-alias", 'typedef DOMString Text; interface X { const Text invalid = 1; };')
+    write("webidl", "types-nullable-dictionary", 'dictionary D {}; callback F = undefined (D? value);')
+    write("webidl", "types-promise-attribute", 'typedef Promise<long> P; interface X { attribute P value; };')
+    write("webidl", "types-union-any-alias", 'typedef any A; typedef (A or DOMString) Invalid;')
+
 
 
     write("html", "document", "<!doctype html><table><tr><td>x</table><template><p>y</template>")

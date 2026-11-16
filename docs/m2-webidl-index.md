@@ -5,8 +5,9 @@ quellenübergreifenden Namensindex. Er führt Grunddefinitionen und Partials
 zusammen und löst benannte Typen, Vererbung und Includes auf. Die vollständigen
 Syntaxbäume bleiben erhalten. Darauf baut inzwischen die strukturierte
 [Memberbeschreibung mit ersten Prüfungen](m2-webidl-members.md) auf. Eine
-normalisierte Typbeschreibung, vollständige semantische Validierung und
-Binding-Generierung stehen noch aus.
+[Typbeschreibung mit ersten Typregeln](m2-webidl-types.md) ist ebenfalls
+vorhanden. Vollständige semantische Validierung und Binding-Generierung
+stehen noch aus.
 
 ## Standard und Umfang
 
@@ -172,9 +173,10 @@ mutierte Korpora bleiben nach [SECURITY.md](../SECURITY.md) und
 2. Die inzwischen vorhandene [Memberbeschreibung](m2-webidl-members.md)
    prüfen: Member-Namen und Kollisionen über Partials/Mixins, Dictionary-Felder
    einschließlich Vererbung, Enumduplikate und erste Argument-/Overload-Regeln
-   sind implementiert. Eine normalisierte Typbeschreibung, vollständige
-   Overload-Auflösung, erlaubte Typkombinationen, Nullable-/Union-Regeln,
-   konstante Werte und Defaults sowie Extended Attributes bleiben offen.
+   sind implementiert. Auch die [Typbeschreibung](m2-webidl-types.md) samt
+   ersten Nullable-/Union- und Verwendungsregeln ist vorhanden. Vollständige
+   Overload-Auflösung, Typprüfung, konstante Werte und Defaults sowie
+   Extended Attributes bleiben offen.
 3. Erst nach diesen Prüfungen Bindings mit Argumentprüfung, Konversionen,
    Ausnahmen und Prototypen erzeugen. Mixin-Member benötigen pro Host-Interface
    eigene JavaScript-Funktionsobjekte; gemeinsam indizierter Quellcode bedeutet
