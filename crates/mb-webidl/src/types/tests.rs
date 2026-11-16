@@ -317,6 +317,7 @@ fn graph_sharing_does_not_expand_typedefs_exponentially() {
             source_nodes: 10000,
             types: 200,
             edges: 200,
+            ..Limits::default()
         },
         &Budget::new(15000),
     )
@@ -364,6 +365,7 @@ fn node_type_edge_limits_and_exact_work_boundaries_are_host_failures() {
         source_nodes: nodes,
         types: types.len(),
         edges: types.edge_count(),
+        ..Limits::default()
     };
     let budget = Budget::unlimited();
     build_within(&index, &members, limits, &budget).unwrap();

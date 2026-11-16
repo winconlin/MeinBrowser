@@ -1,0 +1,1 @@
+dictionary Leaf { long n; }; dictionary A { Leaf left; Leaf right; }; dictionary B { A left; A right; };

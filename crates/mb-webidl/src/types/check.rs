@@ -84,7 +84,7 @@ pub(super) fn check(
             arguments(members, types, signature, work)?;
         }
     }
-    Ok(())
+    super::dictionary::check(index, members, types, work)
 }
 
 fn arguments(

@@ -12,6 +12,7 @@ use crate::parser::{Document, Kind as NodeKind, NodeId};
 pub use mb_base::{Budget, Cancel, Exhausted};
 
 mod check;
+mod dictionary;
 mod lower;
 
 pub const DEFAULT_STEPS: u64 = 10_000_000;
@@ -21,6 +22,10 @@ pub struct Limits {
     pub source_nodes: usize,
     pub types: usize,
     pub edges: usize,
+    /// Dictionary-Knoten im impliziten Einschlussgraphen.
+    pub dictionary_nodes: usize,
+    /// Besuchte Einschlusskanten, einschließlich Feldern und Vererbung.
+    pub dictionary_edges: usize,
 }
 impl Default for Limits {
     fn default() -> Self {
@@ -28,6 +33,8 @@ impl Default for Limits {
             source_nodes: 1_000_000,
             types: 200_000,
             edges: 400_000,
+            dictionary_nodes: 200_000,
+            dictionary_edges: 1_000_000,
         }
     }
 }
@@ -36,6 +43,8 @@ pub enum Limit {
     SourceNodes,
     Types,
     Edges,
+    DictionaryNodes,
+    DictionaryEdges,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ErrorKind {
@@ -48,6 +57,7 @@ pub enum ErrorKind {
     AttributeType,
     AttributePromiseReadonly,
     NullableDictionary,
+    DictionaryCycle,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Error {

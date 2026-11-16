@@ -46,7 +46,7 @@ Overloading, Dictionaries und Enumerations. Implementiert sind:
 Diese Prüfungen ersetzen noch keinen vollständigen WebIDL-Validator. Insbesondere
 bleiben `toJSON`-Sonderregeln, weitere Getter-/Setter-/Stringifier- und
 Collection-Regeln, Typ-/Union-/Nullable-Prüfung, Typedef-Auswertung,
-Dictionary-Typzyklen, Pflicht-/Defaultwert-Regeln, Wertebereiche, Extended
+Pflicht-/Defaultwert-Regeln, Wertebereiche, Extended
 Attributes, effektive Overload-Sets und Sprachbindungen offen. Ein Erfolg ist
 keine Freigabe zur ungeprüften Codegenerierung.
 
@@ -185,7 +185,8 @@ und [fuzzing.md](fuzzing.md) privat.
    besonders static/regular bei Namenskollisionen und Overloads, Partials und
    Mixins sowie die andere Vererbungsregel bei Dictionary-Feldern.
 2. Die inzwischen vorhandene begrenzte [Typbeschreibung](m2-webidl-types.md)
-   mit ersten Form- und Kontextregeln prüfen. Darauf Dictionary-Typzyklen,
+   mit ersten Form- und Kontextregeln samt
+   [Dictionary-Typzyklen](m2-webidl-dictionary-types.md) prüfen. Darauf
    vollständige Typunterscheidbarkeit, Default-/Konstantenwerte und die
    verbleibenden typabhängigen Memberregeln validieren.
 3. Extended Attributes gezielt auswerten und validieren; ihre ungeprüften
