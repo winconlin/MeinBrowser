@@ -7,8 +7,12 @@
 //! ansehen will, muss zusätzlich normalisieren (D145). Die Funktionen auf
 //! Codepunkten nehmen auch einzelne Surrogate an und lassen sie unverändert
 //! (RS-9).
+//!
+//! Dazu die einfache Faltung (scf, Status C und S), die jeden Codepunkt auf
+//! genau einen abbildet. Mit ihr vergleichen reguläre Ausdrücke mit `i` und
+//! `u` oder `v`.
 
-use crate::tables::CASE_FOLDING;
+use crate::tables::{CASE_FOLDING, SIMPLE_CASE_FOLDING};
 
 /// Die gefaltete Zeichenkette (toCasefold).
 pub fn fold(text: &str) -> String {
@@ -40,6 +44,35 @@ fn folded(text: &str) -> impl Iterator<Item = u32> + '_ {
         let unchanged = mapping.is_empty().then_some(code_point);
         mapping.iter().copied().chain(unchanged)
     })
+}
+
+/// Die einfache Faltung eines Codepunkts (scf): der Eintrag mit Status S,
+/// sonst der mit Status C, sonst der Codepunkt selbst.
+pub fn simple_fold(code_point: u32) -> u32 {
+    simple(code_point, folding(code_point)).unwrap_or(code_point)
+}
+
+/// Alle Codepunkte, die die einfache Faltung ändert, mit ihrem Ziel,
+/// aufsteigend nach Codepunkt.
+pub fn simple_foldings() -> impl Iterator<Item = (u32, u32)> {
+    CASE_FOLDING.iter().filter_map(|&(code_point, mapping)| {
+        simple(code_point, Some(mapping)).map(|target| (code_point, target))
+    })
+}
+
+/// Das Ziel der einfachen Faltung zu einem Eintrag der vollständigen. Einen
+/// Eintrag mit Status S gibt es nur neben einem mit Status F, und einer mit
+/// Status C hat genau einen Codepunkt; beides prüft `tools/datagen`.
+fn simple(code_point: u32, full: Option<&'static [u32]>) -> Option<u32> {
+    match full? {
+        [target] => Some(*target),
+        _ => {
+            let index = SIMPLE_CASE_FOLDING
+                .binary_search_by_key(&code_point, |&(source, _)| source)
+                .ok()?;
+            SIMPLE_CASE_FOLDING.get(index).map(|&(_, target)| target)
+        }
+    }
 }
 
 /// Die Faltung eines Codepunkts, `None` für alle, die bleiben, wie sie sind.
@@ -76,6 +109,32 @@ mod tests {
             fold_code_points([0x41, 0xD800, 0xDF]),
             [0x61, 0xD800, 0x73, 0x73]
         );
+    }
+
+    #[test]
+    fn simple_foldings_map_to_one_code_point() {
+        assert_eq!(simple_fold(0x41), 0x61);
+        assert_eq!(simple_fold(0x61), 0x61);
+        // ß hat nur eine vollständige Faltung, ẞ auch eine einfache.
+        assert_eq!(simple_fold(0xDF), 0xDF);
+        assert_eq!(simple_fold(0x1E9E), 0xDF);
+        // ſ und das Kelvin-Zeichen falten in den ASCII-Bereich.
+        assert_eq!(simple_fold(0x17F), 0x73);
+        assert_eq!(simple_fold(0x212A), 0x6B);
+        // Ohne die türkische Sonderform.
+        assert_eq!(simple_fold(0x130), 0x130);
+        assert_eq!(simple_fold(0xD800), 0xD800);
+        assert_eq!(simple_fold(0x11_0000), 0x11_0000);
+        // Die Liste ist aufsteigend, ändert jeden ihrer Codepunkte und ist
+        // idempotent: Ein Ziel wird nicht weiter gefaltet.
+        let all: Vec<(u32, u32)> = simple_foldings().collect();
+        assert!(all.windows(2).all(|pair| pair[0].0 < pair[1].0));
+        assert!(all.contains(&(0x1E9E, 0xDF)));
+        for &(source, target) in &all {
+            assert_ne!(source, target);
+            assert_eq!(simple_fold(source), target);
+            assert_eq!(simple_fold(target), target, "U+{source:04X}");
+        }
     }
 
     /// Vergleicht jeden Codepunkt mit `CaseFolding.txt`, gelesen unabhängig

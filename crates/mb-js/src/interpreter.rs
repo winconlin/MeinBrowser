@@ -78,6 +78,7 @@ use crate::async_function::{
 use crate::async_generator::{async_generator_create, async_generator_yield, suspend_frame};
 use crate::bound_function::{is_bound_function, unwrap_call, unwrap_construct};
 use crate::builtin::{builtin_parts, call_builtin};
+use crate::builtins::create_regexp;
 use crate::bytecode::{Code, Constant, HandlerKind, Instruction, Op};
 use crate::compare::{is_less_than, is_loosely_equal, is_strictly_equal};
 use crate::compiler::{CompileError, compile_default_constructor, compile_function};
@@ -1311,6 +1312,12 @@ impl<'c> Frame<'c, '_> {
                 };
                 self.set_accumulator(agent, object);
             }
+            Op::CreateRegExp => {
+                let pattern = self.constant(agent, scope, first);
+                let flags = self.constant(agent, scope, second);
+                let regexp = create_regexp(agent, scope, self.realm, pattern, flags)?;
+                self.set_accumulator(agent, regexp);
+            }
             Op::DefineNamed | Op::DefineKeyed => {
                 let object = self.register(agent, scope, first);
                 let key = if instruction.op == Op::DefineNamed {
@@ -2524,6 +2531,7 @@ impl<'c> Frame<'c, '_> {
             }
             Op::CreateObject
             | Op::CreateArray
+            | Op::CreateRegExp
             | Op::DefineNamed
             | Op::DefineKeyed
             | Op::SetPrototypeLiteral

@@ -213,6 +213,9 @@ ops! {
     CreateObject [],
     /// Ein neues Array mit der Länge 0 und %Array.prototype%.
     CreateArray [],
+    /// Ein Literal `/muster/flags` (Abschnitt 13.2.7.3): RegExpCreate mit
+    /// dem Muster aus der ersten und den Flags aus der zweiten Konstante.
+    CreateRegExp [Constant, Constant],
     /// CreateDataPropertyOrThrow für das Objekt im Register mit dem Namen
     /// und dem Akkumulator als Wert.
     DefineNamed [Register, Constant],

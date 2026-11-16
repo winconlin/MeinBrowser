@@ -72,7 +72,9 @@ fn show(pattern: &Pattern, id: NodeId) -> String {
         .to_owned(),
         Node::Property { property, negated } => {
             let (name, value) = match property {
-                Property::GeneralCategory(value) => ("gc=", value),
+                Property::GeneralCategory(value) | Property::NamedGeneralCategory(value) => {
+                    ("gc=", value)
+                }
                 Property::Script(value) => ("sc=", value),
                 Property::ScriptExtensions(value) => ("scx=", value),
                 Property::Binary(value) | Property::Strings(value) => ("", value),

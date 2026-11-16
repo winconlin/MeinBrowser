@@ -6,10 +6,8 @@
 //! Ist das Muster ein Objekt mit der passenden Methode unter @@match,
 //! @@matchAll, @@replace, @@search oder @@split, ruft die Methode sie auf.
 //! Sonst suchen `replace`, `replaceAll` und `split` nach einer
-//! Zeichenkette. `match`, `matchAll` und `search` bräuchten dafür
-//! RegExpCreate; bis die Engine für reguläre Ausdrücke da ist, enden sie
-//! dort als nicht unterstützt ([`Abrupt::Unsupported`]), nicht mit einem
-//! Fehler, den ein Script fangen könnte.
+//! Zeichenkette. `match`, `matchAll` und `search` legen mit RegExpCreate
+//! einen regulären Ausdruck an und rufen dessen Methode auf.
 //!
 //! `replaceAll` sammelt die Fundstellen nicht erst in einer Liste, sondern
 //! sucht die nächste, nachdem die vorige ersetzt ist. Die Zeichenketten
@@ -21,7 +19,7 @@ use super::{
     is_object, is_regexp, is_undefined, new_string, number, push_units, require_object_coercible,
     undefined,
 };
-use crate::agent::{Abrupt, Agent, Completion, ErrorKind};
+use crate::agent::{Agent, Completion, ErrorKind};
 use crate::builtin::BuiltinCall;
 use crate::builtins::array::{step, units_of};
 use crate::builtins::units;
@@ -78,14 +76,26 @@ fn require_global(agent: &mut Agent, pattern: Local<'_>) -> Completion<()> {
 }
 
 /// Der Rest von `match`, `matchAll` und `search` für ein Muster ohne
-/// eigene Methode: ToString(*this*), dann RegExpCreate, das noch fehlt.
+/// eigene Methode: ToString(*this*), RegExpCreate mit `flags` und Invoke
+/// der Methode unter `symbol`.
 fn regexp_create<'s>(
     agent: &mut Agent,
     scope: &'s Scope,
     arguments: &BuiltinCall<'_, '_>,
+    flags: &str,
+    symbol: WellKnownSymbol,
 ) -> Completion<Local<'s>> {
-    to_string(agent, scope, arguments.this)?;
-    Err(Abrupt::Unsupported(0))
+    let string = to_string(agent, scope, arguments.this)?;
+    let pattern = arguments.argument(agent, scope, 0);
+    let flags = if flags.is_empty() {
+        undefined(agent, scope)
+    } else {
+        new_string(agent, scope, &units(flags))?
+    };
+    let realm = arguments.realm;
+    let regexp = crate::builtins::regexp::regexp_create(agent, scope, realm, pattern, flags)?;
+    let key = PropertyKey::Symbol(agent.well_known_symbol(scope, symbol));
+    crate::operations::invoke(agent, scope, realm, regexp, key, &[string])
 }
 
 /// String.prototype.match ( regexp ) (Abschnitt 22.1.3.13).
@@ -100,7 +110,7 @@ pub(super) fn match_pattern<'s>(
     if let Some(result) = dispatch(agent, scope, regexp, WellKnownSymbol::Match, &this)? {
         return Ok(result);
     }
-    regexp_create(agent, scope, arguments)
+    regexp_create(agent, scope, arguments, "", WellKnownSymbol::Match)
 }
 
 /// String.prototype.matchAll ( regexp ) (Abschnitt 22.1.3.14).
@@ -116,7 +126,7 @@ pub(super) fn match_all<'s>(
     if let Some(result) = dispatch(agent, scope, regexp, WellKnownSymbol::MatchAll, &this)? {
         return Ok(result);
     }
-    regexp_create(agent, scope, arguments)
+    regexp_create(agent, scope, arguments, "g", WellKnownSymbol::MatchAll)
 }
 
 /// String.prototype.search ( regexp ) (Abschnitt 22.1.3.21).
@@ -131,7 +141,7 @@ pub(super) fn search<'s>(
     if let Some(result) = dispatch(agent, scope, regexp, WellKnownSymbol::Search, &this)? {
         return Ok(result);
     }
-    regexp_create(agent, scope, arguments)
+    regexp_create(agent, scope, arguments, "", WellKnownSymbol::Search)
 }
 
 /// Was GetSubstitution über einen Fund weiß.

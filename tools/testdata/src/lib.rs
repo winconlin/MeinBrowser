@@ -153,6 +153,7 @@ pub const SOURCES: [Source; 9] = [
             "/test/built-ins/Proxy/",
             "/test/built-ins/Reflect/",
             "/test/built-ins/RegExp/",
+            "/test/built-ins/RegExpStringIteratorPrototype/",
             "/test/built-ins/Set/",
             "/test/built-ins/SetIteratorPrototype/",
             "/test/built-ins/String/",

@@ -223,7 +223,8 @@ pub fn get_prototype_of<'s>(
             | ObjectClass::AsyncFromSyncIterator
             | ObjectClass::AsyncGenerator
             | ObjectClass::BoundFunction
-            | ObjectClass::Collection => {
+            | ObjectClass::Collection
+            | ObjectClass::RegExp => {
                 let heap = agent.heap();
                 let prototype =
                     object_of(heap, cursor).and_then(|object| heap.object_prototype(object));
@@ -258,7 +259,8 @@ pub fn set_prototype_of(
         | ObjectClass::AsyncFromSyncIterator
         | ObjectClass::AsyncGenerator
         | ObjectClass::BoundFunction
-        | ObjectClass::Collection => ordinary_set_prototype_of(agent, object, prototype),
+        | ObjectClass::Collection
+        | ObjectClass::RegExp => ordinary_set_prototype_of(agent, object, prototype),
         ObjectClass::Proxy => agent.scope(|agent, scope| {
             let heap = agent.heap();
             let cursor = heap.local(scope, heap.get(object));
@@ -334,7 +336,8 @@ pub fn is_extensible(agent: &mut Agent, object: Local<'_>) -> Completion<bool> {
         | ObjectClass::AsyncFromSyncIterator
         | ObjectClass::AsyncGenerator
         | ObjectClass::BoundFunction
-        | ObjectClass::Collection => Ok(ordinary_is_extensible(agent.heap(), object)),
+        | ObjectClass::Collection
+        | ObjectClass::RegExp => Ok(ordinary_is_extensible(agent.heap(), object)),
         ObjectClass::Proxy => agent.scope(|agent, scope| {
             let heap = agent.heap();
             let cursor = heap.local(scope, heap.get(object));
@@ -371,7 +374,8 @@ pub fn prevent_extensions(agent: &mut Agent, object: Local<'_>) -> Completion<bo
         | ObjectClass::AsyncFromSyncIterator
         | ObjectClass::AsyncGenerator
         | ObjectClass::BoundFunction
-        | ObjectClass::Collection => Ok(ordinary_prevent_extensions(agent.heap(), object)),
+        | ObjectClass::Collection
+        | ObjectClass::RegExp => Ok(ordinary_prevent_extensions(agent.heap(), object)),
         ObjectClass::Proxy => agent.scope(|agent, scope| {
             let heap = agent.heap();
             let cursor = heap.local(scope, heap.get(object));
@@ -426,9 +430,8 @@ pub fn get_own_property<'s>(
         | ObjectClass::AsyncFromSyncIterator
         | ObjectClass::AsyncGenerator
         | ObjectClass::BoundFunction
-        | ObjectClass::Collection => {
-            Ok(ordinary_get_own_property(agent.heap(), scope, object, key))
-        }
+        | ObjectClass::Collection
+        | ObjectClass::RegExp => Ok(ordinary_get_own_property(agent.heap(), scope, object, key)),
         ObjectClass::Proxy => {
             let heap = agent.heap();
             let cursor = heap.local(scope, heap.get(object));
@@ -494,7 +497,8 @@ pub fn define_own_property(
         | ObjectClass::AsyncFromSyncIterator
         | ObjectClass::AsyncGenerator
         | ObjectClass::BoundFunction
-        | ObjectClass::Collection => {
+        | ObjectClass::Collection
+        | ObjectClass::RegExp => {
             ordinary_define_own_property(agent, scope, object, key, descriptor)
         }
         ObjectClass::Array => array::define_own_property(agent, scope, object, key, descriptor),
@@ -1104,7 +1108,8 @@ pub fn own_property_keys<'s>(
         | ObjectClass::AsyncFromSyncIterator
         | ObjectClass::AsyncGenerator
         | ObjectClass::BoundFunction
-        | ObjectClass::Collection => {}
+        | ObjectClass::Collection
+        | ObjectClass::RegExp => {}
         ObjectClass::Proxy => {
             let heap = agent.heap();
             let cursor = heap.local(scope, heap.get(object));

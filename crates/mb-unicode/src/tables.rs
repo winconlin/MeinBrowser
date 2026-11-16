@@ -24302,6 +24302,45 @@ pub static CASE_FOLDING: [(u32, &[u32]); 1606] = [
     (0x1E921, &[0x1E943]),
 ];
 
+/// Einfache Faltung der Groß- und Kleinschreibung, wo sie von der
+/// vollständigen abweicht (Status S in `CaseFolding.txt`), nach Codepunkt
+/// sortiert. Sonst gilt der Eintrag in `CASE_FOLDING`, wenn er aus genau
+/// einem Codepunkt besteht (Status C).
+pub static SIMPLE_CASE_FOLDING: [(u32, u32); 32] = [
+    (0x1E9E, 0x00DF),
+    (0x1F88, 0x1F80),
+    (0x1F89, 0x1F81),
+    (0x1F8A, 0x1F82),
+    (0x1F8B, 0x1F83),
+    (0x1F8C, 0x1F84),
+    (0x1F8D, 0x1F85),
+    (0x1F8E, 0x1F86),
+    (0x1F8F, 0x1F87),
+    (0x1F98, 0x1F90),
+    (0x1F99, 0x1F91),
+    (0x1F9A, 0x1F92),
+    (0x1F9B, 0x1F93),
+    (0x1F9C, 0x1F94),
+    (0x1F9D, 0x1F95),
+    (0x1F9E, 0x1F96),
+    (0x1F9F, 0x1F97),
+    (0x1FA8, 0x1FA0),
+    (0x1FA9, 0x1FA1),
+    (0x1FAA, 0x1FA2),
+    (0x1FAB, 0x1FA3),
+    (0x1FAC, 0x1FA4),
+    (0x1FAD, 0x1FA5),
+    (0x1FAE, 0x1FA6),
+    (0x1FAF, 0x1FA7),
+    (0x1FBC, 0x1FB3),
+    (0x1FCC, 0x1FC3),
+    (0x1FD3, 0x0390),
+    (0x1FE3, 0x03B0),
+    (0x1FFC, 0x1FF3),
+    (0xFB05, 0xFB06),
+    (0x1DF95, 0x00DF),
+];
+
 /// Abbildung auf Kleinbuchstaben für die Default Case Conversion: die
 /// Abbildungen ohne Bedingung aus `SpecialCasing.txt`, sonst
 /// Simple_Lowercase_Mapping, nach Codepunkt sortiert. Alle anderen

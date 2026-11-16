@@ -204,6 +204,12 @@ pub enum Intrinsic {
     Reflect,
     /// %Proxy% (Abschnitt 28.2.1).
     Proxy,
+    /// %RegExp% (Abschnitt 22.2.4).
+    RegExp,
+    /// %RegExp.prototype% (Abschnitt 22.2.6).
+    RegExpPrototype,
+    /// %RegExpStringIteratorPrototype% (Abschnitt 22.2.9.2).
+    RegExpStringIteratorPrototype,
 }
 
 impl Intrinsic {
@@ -747,6 +753,7 @@ fn set_default_global_bindings(
         ("Proxy", Intrinsic::Proxy),
         ("RangeError", Intrinsic::RangeError),
         ("ReferenceError", Intrinsic::ReferenceError),
+        ("RegExp", Intrinsic::RegExp),
         ("Set", Intrinsic::Set),
         ("String", Intrinsic::String),
         ("Symbol", Intrinsic::Symbol),

@@ -72,6 +72,8 @@ const BUILT_INS: Suite = Suite {
         "Promise",
         "Proxy",
         "Reflect",
+        "RegExp",
+        "RegExpStringIteratorPrototype",
         "Set",
         "SetIteratorPrototype",
         "String",
@@ -92,7 +94,7 @@ const BUILT_INS: Suite = Suite {
 /// von `String.prototype` (Anhang B.2.2).
 const ANNEX_B_BUILT_INS: Suite = Suite {
     directory: "test/annexB/built-ins",
-    parts: &["Object", "String"],
+    parts: &["Object", "RegExp", "String"],
     selection: false,
     file: "erwartete-fehlschlaege-annexb-built-ins.txt",
     expected: include_str!("erwartete-fehlschlaege-annexb-built-ins.txt"),

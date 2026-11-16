@@ -22,6 +22,8 @@
 
 mod html;
 mod pattern;
+
+pub(super) use pattern::{Match, get_substitution};
 mod prototype;
 mod search;
 
@@ -32,10 +34,10 @@ use super::{
 };
 use crate::agent::{Agent, Completion, ErrorKind};
 use crate::builtin::{Behaviour, Builtin, BuiltinCall, create_builtin_function};
-use crate::conversion::{to_boolean, to_number, to_object, to_string, to_uint32};
+use crate::conversion::{to_number, to_object, to_string, to_uint32};
 use crate::descriptor::PropertyDescriptor;
 use crate::heap::{Local, OutOfMemory, Scope};
-use crate::key::{PropertyKey, WellKnownSymbol};
+use crate::key::WellKnownSymbol;
 use crate::object::{get_prototype_from_constructor, string_create};
 use crate::operations::{define_property_or_throw, get, length_of_array_like};
 use crate::realm::{Intrinsic, RealmId};
@@ -93,7 +95,7 @@ pub(super) fn create(agent: &mut Agent, scope: &Scope, realm: RealmId) -> Comple
 
 // Helfer
 
-fn number<'s>(agent: &Agent, scope: &'s Scope, value: f64) -> Local<'s> {
+pub(super) fn number<'s>(agent: &Agent, scope: &'s Scope, value: f64) -> Local<'s> {
     agent.heap().local(scope, Value::number(value))
 }
 
@@ -101,21 +103,21 @@ fn boolean<'s>(agent: &Agent, scope: &'s Scope, value: bool) -> Local<'s> {
     agent.heap().local(scope, Value::boolean(value))
 }
 
-fn undefined<'s>(agent: &Agent, scope: &'s Scope) -> Local<'s> {
+pub(super) fn undefined<'s>(agent: &Agent, scope: &'s Scope) -> Local<'s> {
     agent.heap().local(scope, Value::UNDEFINED)
 }
 
-fn is_object(agent: &Agent, value: Local<'_>) -> bool {
+pub(super) fn is_object(agent: &Agent, value: Local<'_>) -> bool {
     matches!(agent.heap().get(value).kind(), Kind::Object(_))
 }
 
-fn is_undefined(agent: &Agent, value: Local<'_>) -> bool {
+pub(super) fn is_undefined(agent: &Agent, value: Local<'_>) -> bool {
     agent.heap().get(value).is_undefined()
 }
 
 /// Eine Länge oder Stelle als Zahl. Zeichenketten haben höchstens 2³² − 1
 /// Codeeinheiten, die Umwandlung ist also exakt.
-fn count(length: usize) -> f64 {
+pub(super) fn count(length: usize) -> f64 {
     u32::try_from(length).map_or(f64::INFINITY, f64::from)
 }
 
@@ -151,7 +153,7 @@ fn argument_string<'s>(
 }
 
 /// Die Länge einer Zeichenkette in Codeeinheiten.
-fn length_of(agent: &Agent, string: Local<'_>) -> usize {
+pub(super) fn length_of(agent: &Agent, string: Local<'_>) -> usize {
     let heap = agent.heap();
     match heap.get(string).kind() {
         Kind::String(string) => heap.string_len(string),
@@ -161,7 +163,7 @@ fn length_of(agent: &Agent, string: Local<'_>) -> usize {
 
 /// Die Codeeinheit an der Stelle `index`, ohne die Zeichenkette zu
 /// kopieren.
-fn unit_at(agent: &Agent, string: Local<'_>, index: usize) -> Option<u16> {
+pub(super) fn unit_at(agent: &Agent, string: Local<'_>, index: usize) -> Option<u16> {
     let heap = agent.heap();
     match heap.get(string).kind() {
         Kind::String(string) => heap.string_unit(string, index),
@@ -170,7 +172,7 @@ fn unit_at(agent: &Agent, string: Local<'_>, index: usize) -> Option<u16> {
 }
 
 /// Die Codeeinheiten von `from` bis vor `to`.
-fn units_between(agent: &Agent, string: Local<'_>, from: usize, to: usize) -> Vec<u16> {
+pub(super) fn units_between(agent: &Agent, string: Local<'_>, from: usize, to: usize) -> Vec<u16> {
     (from..to)
         .map_while(|index| unit_at(agent, string, index))
         .collect()
@@ -178,7 +180,7 @@ fn units_between(agent: &Agent, string: Local<'_>, from: usize, to: usize) -> Ve
 
 /// Der Teil von `from` bis vor `to` als Zeichenkette; der ganze Bereich
 /// ist die Zeichenkette selbst.
-fn substring<'s>(
+pub(super) fn substring<'s>(
     agent: &mut Agent,
     scope: &'s Scope,
     string: Local<'_>,
@@ -194,7 +196,11 @@ fn substring<'s>(
 }
 
 /// Eine neue Zeichenkette aus `units`.
-fn new_string<'s>(agent: &mut Agent, scope: &'s Scope, units: &[u16]) -> Completion<Local<'s>> {
+pub(super) fn new_string<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    units: &[u16],
+) -> Completion<Local<'s>> {
     check_length(agent, units.len())?;
     Ok(agent.heap_mut().alloc_string(scope, units)?)
 }
@@ -217,7 +223,7 @@ fn check_length(agent: &mut Agent, length: usize) -> Completion<()> {
 
 /// Hängt `units` an eine wachsende Zeichenkette an: ein RangeError über
 /// 2³² − 1 Codeeinheiten, sonst wie [`append`].
-fn push_units(agent: &mut Agent, text: &mut Vec<u16>, units: &[u16]) -> Completion<()> {
+pub(super) fn push_units(agent: &mut Agent, text: &mut Vec<u16>, units: &[u16]) -> Completion<()> {
     let fits = text
         .len()
         .checked_add(units.len())
@@ -244,7 +250,10 @@ fn clamp_position(position: f64, length: usize) -> usize {
 /// CodePointAt (Abschnitt 11.1.4) auf Codeeinheiten: der Codepunkt an
 /// `position` und wie viele Codeeinheiten er belegt. Ein einzelnes
 /// Surrogat ist sein eigener Codepunkt.
-fn code_point_at(unit: impl Fn(usize) -> Option<u16>, position: usize) -> Option<(u32, usize)> {
+pub(super) fn code_point_at(
+    unit: impl Fn(usize) -> Option<u16>,
+    position: usize,
+) -> Option<(u32, usize)> {
     let first = unit(position)?;
     if (0xD800..=0xDBFF).contains(&first)
         && let Some(second) = position.checked_add(1).and_then(&unit)
@@ -271,7 +280,7 @@ fn code_points(units: &[u16]) -> Vec<u32> {
 
 /// UTF16EncodeCodePoint (Abschnitt 11.1.1); ein einzelnes Surrogat bleibt
 /// eine Codeeinheit.
-fn push_code_point(units: &mut Vec<u16>, code_point: u32) {
+pub(super) fn push_code_point(units: &mut Vec<u16>, code_point: u32) {
     let mut buffer = [0; 2];
     match char::from_u32(code_point) {
         Some(c) => units.extend_from_slice(c.encode_utf16(&mut buffer)),
@@ -279,19 +288,9 @@ fn push_code_point(units: &mut Vec<u16>, code_point: u32) {
     }
 }
 
-/// IsRegExp (Abschnitt 7.2.6). Objekte mit [[RegExpMatcher]] gibt es noch
-/// nicht; bis dahin entscheidet allein @@match.
+/// IsRegExp (Abschnitt 7.2.6).
 fn is_regexp(agent: &mut Agent, value: Local<'_>) -> Completion<bool> {
-    if !is_object(agent, value) {
-        return Ok(false);
-    }
-    agent.scope(|agent, scope| {
-        let key = PropertyKey::Symbol(agent.well_known_symbol(scope, WellKnownSymbol::Match));
-        let matcher = get(agent, scope, value, key)?;
-        let heap = agent.heap();
-        let found = heap.get(matcher);
-        Ok(!found.is_undefined() && to_boolean(heap, found))
-    })
+    super::regexp::is_regexp(agent, value)
 }
 
 // Der Konstruktor und seine Funktionen

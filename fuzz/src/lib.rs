@@ -7,9 +7,11 @@ use std::hint::black_box;
 
 mod execution;
 mod idl;
+mod regexp;
 mod runtime;
 pub use execution::js_execute;
 pub use idl::webidl;
+pub use regexp::regexp;
 pub use runtime::js_runtime;
 
 pub const MAX_INPUT: usize = 4096;
@@ -503,7 +505,7 @@ mod tests {
     #[test]
     fn start_corpora_and_empty_inputs_exercise_all_harnesses() {
         type Harness = fn(&[u8]);
-        let targets: [(&str, Harness); 16] = [
+        let targets: [(&str, Harness); 17] = [
             ("html", html),
             ("css", css),
             ("url", url),
@@ -520,6 +522,7 @@ mod tests {
             ("js-runtime", js_runtime),
             ("js-execute", js_execute),
             ("webidl", webidl),
+            ("regexp", regexp),
         ];
         for (name, check) in targets {
             check(&[]);

@@ -5,10 +5,10 @@
 use super::{
     Heap, KIND_ARGUMENTS, KIND_ARRAY, KIND_ASYNC_FROM_SYNC, KIND_ASYNC_GENERATOR,
     KIND_BOUND_FUNCTION, KIND_BUILTIN, KIND_COLLECTION, KIND_ERROR, KIND_FUNCTION, KIND_GENERATOR,
-    KIND_ITERATOR, KIND_OBJECT, KIND_PRIMITIVE, KIND_PROMISE, KIND_PROXY, KIND_SHAPE, KIND_SLOTS,
-    KIND_SPARSE, KIND_SYMBOL, KIND_WEAK, Local, NONE, OBJECT_REFS, OutOfMemory, Scope, cell_words,
-    header, header_flags, header_kind, header_length, is_object, is_value_cell, object_fields,
-    packed, packed_high, packed_low, to_usize, with_flags,
+    KIND_ITERATOR, KIND_OBJECT, KIND_PRIMITIVE, KIND_PROMISE, KIND_PROXY, KIND_REGEXP, KIND_SHAPE,
+    KIND_SLOTS, KIND_SPARSE, KIND_SYMBOL, KIND_WEAK, Local, NONE, OBJECT_REFS, OutOfMemory, Scope,
+    cell_words, header, header_flags, header_kind, header_length, is_object, is_value_cell,
+    object_fields, packed, packed_high, packed_low, to_usize, with_flags,
 };
 use crate::value::{Ref, RefKind, Value};
 
@@ -122,6 +122,10 @@ pub(crate) enum ObjectClass {
     /// internen Methoden fragen den Handler; Gestalt und Plätze trägt er
     /// nur für private Elemente, sein Prototyp bleibt leer.
     Proxy,
+    /// Ein regulärer Ausdruck (Abschnitt 22.2.8) mit
+    /// [`REGEXP_FIELDS`](super::REGEXP_FIELDS) internen Feldern, sonst
+    /// gewöhnlich.
+    RegExp,
 }
 
 impl ObjectClass {
@@ -142,6 +146,7 @@ impl ObjectClass {
             ObjectClass::BoundFunction => KIND_BOUND_FUNCTION,
             ObjectClass::Collection => KIND_COLLECTION,
             ObjectClass::Proxy => KIND_PROXY,
+            ObjectClass::RegExp => KIND_REGEXP,
         }
     }
 
@@ -162,6 +167,7 @@ impl ObjectClass {
             KIND_BOUND_FUNCTION => Some(ObjectClass::BoundFunction),
             KIND_COLLECTION => Some(ObjectClass::Collection),
             KIND_PROXY => Some(ObjectClass::Proxy),
+            KIND_REGEXP => Some(ObjectClass::RegExp),
             _ => None,
         }
     }
@@ -672,6 +678,20 @@ impl Heap {
     /// nicht gibt.
     pub(crate) fn set_proxy_field(&self, object: Ref<'_>, index: usize, value: Value<'_>) -> bool {
         self.field_word(object, KIND_PROXY, index)
+            .is_some_and(|word| self.store(object.offset(), word, value.bits()))
+    }
+
+    /// Ein internes Feld eines regulären Ausdrucks, `None` für andere
+    /// Zellen.
+    pub(crate) fn regexp_field(&self, object: Ref<'_>, index: usize) -> Option<Value<'_>> {
+        let word = self.field_word(object, KIND_REGEXP, index)?;
+        self.word(object.offset(), word).map(Value::from_bits)
+    }
+
+    /// Schreibt ein internes Feld eines regulären Ausdrucks. `false`, wenn
+    /// es das Feld nicht gibt.
+    pub(crate) fn set_regexp_field(&self, object: Ref<'_>, index: usize, value: Value<'_>) -> bool {
+        self.field_word(object, KIND_REGEXP, index)
             .is_some_and(|word| self.store(object.offset(), word, value.bits()))
     }
 }

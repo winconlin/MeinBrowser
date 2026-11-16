@@ -403,8 +403,6 @@ fn unsupported_constructs_name_their_place() {
         ("[a = class { [1n]() {} }] = b;", 14),
         ("f`x`;", 0),
         ("1n;", 0),
-        ("/a/;", 0),
-        ("(/a/);", 1),
         ("with (a) {}", 0),
         ("l: function g() {}", 3),
     ];
@@ -415,6 +413,8 @@ fn unsupported_constructs_name_their_place() {
             "{source}"
         );
     }
+    // Literale regulärer Ausdrücke übersetzt der Übersetzer seit Welle 8g.
+    assert!(compile("(/a/g);").is_ok());
     let module = parse_module(&units("1;")).expect("gültiges Modul");
     assert_eq!(
         compile_script(&module).map(|_| ()),
