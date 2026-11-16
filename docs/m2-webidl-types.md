@@ -3,7 +3,8 @@
 `mb_webidl::types` ergänzt [Namensindex](m2-webidl-index.md) und
 [Memberbeschreibung](m2-webidl-members.md) um eine eigene normalisierte
 Typdarstellung. Typedefs bleiben Verweise auf einen Graphen. Zusätzlich werden
-erste Form- und Verwendungsvorschriften geprüft. Es wird keine fremde
+erste Form- und Verwendungsvorschriften sowie inzwischen
+[Dictionary-Typzyklen](m2-webidl-dictionary-types.md) geprüft. Es wird keine fremde
 Browserimplementierung oder zusätzliche externe Crate verwendet.
 
 ## Standard und geprüfte Regeln
@@ -35,7 +36,7 @@ Die Prüfung löst Typedefs und explizite Annotationshüllen bei der Einordnung 
   Typ sein. Nullable Dictionary-Rückgabewerte sind davon nicht ausgeschlossen.
 
 Das ist noch keine vollständige semantische Validierung. Insbesondere fehlen
-paarweise Typunterscheidbarkeit aller Unionglieder, Dictionary-Typzyklen,
+paarweise Typunterscheidbarkeit aller Unionglieder,
 weitere Regeln für ObservableArrays, Collection-/Getter-/Setter-/Stringifier-
 und `toJSON`-Typen, Wertebereiche und Defaults, Typattribut-Auswertung sowie
 effektive Overload-Sets. Auch ein erfolgreicher Aufbau erlaubt noch keine
@@ -105,6 +106,8 @@ unbekannter Attribute.
 | Syntaxknoten aller Quelldokumente für die Zuordnung | 1.000.000 |
 | Normalisierte Typknoten | 200.000 |
 | Gespeicherte Kindkanten | 400.000 |
+| Dictionary-Definitionen im Einschlussgraphen | 200.000 |
+| Besuchte Dictionary-Einschlusskanten | 1.000.000 |
 
 Die Gesamtzahl der Syntaxknoten wird vor dem Anlegen der Zuordnungstabellen
 mit geprüfter Addition begrenzt. Typ- und Kantenlimits werden vor dem Einfügen
@@ -181,8 +184,9 @@ behauptet. Rohprotokolle, Funde und mutierte Korpora bleiben gemäß
 
 1. Typformen, Zuordnung der Grammatikproduktionen, Typedef-Kanten und die
    genauen Regeln nach dem angegebenen Standardstand prüfen.
-2. Dictionary-Typzyklen und vollständige Union-Unterscheidbarkeit auf dem
-   begrenzten Graphen prüfen, ohne Untergraphen exponentiell zu expandieren.
+2. Die inzwischen implementierte [Dictionary-Zyklenprüfung](m2-webidl-dictionary-types.md)
+   auf dem impliziten Einschlussgraphen prüfen. Als Nächstes vollständige
+   Union-Unterscheidbarkeit ergänzen, ohne Untergraphen exponentiell zu expandieren.
 3. Die verbleibenden Member-Typregeln, Werte/Defaults und Extended Attributes
    einschließlich ihrer Anwendbarkeit und Assoziation implementieren.
 4. Effektive Overload-Sets und Binding-Reihenfolgen ergänzen. Erst danach

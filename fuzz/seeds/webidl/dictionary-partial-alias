@@ -1,0 +1,1 @@
+partial dictionary A { Items next; }; typedef sequence<B> Items; dictionary A {}; dictionary B { A back; };

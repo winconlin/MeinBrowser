@@ -15,6 +15,7 @@ pub fn webidl(data: &[u8]) {
     name_model(data);
     member_model(data);
     type_model(data);
+    dictionary_model(data);
 }
 
 fn tokens(source: &str) {
@@ -149,6 +150,8 @@ fn names(sources: &[&str]) {
                             source_nodes: 8192,
                             types: 1024,
                             edges: 2048,
+                            dictionary_nodes: 1024,
+                            dictionary_edges: 4096,
                         },
                         &budget,
                     ) {
@@ -726,6 +729,8 @@ fn type_model(data: &[u8]) {
             source_nodes: 8192,
             types: 1024,
             edges: 2048,
+            dictionary_nodes: 1024,
+            dictionary_edges: 4096,
         },
         &budget,
     );
@@ -762,6 +767,100 @@ fn type_model(data: &[u8]) {
             types.get(primitive).unwrap().kind,
             types::Kind::Atom(types::Atom::Primitive(types::Primitive::UnsignedLong))
         );
+    }
+}
+
+// Unabhängiges Orakel: kleiner Dictionary-Graph, dessen transitive Hülle
+// mit einer booleschen Matrix berechnet wird. Die Implementierung verwendet
+// stattdessen einen impliziten Typ-/Dictionary-Graphen mit Tiefensuche.
+fn dictionary_model(data: &[u8]) {
+    let count = usize::from(data.first().copied().unwrap_or(0) % 8) + 1;
+    let byte = |at| data.get(at).copied().unwrap_or(0);
+    let mut reach = [[false; 8]; 8];
+    let mut early = String::new();
+    let mut late = String::new();
+    for (n, row) in reach.iter_mut().enumerate().take(count) {
+        let target = usize::from(byte(n + 2)) % count;
+        let wrapper = byte(n + 1) % 8;
+        let name = format!("D{target}");
+        let ty = match wrapper {
+            0 => name,
+            1 => format!("sequence<{name}>"),
+            2 => format!("FrozenArray<{name}>"),
+            3 => format!("record<DOMString,{name}>"),
+            4 => format!("({name} or DOMString)"),
+            5 => format!("sequence<{name}>?"),
+            6 => format!("Promise<{name}>"),
+            _ => format!("async_sequence<{name}>"),
+        };
+        early.push_str(&format!("partial dictionary D{n} {{ Ref{n} field{n}; }}; "));
+        late.push_str(&format!("dictionary D{n}"));
+        if n != 0 && byte(n + 10) & 1 != 0 {
+            let parent = usize::from(byte(n + 11)) % n;
+            late.push_str(&format!(" : D{parent}"));
+            row[parent] = true;
+        }
+        late.push_str(&format!(" {{}}; typedef [Opaque] {ty} Ref{n}; "));
+        if wrapper < 6 {
+            row[target] = true;
+        }
+    }
+    for via in 0..count {
+        for from in 0..count {
+            for to in 0..count {
+                reach[from][to] |= reach[from][via] && reach[via][to];
+            }
+        }
+    }
+    let expected_cycle = reach.iter().enumerate().take(count).any(|(n, row)| row[n]);
+    let budget = Budget::new(100_000);
+    let index = index::build_within(
+        &[&early, &late],
+        index::Limits {
+            sources: 2,
+            source_bytes: 8192,
+            nodes: 8192,
+            records: 1024,
+            parser: Limits {
+                source_bytes: 8192,
+                nodes: 8192,
+                pending: 8192,
+            },
+        },
+        &budget,
+    )
+    .expect("linked dictionary model");
+    let members = members::build_within(
+        &index,
+        members::Limits {
+            records: 1024,
+            visits: 4096,
+        },
+        &budget,
+    )
+    .expect("valid dictionary member names");
+    let result = types::build_within(
+        &index,
+        &members,
+        types::Limits {
+            source_nodes: 8192,
+            types: 1024,
+            edges: 2048,
+            dictionary_nodes: 16,
+            dictionary_edges: 512,
+        },
+        &budget,
+    );
+    if expected_cycle {
+        let error = result.expect_err("independent reachability found a cycle");
+        assert_eq!(error.kind, types::ErrorKind::DictionaryCycle);
+        let at = error.location.expect("field on the cycle");
+        assert_eq!(at.source, 0, "all model fields occur in the partial source");
+        let text = early.get(at.span).expect("valid field range");
+        assert!(text.starts_with("field"));
+    } else {
+        let types = result.expect("acyclic dictionary model");
+        check_types(&index, &members, &types);
     }
 }
 
@@ -804,6 +903,21 @@ mod tests {
         for depth in 0..8 {
             for mode in 0..8 {
                 type_model(&[depth, mode]);
+            }
+        }
+    }
+
+    #[test]
+    fn dictionary_model_checks_all_wrappers_and_varied_inheritance_graphs() {
+        for count in 0..8 {
+            for control in 0..32 {
+                let mut data = vec![control; 24];
+                data[0] = count;
+                dictionary_model(&data);
+                for (n, byte) in data.iter_mut().enumerate().skip(1) {
+                    *byte = control.wrapping_add(n as u8 * 7);
+                }
+                dictionary_model(&data);
             }
         }
     }

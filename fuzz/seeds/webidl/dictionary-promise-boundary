@@ -1,0 +1,1 @@
+dictionary D { Promise<D> deferred; async_sequence<D> stream; };

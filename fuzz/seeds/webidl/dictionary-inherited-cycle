@@ -1,0 +1,1 @@
+dictionary Base { Child child; }; dictionary Child : Base {};

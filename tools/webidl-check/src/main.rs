@@ -27,7 +27,7 @@ fn run(args: impl Iterator<Item = OsString>) -> Result<(), String> {
     for arg in args {
         if arg == "--help" || arg == "-h" {
             println!(
-                "Aufruf: cargo run -p webidl-check -- DATEI.idl [WEITERE.idl ...]\nPrüft Syntax, Namen, Verweise, Vererbung und erste Member-/Typregeln.\nAlle benötigten Definitionen gemeinsam angeben.\nKein vollständiger WebIDL-Validator; erzeugt keine Bindings."
+                "Aufruf: cargo run -p webidl-check -- DATEI.idl [WEITERE.idl ...]\nPrüft Syntax, Namen, Verweise, Vererbung, Dictionary-Typzyklen und erste Member-/Typregeln.\nAlle benötigten Definitionen gemeinsam angeben.\nKein vollständiger WebIDL-Validator; erzeugt keine Bindings."
             );
             return Ok(());
         }
@@ -208,6 +208,21 @@ mod tests {
         assert_eq!(
             positioned_error(&paths, &sources, &error.kind, error.location.as_ref(), None),
             "api.idl:1:25: AttributeType"
+        );
+    }
+    #[test]
+    fn dictionary_cycle_diagnostic_identifies_a_field_across_sources() {
+        let paths = ["left.idl".into(), "right.idl".into()];
+        let sources = [
+            "dictionary A { B next; };".to_owned(),
+            "dictionary B { A back; };".to_owned(),
+        ];
+        let index = index::build(&sources.iter().map(String::as_str).collect::<Vec<_>>()).unwrap();
+        let members = members::build(&index).unwrap();
+        let error = types::build(&index, &members).unwrap_err();
+        assert_eq!(
+            positioned_error(&paths, &sources, &error.kind, error.location.as_ref(), None),
+            "right.idl:1:18: DictionaryCycle"
         );
     }
 }
