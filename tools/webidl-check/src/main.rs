@@ -27,7 +27,7 @@ fn run(args: impl Iterator<Item = OsString>) -> Result<(), String> {
     for arg in args {
         if arg == "--help" || arg == "-h" {
             println!(
-                "Aufruf: cargo run -p webidl-check -- DATEI.idl [WEITERE.idl ...]\nPrüft Syntax, Namen, Verweise, Vererbung, Dictionary-Typzyklen und erste Member-/Typregeln.\nAlle benötigten Definitionen gemeinsam angeben.\nKein vollständiger WebIDL-Validator; erzeugt keine Bindings."
+                "Aufruf: cargo run -p webidl-check -- DATEI.idl [WEITERE.idl ...]\nPrüft Syntax, Namen, Verweise, Vererbung, Dictionary-Typzyklen, Union-Unterscheidbarkeit und erste Member-/Typregeln.\nAlle benötigten Definitionen gemeinsam angeben.\nKein vollständiger WebIDL-Validator; erzeugt keine Bindings."
             );
             return Ok(());
         }
@@ -223,6 +223,21 @@ mod tests {
         assert_eq!(
             positioned_error(&paths, &sources, &error.kind, error.location.as_ref(), None),
             "right.idl:1:18: DictionaryCycle"
+        );
+    }
+    #[test]
+    fn ambiguous_union_diagnostic_points_to_the_union_in_its_own_file() {
+        let paths = ["types.idl".into(), "api.idl".into()];
+        let sources = [
+            "enum Name {\"x\"};".to_owned(),
+            "typedef (Name or DOMString) Choice;".to_owned(),
+        ];
+        let index = index::build(&sources.iter().map(String::as_str).collect::<Vec<_>>()).unwrap();
+        let members = members::build(&index).unwrap();
+        let error = types::build(&index, &members).unwrap_err();
+        assert_eq!(
+            positioned_error(&paths, &sources, &error.kind, error.location.as_ref(), None),
+            "api.idl:1:9: IndistinguishableUnion"
         );
     }
 }

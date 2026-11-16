@@ -4,7 +4,8 @@
 [Memberbeschreibung](m2-webidl-members.md) um eine eigene normalisierte
 Typdarstellung. Typedefs bleiben Verweise auf einen Graphen. Zusätzlich werden
 erste Form- und Verwendungsvorschriften sowie inzwischen
-[Dictionary-Typzyklen](m2-webidl-dictionary-types.md) geprüft. Es wird keine fremde
+[Dictionary-Typzyklen](m2-webidl-dictionary-types.md) und
+[Union-Unterscheidbarkeit](m2-webidl-unions.md) geprüft. Es wird keine fremde
 Browserimplementierung oder zusätzliche externe Crate verwendet.
 
 ## Standard und geprüfte Regeln
@@ -35,8 +36,9 @@ Die Prüfung löst Typedefs und explizite Annotationshüllen bei der Einordnung 
   Felder dürfen nach dem Auflösen kein Nullable mit Dictionary als innerem
   Typ sein. Nullable Dictionary-Rückgabewerte sind davon nicht ausgeschlossen.
 
+Die abgeflachten Unionglieder werden inzwischen zusätzlich nach der
+[normativen Unterscheidbarkeitstabelle](m2-webidl-unions.md) geprüft.
 Das ist noch keine vollständige semantische Validierung. Insbesondere fehlen
-paarweise Typunterscheidbarkeit aller Unionglieder,
 weitere Regeln für ObservableArrays, Collection-/Getter-/Setter-/Stringifier-
 und `toJSON`-Typen, Wertebereiche und Defaults, Typattribut-Auswertung sowie
 effektive Overload-Sets. Auch ein erfolgreicher Aufbau erlaubt noch keine
@@ -108,6 +110,8 @@ unbekannter Attribute.
 | Gespeicherte Kindkanten | 400.000 |
 | Dictionary-Definitionen im Einschlussgraphen | 200.000 |
 | Besuchte Dictionary-Einschlusskanten | 1.000.000 |
+| Besuche bei der Union-Auflösung und -Abflachung | 1.000.000 |
+| Interfaces im bedarfsweise aufgebauten Union-Vererbungsindex | 200.000 |
 
 Die Gesamtzahl der Syntaxknoten wird vor dem Anlegen der Zuordnungstabellen
 mit geprüfter Addition begrenzt. Typ- und Kantenlimits werden vor dem Einfügen
@@ -152,9 +156,9 @@ Escape-Namen, sämtliche Member-/Argument-Typpositionen, die oben genannten
 Regeln nach Typedef-Auflösung, exakte Grenzen und gemeinsam verbrauchte Budgets.
 2.000 verschachtelte Sequenztypen werden auf einem Faden mit 1 MiB Rust-Stapel
 aufgebaut und freigegeben. Ein geteilter Typedef-Graph wird unter einer kleinen
-Quote geprüft, obwohl sein vollständiges Aufklappen Milliarden Glieder erzeugen
-würde. Das Beispiel enthält gleiche Unionglieder; deren vollständige
-Unterscheidbarkeit ist ausdrücklich noch nicht geprüft.
+Quote abgelehnt, obwohl sein vollständiges Aufklappen Milliarden Glieder erzeugen
+würde: Das Beispiel enthält gleiche Unionglieder und ist damit semantisch
+ungültig. Geteilte gültige Untergraphen bleiben weiterhin kompakt gespeichert.
 
 Im bestehenden Fuzzing-Ziel `webidl` erhält die Typstufe den Rest derselben
 75.000-Schritt-Quote nach Index und Memberprüfung. Es gelten 8.192 Syntaxknoten,
@@ -185,8 +189,9 @@ behauptet. Rohprotokolle, Funde und mutierte Korpora bleiben gemäß
 1. Typformen, Zuordnung der Grammatikproduktionen, Typedef-Kanten und die
    genauen Regeln nach dem angegebenen Standardstand prüfen.
 2. Die inzwischen implementierte [Dictionary-Zyklenprüfung](m2-webidl-dictionary-types.md)
-   auf dem impliziten Einschlussgraphen prüfen. Als Nächstes vollständige
-   Union-Unterscheidbarkeit ergänzen, ohne Untergraphen exponentiell zu expandieren.
+   auf dem impliziten Einschlussgraphen sowie die
+   [Union-Unterscheidbarkeit](m2-webidl-unions.md) mit Interface-Intervallen und
+   gemeinsamem Besuchslimit prüfen.
 3. Die verbleibenden Member-Typregeln, Werte/Defaults und Extended Attributes
    einschließlich ihrer Anwendbarkeit und Assoziation implementieren.
 4. Effektive Overload-Sets und Binding-Reihenfolgen ergänzen. Erst danach

@@ -1,0 +1,1 @@
+typedef (ArrayBuffer or DataView or Uint8Array) Choice;

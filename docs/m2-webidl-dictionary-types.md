@@ -157,8 +157,8 @@ und Fuzzing-Funde bleiben gemäß [SECURITY.md](../SECURITY.md) privat.
    prüfen, besonders Nachfahrentypen in Vorfahrenfeldern und geerbte Felder.
 2. Globale Farben, Typedef-Verweise, tatsächliche Feldpositionen und die beiden
    zusätzlichen Grenzen prüfen. Weiterhin keine geteilten Untergraphen expandieren.
-3. Als nächsten Typprüfungsschritt die vollständige Unterscheidbarkeit aller
-   Unionglieder ergänzen. Werte/Defaults, weitere Member-Typregeln, Extended
-   Attributes und effektive Overload-Sets bleiben ebenfalls offen.
+3. Die inzwischen ergänzte [Union-Unterscheidbarkeit](m2-webidl-unions.md)
+   prüfen. Werte/Defaults, weitere Member-Typregeln, Extended Attributes und
+   effektive Overload-Sets bleiben offen.
 4. Erst nach den übrigen semantischen Prüfungen Bindings erzeugen und gegen
    DOM-/WebIDL-WPT prüfen. M2 ist weiterhin nicht abgeschlossen.

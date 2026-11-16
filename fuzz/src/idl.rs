@@ -16,6 +16,7 @@ pub fn webidl(data: &[u8]) {
     member_model(data);
     type_model(data);
     dictionary_model(data);
+    union_model(data);
 }
 
 fn tokens(source: &str) {
@@ -152,6 +153,8 @@ fn names(sources: &[&str]) {
                             edges: 2048,
                             dictionary_nodes: 1024,
                             dictionary_edges: 4096,
+                            union_visits: 8192,
+                            union_interfaces: 1024,
                         },
                         &budget,
                     ) {
@@ -731,6 +734,8 @@ fn type_model(data: &[u8]) {
             edges: 2048,
             dictionary_nodes: 1024,
             dictionary_edges: 4096,
+            union_visits: 8192,
+            union_interfaces: 1024,
         },
         &budget,
     );
@@ -848,6 +853,8 @@ fn dictionary_model(data: &[u8]) {
             edges: 2048,
             dictionary_nodes: 16,
             dictionary_edges: 512,
+            union_visits: 8192,
+            union_interfaces: 1024,
         },
         &budget,
     );
@@ -861,6 +868,158 @@ fn dictionary_model(data: &[u8]) {
     } else {
         let types = result.expect("acyclic dictionary model");
         check_types(&index, &members, &types);
+    }
+}
+
+// Independent oracle: the table is transcribed into rows; at most six
+// generated leaves are compared pairwise. The implementation uses class
+// masks, a transparent graph and inheritance intervals instead.
+fn union_model(data: &[u8]) {
+    const ALLOWED: [&str; 12] = [
+        "011111111011",
+        "101111111111",
+        "110111111111",
+        "111011111111",
+        "111101111111",
+        "111110100000",
+        "111111011111",
+        "111110111111",
+        "111110110111",
+        "011110111011",
+        "111110111100",
+        "111110111100",
+    ];
+    let count = usize::from(data.first().copied().unwrap_or(0) % 5) + 2;
+    let byte = |at| data.get(at).copied().unwrap_or(0);
+    let mut early = String::from(
+        "interface A {}; interface B : A {}; interface C : A {}; interface Other {}; dictionary D {}; callback F = undefined (); [LegacyTreatNonObjectAsNull] callback Legacy = undefined (); callback interface Handler { undefined handle(); }; enum State { \"on\" }; ",
+    );
+    let mut leaves = Vec::new();
+    for n in 0..count {
+        let class = usize::from(byte(n * 2 + 1) % 13);
+        let flavor = usize::from(byte(n * 2 + 2) % 8);
+        let text = match class {
+            0 => "undefined",
+            1 => "boolean",
+            2 => {
+                if flavor & 1 == 0 {
+                    "long"
+                } else {
+                    "double"
+                }
+            }
+            3 => "bigint",
+            4 => ["DOMString", "State", "USVString"][flavor % 3],
+            5 => "object",
+            6 => "symbol",
+            7 => [
+                "A",
+                "B",
+                "C",
+                "Other",
+                "ArrayBuffer",
+                "DataView",
+                "Uint8Array",
+                "Float32Array",
+            ][flavor],
+            8 => {
+                if flavor & 1 == 0 {
+                    "F"
+                } else {
+                    "Legacy"
+                }
+            }
+            9 => ["D", "record<DOMString,long>", "Handler"][flavor % 3],
+            10 => "async_sequence<long>",
+            11 => {
+                if flavor & 1 == 0 {
+                    "sequence<long>"
+                } else {
+                    "FrozenArray<DOMString>"
+                }
+            }
+            _ => "ObservableArray<long>",
+        };
+        early.push_str(&format!("typedef [Alias] {text} Leaf{n}; "));
+        leaves.push((class, flavor));
+    }
+    let mut expected = true;
+    for (i, &(a, av)) in leaves.iter().enumerate() {
+        for &(b, bv) in &leaves[i + 1..] {
+            let mut pair = a < 12 && b < 12 && ALLOWED[a].as_bytes()[b] == b'1';
+            if a == 7 && b == 7 {
+                pair &= if av < 4 && bv < 4 {
+                    av != bv && !matches!((av, bv), (0, 1) | (1, 0) | (0, 2) | (2, 0))
+                } else if av >= 4 && bv >= 4 {
+                    av != bv
+                } else {
+                    true
+                };
+            }
+            if (a == 8 && av & 1 != 0 && b == 9) || (b == 8 && bv & 1 != 0 && a == 9) {
+                pair = false;
+            }
+            expected &= pair;
+        }
+    }
+    let mut late = String::from("typedef [Outer] ");
+    for n in 0..count - 1 {
+        late.push_str(&format!("(Leaf{n} or "));
+    }
+    late.push_str(&format!("Leaf{}", count - 1));
+    late.push_str(&")".repeat(count - 1));
+    late.push_str(" Choice;");
+    let budget = Budget::new(100_000);
+    let index = index::build_within(
+        &[&early, &late],
+        index::Limits {
+            sources: 2,
+            source_bytes: 8192,
+            nodes: 8192,
+            records: 1024,
+            parser: Limits {
+                source_bytes: 8192,
+                nodes: 8192,
+                pending: 8192,
+            },
+        },
+        &budget,
+    )
+    .expect("linked union model");
+    let members = members::build_within(
+        &index,
+        members::Limits {
+            records: 1024,
+            visits: 4096,
+        },
+        &budget,
+    )
+    .expect("valid union-model members");
+    let result = types::build_within(
+        &index,
+        &members,
+        types::Limits {
+            source_nodes: 8192,
+            types: 1024,
+            edges: 2048,
+            dictionary_nodes: 16,
+            dictionary_edges: 512,
+            union_visits: 8192,
+            union_interfaces: 16,
+        },
+        &budget,
+    );
+    if expected {
+        check_types(
+            &index,
+            &members,
+            &result.expect("independently distinguishable union"),
+        );
+    } else {
+        assert_eq!(
+            result.expect_err("independently ambiguous union").kind,
+            types::ErrorKind::IndistinguishableUnion
+        );
     }
 }
 
@@ -919,6 +1078,21 @@ mod tests {
                 }
                 dictionary_model(&data);
             }
+        }
+    }
+
+    #[test]
+    fn union_model_checks_category_pairs_flags_and_nominal_interface_identity() {
+        for a in 0..13 {
+            for b in 0..13 {
+                for flavor in 0..8 {
+                    union_model(&[0, a, flavor, b, 7 - flavor]);
+                }
+            }
+        }
+        for n in 0u8..64 {
+            let data: Vec<u8> = (0..20).map(|at| n.wrapping_add(at * 13)).collect();
+            union_model(&data);
         }
     }
 

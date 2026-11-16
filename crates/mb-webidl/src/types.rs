@@ -14,6 +14,7 @@ pub use mb_base::{Budget, Cancel, Exhausted};
 mod check;
 mod dictionary;
 mod lower;
+mod union;
 
 pub const DEFAULT_STEPS: u64 = 10_000_000;
 
@@ -26,6 +27,8 @@ pub struct Limits {
     pub dictionary_nodes: usize,
     /// Besuchte Einschlusskanten, einschließlich Feldern und Vererbung.
     pub dictionary_edges: usize,
+    pub union_visits: usize,
+    pub union_interfaces: usize,
 }
 impl Default for Limits {
     fn default() -> Self {
@@ -35,6 +38,8 @@ impl Default for Limits {
             edges: 400_000,
             dictionary_nodes: 200_000,
             dictionary_edges: 1_000_000,
+            union_visits: 1_000_000,
+            union_interfaces: 200_000,
         }
     }
 }
@@ -45,6 +50,8 @@ pub enum Limit {
     Edges,
     DictionaryNodes,
     DictionaryEdges,
+    UnionVisits,
+    UnionInterfaces,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ErrorKind {
@@ -58,6 +65,8 @@ pub enum ErrorKind {
     AttributePromiseReadonly,
     NullableDictionary,
     DictionaryCycle,
+    IndistinguishableUnion,
+    InvalidCallbackAttribute,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Error {
@@ -201,7 +210,7 @@ impl Types {
     pub fn get(&self, id: TypeId) -> Option<&Type> {
         self.nodes.get(id.index())
     }
-    pub fn iter(&self) -> impl ExactSizeIterator<Item = (TypeId, &Type)> {
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = (TypeId, &Type)> + DoubleEndedIterator {
         self.nodes.iter().enumerate().map(|(n, ty)| {
             (
                 TypeId(NonZeroU32::new(n as u32 + 1).expect("lokale Typ-ID")),
