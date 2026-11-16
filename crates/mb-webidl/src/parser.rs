@@ -55,6 +55,12 @@ pub struct Error {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct NodeId(u32);
 
+impl NodeId {
+    pub(crate) const fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Production(&'static str),
@@ -78,6 +84,14 @@ pub struct Document<'a> {
 }
 
 impl<'a> Document<'a> {
+    // Kinder haben größere IDs; umgekehrte Arena-Reihenfolge erlaubt einen
+    // iterativen Typaufbau ohne zusätzlichen Traversierungsstapel.
+    pub(crate) fn nodes(&self) -> impl DoubleEndedIterator<Item = (NodeId, &Node)> {
+        self.nodes
+            .iter()
+            .enumerate()
+            .map(|(n, node)| (NodeId(n as u32), node))
+    }
     pub fn source(&self) -> &'a str {
         self.source
     }

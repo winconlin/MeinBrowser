@@ -9,7 +9,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use mb_webidl::index::{self, Error, Limits};
-use mb_webidl::members;
+use mb_webidl::{members, types};
 
 fn main() -> ExitCode {
     match run(std::env::args_os().skip(1)) {
@@ -27,7 +27,7 @@ fn run(args: impl Iterator<Item = OsString>) -> Result<(), String> {
     for arg in args {
         if arg == "--help" || arg == "-h" {
             println!(
-                "Aufruf: cargo run -p webidl-check -- DATEI.idl [WEITERE.idl ...]\nPrüft Syntax, Namen, Verweise, Vererbung und erste Member-Regeln.\nAlle benötigten Definitionen gemeinsam angeben.\nKein vollständiger WebIDL-Validator; erzeugt keine Bindings."
+                "Aufruf: cargo run -p webidl-check -- DATEI.idl [WEITERE.idl ...]\nPrüft Syntax, Namen, Verweise, Vererbung und erste Member-/Typregeln.\nAlle benötigten Definitionen gemeinsam angeben.\nKein vollständiger WebIDL-Validator; erzeugt keine Bindings."
             );
             return Ok(());
         }
@@ -49,7 +49,8 @@ fn run(args: impl Iterator<Item = OsString>) -> Result<(), String> {
         sources.push(source);
     }
     let borrowed: Vec<_> = sources.iter().map(String::as_str).collect();
-    let budget = index::Budget::new(index::DEFAULT_STEPS + members::DEFAULT_STEPS);
+    let budget =
+        index::Budget::new(index::DEFAULT_STEPS + members::DEFAULT_STEPS + types::DEFAULT_STEPS);
     let index = index::build_within(&borrowed, limits, &budget)
         .map_err(|error| diagnostic(&paths, &sources, &error))?;
     let members =
@@ -62,6 +63,9 @@ fn run(args: impl Iterator<Item = OsString>) -> Result<(), String> {
                 error.previous.as_ref(),
             )
         })?;
+    let types = types::build_within(&index, &members, types::Limits::default(), &budget).map_err(
+        |error| positioned_error(&paths, &sources, &error.kind, error.location.as_ref(), None),
+    )?;
     let fragments: usize = index
         .definitions()
         .map(|(_, definition)| definition.fragments.len())
@@ -81,7 +85,9 @@ fn run(args: impl Iterator<Item = OsString>) -> Result<(), String> {
         members.value_count()
     );
     println!(
-        "Typformen, Werte, Extended Attributes, Overload-Unterscheidbarkeit und Bindings benötigen weitere Prüfung."
+        "{} Typknoten und {} Kanten aufgebaut. Vollständige Typ-/Wertprüfung, Extended Attributes, Overload-Unterscheidbarkeit und Bindings fehlen weiterhin.",
+        types.len(),
+        types.edge_count()
     );
     Ok(())
 }
@@ -187,6 +193,21 @@ mod tests {
         assert_eq!(
             text,
             "partial.idl:1:38: DuplicateMember (erste Deklaration: base.idl:1:30)"
+        );
+    }
+    #[test]
+    fn type_diagnostic_reports_the_alias_use_in_the_correct_source() {
+        let paths = ["types.idl".into(), "api.idl".into()];
+        let sources = [
+            "typedef sequence<long> Values;".to_owned(),
+            "interface X { attribute Values value; };".to_owned(),
+        ];
+        let index = index::build(&sources.iter().map(String::as_str).collect::<Vec<_>>()).unwrap();
+        let members = members::build(&index).unwrap();
+        let error = types::build(&index, &members).unwrap_err();
+        assert_eq!(
+            positioned_error(&paths, &sources, &error.kind, error.location.as_ref(), None),
+            "api.idl:1:25: AttributeType"
         );
     }
 }

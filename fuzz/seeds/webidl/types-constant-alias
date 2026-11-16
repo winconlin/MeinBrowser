@@ -1,0 +1,1 @@
+typedef DOMString Text; interface X { const Text invalid = 1; };

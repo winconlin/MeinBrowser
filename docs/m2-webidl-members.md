@@ -2,7 +2,9 @@
 
 `mb_webidl::members` baut auf dem [Namensindex](m2-webidl-index.md) auf.
 Der Baustein erfasst Member, Argumente und Enumwerte strukturiert und prüft
-weitere Regeln vor einer späteren Binding-Generierung. Er bleibt unabhängig
+weitere Regeln vor einer späteren Binding-Generierung. Die darauf aufbauende
+[Typbeschreibung](m2-webidl-types.md) löst Typformen auf und prüft erste
+typabhängige Regeln. Der Memberbaustein bleibt unabhängig
 von der JavaScript-Engine und enthält keine fremde Browserimplementierung.
 
 ## Geprüfter Standardumfang
@@ -139,8 +141,9 @@ cargo run --locked -p webidl-check -- api.idl dependencies.idl
 cargo test --locked -p mb-webidl -p webidl-check
 ```
 
-`webidl-check` führt jetzt Namensindex und Member-Prüfung mit einer gemeinsamen
-Quote von 35 Millionen Schritten aus. Es meldet Fehler mit Datei, Zeile und
+`webidl-check` führt inzwischen Namensindex, Member- und
+[Typprüfung](m2-webidl-types.md) mit einer gemeinsamen Quote von 45 Millionen
+Schritten aus. Es meldet Fehler mit Datei, Zeile und
 Spalte sowie gegebenenfalls der anderen Deklaration. Bei Erfolg werden zusätzlich
 Member-, Argument- und Enumwertzahlen und die noch offenen Prüfschritte ausgegeben.
 Es erzeugt keine Bindings.
@@ -181,9 +184,10 @@ und [fuzzing.md](fuzzing.md) privat.
 1. Die implementierten Regeln gegen den angegebenen Standardstand prüfen,
    besonders static/regular bei Namenskollisionen und Overloads, Partials und
    Mixins sowie die andere Vererbungsregel bei Dictionary-Feldern.
-2. Typknoten in eine begrenzte normalisierte Typbeschreibung überführen und
-   danach erlaubte Typkombinationen, Dictionary-Typzyklen, Default-/Konstanten-
-   werte und die typabhängigen Memberregeln validieren.
+2. Die inzwischen vorhandene begrenzte [Typbeschreibung](m2-webidl-types.md)
+   mit ersten Form- und Kontextregeln prüfen. Darauf Dictionary-Typzyklen,
+   vollständige Typunterscheidbarkeit, Default-/Konstantenwerte und die
+   verbleibenden typabhängigen Memberregeln validieren.
 3. Extended Attributes gezielt auswerten und validieren; ihre ungeprüften
    Syntaxknoten dürfen keine Erlaubnis für die Codegenerierung sein.
 4. Effektive Overload-Sets, Unterscheidbarkeit und Binding-Reihenfolgen umsetzen.

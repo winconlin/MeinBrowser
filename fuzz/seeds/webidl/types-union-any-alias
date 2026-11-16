@@ -1,0 +1,1 @@
+typedef any A; typedef (A or DOMString) Invalid;
