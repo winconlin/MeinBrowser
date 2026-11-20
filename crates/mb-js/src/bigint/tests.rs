@@ -325,6 +325,69 @@ fn as_int_n_and_as_uint_n_wrap_like_fixed_widths() {
         assert_eq!(big(-(1 << 63)).as_int_n(64, budget), Ok(big(-(1 << 63))));
         assert_eq!(big(1 << 63).as_int_n(64, budget), Ok(big(-(1 << 63))));
     });
+    // Negative Zweierpotenzen liegen genau an der unteren Grenze.
+    for k in 0..126 {
+        for x in [-(1i128 << k) + 1, -(1i128 << k), -(1i128 << k) - 1] {
+            for bits in 1..=126u64 {
+                let modulus = 1i128 << bits;
+                let wrapped = x.rem_euclid(modulus);
+                let expected = if wrapped >= modulus / 2 {
+                    wrapped - modulus
+                } else {
+                    wrapped
+                };
+                let signed = free(|budget| big(x).as_int_n(bits, budget)).expect("asIntN");
+                assert_eq!(small(&signed), Some(expected), "asIntN({bits}, {x})");
+            }
+        }
+    }
+}
+
+#[test]
+fn as_int_n_and_as_uint_n_pay_for_values_that_stay() {
+    let large = BigInt::from_parts(false, vec![u64::MAX; 64]).expect("Wert");
+    let negative = large.negate();
+    let mut spent = 0;
+    let mut spend = |work| {
+        spent += work;
+        false
+    };
+    let mut budget = Budget {
+        bytes: usize::MAX,
+        spend: &mut spend,
+    };
+    // Der Wert bleibt, wird abgeschnitten oder als negativer Wert gelesen.
+    for (bits, value) in [(4096, &large), (64, &large), (4096, &negative)] {
+        assert_eq!(
+            value.as_uint_n(bits, &mut budget),
+            Err(Failure::Stopped),
+            "asUintN({bits})"
+        );
+        assert_eq!(
+            value.as_int_n(bits, &mut budget),
+            Err(Failure::Stopped),
+            "asIntN({bits})"
+        );
+    }
+    // Zweimal liest und kopiert asUintN 64 Wörter, einmal bleibt ein Wort;
+    // asIntN zahlt jedes Mal zuerst das Lesen.
+    assert_eq!(spent, 2 * (64 + 64 * COPY_WORK) + (64 + COPY_WORK) + 3 * 64);
+    let mut spend = |_| true;
+    let mut budget = Budget {
+        bytes: 100,
+        spend: &mut spend,
+    };
+    assert_eq!(
+        large.as_uint_n(4096, &mut budget),
+        Err(Failure::OutOfMemory)
+    );
+    assert_eq!(large.as_int_n(4096, &mut budget), Err(Failure::OutOfMemory));
+    assert_eq!(
+        large
+            .as_uint_n(64, &mut budget)
+            .map(|value| value.magnitude().len()),
+        Ok(1)
+    );
 }
 
 #[test]

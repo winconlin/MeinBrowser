@@ -4405,6 +4405,43 @@ fn bigints_stay_within_their_limits() {
 }
 
 #[test]
+fn bigint_copies_pay_for_their_words() {
+    use crate::agent::Budget;
+    use std::rc::Rc;
+
+    let spent = |source: &str| {
+        let (mut agent, realm) = agent_with(false);
+        let budget = Rc::new(Budget::new(10_000_000));
+        agent
+            .scope(|agent, scope| {
+                agent
+                    .evaluate_script_within(scope, realm, &units(source), Rc::clone(&budget))
+                    .map(|_| ())
+            })
+            .expect("Skript");
+        10_000_000 - budget.remaining()
+    };
+    let loop_over =
+        |call: &str| format!("var a = 1n << 100000n; for (var i = 0; i < 300; i++) {call};");
+    let base = spent(&loop_over("BigInt.asUintN(64, 1n)"));
+    // Der Wert hat 1.563 Wörter. Jeder Aufruf liest ihn ganz und kostet so
+    // mindestens 24 Schritte, auch wenn der Wert bleibt.
+    for call in [
+        "BigInt.asUintN(100001, a)",
+        "BigInt.asUintN(64, a)",
+        "BigInt.asIntN(100002, a)",
+        "BigInt.asIntN(100002, -a)",
+        "BigInt.asIntN(64, a)",
+    ] {
+        let used = spent(&loop_over(call));
+        assert!(
+            used.saturating_sub(base) >= 300 * 24,
+            "{call}: {used} Schritte, ohne den Wert {base}"
+        );
+    }
+}
+
+#[test]
 fn bigints_survive_collections() {
     let (mut agent, realm) = agent_with(true);
     let source = "var a = 2n ** 100n; var b = -a / 3n; var m = new Map([[a, 1], [b, 2]]); \

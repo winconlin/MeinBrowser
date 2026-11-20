@@ -96,7 +96,12 @@ fn bits_and_value(
     let bits = to_index(agent, scope, bits)?;
     let value = arguments.argument(agent, scope, 1);
     let value = to_bigint(agent, scope, value)?;
-    let value = bigint::value_of(agent, value).unwrap_or_default();
+    // Für 0 Bit ist das Ergebnis 0n; der Wert muss dafür nicht aus dem Heap.
+    let value = if bits == 0 {
+        BigInt::zero()
+    } else {
+        bigint::value_of(agent, value).unwrap_or_default()
+    };
     Ok((bits, value))
 }
 

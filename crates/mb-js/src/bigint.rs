@@ -115,6 +115,14 @@ fn bit_length_of(words: &[u64]) -> u64 {
     }
 }
 
+/// Ob der Betrag eine Zweierpotenz ist: genau ein gesetztes Bit.
+fn is_power_of_two(words: &[u64]) -> bool {
+    match words.split_last() {
+        Some((top, rest)) => top.is_power_of_two() && rest.iter().all(|&word| word == 0),
+        None => false,
+    }
+}
+
 /// Vergleicht zwei Beträge.
 fn compare_magnitudes(a: &[u64], b: &[u64]) -> Ordering {
     a.len()
@@ -626,17 +634,20 @@ impl BigInt {
         if bits == 0 {
             return Ok(BigInt::zero());
         }
+        // Gelesen wird der ganze Wert, auch wenn er bleibt; das Ergebnis
+        // kostet seine Wörter wie bei den anderen Rechnungen.
+        let read = self.magnitude.len();
         if !self.negative && self.bit_length() <= bits {
+            budget.take(count(read), read)?;
             return Ok(self.clone());
         }
         // Die Wörter, die der Rest braucht; die Bits darüber fallen weg.
         let length = bits.div_ceil(64);
-        let kept = usize::try_from(length).map_or(self.magnitude.len(), |length| {
-            length.min(self.magnitude.len())
-        });
+        let kept = usize::try_from(length).map_or(read, |length| length.min(read));
+        budget.take(count(read), kept)?;
         let mut words = self.magnitude.get(..kept).unwrap_or_default().to_vec();
         mask(&mut words, bits);
-        if !self.negative || trim(words.clone()).is_empty() {
+        if !self.negative || words.iter().all(|&word| word == 0) {
             return BigInt::from_parts(false, words);
         }
         // Für negative Werte 2^bits - (|x| mod 2^bits).
@@ -657,13 +668,19 @@ impl BigInt {
         if bits == 0 {
             return Ok(BigInt::zero());
         }
+        // Gelesen wird der ganze Wert, auch wenn er bleibt.
+        let read = self.magnitude.len();
+        budget.take(count(read), 0)?;
         // Passt der Wert schon, bleibt er: -2^(bits-1) <= x < 2^(bits-1).
-        let needed = if self.negative {
-            bit_length_of(&subtract_magnitudes(&self.magnitude, &[1]))
+        // Für negative Werte zählt die Bitlänge von |x| - 1; sie ist nur
+        // für Zweierpotenzen kleiner als die von |x|.
+        let needed = if self.negative && is_power_of_two(&self.magnitude) {
+            self.bit_length().saturating_sub(1)
         } else {
             self.bit_length()
         };
         if needed < bits {
+            budget.take(0, read)?;
             return Ok(self.clone());
         }
         // Sonst ist `bits` höchstens so groß wie die Bitlänge.
