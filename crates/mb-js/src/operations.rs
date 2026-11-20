@@ -76,7 +76,8 @@ pub fn is_callable(heap: &Heap, value: Value<'_>) -> bool {
                 | ObjectClass::AsyncFromSyncIterator
                 | ObjectClass::AsyncGenerator
                 | ObjectClass::Collection
-                | ObjectClass::RegExp,
+                | ObjectClass::RegExp
+                | ObjectClass::Date,
             )
             | None => false,
         },

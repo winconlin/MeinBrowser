@@ -355,6 +355,20 @@ def main():
     bigint("long-division", 1 << 2, b"\x80" + b"\x00" * 16, b"\xff" * 9)
     bigint("signs", 3 | 63 << 2, b"\xff" * 17, b"\x80" * 9)
     bigint("near-number", 1, b"\x20\x00\x00\x00\x00\x00\x01", b"\x01")
+
+    def date(name, control, parameter, time, clock, text):
+        # Zone, raw time and raw clock in the control byte, the zone parameter as two bytes,
+        # time and clock as eight bytes each, low first, then the text (src/date.rs).
+        time = struct.pack("<d", time) if control & 4 else struct.pack("<q", time)
+        clock = struct.pack("<d", clock) if control & 8 else struct.pack("<q", clock)
+        write("date", name, bytes([control]) + struct.pack("<H", parameter) + time + clock + text)
+    now = 1577977445123
+    date("iso", 0, 0, 0, now, b"2020-01-02T15:04:05.123Z")
+    date("local-text", 1, 117, now, now, b"Thu Jan 02 2020 20:34:05 GMT+0530 (India)")
+    date("legacy", 2, 2 * 1439, -1, now, b"1/2/2020, 3:04:05 PM")
+    date("edges", 1, 0, -8640000000000000, now, b"+275760-09-13T00:00:00.000Z")
+    date("identifier", 3, 0, 253402300799999, now, b"-23:59:59.999999999")
+    date("raw", 4 | 8, 0, -0.0, float("nan"), b"Sat, 13 Sep 275760 00:00:00 GMT")
     part = b"\x1f\x1f"  # PART_SEPARATOR in src/lib.rs
     write("page", "document", "<!doctype html><style>@media (max-width: 400px) { p { margin: 0 } }"
           " p { border: 2px dashed red; padding: 4px; font-style: italic }"

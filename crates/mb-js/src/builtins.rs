@@ -12,9 +12,9 @@
 //! sowie %Map% und %Set% mit ihren Prototypen und Iteratoren (Welle 8e),
 //! %Reflect% und %Proxy% (Welle 8f), %String% mit %String.prototype% und
 //! %RegExp% mit %RegExp.prototype% und %RegExpStringIteratorPrototype%
-//! (Welle 8g) und %BigInt% mit %BigInt.prototype% (Welle 8h); %Function%
-//! selbst wartet auf `eval`. Dazu kommen, was `for`-`of` und
-//! die Ausbreitung brauchen: die Iteratoren für Arrays und Zeichenketten
+//! (Welle 8g), %BigInt% mit %BigInt.prototype% (Welle 8h) und %Date% mit
+//! %Date.prototype% (Welle 8i); %Function% selbst wartet auf `eval`. Dazu
+//! kommen, was `for`-`of` und die Ausbreitung brauchen: die Iteratoren für Arrays und Zeichenketten
 //! mit den Methoden für @@iterator. Generatoren und async-Generatoren bringen ihre Prototypen
 //! mit `next`, `return` und `throw` mit, async-Funktionen ihren Prototyp,
 //! und `for await` braucht %AsyncIteratorPrototype% und
@@ -34,6 +34,7 @@ mod async_iterator;
 mod bigint;
 mod boolean;
 mod collection;
+mod date;
 mod error;
 mod function;
 mod generator;
@@ -94,6 +95,7 @@ pub(crate) fn create_intrinsics(
     global::create(agent, scope, realm)?;
     number::create(agent, scope, realm)?;
     bigint::create(agent, scope, realm)?;
+    date::create(agent, scope, realm)?;
     math::create(agent, scope, realm)?;
     json::create(agent, scope, realm)?;
     map::create(agent, scope, realm)?;

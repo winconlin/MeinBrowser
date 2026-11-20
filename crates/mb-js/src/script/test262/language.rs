@@ -60,6 +60,7 @@ const BUILT_INS: Suite = Suite {
         "Array",
         "BigInt",
         "Boolean",
+        "Date",
         "Error",
         "Function",
         "Iterator",
@@ -92,10 +93,11 @@ const BUILT_INS: Suite = Suite {
 
 /// Dasselbe für Anhang B: `Object.prototype.__proto__` und die
 /// Altmethoden von `Object.prototype`, dazu die zusätzlichen Eigenschaften
-/// von `String.prototype` (Anhang B.2.2).
+/// von `String.prototype` (Anhang B.2.2) und `Date.prototype` (Anhang
+/// B.2.3).
 const ANNEX_B_BUILT_INS: Suite = Suite {
     directory: "test/annexB/built-ins",
-    parts: &["Object", "RegExp", "String"],
+    parts: &["Date", "Object", "RegExp", "String"],
     selection: false,
     file: "erwartete-fehlschlaege-annexb-built-ins.txt",
     expected: include_str!("erwartete-fehlschlaege-annexb-built-ins.txt"),

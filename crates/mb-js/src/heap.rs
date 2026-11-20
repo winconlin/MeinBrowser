@@ -135,6 +135,7 @@ const KIND_COLLECTION: u64 = 22;
 const KIND_PROXY: u64 = 23;
 const KIND_REGEXP: u64 = 24;
 const KIND_BIGINT: u64 = 25;
+const KIND_DATE: u64 = 26;
 
 /// Die Kennzeichen stehen in den Bits 8 bis 31 des Kopfworts.
 const FLAG_SHIFT: u32 = 8;
@@ -174,7 +175,7 @@ fn is_value_cell(kind: u64) -> bool {
 }
 
 /// Die Arten der Objektzellen.
-const OBJECT_KINDS: [u64; 16] = [
+const OBJECT_KINDS: [u64; 17] = [
     KIND_OBJECT,
     KIND_ARRAY,
     KIND_FUNCTION,
@@ -191,6 +192,7 @@ const OBJECT_KINDS: [u64; 16] = [
     KIND_COLLECTION,
     KIND_PROXY,
     KIND_REGEXP,
+    KIND_DATE,
 ];
 
 /// Die internen Felder eines Funktionsobjekts, Werte vor den eingebetteten
@@ -227,6 +229,8 @@ pub(crate) const PROXY_FIELDS: usize = 3;
 /// [[OriginalFlags]] und die Nummer seines Programms, die für
 /// [[RegExpRecord]] und [[RegExpMatcher]] steht.
 pub(crate) const REGEXP_FIELDS: usize = 3;
+/// Das interne Feld eines Date-Objekts: [[DateValue]], eine Number.
+pub(crate) const DATE_FIELDS: usize = 1;
 
 fn is_object(kind: u64) -> bool {
     OBJECT_KINDS.contains(&kind)
@@ -249,6 +253,7 @@ fn object_fields(kind: u64) -> usize {
         KIND_COLLECTION => COLLECTION_FIELDS,
         KIND_PROXY => PROXY_FIELDS,
         KIND_REGEXP => REGEXP_FIELDS,
+        KIND_DATE => DATE_FIELDS,
         _ => 0,
     }
 }
