@@ -1,0 +1,1 @@
+interface Base {}; interface Child : Base {}; typedef (Base or Child) Choice;

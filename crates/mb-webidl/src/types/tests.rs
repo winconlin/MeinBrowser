@@ -307,10 +307,11 @@ fn graph_sharing_does_not_expand_typedefs_exponentially() {
     for n in 1..35 {
         source.push_str(&format!("typedef (T{} or T{}) T{n}; ", n - 1, n - 1));
     }
-    // Gleiche Unionglieder sind noch keine vollständige Unterscheidbarkeitsprüfung.
+    // Die zuvor nur strukturell gelesenen doppelten Glieder müssen jetzt
+    // als nicht unterscheidbar enden, ohne den Aliasgraphen aufzuklappen.
     let index = index::build(&[&source]).unwrap();
     let members = members::build(&index).unwrap();
-    let types = build_within(
+    let error = build_within(
         &index,
         &members,
         Limits {
@@ -321,9 +322,8 @@ fn graph_sharing_does_not_expand_typedefs_exponentially() {
         },
         &Budget::new(15000),
     )
-    .unwrap();
-    assert!(types.len() < 110);
-    assert!(types.edge_count() < 80);
+    .unwrap_err();
+    assert_eq!(error.kind, ErrorKind::IndistinguishableUnion);
 }
 
 #[test]

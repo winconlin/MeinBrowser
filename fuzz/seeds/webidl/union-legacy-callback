@@ -1,0 +1,1 @@
+[LegacyTreatNonObjectAsNull] callback F = undefined (); dictionary D {}; typedef (F or D) Choice;

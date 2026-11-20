@@ -1,0 +1,1 @@
+interface Base {}; interface Left : Base {}; interface Right : Base {}; typedef (Left or Right) Choice;
