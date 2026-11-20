@@ -4612,3 +4612,186 @@ fn dates_follow_the_host() {
         assert_eq!(run(&mut agent, realm, source), expected, "{source}");
     }
 }
+
+#[test]
+fn array_buffers_resize_transfer_and_detach() {
+    check(&[
+        ("new ArrayBuffer(8).byteLength", "8"),
+        ("new ArrayBuffer(2.9).byteLength", "2"),
+        ("new ArrayBuffer().byteLength", "0"),
+        ("new ArrayBuffer(-1)", "RangeError"),
+        ("new ArrayBuffer(2 ** 53)", "RangeError"),
+        // Mehr, als ein Heap je fassen kann.
+        ("new ArrayBuffer(2 ** 40)", "RangeError"),
+        (
+            "new ArrayBuffer(0, { maxByteLength: 2 ** 40 })",
+            "RangeError",
+        ),
+        ("new ArrayBuffer(4, { maxByteLength: 2 })", "RangeError"),
+        ("ArrayBuffer(1)", "TypeError"),
+        ("new ArrayBuffer(4).resizable", "false"),
+        ("new ArrayBuffer(4).maxByteLength", "4"),
+        (
+            "var b = new ArrayBuffer(2, { maxByteLength: 6 }); [b.resizable, b.maxByteLength].join()",
+            "\"true,6\"",
+        ),
+        (
+            "var b = new ArrayBuffer(2, { maxByteLength: 6 }); var v = new DataView(b); \
+             v.setUint8(1, 7); b.resize(6); b.byteLength + ':' + v.getUint8(1) + ':' + v.byteLength",
+            "\"6:7:6\"",
+        ),
+        (
+            "var b = new ArrayBuffer(4, { maxByteLength: 6 }); b.resize(7)",
+            "RangeError",
+        ),
+        ("new ArrayBuffer(4).resize(2)", "TypeError"),
+        (
+            "var b = new ArrayBuffer(4); new DataView(b).setUint8(3, 9); \
+             var t = b.transfer(6); [b.detached, b.byteLength, t.byteLength, \
+             new DataView(t).getUint8(3), t.resizable].join()",
+            "\"true,0,6,9,false\"",
+        ),
+        (
+            "var b = new ArrayBuffer(4, { maxByteLength: 8 }); \
+             [b.transfer().resizable, b.detached].join()",
+            "\"true,true\"",
+        ),
+        (
+            "var b = new ArrayBuffer(4, { maxByteLength: 8 }); b.transferToFixedLength().resizable",
+            "false",
+        ),
+        (
+            "var b = new ArrayBuffer(4); b.transfer(); b.transfer()",
+            "TypeError",
+        ),
+        (
+            "var b = new ArrayBuffer(4); b.transfer(); new DataView(b)",
+            "TypeError",
+        ),
+        (
+            "var b = new ArrayBuffer(8); var v = new DataView(b); \
+             for (var i = 0; i < 8; i++) v.setUint8(i, i); \
+             var s = b.slice(2, -2); var w = new DataView(s); \
+             s.byteLength + ':' + w.getUint8(0) + w.getUint8(3)",
+            "\"4:25\"",
+        ),
+        ("new ArrayBuffer(8).slice(6, 2).byteLength", "0"),
+        (
+            "class B extends ArrayBuffer {} var s = new B(4).slice(1); \
+             (s instanceof B) + ':' + s.byteLength",
+            "\"true:3\"",
+        ),
+        (
+            "ArrayBuffer.isView(new DataView(new ArrayBuffer(1))) + ':' + \
+             ArrayBuffer.isView(new ArrayBuffer(1))",
+            "\"true:false\"",
+        ),
+        ("ArrayBuffer[Symbol.species] === ArrayBuffer", "true"),
+        (
+            "Object.prototype.toString.call(new ArrayBuffer(1))",
+            "\"[object ArrayBuffer]\"",
+        ),
+        (
+            "Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'byteLength').get.call({})",
+            "TypeError",
+        ),
+    ]);
+}
+
+#[test]
+fn data_views_read_and_write_every_element_type() {
+    check(&[
+        (
+            "var v = new DataView(new ArrayBuffer(8)); v.setInt16(0, -2); \
+             [v.getInt16(0), v.getUint16(0), v.getUint8(0), v.getInt16(0, true)].join()",
+            "\"-2,65534,255,-257\"",
+        ),
+        (
+            "var v = new DataView(new ArrayBuffer(8)); v.setUint32(0, 0x01020304, true); \
+             [v.getUint8(0), v.getUint8(3), v.getInt32(0)].join()",
+            "\"4,1,67305985\"",
+        ),
+        (
+            "var v = new DataView(new ArrayBuffer(8)); v.setFloat64(0, Math.PI); v.getFloat64(0)",
+            &format!("{}", std::f64::consts::PI),
+        ),
+        (
+            "var v = new DataView(new ArrayBuffer(4)); v.setFloat32(0, 1.1); v.getFloat32(0)",
+            "1.100000023841858",
+        ),
+        (
+            "var v = new DataView(new ArrayBuffer(2)); v.setFloat16(0, 1.1); \
+             [v.getFloat16(0), v.getUint16(0)].join()",
+            "\"1.099609375,15462\"",
+        ),
+        (
+            "var v = new DataView(new ArrayBuffer(2)); v.setFloat16(0, 65520); v.getFloat16(0)",
+            "Infinity",
+        ),
+        (
+            "var v = new DataView(new ArrayBuffer(8)); v.setBigInt64(0, -1n); \
+             v.getBigUint64(0)",
+            "18446744073709551615n",
+        ),
+        (
+            "var v = new DataView(new ArrayBuffer(8)); v.setBigUint64(0, 2n ** 64n + 5n, true); \
+             v.getBigInt64(0, true)",
+            "5n",
+        ),
+        (
+            "new DataView(new ArrayBuffer(8)).setBigInt64(0, 1)",
+            "TypeError",
+        ),
+        ("new DataView(new ArrayBuffer(8)).getInt32(5)", "RangeError"),
+        (
+            "new DataView(new ArrayBuffer(8)).getInt32(-1)",
+            "RangeError",
+        ),
+        ("new DataView(new ArrayBuffer(8), 9)", "RangeError"),
+        ("new DataView(new ArrayBuffer(8), 4, 5)", "RangeError"),
+        ("new DataView({})", "TypeError"),
+        ("DataView(new ArrayBuffer(1))", "TypeError"),
+        (
+            "var v = new DataView(new ArrayBuffer(8), 2, 4); \
+             [v.byteOffset, v.byteLength, v.buffer.byteLength].join()",
+            "\"2,4,8\"",
+        ),
+        (
+            "var b = new ArrayBuffer(8, { maxByteLength: 16 }); var v = new DataView(b, 4); \
+             b.resize(2); [v.byteLength, v.byteOffset].join()",
+            "\"0,0\"",
+        ),
+        (
+            "var b = new ArrayBuffer(8, { maxByteLength: 16 }); var v = new DataView(b, 4); \
+             b.resize(2); v.getUint8(0)",
+            "TypeError",
+        ),
+        (
+            "var b = new ArrayBuffer(8, { maxByteLength: 16 }); var v = new DataView(b, 4); \
+             b.resize(12); v.byteLength",
+            "8",
+        ),
+        (
+            "Object.prototype.toString.call(new DataView(new ArrayBuffer(1)))",
+            "\"[object DataView]\"",
+        ),
+        (
+            "var log = []; var v = new DataView(new ArrayBuffer(2)); \
+             v.setUint8({ valueOf() { log.push('i'); return 0; } }, \
+             { valueOf() { log.push('v'); return 1; } }); log.join() + v.getUint8(0)",
+            "\"i,v1\"",
+        ),
+    ]);
+}
+
+#[test]
+fn buffer_bytes_survive_collections() {
+    let (mut agent, realm) = agent_with(true);
+    let source = "var b = new ArrayBuffer(300000); var v = new DataView(b); \
+                  for (var i = 0; i < 300000; i += 9973) v.setUint8(i, i % 256); \
+                  var garbage = []; for (var j = 0; j < 50; j++) garbage.push([j]); \
+                  var t = b.transfer(); var w = new DataView(t); var sum = 0; \
+                  for (var i = 0; i < 300000; i += 9973) sum += w.getUint8(i); sum";
+    let expected: u32 = (0..300_000u32).step_by(9973).map(|i| i % 256).sum();
+    assert_eq!(run(&mut agent, realm, source), expected.to_string());
+}

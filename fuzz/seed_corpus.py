@@ -369,6 +369,26 @@ def main():
     date("edges", 1, 0, -8640000000000000, now, b"+275760-09-13T00:00:00.000Z")
     date("identifier", 3, 0, 253402300799999, now, b"-23:59:59.999999999")
     date("raw", 4 | 8, 0, -0.0, float("nan"), b"Sat, 13 Sep 275760 00:00:00 GMT")
+
+    def arraybuffer(name, length, extra, resizable, steps):
+        # Length, extra maximum and resizability, then eleven bytes per step: the step (bits 3 and
+        # 4 choose the kind of Number), the element type (bit 7 for little-endian), an offset and
+        # eight value bytes, low first (src/arraybuffer.rs).
+        data = bytes([length, extra, resizable])
+        for op, kind, offset, value in steps:
+            data += bytes([op, kind, offset]) + value
+        write("arraybuffer", name, data)
+    pi = struct.pack("<d", 3.141592653589793)
+    arraybuffer("every-type", 16, 0, 0, [(0, kind, 3, struct.pack("<q", -5 << 4)) for kind in range(11)]
+                + [(1, kind | 128, 2, bytes(8)) for kind in range(11)])
+    arraybuffer("floats", 8, 0, 0, [(1 << 3, 8 | 128, 0, pi), (3 << 3, 8, 2, bytes([5]) + bytes(7)),
+                                    (3 << 3, 9, 4, bytes([10]) + bytes(7)), (1 << 3, 10, 0, pi)])
+    arraybuffer("resize", 4, 20, 1, [(5, 0, 2, b"\x41" * 8), (2, 0, 22, bytes(8)), (6, 0, 3, b"\x41" * 8),
+                                     (2, 0, 1, bytes(8)), (4, 1, 22, b"\x41" * 8)])
+    arraybuffer("transfer", 8, 8, 1, [(3, 129, 9, b"\x40" * 8), (3, 1, 30, b"\x40" * 8),
+                                      (3, 0, 0, b"\x41" * 8), (0, 0, 0, bytes(8)), (7, 128, 7, b"\x41" * 8)])
+    arraybuffer("bigints", 8, 0, 0, [(0, 6, 0, struct.pack("<q", -1)), (0, 7 | 128, 0, struct.pack("<q", 1 << 62)),
+                                     (0, 6 + 11 * 10, 0, struct.pack("<q", -(1 << 63)))])
     part = b"\x1f\x1f"  # PART_SEPARATOR in src/lib.rs
     write("page", "document", "<!doctype html><style>@media (max-width: 400px) { p { margin: 0 } }"
           " p { border: 2px dashed red; padding: 4px; font-style: italic }"

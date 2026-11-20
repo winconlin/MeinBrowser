@@ -7,9 +7,10 @@
 //! (RS-7). Jede Zelle beginnt mit einem Kopfwort: Art in den Bits 0 bis 7,
 //! Kennzeichen in den Bits 8 bis 31, Länge in den Bits 32 bis 63.
 //!
-//! Zeichenketten und BigInts bestehen nach dem Kopfwort aus Rohdaten: den
-//! Codeeinheiten oder den Wörtern des Betrags, das Vorzeichen als
-//! Kennzeichen. Die meisten anderen Zellen bestehen nach dem Kopfwort aus
+//! Zeichenketten, BigInts und die Daten von ArrayBuffern bestehen nach dem
+//! Kopfwort aus Rohdaten: den Codeeinheiten, den Wörtern des Betrags mit dem
+//! Vorzeichen als Kennzeichen oder den Bytes, acht je Wort, das erste im
+//! niedrigsten. Die meisten anderen Zellen bestehen nach dem Kopfwort aus
 //! Werten: Felder, Symbole, Gestalten, schwache Felder und dünn besetzte
 //! Elemente. Objekte beginnen mit zwei Wörtern, die je zwei 32-Bit-Verweise
 //! packen (Gestalt und Prototyp, Elemente und Zusatzfeld), dann folgen ihre
@@ -136,6 +137,9 @@ const KIND_PROXY: u64 = 23;
 const KIND_REGEXP: u64 = 24;
 const KIND_BIGINT: u64 = 25;
 const KIND_DATE: u64 = 26;
+const KIND_BYTES: u64 = 27;
+const KIND_ARRAY_BUFFER: u64 = 28;
+const KIND_DATA_VIEW: u64 = 29;
 
 /// Die Kennzeichen stehen in den Bits 8 bis 31 des Kopfworts.
 const FLAG_SHIFT: u32 = 8;
@@ -175,7 +179,7 @@ fn is_value_cell(kind: u64) -> bool {
 }
 
 /// Die Arten der Objektzellen.
-const OBJECT_KINDS: [u64; 17] = [
+const OBJECT_KINDS: [u64; 19] = [
     KIND_OBJECT,
     KIND_ARRAY,
     KIND_FUNCTION,
@@ -193,6 +197,8 @@ const OBJECT_KINDS: [u64; 17] = [
     KIND_PROXY,
     KIND_REGEXP,
     KIND_DATE,
+    KIND_ARRAY_BUFFER,
+    KIND_DATA_VIEW,
 ];
 
 /// Die internen Felder eines Funktionsobjekts, Werte vor den eingebetteten
@@ -231,6 +237,17 @@ pub(crate) const PROXY_FIELDS: usize = 3;
 pub(crate) const REGEXP_FIELDS: usize = 3;
 /// Das interne Feld eines Date-Objekts: [[DateValue]], eine Number.
 pub(crate) const DATE_FIELDS: usize = 1;
+/// Die internen Felder eines ArrayBuffer: [[ArrayBufferData]], eine Zelle
+/// aus Bytes oder *null*, wenn er abgelöst ist, und
+/// [[ArrayBufferMaxByteLength]], eine Number oder *undefined* für einen
+/// ArrayBuffer fester Länge. [[ArrayBufferByteLength]] ist die Länge der
+/// Zelle.
+pub(crate) const ARRAY_BUFFER_FIELDS: usize = 2;
+/// Die internen Felder eines DataView: [[ViewedArrayBuffer]],
+/// [[ByteLength]] als Number oder *undefined* für ~auto~ und
+/// [[ByteOffset]] als Number. [[DataView]] hat keinen Wert, die Art sagt
+/// alles.
+pub(crate) const DATA_VIEW_FIELDS: usize = 3;
 
 fn is_object(kind: u64) -> bool {
     OBJECT_KINDS.contains(&kind)
@@ -254,6 +271,8 @@ fn object_fields(kind: u64) -> usize {
         KIND_PROXY => PROXY_FIELDS,
         KIND_REGEXP => REGEXP_FIELDS,
         KIND_DATE => DATE_FIELDS,
+        KIND_ARRAY_BUFFER => ARRAY_BUFFER_FIELDS,
+        KIND_DATA_VIEW => DATA_VIEW_FIELDS,
         _ => 0,
     }
 }
@@ -282,6 +301,7 @@ fn cell_words(header: u64) -> Option<usize> {
         KIND_LATIN1 => length.div_ceil(8),
         KIND_UTF16 => length.div_ceil(4),
         KIND_BIGINT => length,
+        KIND_BYTES => length.div_ceil(8),
         kind if is_value_cell(kind) => length,
         kind if is_object(kind) => length
             .checked_add(OBJECT_REFS)?
@@ -771,6 +791,17 @@ impl Heap {
             .is_some_and(|head| header_length(head) == 0)
     }
 
+    /// Das Vorzeichen und das niedrigste Wort des Betrags, ohne den Betrag
+    /// zu kopieren; 0 für den Wert 0.
+    pub(crate) fn bigint_low_word(&self, bigint: Ref<'_>) -> Option<(bool, u64)> {
+        let head = self.bigint_header(bigint)?;
+        let negative = header_flags(head) & NEGATIVE_FLAG != 0;
+        if header_length(head) == 0 {
+            return Some((negative, 0));
+        }
+        Some((negative, self.word(bigint.offset(), 1)?))
+    }
+
     fn bigint_header(&self, bigint: Ref<'_>) -> Option<u64> {
         let head = self.word(bigint.offset(), 0)?;
         (header_kind(head) == KIND_BIGINT).then_some(head)
@@ -1215,9 +1246,10 @@ impl Heap {
             RefKind::String => matches!(cell, KIND_LATIN1 | KIND_UTF16),
             RefKind::Symbol => cell == KIND_SYMBOL,
             RefKind::Object => is_object(cell),
-            RefKind::Internal => {
-                matches!(cell, KIND_SLOTS | KIND_SHAPE | KIND_WEAK | KIND_SPARSE)
-            }
+            RefKind::Internal => matches!(
+                cell,
+                KIND_SLOTS | KIND_SHAPE | KIND_WEAK | KIND_SPARSE | KIND_BYTES
+            ),
             RefKind::BigInt => cell == KIND_BIGINT,
         };
         let check = |bits: u64, place: &str| -> Result<(), String> {
@@ -1277,6 +1309,7 @@ impl Heap {
     }
 }
 
+mod bytes;
 mod cells;
 
 pub(crate) use cells::{CellKind, ObjectClass};

@@ -3,12 +3,13 @@
 //! zusammen; hier steht nur, wie die Zellen im Heap liegen.
 
 use super::{
-    Heap, KIND_ARGUMENTS, KIND_ARRAY, KIND_ASYNC_FROM_SYNC, KIND_ASYNC_GENERATOR,
-    KIND_BOUND_FUNCTION, KIND_BUILTIN, KIND_COLLECTION, KIND_DATE, KIND_ERROR, KIND_FUNCTION,
-    KIND_GENERATOR, KIND_ITERATOR, KIND_OBJECT, KIND_PRIMITIVE, KIND_PROMISE, KIND_PROXY,
-    KIND_REGEXP, KIND_SHAPE, KIND_SLOTS, KIND_SPARSE, KIND_SYMBOL, KIND_WEAK, Local, NONE,
-    OBJECT_REFS, OutOfMemory, Scope, cell_words, header, header_flags, header_kind, header_length,
-    is_object, is_value_cell, object_fields, packed, packed_high, packed_low, to_usize, with_flags,
+    Heap, KIND_ARGUMENTS, KIND_ARRAY, KIND_ARRAY_BUFFER, KIND_ASYNC_FROM_SYNC,
+    KIND_ASYNC_GENERATOR, KIND_BOUND_FUNCTION, KIND_BUILTIN, KIND_COLLECTION, KIND_DATA_VIEW,
+    KIND_DATE, KIND_ERROR, KIND_FUNCTION, KIND_GENERATOR, KIND_ITERATOR, KIND_OBJECT,
+    KIND_PRIMITIVE, KIND_PROMISE, KIND_PROXY, KIND_REGEXP, KIND_SHAPE, KIND_SLOTS, KIND_SPARSE,
+    KIND_SYMBOL, KIND_WEAK, Local, NONE, OBJECT_REFS, OutOfMemory, Scope, cell_words, header,
+    header_flags, header_kind, header_length, is_object, is_value_cell, object_fields, packed,
+    packed_high, packed_low, to_usize, with_flags,
 };
 use crate::value::{Ref, RefKind, Value};
 
@@ -129,6 +130,14 @@ pub(crate) enum ObjectClass {
     /// Ein Date-Objekt (Abschnitt 21.4.5) mit [[DateValue]] als internem
     /// Feld, sonst gewöhnlich.
     Date,
+    /// Ein ArrayBuffer (Abschnitt 25.1.7) mit
+    /// [`ARRAY_BUFFER_FIELDS`](super::ARRAY_BUFFER_FIELDS) internen
+    /// Feldern, sonst gewöhnlich.
+    ArrayBuffer,
+    /// Ein DataView (Abschnitt 25.3.5) mit
+    /// [`DATA_VIEW_FIELDS`](super::DATA_VIEW_FIELDS) internen Feldern,
+    /// sonst gewöhnlich.
+    DataView,
 }
 
 impl ObjectClass {
@@ -151,6 +160,8 @@ impl ObjectClass {
             ObjectClass::Proxy => KIND_PROXY,
             ObjectClass::RegExp => KIND_REGEXP,
             ObjectClass::Date => KIND_DATE,
+            ObjectClass::ArrayBuffer => KIND_ARRAY_BUFFER,
+            ObjectClass::DataView => KIND_DATA_VIEW,
         }
     }
 
@@ -173,6 +184,8 @@ impl ObjectClass {
             KIND_PROXY => Some(ObjectClass::Proxy),
             KIND_REGEXP => Some(ObjectClass::RegExp),
             KIND_DATE => Some(ObjectClass::Date),
+            KIND_ARRAY_BUFFER => Some(ObjectClass::ArrayBuffer),
+            KIND_DATA_VIEW => Some(ObjectClass::DataView),
             _ => None,
         }
     }
@@ -712,5 +725,41 @@ impl Heap {
     pub(crate) fn set_date_value(&self, object: Ref<'_>, value: f64) -> bool {
         self.field_word(object, KIND_DATE, 0)
             .is_some_and(|word| self.store(object.offset(), word, Value::number(value).bits()))
+    }
+
+    /// Ein internes Feld eines ArrayBuffer, `None` für andere Zellen.
+    pub(crate) fn array_buffer_field(&self, object: Ref<'_>, index: usize) -> Option<Value<'_>> {
+        let word = self.field_word(object, KIND_ARRAY_BUFFER, index)?;
+        self.word(object.offset(), word).map(Value::from_bits)
+    }
+
+    /// Schreibt ein internes Feld eines ArrayBuffer. `false`, wenn es das
+    /// Feld nicht gibt.
+    pub(crate) fn set_array_buffer_field(
+        &self,
+        object: Ref<'_>,
+        index: usize,
+        value: Value<'_>,
+    ) -> bool {
+        self.field_word(object, KIND_ARRAY_BUFFER, index)
+            .is_some_and(|word| self.store(object.offset(), word, value.bits()))
+    }
+
+    /// Ein internes Feld eines DataView, `None` für andere Zellen.
+    pub(crate) fn data_view_field(&self, object: Ref<'_>, index: usize) -> Option<Value<'_>> {
+        let word = self.field_word(object, KIND_DATA_VIEW, index)?;
+        self.word(object.offset(), word).map(Value::from_bits)
+    }
+
+    /// Schreibt ein internes Feld eines DataView. `false`, wenn es das Feld
+    /// nicht gibt.
+    pub(crate) fn set_data_view_field(
+        &self,
+        object: Ref<'_>,
+        index: usize,
+        value: Value<'_>,
+    ) -> bool {
+        self.field_word(object, KIND_DATA_VIEW, index)
+            .is_some_and(|word| self.store(object.offset(), word, value.bits()))
     }
 }

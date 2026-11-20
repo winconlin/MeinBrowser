@@ -128,6 +128,11 @@ pub enum Intrinsic {
     SetPrototype,
     /// %SetIteratorPrototype% (Abschnitt 24.2.6.2).
     SetIteratorPrototype,
+    /// %ArrayBuffer.prototype% (Abschnitt 25.1.6), ein gewöhnliches
+    /// Objekt.
+    ArrayBufferPrototype,
+    /// %DataView.prototype% (Abschnitt 25.3.4), ein gewöhnliches Objekt.
+    DataViewPrototype,
     /// %Array.prototype.values% (Abschnitt 23.1.3.38), auch @@iterator von
     /// Arrays und arguments-Objekten.
     ArrayPrototypeValues,
@@ -208,6 +213,10 @@ pub enum Intrinsic {
     Map,
     /// %Set% (Abschnitt 24.2.2).
     Set,
+    /// %ArrayBuffer% (Abschnitt 25.1.4).
+    ArrayBuffer,
+    /// %DataView% (Abschnitt 25.3.2).
+    DataView,
     /// %Reflect% (Abschnitt 28.1).
     Reflect,
     /// %Proxy% (Abschnitt 28.2.1).
@@ -753,8 +762,10 @@ fn set_default_global_bindings(
     let intrinsics = [
         ("AggregateError", Intrinsic::AggregateError),
         ("Array", Intrinsic::Array),
+        ("ArrayBuffer", Intrinsic::ArrayBuffer),
         ("BigInt", Intrinsic::BigInt),
         ("Boolean", Intrinsic::Boolean),
+        ("DataView", Intrinsic::DataView),
         ("Date", Intrinsic::Date),
         ("Error", Intrinsic::Error),
         ("EvalError", Intrinsic::EvalError),
