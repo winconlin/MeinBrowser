@@ -65,9 +65,9 @@ pub(crate) fn to_object_base<'s>(
         Kind::Number(_) => Intrinsic::NumberPrototype,
         Kind::String(_) => Intrinsic::StringPrototype,
         Kind::Symbol(_) => Intrinsic::SymbolPrototype,
-        // BigInt-Werte gibt es noch nicht, Lücken und interne Zellen sehen
-        // Skripte nie.
-        Kind::Undefined | Kind::Null | Kind::BigInt(_) | Kind::Hole | Kind::Internal(_) => {
+        Kind::BigInt(_) => Intrinsic::BigIntPrototype,
+        // Lücken und interne Zellen sehen Skripte nie.
+        Kind::Undefined | Kind::Null | Kind::Hole | Kind::Internal(_) => {
             return Err(agent.throw_error(ErrorKind::TypeError));
         }
     };

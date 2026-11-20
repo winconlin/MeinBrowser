@@ -345,6 +345,16 @@ def main():
     regexp("modifiers", "", r"(?i:a)(?-i:B)", "AB")
     regexp("invalid", "", r"(?<a>x)(?<a>y)", "xy")
     regexp("backtracking", "", r"(a*)*b", "a" * 30)
+
+    def bigint(name, control, a, b):
+        # Signs in bits 0 and 1, shift in bits 2 to 7, the length of a as two bytes, low first,
+        # then a and b (src/bigint.rs).
+        write("bigint", name, bytes([control]) + struct.pack("<H", len(a)) + a + b)
+    bigint("small", 1 | 5 << 2, b"\x12\x34", b"\x05")
+    bigint("zero-divisor", 2 | 3 << 2, b"\xff" * 9, b"")
+    bigint("long-division", 1 << 2, b"\x80" + b"\x00" * 16, b"\xff" * 9)
+    bigint("signs", 3 | 63 << 2, b"\xff" * 17, b"\x80" * 9)
+    bigint("near-number", 1, b"\x20\x00\x00\x00\x00\x00\x01", b"\x01")
     part = b"\x1f\x1f"  # PART_SEPARATOR in src/lib.rs
     write("page", "document", "<!doctype html><style>@media (max-width: 400px) { p { margin: 0 } }"
           " p { border: 2px dashed red; padding: 4px; font-style: italic }"

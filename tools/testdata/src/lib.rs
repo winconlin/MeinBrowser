@@ -138,6 +138,7 @@ pub const SOURCES: [Source; 9] = [
             "/test/annexB/language/",
             "/test/built-ins/AggregateError/",
             "/test/built-ins/Array/",
+            "/test/built-ins/BigInt/",
             "/test/built-ins/Boolean/",
             "/test/built-ins/Error/",
             "/test/built-ins/Function/",

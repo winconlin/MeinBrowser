@@ -1,12 +1,13 @@
 //! Typumwandlungen (Abschnitt 7.1): ToPrimitive, ToBoolean, ToNumeric,
 //! ToNumber mit StringToNumber, ToIntegerOrInfinity, ToInt32, ToUint32,
-//! ToString, ToObject und ToPropertyKey. Die übrigen kommen mit den
-//! Schritten, die sie brauchen. BigInt-Werte gibt es noch nicht; bis sie
-//! kommen, ergibt ToNumeric immer eine Zahl.
+//! ToBigInt mit StringToBigInt, ToString, ToObject, ToPropertyKey und
+//! ToIndex, dazu NumberToBigInt (Abschnitt 21.2.1.1.1). Die übrigen kommen
+//! mit den Schritten, die sie brauchen.
 
 #![forbid(unsafe_code)]
 
 use crate::agent::{Agent, Completion, ErrorKind};
+use crate::bigint::{self, BigInt};
 use crate::heap::{Heap, Local, Scope};
 use crate::key::{MAX_ARRAY_INDEX, PropertyKey, WellKnownSymbol};
 use crate::lexer::number::from_power_of_two_radix;
@@ -98,19 +99,30 @@ pub fn to_boolean(heap: &Heap, value: Value<'_>) -> bool {
         Kind::Undefined | Kind::Null => false,
         Kind::Number(number) => number != 0.0 && !number.is_nan(),
         Kind::String(string) => heap.string_len(string) != 0,
-        // 0n wäre *false*, aber BigInt-Werte gibt es noch nicht. Lücken und
-        // interne Zellen sind keine Werte der Sprache.
-        Kind::Symbol(_) | Kind::BigInt(_) | Kind::Object(_) | Kind::Hole | Kind::Internal(_) => {
-            true
-        }
+        Kind::BigInt(bigint) => !heap.bigint_is_zero(bigint),
+        // Lücken und interne Zellen sind keine Werte der Sprache.
+        Kind::Symbol(_) | Kind::Object(_) | Kind::Hole | Kind::Internal(_) => true,
     }
 }
 
-/// ToNumeric (Abschnitt 7.1.3). Ein BigInt käme unverändert zurück; bis es
-/// BigInt-Werte gibt, ist das Ergebnis immer eine Zahl.
-pub fn to_numeric(agent: &mut Agent, scope: &Scope, value: Local<'_>) -> Completion<f64> {
+/// Das Ergebnis von ToNumeric: eine Zahl oder ein BigInt.
+#[derive(Clone, Copy, Debug)]
+pub enum Numeric<'s> {
+    Number(f64),
+    BigInt(Local<'s>),
+}
+
+/// ToNumeric (Abschnitt 7.1.3).
+pub fn to_numeric<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    value: Local<'_>,
+) -> Completion<Numeric<'s>> {
     let primitive = to_primitive(agent, scope, value, Some(PreferredType::Number))?;
-    to_number(agent, scope, primitive)
+    if matches!(agent.heap().get(primitive).kind(), Kind::BigInt(_)) {
+        return Ok(Numeric::BigInt(primitive));
+    }
+    Ok(Numeric::Number(to_number(agent, scope, primitive)?))
 }
 
 /// ToNumber (Abschnitt 7.1.4).
@@ -356,6 +368,101 @@ pub fn to_integer_or_infinity(
     Ok(integer_or_infinity(number))
 }
 
+/// ToIndex (Abschnitt 7.1.22): eine ganze Zahl von 0 bis 2⁵³ − 1, sonst
+/// ein RangeError.
+pub fn to_index(agent: &mut Agent, scope: &Scope, value: Local<'_>) -> Completion<u64> {
+    let integer = to_integer_or_infinity(agent, scope, value)?;
+    if !(0.0..=9_007_199_254_740_991.0).contains(&integer) {
+        return Err(agent.throw_error(ErrorKind::RangeError));
+    }
+    // Ganz und im Bereich, also genau darstellbar.
+    Ok(integer as u64)
+}
+
+/// ToBigInt (Abschnitt 7.1.13).
+pub fn to_bigint<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    value: Local<'_>,
+) -> Completion<Local<'s>> {
+    let primitive = to_primitive(agent, scope, value, Some(PreferredType::Number))?;
+    let heap = agent.heap();
+    let value = match heap.get(primitive).kind() {
+        Kind::BigInt(_) => return Ok(primitive),
+        Kind::Boolean(b) => BigInt::from_u64(u64::from(b)),
+        Kind::String(string) => {
+            let units = heap.string_units(string);
+            match string_to_bigint(agent, &units)? {
+                Some(value) => value,
+                None => return Err(agent.throw_error(ErrorKind::SyntaxError)),
+            }
+        }
+        // *undefined*, *null*, Zahlen und Symbole werfen einen TypeError.
+        // ToPrimitive gibt kein Objekt zurück, Lücken und interne Zellen
+        // sind keine Werte der Sprache.
+        Kind::Undefined
+        | Kind::Null
+        | Kind::Number(_)
+        | Kind::Symbol(_)
+        | Kind::Object(_)
+        | Kind::Hole
+        | Kind::Internal(_) => return Err(agent.throw_error(ErrorKind::TypeError)),
+    };
+    bigint::allocate(agent, scope, &value)
+}
+
+/// StringToBigInt (Abschnitt 7.1.14): `None`, wenn die Zeichenkette kein
+/// *StringIntegerLiteral* ist. Leer oder nur Leerraum ergibt 0, ein
+/// Vorzeichen gibt es nur vor Dezimalziffern, Trennzeichen gar nicht.
+pub(crate) fn string_to_bigint(agent: &mut Agent, units: &[u16]) -> Completion<Option<BigInt>> {
+    let start = units.iter().position(|&unit| !is_trimmed(unit));
+    let end = units.iter().rposition(|&unit| !is_trimmed(unit));
+    let (Some(start), Some(end)) = (start, end) else {
+        return Ok(Some(BigInt::zero()));
+    };
+    let mut text = Vec::with_capacity(end.saturating_sub(start).saturating_add(1));
+    for &unit in units.get(start..=end).unwrap_or_default() {
+        match u8::try_from(unit) {
+            Ok(byte) if byte.is_ascii() => text.push(byte),
+            _ => return Ok(None),
+        }
+    }
+    let prefix = text.get(..2).map(<[u8]>::to_ascii_lowercase);
+    let (radix, negative, digits) = match prefix.as_deref() {
+        Some(b"0x") => (16, false, text.get(2..)),
+        Some(b"0o") => (8, false, text.get(2..)),
+        Some(b"0b") => (2, false, text.get(2..)),
+        _ => match text.first() {
+            Some(b'-') => (10, true, text.get(1..)),
+            Some(b'+') => (10, false, text.get(1..)),
+            _ => (10, false, Some(text.as_slice())),
+        },
+    };
+    let digits = digits.unwrap_or_default();
+    let valid = !digits.is_empty()
+        && digits
+            .iter()
+            .all(|&digit| char::from(digit).is_digit(radix));
+    if !valid {
+        return Ok(None);
+    }
+    let value = bigint::compute(agent, |budget| BigInt::from_digits(radix, digits, budget))?;
+    Ok(Some(if negative { value.negate() } else { value }))
+}
+
+/// NumberToBigInt (Abschnitt 21.2.1.1.1): ein RangeError, wenn die Zahl
+/// keine ganze ist.
+pub fn number_to_bigint<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    number: f64,
+) -> Completion<Local<'s>> {
+    match BigInt::from_f64(number) {
+        Some(value) => bigint::allocate(agent, scope, &value),
+        None => Err(agent.throw_error(ErrorKind::RangeError)),
+    }
+}
+
 /// ToLength (Abschnitt 7.1.22): eine ganze Zahl von 0 bis 2⁵³ − 1.
 pub fn to_length(agent: &mut Agent, scope: &Scope, value: Local<'_>) -> Completion<f64> {
     /// 2⁵³ − 1, die größte ganze Zahl, die eine Gleitkommazahl exakt hält.
@@ -391,17 +498,19 @@ pub fn to_string<'s>(
     };
     let text = match agent.heap().get(primitive).kind() {
         Kind::String(_) => return Ok(primitive),
+        Kind::BigInt(cell) => {
+            let value = agent.heap().bigint(cell).unwrap_or_default();
+            let units = bigint::to_units(agent, &value, 10)?;
+            return Ok(agent.heap_mut().alloc_string(scope, &units)?);
+        }
         Kind::Undefined => Some("undefined".to_owned()),
         Kind::Null => Some("null".to_owned()),
         Kind::Boolean(true) => Some("true".to_owned()),
         Kind::Boolean(false) => Some("false".to_owned()),
         Kind::Number(number) => Some(number::to_string(number)),
-        // Symbole werfen, BigInt::toString kommt mit den BigInt-Werten.
-        // ToPrimitive gibt kein Objekt zurück, Lücken und interne Zellen
-        // sind keine Werte der Sprache.
-        Kind::Symbol(_) | Kind::BigInt(_) | Kind::Object(_) | Kind::Hole | Kind::Internal(_) => {
-            None
-        }
+        // Symbole werfen. ToPrimitive gibt kein Objekt zurück, Lücken und
+        // interne Zellen sind keine Werte der Sprache.
+        Kind::Symbol(_) | Kind::Object(_) | Kind::Hole | Kind::Internal(_) => None,
     };
     let Some(text) = text else {
         return Err(agent.throw_error(ErrorKind::TypeError));
@@ -429,9 +538,9 @@ pub fn to_object<'s>(
             return string_create(agent, scope, value, prototype);
         }
         Kind::Symbol(_) => Intrinsic::SymbolPrototype,
-        // BigInt-Werte gibt es noch nicht, Lücken und interne Zellen sind
-        // keine Werte der Sprache.
-        Kind::Undefined | Kind::Null | Kind::BigInt(_) | Kind::Hole | Kind::Internal(_) => {
+        Kind::BigInt(_) => Intrinsic::BigIntPrototype,
+        // Lücken und interne Zellen sind keine Werte der Sprache.
+        Kind::Undefined | Kind::Null | Kind::Hole | Kind::Internal(_) => {
             return Err(agent.throw_error(ErrorKind::TypeError));
         }
     };

@@ -282,7 +282,10 @@ fn check(agent: &mut Agent, scope: &Scope, input: &Input) {
             number,
         );
         same_number(
-            conversion::to_numeric(agent, scope, local).expect("primitive ToNumeric"),
+            match conversion::to_numeric(agent, scope, local).expect("primitive ToNumeric") {
+                conversion::Numeric::Number(numeric) => numeric,
+                conversion::Numeric::BigInt(_) => panic!("primitive ToNumeric gave a BigInt"),
+            },
             number,
         );
         same_number(

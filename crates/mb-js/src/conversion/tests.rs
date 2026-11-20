@@ -440,6 +440,14 @@ fn values_become_property_keys() {
     });
 }
 
+/// Die Zahl aus ToNumeric; ein BigInt ist hier ein Fehler des Tests.
+fn number_of(result: Completion<Numeric<'_>>) -> Completion<f64> {
+    result.map(|numeric| match numeric {
+        Numeric::Number(number) => number,
+        Numeric::BigInt(_) => panic!("BigInt statt Zahl"),
+    })
+}
+
 #[test]
 fn int32_and_numeric_go_through_to_number() {
     let mut agent = checked();
@@ -449,18 +457,40 @@ fn int32_and_numeric_go_through_to_number() {
             .alloc_string(scope, &units(" 4294967295 "))
             .expect("Speicher");
         assert_eq!(to_int32(agent, scope, text), Ok(-1));
-        assert_eq!(to_numeric(agent, scope, text), Ok(4_294_967_295.0));
+        assert_eq!(
+            number_of(to_numeric(agent, scope, text)),
+            Ok(4_294_967_295.0)
+        );
         let yes = agent.heap().local(scope, Value::TRUE);
         assert_eq!(to_int32(agent, scope, yes), Ok(1));
-        assert_eq!(to_numeric(agent, scope, yes), Ok(1.0));
+        assert_eq!(number_of(to_numeric(agent, scope, yes)), Ok(1.0));
 
         let symbol = agent.new_symbol(scope, None).expect("Speicher");
         assert_eq!(to_int32(agent, scope, symbol), Err(Abrupt::Throw));
         assert_eq!(thrown(agent, scope), Some(ErrorKind::TypeError));
-        assert_eq!(to_numeric(agent, scope, symbol), Err(Abrupt::Throw));
+        assert_eq!(
+            number_of(to_numeric(agent, scope, symbol)),
+            Err(Abrupt::Throw)
+        );
         assert_eq!(thrown(agent, scope), Some(ErrorKind::TypeError));
         let object = ordinary_object_create(agent, scope, None).expect("Speicher");
-        assert_eq!(to_numeric(agent, scope, object), Err(Abrupt::Throw));
+        assert_eq!(
+            number_of(to_numeric(agent, scope, object)),
+            Err(Abrupt::Throw)
+        );
+        assert_eq!(thrown(agent, scope), Some(ErrorKind::TypeError));
+        let big = agent
+            .heap_mut()
+            .alloc_bigint(scope, &BigInt::from_i64(-5))
+            .expect("Speicher");
+        let Ok(Numeric::BigInt(numeric)) = to_numeric(agent, scope, big) else {
+            panic!("ToNumeric eines BigInt");
+        };
+        assert_eq!(
+            crate::bigint::value_of(agent, numeric),
+            Some(BigInt::from_i64(-5))
+        );
+        assert_eq!(to_int32(agent, scope, big), Err(Abrupt::Throw));
         assert_eq!(thrown(agent, scope), Some(ErrorKind::TypeError));
     });
 }

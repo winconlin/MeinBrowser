@@ -140,10 +140,7 @@ fn stored_hash(heap: &Heap, entries: Ref<'_>, base: usize) -> u32 {
 
 /// Ob der Hashwert des Schlüssels an seiner Lage im Heap hängt.
 fn is_identity(key: Value<'_>) -> bool {
-    matches!(
-        key.kind(),
-        Kind::Object(_) | Kind::Symbol(_) | Kind::BigInt(_)
-    )
+    matches!(key.kind(), Kind::Object(_) | Kind::Symbol(_))
 }
 
 /// Der Hashwert eines Schlüssels. -0 und +0 haben denselben, ebenso alle
@@ -178,11 +175,15 @@ fn hash_of(heap: &Heap, hasher: &RandomState, key: Value<'_>) -> u32 {
             state.write_u8(5);
             state.write_u32(cell.offset());
         }
-        // BigInt-Werte gibt es noch nicht. Mit ihnen kommt ein Hashwert aus
-        // den Ziffern, denn SameValueZero vergleicht sie nach dem Wert.
+        // SameValueZero vergleicht BigInts nach dem Wert, also zählen
+        // Vorzeichen und Betrag.
         Kind::BigInt(cell) => {
             state.write_u8(6);
-            state.write_u32(cell.offset());
+            let value = heap.bigint(cell).unwrap_or_default();
+            state.write_u8(u8::from(value.is_negative()));
+            for &word in value.magnitude() {
+                state.write_u64(word);
+            }
         }
         // Lücken und interne Zellen sind nie Schlüssel.
         Kind::Hole | Kind::Internal(_) => state.write_u8(7),

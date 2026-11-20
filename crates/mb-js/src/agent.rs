@@ -306,6 +306,11 @@ impl Agent {
         &self.collection_hasher
     }
 
+    /// Ob eine Ausführung mit Arbeitsquote läuft.
+    pub(crate) fn has_execution_budget(&self) -> bool {
+        !self.execution_budgets.is_empty()
+    }
+
     /// Auch null Schritte fragen ein Abbruchsignal ab. Bei mehreren
     /// Quoten kann eine frühere Quote den Versuch bereits bezahlt haben,
     /// wenn eine spätere ihn ablehnt. Kein Befehl läuft danach weiter.

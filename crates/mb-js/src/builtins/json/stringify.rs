@@ -14,11 +14,11 @@ use super::super::units;
 use crate::agent::{Abrupt, Agent, Completion, ErrorKind};
 use crate::builtin::BuiltinCall;
 use crate::compare::same_value;
-use crate::conversion::{to_integer_or_infinity, to_number, to_string};
+use crate::conversion::{to_integer_or_infinity, to_number, to_object, to_string};
 use crate::heap::{Local, Scope};
 use crate::key::PropertyKey;
 use crate::number;
-use crate::object::ordinary_object_create;
+use crate::object::{self, ordinary_object_create};
 use crate::operations::{
     EnumerableKind, call, create_data_property_or_throw, enumerable_own_properties, get, is_array,
     is_callable, length_of_array_like,
@@ -401,10 +401,17 @@ fn property<'s>(
     agent.scope(|agent, inner| -> Completion<Serialized<'s>> {
         let property_key = agent.key_from_units(inner, key)?;
         let mut value = get(agent, inner, holder, property_key)?;
-        // BigInt gibt es noch nicht; nur Objekte haben `toJSON`.
-        if is_object(agent, value) {
+        let bigint = matches!(agent.heap().get(value).kind(), Kind::BigInt(_));
+        if is_object(agent, value) || bigint {
             let to_json = agent.key_from_units(inner, &units("toJSON"))?;
-            let method = get(agent, inner, value, to_json)?;
+            let method = if bigint {
+                // GetV (Abschnitt 7.3.3): [[Get]] am Wrapper-Objekt mit dem
+                // BigInt selbst als Empfänger.
+                let object = to_object(agent, inner, state.realm, value)?;
+                object::get(agent, inner, object, to_json, value)?
+            } else {
+                get(agent, inner, value, to_json)?
+            };
             if is_callable(agent.heap(), agent.heap().get(method)) {
                 let name = agent.heap_mut().alloc_string(inner, key)?;
                 value = call(agent, inner, method, value, &[name])?;
@@ -429,6 +436,10 @@ fn property<'s>(
                 Some(Kind::Boolean(boolean)) => {
                     value = agent.heap().local(inner, Value::boolean(boolean));
                 }
+                Some(Kind::BigInt(_)) => {
+                    let data = primitive_data(agent, value).unwrap_or(Value::UNDEFINED);
+                    value = agent.heap().local(inner, data);
+                }
                 _ => {}
             }
         }
@@ -451,6 +462,8 @@ fn property<'s>(
                 Serialized::Text(units(&number::to_string(number)))
             }
             Kind::Number(_) => Serialized::Text(units("null")),
+            // Schritt 10: BigInts haben keine Darstellung in JSON.
+            Kind::BigInt(_) => return Err(agent.throw_error(ErrorKind::TypeError)),
             Kind::Object(_) if !is_callable(heap, heap.get(value)) => {
                 heap.set(slot, heap.get(value));
                 if array {

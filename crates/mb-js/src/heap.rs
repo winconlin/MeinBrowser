@@ -7,10 +7,13 @@
 //! (RS-7). Jede Zelle beginnt mit einem Kopfwort: Art in den Bits 0 bis 7,
 //! Kennzeichen in den Bits 8 bis 31, Länge in den Bits 32 bis 63.
 //!
-//! Die meisten Zellen bestehen nach dem Kopfwort aus Werten: Felder,
-//! Symbole, Gestalten, schwache Felder und dünn besetzte Elemente. Objekte
-//! beginnen mit zwei Wörtern, die je zwei 32-Bit-Verweise packen (Gestalt
-//! und Prototyp, Elemente und Zusatzfeld), dann folgen ihre Werte:
+//! Zeichenketten und BigInts bestehen nach dem Kopfwort aus Rohdaten: den
+//! Codeeinheiten oder den Wörtern des Betrags, das Vorzeichen als
+//! Kennzeichen. Die meisten anderen Zellen bestehen nach dem Kopfwort aus
+//! Werten: Felder, Symbole, Gestalten, schwache Felder und dünn besetzte
+//! Elemente. Objekte beginnen mit zwei Wörtern, die je zwei 32-Bit-Verweise
+//! packen (Gestalt und Prototyp, Elemente und Zusatzfeld), dann folgen ihre
+//! Werte:
 //! Funktionsobjekte, eingebaute Funktionen, arguments-Objekte und
 //! Wrapper-Objekte haben zuerst interne Felder,
 //! danach kommen bei allen Objekten die eingebetteten Plätze. Die Felder
@@ -79,6 +82,7 @@ use std::fmt;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::bigint::BigInt;
 use crate::value::{Ref, RefKind, Value};
 
 /// Wörter einer Seite: 256 KiB.
@@ -130,10 +134,13 @@ const KIND_BOUND_FUNCTION: u64 = 21;
 const KIND_COLLECTION: u64 = 22;
 const KIND_PROXY: u64 = 23;
 const KIND_REGEXP: u64 = 24;
+const KIND_BIGINT: u64 = 25;
 
 /// Die Kennzeichen stehen in den Bits 8 bis 31 des Kopfworts.
 const FLAG_SHIFT: u32 = 8;
 const FLAG_MASK: u64 = 0xFF_FFFF;
+/// Kennzeichen eines negativen BigInt.
+const NEGATIVE_FLAG: u32 = 1;
 
 /// Wörter mit gepackten Verweisen am Anfang eines Objekts.
 const OBJECT_REFS: usize = 2;
@@ -269,6 +276,7 @@ fn cell_words(header: u64) -> Option<usize> {
     let body = match header_kind(header) {
         KIND_LATIN1 => length.div_ceil(8),
         KIND_UTF16 => length.div_ceil(4),
+        KIND_BIGINT => length,
         kind if is_value_cell(kind) => length,
         kind if is_object(kind) => length
             .checked_add(OBJECT_REFS)?
@@ -704,6 +712,63 @@ impl Heap {
     fn string_header(&self, string: Ref<'_>) -> Option<u64> {
         let head = self.word(string.offset(), 0)?;
         matches!(header_kind(head), KIND_LATIN1 | KIND_UTF16).then_some(head)
+    }
+
+    // BigInts
+
+    /// Legt ein BigInt an. Wie Zeichenketten sind BigInts unveränderlich.
+    pub(crate) fn alloc_bigint<'s>(
+        &mut self,
+        scope: &'s Scope,
+        value: &BigInt,
+    ) -> Result<Local<'s>, OutOfMemory> {
+        let magnitude = value.magnitude();
+        let length = u32::try_from(magnitude.len()).map_err(|_| OutOfMemory)?;
+        let flags = if value.is_negative() {
+            NEGATIVE_FLAG
+        } else {
+            0
+        };
+        let head = with_flags(header(KIND_BIGINT, length), flags);
+        let words = cell_words(head).ok_or(OutOfMemory)?;
+        let offset = self.allocate(words)?;
+        self.init(offset, 0, head);
+        for (index, &word) in magnitude.iter().enumerate() {
+            self.init(offset, index + 1, word);
+        }
+        Ok(self.local(scope, Value::reference(RefKind::BigInt, offset)))
+    }
+
+    /// Der Wert eines BigInt, `None` für einen Verweis auf etwas anderes.
+    pub(crate) fn bigint(&self, bigint: Ref<'_>) -> Option<BigInt> {
+        let head = self.bigint_header(bigint)?;
+        let magnitude = (1..=to_usize(header_length(head)))
+            .map(|index| self.word(bigint.offset(), index))
+            .collect::<Option<Vec<u64>>>()?;
+        BigInt::from_parts(header_flags(head) & NEGATIVE_FLAG != 0, magnitude).ok()
+    }
+
+    /// BigInt::equal (Abschnitt 6.1.6.2.13) zweier BigInt-Zellen, ohne die
+    /// Beträge zu kopieren. Die Form ist kanonisch, also sind gleiche Werte
+    /// Wort für Wort gleich.
+    pub(crate) fn bigints_equal(&self, x: Ref<'_>, y: Ref<'_>) -> bool {
+        let (Some(first), Some(second)) = (self.bigint_header(x), self.bigint_header(y)) else {
+            return false;
+        };
+        first == second
+            && (1..=to_usize(header_length(first)))
+                .all(|index| self.word(x.offset(), index) == self.word(y.offset(), index))
+    }
+
+    /// Ob das BigInt 0 ist; ohne den Betrag zu kopieren.
+    pub(crate) fn bigint_is_zero(&self, bigint: Ref<'_>) -> bool {
+        self.bigint_header(bigint)
+            .is_some_and(|head| header_length(head) == 0)
+    }
+
+    fn bigint_header(&self, bigint: Ref<'_>) -> Option<u64> {
+        let head = self.word(bigint.offset(), 0)?;
+        (header_kind(head) == KIND_BIGINT).then_some(head)
     }
 
     // Felder
@@ -1148,7 +1213,7 @@ impl Heap {
             RefKind::Internal => {
                 matches!(cell, KIND_SLOTS | KIND_SHAPE | KIND_WEAK | KIND_SPARSE)
             }
-            RefKind::BigInt => false,
+            RefKind::BigInt => cell == KIND_BIGINT,
         };
         let check = |bits: u64, place: &str| -> Result<(), String> {
             let Some((kind, offset)) = Value::from_bits(bits).reference_parts() else {
