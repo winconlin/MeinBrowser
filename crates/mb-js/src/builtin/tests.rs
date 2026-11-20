@@ -31,6 +31,10 @@ fn describe(agent: &Agent, value: Local<'_>) -> String {
             let text = String::from_utf16(&heap.string_units(string)).expect("UTF-16");
             format!("{text:?}")
         }
+        Kind::BigInt(cell) => match heap.bigint(cell) {
+            Some(value) => format!("{value}n"),
+            None => "BigInt ohne Zelle".to_owned(),
+        },
         Kind::Object(_) => "Objekt".to_owned(),
         kind => format!("{kind:?}"),
     }
@@ -4179,4 +4183,277 @@ fn regexp_symbol_methods() {
             "false",
         ),
     ]);
+}
+
+#[test]
+fn bigint_literals_and_arithmetic() {
+    check(&[
+        ("1n", "1n"),
+        ("0x1fn", "31n"),
+        ("0o17n", "15n"),
+        ("0b101n", "5n"),
+        ("1_000n", "1000n"),
+        ("-0n", "0n"),
+        ("typeof 1n", "\"bigint\""),
+        ("2n ** 64n", "18446744073709551616n"),
+        ("2n ** 64n - 1n", "18446744073709551615n"),
+        ("-(2n ** 63n) * 3n", "-27670116110564327424n"),
+        ("7n / 2n", "3n"),
+        ("-7n / 2n", "-3n"),
+        ("-7n % 2n", "-1n"),
+        ("7n % -2n", "1n"),
+        ("1n / 0n", "RangeError"),
+        ("1n % 0n", "RangeError"),
+        ("2n ** -1n", "RangeError"),
+        ("0n ** 0n", "1n"),
+        ("(-2n) ** 3n", "-8n"),
+        ("5n & 3n", "1n"),
+        ("5n | 3n", "7n"),
+        ("5n ^ 3n", "6n"),
+        ("-5n & 0xffn", "251n"),
+        ("~5n", "-6n"),
+        ("~-1n", "0n"),
+        ("1n << 100n", "1267650600228229401496703205376n"),
+        ("-9n >> 1n", "-5n"),
+        ("9n >> -2n", "36n"),
+        ("1n >>> 0n", "TypeError"),
+        ("1n + 1", "TypeError"),
+        ("1 * 1n", "TypeError"),
+        ("+1n", "TypeError"),
+        ("-(1n)", "-1n"),
+        ("var a = 9007199254740993n; a++; a", "9007199254740994n"),
+        ("var a = 0n; --a", "-1n"),
+        ("var a = 2n; a **= 70n; a", "1180591620717411303424n"),
+        ("'x' + 12n", "\"x12\""),
+        ("12n + 'x'", "\"12x\""),
+        ("`${-5n}`", "\"-5\""),
+        ("String(2n ** 70n)", "\"1180591620717411303424\""),
+        ("({1n: 'a', 0x10n: 'b'})[16]", "\"b\""),
+        ("var {1n: a} = {1: 'c'}; a", "\"c\""),
+        ("class A { static [2n]() { return 3; } } A[2]()", "3"),
+    ]);
+}
+
+#[test]
+fn bigint_comparisons_and_equality() {
+    check(&[
+        ("1n === 1n", "true"),
+        ("2n ** 64n === 2n ** 64n", "true"),
+        ("0n === -0n", "true"),
+        ("1n === 1", "false"),
+        ("1n == 1", "true"),
+        ("1n == 1.5", "false"),
+        ("1n == '1'", "true"),
+        ("'0x10' == 16n", "true"),
+        ("1n == 'x'", "false"),
+        ("1n == NaN", "false"),
+        ("1n == Infinity", "false"),
+        ("0n == false", "true"),
+        ("1n == Object(1n)", "true"),
+        ("Object(1n) === Object(1n)", "false"),
+        ("[NaN, 0, 1n].includes(1n)", "true"),
+        ("[2n].indexOf(2n)", "0"),
+        ("Object.is(1n, 1n)", "true"),
+        ("1n < 2", "true"),
+        ("2n > 1.5", "true"),
+        ("2n < 2.5", "true"),
+        ("-1n < -0.5", "true"),
+        ("9007199254740993n > 9007199254740992", "true"),
+        ("1n < Infinity", "true"),
+        ("1n > -Infinity", "true"),
+        ("1n < NaN", "false"),
+        ("1n >= NaN", "false"),
+        ("1n < '2'", "true"),
+        ("'10' > 9n", "true"),
+        ("1n < 'x'", "false"),
+        ("1n >= 'x'", "false"),
+        ("-(2n ** 64n) < -(2n ** 63n)", "true"),
+        ("2n ** 1024n > Number.MAX_VALUE", "true"),
+        ("!!0n", "false"),
+        ("!!-1n", "true"),
+        ("0n ? 'a' : 'b'", "\"b\""),
+    ]);
+}
+
+#[test]
+fn bigint_constructor_and_prototype() {
+    check(&[
+        ("BigInt(5)", "5n"),
+        ("BigInt(-0)", "0n"),
+        ("BigInt(2 ** 60)", "1152921504606846976n"),
+        ("BigInt(1.5)", "RangeError"),
+        ("BigInt(NaN)", "RangeError"),
+        ("BigInt(Infinity)", "RangeError"),
+        ("BigInt(' 0x1F ')", "31n"),
+        ("BigInt('-12')", "-12n"),
+        ("BigInt('')", "0n"),
+        ("BigInt('-0x1')", "SyntaxError"),
+        ("BigInt('1n')", "SyntaxError"),
+        ("BigInt('1e3')", "SyntaxError"),
+        ("BigInt(true)", "1n"),
+        ("BigInt(undefined)", "TypeError"),
+        ("BigInt(null)", "TypeError"),
+        ("BigInt(Symbol())", "TypeError"),
+        ("BigInt({valueOf() { return 7; }})", "7n"),
+        ("new BigInt(1)", "TypeError"),
+        ("BigInt.length", "1"),
+        ("BigInt.name", "\"BigInt\""),
+        ("BigInt.prototype.constructor === BigInt", "true"),
+        ("Object.getPrototypeOf(1n) === BigInt.prototype", "true"),
+        ("Object.prototype.toString.call(1n)", "\"[object BigInt]\""),
+        ("typeof Object(1n)", "\"object\""),
+        ("Object(3n).valueOf()", "3n"),
+        ("BigInt.prototype.valueOf.call(1)", "TypeError"),
+        ("(255n).toString(16)", "\"ff\""),
+        ("(-255n).toString(2)", "\"-11111111\""),
+        ("(10n).toString(36)", "\"a\""),
+        ("(10n).toString(1)", "RangeError"),
+        ("(10n).toString(37)", "RangeError"),
+        ("(10n).toLocaleString()", "\"10\""),
+        ("BigInt.prototype.toString.call(Object(4n))", "\"4\""),
+        ("BigInt.prototype.toString.call('4')", "TypeError"),
+        ("BigInt.asIntN(8, 255n)", "-1n"),
+        ("BigInt.asIntN(8, 128n)", "-128n"),
+        ("BigInt.asIntN(8, -129n)", "127n"),
+        ("BigInt.asIntN(0, 5n)", "0n"),
+        ("BigInt.asIntN(64, 2n ** 63n)", "-9223372036854775808n"),
+        ("BigInt.asUintN(8, -1n)", "255n"),
+        ("BigInt.asUintN(64, -1n)", "18446744073709551615n"),
+        ("BigInt.asUintN(2 ** 53 - 1, 5n)", "5n"),
+        ("BigInt.asUintN(-1, 5n)", "RangeError"),
+        ("BigInt.asUintN(8, 5)", "TypeError"),
+        ("BigInt.asIntN(3, '7')", "-1n"),
+        ("Number(2n ** 64n)", "18446744073709552000"),
+        ("Number(-(2n ** 53n) - 1n)", "-9007199254740992"),
+        ("Number(2n ** 1024n)", "Infinity"),
+        ("parseInt('12n')", "12"),
+        ("Math.max(1n)", "TypeError"),
+        ("isNaN(1n)", "TypeError"),
+        ("JSON.stringify(1n)", "TypeError"),
+        ("JSON.stringify({a: Object(1n)})", "TypeError"),
+        (
+            "BigInt.prototype.toJSON = function () { return this.toString(); }; JSON.stringify([1n, Object(2n)])",
+            "\"[\\\"1\\\",\\\"2\\\"]\"",
+        ),
+        (
+            "var m = new Map([[1n, 'a']]); [m.get(1n), m.has(1), m.get(2n ** 70n - 2n ** 70n + 1n)].join()",
+            "\"a,false,a\"",
+        ),
+        ("new Set([1n, 1n, 2n ** 64n, 2n ** 64n, 1]).size", "3"),
+    ]);
+}
+
+/// Zu große BigInts sind RangeErrors, große Rechnungen kosten Speicher und
+/// Arbeitsschritte.
+#[test]
+fn bigints_stay_within_their_limits() {
+    use crate::agent::{Budget, Exhausted};
+    use std::rc::Rc;
+
+    let (mut agent, realm) = agent_with(false);
+    for source in [
+        "2n ** (2n ** 40n)",
+        "1n << (2n ** 40n)",
+        "1n << (1n << 30n)",
+        "BigInt.asUintN(2 ** 40, -1n)",
+        "2n ** (2n ** 30n)",
+        "BigInt.asUintN(2 ** 30 + 1, -1n)",
+    ] {
+        assert_eq!(run(&mut agent, realm, source), "RangeError", "{source}");
+    }
+    for (source, expected) in [
+        ("1n >> (2n ** 40n)", "0n"),
+        ("-1n >> (2n ** 40n)", "-1n"),
+        ("1n << -(2n ** 40n)", "0n"),
+        ("1n ** (2n ** 40n)", "1n"),
+        ("(-1n) ** (2n ** 40n + 1n)", "-1n"),
+        ("BigInt.asIntN(2 ** 40, -1n)", "-1n"),
+        ("(2n ** 4096n).toString(16).length", "1025"),
+    ] {
+        assert_eq!(run(&mut agent, realm, source), expected, "{source}");
+    }
+    let mut agent = Agent::with_options(Options {
+        limit: 4 * 1024 * 1024,
+        verify: true,
+        ..Options::default()
+    })
+    .expect("Speicher");
+    let realm = agent.create_realm().expect("Speicher");
+    assert_eq!(
+        run(&mut agent, realm, "2n ** (2n ** 26n)"),
+        "Abrupt(OutOfMemory)"
+    );
+    for source in [
+        "var a = 3n ** 20000n; a * a",
+        "var a = 3n ** 20000n; a / 7n ** 5000n",
+        "(3n ** 20000n).toString()",
+        "BigInt('9'.repeat(20000))",
+    ] {
+        let (mut agent, realm) = agent_with(false);
+        let budget = Rc::new(Budget::new(2000));
+        let result = agent.scope(|agent, scope| {
+            agent
+                .evaluate_script_within(scope, realm, &units(source), budget)
+                .map(|_| ())
+        });
+        assert_eq!(
+            result,
+            Err(ScriptError::Abrupt(Abrupt::Exhausted(Exhausted::Steps))),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn bigint_copies_pay_for_their_words() {
+    use crate::agent::Budget;
+    use std::rc::Rc;
+
+    let spent = |source: &str| {
+        let (mut agent, realm) = agent_with(false);
+        let budget = Rc::new(Budget::new(10_000_000));
+        agent
+            .scope(|agent, scope| {
+                agent
+                    .evaluate_script_within(scope, realm, &units(source), Rc::clone(&budget))
+                    .map(|_| ())
+            })
+            .expect("Skript");
+        10_000_000 - budget.remaining()
+    };
+    let loop_over =
+        |call: &str| format!("var a = 1n << 100000n; for (var i = 0; i < 300; i++) {call};");
+    let base = spent(&loop_over("BigInt.asUintN(64, 1n)"));
+    // Der Wert hat 1.563 Wörter. Jeder Aufruf liest ihn ganz und kostet so
+    // mindestens 24 Schritte, auch wenn der Wert bleibt.
+    for call in [
+        "BigInt.asUintN(100001, a)",
+        "BigInt.asUintN(64, a)",
+        "BigInt.asIntN(100002, a)",
+        "BigInt.asIntN(100002, -a)",
+        "BigInt.asIntN(64, a)",
+    ] {
+        let used = spent(&loop_over(call));
+        assert!(
+            used.saturating_sub(base) >= 300 * 24,
+            "{call}: {used} Schritte, ohne den Wert {base}"
+        );
+    }
+}
+
+#[test]
+fn bigints_survive_collections() {
+    let (mut agent, realm) = agent_with(true);
+    let source = "var a = 2n ** 100n; var b = -a / 3n; var m = new Map([[a, 1], [b, 2]]); \
+                  var s = new Set([a, b, a + 0n]); \
+                  [a, b, a * b, a % 7n, m.get(2n ** 100n), m.get(b), s.size, \
+                  BigInt.asIntN(70, b), Object(a).valueOf() === a].join(' ')";
+    assert_eq!(
+        run(&mut agent, realm, source),
+        "\"1267650600228229401496703205376 -422550200076076467165567735125 \
+         -535646014752996758513987364113298317307324921460432044032000 2 1 2 2 \
+         -393530540239137101141 true\""
+    );
+    agent.heap_mut().collect();
+    agent.heap().verify().expect("gültiger Heap");
 }

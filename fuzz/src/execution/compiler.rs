@@ -682,7 +682,7 @@ mod tests {
 
     #[test]
     fn syntax_and_unsupported_paths_preserve_positions() {
-        for source in ["class A{[1n](){}}", "with({}){}", "f`x`;"] {
+        for source in ["class A{[f`x`](){}}", "with({}){}", "f`x`;"] {
             let source: Vec<u16> = source.encode_utf16().collect();
             assert_eq!(check_source(&source), Outcome::Unsupported);
         }

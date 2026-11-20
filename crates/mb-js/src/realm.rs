@@ -82,6 +82,8 @@ pub enum Intrinsic {
     StringPrototype,
     /// %Symbol.prototype% (Abschnitt 20.4.3).
     SymbolPrototype,
+    /// %BigInt.prototype% (Abschnitt 21.2.3), ein gewöhnliches Objekt.
+    BigIntPrototype,
     /// %Iterator.prototype% (Abschnitt 27.1.3.3).
     IteratorPrototype,
     /// %IteratorHelperPrototype% (Abschnitt 27.1.2.1).
@@ -182,6 +184,8 @@ pub enum Intrinsic {
     Boolean,
     /// %Number% (Abschnitt 21.1.1).
     Number,
+    /// %BigInt% (Abschnitt 21.2.1).
+    BigInt,
     /// %Math% (Abschnitt 21.3).
     Math,
     /// %isFinite% (Abschnitt 19.2.2).
@@ -709,6 +713,8 @@ fn create_intrinsics(agent: &mut Agent, scope: &Scope, realm: RealmId) -> Comple
     agent.set_intrinsic(realm, Intrinsic::StringPrototype, string);
     let symbol = ordinary_object_create(agent, scope, Some(object))?;
     agent.set_intrinsic(realm, Intrinsic::SymbolPrototype, symbol);
+    let bigint = ordinary_object_create(agent, scope, Some(object))?;
+    agent.set_intrinsic(realm, Intrinsic::BigIntPrototype, bigint);
     builtins::create_intrinsics(agent, scope, realm)?;
     add_restricted_function_properties(agent, scope, realm, function)
 }
@@ -741,6 +747,7 @@ fn set_default_global_bindings(
     let intrinsics = [
         ("AggregateError", Intrinsic::AggregateError),
         ("Array", Intrinsic::Array),
+        ("BigInt", Intrinsic::BigInt),
         ("Boolean", Intrinsic::Boolean),
         ("Error", Intrinsic::Error),
         ("EvalError", Intrinsic::EvalError),

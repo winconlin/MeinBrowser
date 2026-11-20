@@ -101,6 +101,7 @@ use std::fmt;
 use std::rc::Rc;
 
 use crate::ast::{Atom, ClassId, FunctionId};
+use crate::bigint::BigInt;
 
 /// Die Art eines Operanden.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -641,6 +642,8 @@ impl Op {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Constant {
     Number(f64),
+    /// Ein BigInt aus einem Literal.
+    BigInt(BigInt),
     /// Eine Zeichenkette als Wert.
     String(Vec<u16>),
     /// Ein Name: ein Bezeichner oder Eigenschaftsname. Er wird zum Atom.
@@ -1217,6 +1220,7 @@ impl fmt::Display for Code {
                     },
                     Operand::Constant => match self.constant(value) {
                         Some(Constant::Number(number)) => write!(formatter, " {number:?}")?,
+                        Some(Constant::BigInt(value)) => write!(formatter, " {value}n")?,
                         Some(Constant::String(units)) => {
                             formatter.write_str(" \"")?;
                             display_units(formatter, units)?;

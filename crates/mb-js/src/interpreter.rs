@@ -82,7 +82,7 @@ use crate::builtins::create_regexp;
 use crate::bytecode::{Code, Constant, HandlerKind, Instruction, Op};
 use crate::compare::{is_less_than, is_loosely_equal, is_strictly_equal};
 use crate::compiler::{CompileError, compile_default_constructor, compile_function};
-use crate::conversion::{to_boolean, to_number, to_numeric, to_object, to_property_key, to_string};
+use crate::conversion::{to_boolean, to_number, to_object, to_property_key, to_string};
 use crate::descriptor::PropertyDescriptor;
 use crate::enumerate::{for_in_next, for_in_prepare};
 use crate::function::{
@@ -100,7 +100,6 @@ use crate::iterator::{
     iterator_close_on_throw, iterator_complete, iterator_step, iterator_step_value, iterator_value,
 };
 use crate::key::{PropertyKey, array_index, is_private_name};
-use crate::number;
 use crate::object::{
     PrivateElement, Step, array_create, create_mapped_arguments_object,
     create_unmapped_arguments_object, define_arguments_iterator, get_prototype_of, is_proxy,
@@ -111,7 +110,9 @@ use crate::operations::{
     call, create_data_property_or_throw, define_property_or_throw, get, get_method, has_property,
     is_callable, private_field_add, private_get, private_method_or_accessor_add, private_set, set,
 };
-use crate::operators::{BinaryOp, apply_string_or_numeric_binary_operator, type_of};
+use crate::operators::{
+    BinaryOp, UnaryOp, apply_string_or_numeric_binary_operator, apply_unary_operator, type_of,
+};
 use crate::realm::{GlobalReference, Intrinsic, RealmId};
 use crate::reference::{
     copy_data_properties, delete_property, get_value, instanceof_operator, put_value,
@@ -1107,8 +1108,8 @@ fn compiled<'s>(
     Ok((code, pool))
 }
 
-/// Legt die Konstanten im Heap an: Zahlen als Werte, Zeichenketten als
-/// neue Zeichenketten, Namen als Atome und Funktionen und
+/// Legt die Konstanten im Heap an: Zahlen als Werte, BigInts und
+/// Zeichenketten als neue Zellen, Namen als Atome und Funktionen und
 /// Standardkonstruktoren als neue gemeinsame Daten mit ihrer Nummer als
 /// Wert. Für sie braucht es den Syntaxbaum `unit`, aus dem der Code stammt.
 fn constant_pool<'s>(
@@ -1124,6 +1125,7 @@ fn constant_pool<'s>(
         agent.scope(|agent, inner| -> Completion<()> {
             let value = match constant {
                 Constant::Number(number) => agent.heap().local(inner, Value::number(*number)),
+                Constant::BigInt(value) => agent.heap_mut().alloc_bigint(inner, value)?,
                 Constant::String(units) => agent.heap_mut().alloc_string(inner, units)?,
                 Constant::Name(units) => agent.atom(inner, units)?,
                 Constant::Function(template) => {
@@ -2490,16 +2492,15 @@ impl<'c> Frame<'c, '_> {
                 self.set_accumulator(agent, result);
             }
             Op::Negate | Op::BitwiseNot | Op::ToNumeric | Op::Inc | Op::Dec => {
-                // Bis es BigInt-Werte gibt, ergibt ToNumeric eine Zahl.
-                let numeric = to_numeric(agent, scope, self.accumulator)?;
-                let result = match instruction.op {
-                    Op::Negate => number::unary_minus(numeric),
-                    Op::BitwiseNot => number::bitwise_not(numeric),
-                    Op::Inc => numeric + 1.0,
-                    Op::Dec => numeric - 1.0,
-                    _ => numeric,
+                let op = match instruction.op {
+                    Op::Negate => UnaryOp::Negate,
+                    Op::BitwiseNot => UnaryOp::BitwiseNot,
+                    Op::Inc => UnaryOp::Increment,
+                    Op::Dec => UnaryOp::Decrement,
+                    _ => UnaryOp::ToNumeric,
                 };
-                self.set_accumulator_value(agent, Value::number(result));
+                let result = apply_unary_operator(agent, scope, op, self.accumulator)?;
+                self.set_accumulator(agent, result);
             }
             Op::ToNumber => {
                 let result = to_number(agent, scope, self.accumulator)?;

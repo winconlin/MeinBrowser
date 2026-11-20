@@ -394,15 +394,13 @@ fn instructions_know_their_place_in_the_source() {
 #[test]
 fn unsupported_constructs_name_their_place() {
     let cases = [
-        ("a = 1n;", 4),
-        ("class A { [1n]() {} }", 11),
-        ("x = {a: 1n};", 8),
-        ("x = {[1n]: 1};", 6),
-        ("x = {1n: 1};", 5),
-        ("let {1n: a} = b;", 5),
-        ("[a = class { [1n]() {} }] = b;", 14),
+        ("a = f`x`;", 4),
+        ("class A { [f`x`]() {} }", 11),
+        ("x = {a: f`x`};", 8),
+        ("x = {[f`x`]: 1};", 6),
+        ("let {[f`x`]: a} = b;", 6),
+        ("[a = class { [f`x`]() {} }] = b;", 14),
         ("f`x`;", 0),
-        ("1n;", 0),
         ("with (a) {}", 0),
         ("l: function g() {}", 3),
     ];
@@ -413,8 +411,18 @@ fn unsupported_constructs_name_their_place() {
             "{source}"
         );
     }
-    // Literale regulärer Ausdrücke übersetzt der Übersetzer seit Welle 8g.
+    // Literale regulärer Ausdrücke übersetzt der Übersetzer seit Welle 8g,
+    // BigInt-Literale auch als Eigenschaftsnamen seit Welle 8h.
     assert!(compile("(/a/g);").is_ok());
+    for source in [
+        "a = 1n;",
+        "class A { [1n]() {} }",
+        "x = {1n: 1, 0x10n: 2};",
+        "let {1n: a} = b;",
+        "1n;",
+    ] {
+        assert!(compile(source).is_ok(), "{source}");
+    }
     let module = parse_module(&units("1;")).expect("gültiges Modul");
     assert_eq!(
         compile_script(&module).map(|_| ()),

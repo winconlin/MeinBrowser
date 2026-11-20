@@ -58,6 +58,7 @@ const BUILT_INS: Suite = Suite {
     parts: &[
         "AggregateError",
         "Array",
+        "BigInt",
         "Boolean",
         "Error",
         "Function",

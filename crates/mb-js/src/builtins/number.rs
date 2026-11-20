@@ -4,8 +4,9 @@
 
 use super::{define_functions, link_constructor, units};
 use crate::agent::{Agent, Completion, ErrorKind};
+use crate::bigint;
 use crate::builtin::{Builtin, BuiltinCall, create_builtin_function};
-use crate::conversion::{to_integer_or_infinity, to_numeric};
+use crate::conversion::{Numeric, to_integer_or_infinity, to_numeric};
 use crate::descriptor::PropertyDescriptor;
 use crate::heap::{Local, Scope};
 use crate::number;
@@ -144,15 +145,18 @@ fn string<'s>(agent: &mut Agent, scope: &'s Scope, text: &str) -> Completion<Loc
     Ok(agent.heap_mut().alloc_string(scope, &units(text))?)
 }
 
-/// Number ( value ) (Abschnitt 21.1.1.1). BigInt-Werte gibt es noch
-/// nicht; ToNumeric ergibt also immer eine Zahl.
+/// Number ( value ) (Abschnitt 21.1.1.1). Ein BigInt wird die nächste
+/// Zahl.
 fn number_constructor<'s>(
     agent: &mut Agent,
     scope: &'s Scope,
     arguments: &BuiltinCall<'_, '_>,
 ) -> Completion<Local<'s>> {
     let n = match arguments.arguments.first() {
-        Some(&value) => to_numeric(agent, scope, value)?,
+        Some(&value) => match to_numeric(agent, scope, value)? {
+            Numeric::Number(number) => number,
+            Numeric::BigInt(bigint) => bigint::value_of(agent, bigint).unwrap_or_default().to_f64(),
+        },
         None => 0.0,
     };
     let n = number_value(agent, scope, n);

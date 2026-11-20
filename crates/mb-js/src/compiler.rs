@@ -40,8 +40,7 @@
 //! in Scripts entscheidet GlobalDeclarationInstantiation, ob es die
 //! globale Bindung gibt, und setzt dafür ein Register.
 //!
-//! Noch nicht unterstützt sind `with`, `import()`,
-//! BigInt-Literale, reguläre Ausdrücke, Templates mit Tag und
+//! Noch nicht unterstützt sind `with`, `import()`, Templates mit Tag und
 //! Funktionsdeklarationen mit Marke (Anhang B.3.1).
 //!
 //! Klassen: Eine Klasse hat einen eigenen Bereich mit ihrem Namen als
@@ -177,6 +176,7 @@ use crate::ast::{
     FunctionId, FunctionKind, List, MethodKind, Node, NodeId, PropertyKind, UnaryOperator,
     UpdateOperator,
 };
+use crate::bigint::BigInt;
 use crate::bytecode::{
     BindingKind, Code, Constant, ContextBinding, ContextLayout, Emitter, Enclosing,
     FunctionTemplate, HandlerKind, Label, Op, TooLarge,
@@ -418,6 +418,7 @@ type Breakable<'a> = fn(&mut Compiler<'a>, NodeId, Target) -> Result<()>;
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum ConstantKey {
     Number(u64),
+    BigInt(BigInt),
     String(Vec<u16>),
     Name(Vec<u16>),
 }
@@ -1274,11 +1275,13 @@ impl<'a> Compiler<'a> {
         self.next_register = mark;
     }
 
-    /// Eine Konstante. Gleiche Zahlen, Zeichenketten und Namen teilen sich
-    /// eine, jede Funktion und jeder Standardkonstruktor bekommt eine eigene.
+    /// Eine Konstante. Gleiche Zahlen, BigInts, Zeichenketten und Namen
+    /// teilen sich eine, jede Funktion und jeder Standardkonstruktor bekommt
+    /// eine eigene.
     fn constant(&mut self, constant: Constant) -> Result<i64> {
         let key = match &constant {
             Constant::Number(number) => Some(ConstantKey::Number(number.to_bits())),
+            Constant::BigInt(value) => Some(ConstantKey::BigInt(value.clone())),
             Constant::String(units) => Some(ConstantKey::String(units.clone())),
             Constant::Name(units) => Some(ConstantKey::Name(units.clone())),
             Constant::Function(_) | Constant::DefaultConstructor { .. } => None,
@@ -1300,6 +1303,12 @@ impl<'a> Compiler<'a> {
     fn name(&mut self, atom: Atom) -> Result<i64> {
         let units = self.ast.atom(atom).to_vec();
         self.constant(Constant::Name(units))
+    }
+
+    /// Der Wert eines BigInt-Literals. Mehr als
+    /// [`MAX_BITS`](crate::bigint::MAX_BITS) Bit sind zu groß.
+    fn bigint_literal(&self, radix: u8, digits: Atom) -> Result<BigInt> {
+        BigInt::from_literal(u32::from(radix), self.ast.atom(digits)).ok_or(CompileError::TooLarge)
     }
 
     fn string(&mut self, atom: Atom) -> Result<i64> {
@@ -3321,6 +3330,11 @@ impl<'a> Compiler<'a> {
                 let constant = self.string(atom)?;
                 self.emit(Op::LdaConstant, &[constant])
             }
+            Node::BigInt { radix, digits } => {
+                let value = self.bigint_literal(radix, digits)?;
+                let constant = self.constant(Constant::BigInt(value))?;
+                self.emit(Op::LdaConstant, &[constant])
+            }
             Node::RegExp { body, flags } => {
                 let body = self.string(body)?;
                 let flags = self.string(flags)?;
@@ -3690,6 +3704,12 @@ impl<'a> Compiler<'a> {
         match *self.ast.node(key) {
             Node::PropertyName(atom) | Node::String(atom) => Ok(Some(self.ast.atom(atom).to_vec())),
             Node::Number(number) => Ok(Some(number::to_string(number).encode_utf16().collect())),
+            // PropName eines BigInt-Literals ist sein Wert als Zeichenkette
+            // (Abschnitt 13.2.5.3).
+            Node::BigInt { radix, digits } => {
+                let value = self.bigint_literal(radix, digits)?;
+                Ok(Some(value.to_string().encode_utf16().collect()))
+            }
             Node::ComputedKey(expression) => {
                 self.expression(expression)?;
                 self.position(key)?;
