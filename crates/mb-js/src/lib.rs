@@ -14,6 +14,7 @@ pub mod bytecode;
 pub mod compare;
 pub mod compiler;
 pub mod conversion;
+pub mod date;
 pub mod descriptor;
 mod enumerate;
 pub mod function;

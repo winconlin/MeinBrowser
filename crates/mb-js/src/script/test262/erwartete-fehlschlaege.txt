@@ -3,7 +3,7 @@
 # nur der genannte. Erzeugt von script/test262/language.rs; bei einer
 # Abweichung schreibt der Test die neue Fassung nach
 # target/test262/erwartete-fehlschlaege.txt.
-# 23828 Dateien, 532 Vorschläge übersprungen; bestanden 20606 von 23296 Dateien und 39903 von 43794 Varianten
+# 23828 Dateien, 532 Vorschläge übersprungen; bestanden 20615 von 23296 Dateien und 39921 von 43794 Varianten
 arguments-object/10.5-1-s.js
 arguments-object/10.5-7-b-1-s.js
 arguments-object/10.6-13-a-2.js
@@ -368,7 +368,6 @@ export/escaped-as-export-specifier.js
 export/escaped-default.js
 export/escaped-from.js
 expressions/addition/S11.6.1_A1.js
-expressions/addition/S11.6.1_A2.2_T2.js
 expressions/arrow-function/arrow/binding-tests-1.js
 expressions/arrow-function/arrow/binding-tests-2.js
 expressions/arrow-function/arrow/binding-tests-3.js
@@ -560,7 +559,6 @@ expressions/class/subclass-builtins/subclass-ArrayBuffer.js
 expressions/class/subclass-builtins/subclass-BigInt64Array.js
 expressions/class/subclass-builtins/subclass-BigUint64Array.js
 expressions/class/subclass-builtins/subclass-DataView.js
-expressions/class/subclass-builtins/subclass-Date.js
 expressions/class/subclass-builtins/subclass-Float32Array.js
 expressions/class/subclass-builtins/subclass-Float64Array.js
 expressions/class/subclass-builtins/subclass-Function.js
@@ -1201,8 +1199,6 @@ expressions/prefix-increment/eval-nostrict.js
 expressions/prefix-increment/operator-prefix-increment-x-calls-putvalue-lhs-newvalue-.js
 expressions/property-accessors/S11.2.1_A1.1.js
 expressions/property-accessors/S11.2.1_A1.2.js
-expressions/property-accessors/S11.2.1_A4_T1.js
-expressions/property-accessors/S11.2.1_A4_T9.js
 expressions/right-shift/S11.7.2_A1.js
 expressions/strict-does-not-equals/S11.9.5_A1.js
 expressions/strict-does-not-equals/S11.9.5_A6.1.js
@@ -1261,9 +1257,7 @@ expressions/this/S11.1.1_A3.1.js
 expressions/this/S11.1.1_A3.2.js
 expressions/this/S11.1.1_A4.1.js
 expressions/this/S11.1.1_A4.2.js
-expressions/typeof/built-in-exotic-objects-no-call.js
 expressions/typeof/native-call.js
-expressions/typeof/string.js
 expressions/typeof/syntax.js
 expressions/unary-minus/S11.4.7_A1.js
 expressions/unary-plus/S11.4.6_A1.js
@@ -2186,8 +2180,6 @@ statements/class/subclass/builtin-objects/ArrayBuffer/regular-subclassing.js
 statements/class/subclass/builtin-objects/ArrayBuffer/super-must-be-called.js
 statements/class/subclass/builtin-objects/DataView/regular-subclassing.js
 statements/class/subclass/builtin-objects/DataView/super-must-be-called.js
-statements/class/subclass/builtin-objects/Date/regular-subclassing.js
-statements/class/subclass/builtin-objects/Date/super-must-be-called.js
 statements/class/subclass/builtin-objects/Function/instance-length.js
 statements/class/subclass/builtin-objects/Function/instance-name.js
 statements/class/subclass/builtin-objects/Function/regular-subclassing.js
@@ -2208,7 +2200,6 @@ statements/class/subclass-builtins/subclass-ArrayBuffer.js
 statements/class/subclass-builtins/subclass-BigInt64Array.js
 statements/class/subclass-builtins/subclass-BigUint64Array.js
 statements/class/subclass-builtins/subclass-DataView.js
-statements/class/subclass-builtins/subclass-Date.js
 statements/class/subclass-builtins/subclass-Float32Array.js
 statements/class/subclass-builtins/subclass-Float64Array.js
 statements/class/subclass-builtins/subclass-Function.js

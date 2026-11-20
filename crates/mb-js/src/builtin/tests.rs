@@ -4457,3 +4457,158 @@ fn bigints_survive_collections() {
     agent.heap_mut().collect();
     agent.heap().verify().expect("gültiger Heap");
 }
+
+#[test]
+fn dates_in_utc() {
+    let (mut agent, realm) = agent_with(false);
+    for (source, expected) in [
+        ("typeof Date", "\"function\""),
+        ("Date.length", "7"),
+        ("Date.UTC.length", "7"),
+        ("Date.prototype.setHours.length", "4"),
+        ("new Date(0).toISOString()", "\"1970-01-01T00:00:00.000Z\""),
+        (
+            "String(new Date(0))",
+            "\"Thu Jan 01 1970 00:00:00 GMT+0000 (Coordinated Universal Time)\"",
+        ),
+        (
+            "new Date(0).toUTCString()",
+            "\"Thu, 01 Jan 1970 00:00:00 GMT\"",
+        ),
+        (
+            "Date.prototype.toGMTString === Date.prototype.toUTCString",
+            "true",
+        ),
+        ("new Date(NaN) + ''", "\"Invalid Date\""),
+        (
+            "new Date(0) + 1",
+            "\"Thu Jan 01 1970 00:00:00 GMT+0000 (Coordinated Universal Time)1\"",
+        ),
+        ("+new Date(5)", "5"),
+        ("new Date(-0).getTime()", "0"),
+        ("1 / new Date(-0).getTime()", "Infinity"),
+        ("new Date(8.64e15 + 1).getTime()", "NaN"),
+        ("new Date(2020, 0, 1).getTime()", "1577836800000"),
+        ("new Date(99, 11).getFullYear()", "1999"),
+        ("Date.UTC(2020)", "1577836800000"),
+        ("Date.UTC()", "NaN"),
+        ("Date.parse('2020-01-01T00:00:00Z')", "1577836800000"),
+        ("new Date('Jan 1 2020').getTime()", "1577836800000"),
+        ("new Date(new Date(7)).getTime()", "7"),
+        (
+            "JSON.stringify(new Date(0))",
+            "\"\\\"1970-01-01T00:00:00.000Z\\\"\"",
+        ),
+        ("JSON.stringify(new Date(NaN))", "\"null\""),
+        (
+            "Object.prototype.toString.call(new Date(0))",
+            "\"[object Date]\"",
+        ),
+        (
+            "Object.prototype.toString.call(Date.prototype)",
+            "\"[object Object]\"",
+        ),
+        ("typeof Date()", "\"string\""),
+        ("new Date(0).toISOString.call({})", "TypeError"),
+        ("new Date(NaN).toISOString()", "RangeError"),
+        (
+            "Date.prototype[Symbol.toPrimitive].call(new Date(0), 'number')",
+            "0",
+        ),
+        (
+            "Date.prototype[Symbol.toPrimitive].call(new Date(0), 'other')",
+            "TypeError",
+        ),
+        (
+            "var d = new Date(0); d.setUTCHours(25); d.toISOString()",
+            "\"1970-01-02T01:00:00.000Z\"",
+        ),
+        (
+            "var d = new Date(0); d.setMonth(1, 29); d.toISOString()",
+            "\"1970-03-01T00:00:00.000Z\"",
+        ),
+        (
+            "var d = new Date(NaN); d.setFullYear(2000); d.toISOString()",
+            "\"2000-01-01T00:00:00.000Z\"",
+        ),
+        ("var d = new Date(NaN); d.setHours(1)", "NaN"),
+        ("var d = new Date(0); d.setMinutes()", "NaN"),
+        ("var d = new Date(0); d.setYear(99); d.getYear()", "99"),
+        ("new Date(2000, 0).getYear()", "100"),
+        ("new Date(0).getTimezoneOffset()", "0"),
+        ("new Date(0).getDay()", "4"),
+        (
+            "new Date(1577977445000).toLocaleString()",
+            "\"1/2/2020, 3:04:05 PM\"",
+        ),
+        (
+            "class D extends Date {} var d = new D(3); d instanceof D && d.getTime()",
+            "3",
+        ),
+        ("Reflect.construct(Date, [5], Object).getTime", "undefined"),
+        (
+            "var log = []; var d = new Date(0); d.setHours({valueOf() { log.push('h'); d.setTime(NaN); return 1; }}, {valueOf() { log.push('m'); return 2; }}); log.join() + d.getTime()",
+            "\"h,m3720000\"",
+        ),
+        ("typeof Date.now()", "\"number\""),
+        ("var t = Date.now(); t === Math.floor(t)", "true"),
+    ] {
+        assert_eq!(run(&mut agent, realm, source), expected, "{source}");
+    }
+}
+
+#[test]
+fn dates_follow_the_host() {
+    use crate::date::TimeZone;
+    use crate::host::Host;
+    use std::rc::Rc;
+
+    struct Fixed {
+        time: f64,
+        zone: TimeZone,
+    }
+    impl Host for Fixed {
+        fn current_time(&self) -> f64 {
+            self.time
+        }
+        fn time_zone(&self) -> TimeZone {
+            self.zone
+        }
+    }
+    let mut agent = Agent::with_options(Options {
+        verify: true,
+        ..Options::default()
+    })
+    .expect("Speicher");
+    agent.set_host(Rc::new(Fixed {
+        time: 1_577_977_445_123.9,
+        zone: TimeZone::from_identifier("+05:30").expect("Abstand"),
+    }));
+    let realm = agent.create_realm().expect("Speicher");
+    for (source, expected) in [
+        ("Date.now()", "1577977445123"),
+        ("new Date().getTime()", "1577977445123"),
+        ("Date()", "\"Thu Jan 02 2020 20:34:05 GMT+0530\""),
+        ("new Date(0).getHours()", "5"),
+        ("new Date(0).getMinutes()", "30"),
+        ("new Date(0).getUTCHours()", "0"),
+        ("new Date(0).getTimezoneOffset()", "-330"),
+        ("new Date(1970, 0, 1).getTime()", "-19800000"),
+        ("Date.parse('1970-01-01T00:00')", "-19800000"),
+        ("Date.parse('1970-01-01')", "0"),
+        (
+            "var d = new Date(0); d.setHours(0); d.getTime()",
+            "-18000000",
+        ),
+        ("var d = new Date(0); d.setUTCHours(0); d.getTime()", "0"),
+        ("new Date(0).toTimeString()", "\"05:30:00 GMT+0530\""),
+        ("new Date(0).toDateString()", "\"Thu Jan 01 1970\""),
+        ("new Date(0).toLocaleTimeString()", "\"5:30:00 AM\""),
+        (
+            "var d = new Date(1e12); Date.parse(d.toString()) === 1e12",
+            "true",
+        ),
+    ] {
+        assert_eq!(run(&mut agent, realm, source), expected, "{source}");
+    }
+}

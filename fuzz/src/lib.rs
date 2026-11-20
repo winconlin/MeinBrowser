@@ -6,11 +6,13 @@
 use std::hint::black_box;
 
 mod bigint;
+mod date;
 mod execution;
 mod idl;
 mod regexp;
 mod runtime;
 pub use bigint::bigint;
+pub use date::date;
 pub use execution::js_execute;
 pub use idl::webidl;
 pub use regexp::regexp;
@@ -507,7 +509,7 @@ mod tests {
     #[test]
     fn start_corpora_and_empty_inputs_exercise_all_harnesses() {
         type Harness = fn(&[u8]);
-        let targets: [(&str, Harness); 18] = [
+        let targets: [(&str, Harness); 19] = [
             ("html", html),
             ("css", css),
             ("url", url),
@@ -526,6 +528,7 @@ mod tests {
             ("webidl", webidl),
             ("regexp", regexp),
             ("bigint", bigint),
+            ("date", date),
         ];
         for (name, check) in targets {
             check(&[]);

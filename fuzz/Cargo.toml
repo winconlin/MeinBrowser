@@ -162,3 +162,10 @@ path = "fuzz_targets/bigint.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "date"
+path = "fuzz_targets/date.rs"
+test = false
+doc = false
+bench = false
