@@ -64,7 +64,7 @@ Wie wir dieses Verhalten im Inneren herstellen, ist dagegen völlig frei. Dort s
 
 ### 1.3 Stand der Ziele
 
-Stand 21.11.2026, nach PR #121. Die Tabelle nennt zu jedem Ziel den Maßstab und was das Repository davon heute zeigt. Den Stand je Meilenstein enthält [12.1](#121-stand-der-meilensteine).
+Stand 21.11.2026, nach PR #123. Die Tabelle nennt zu jedem Ziel den Maßstab und was das Repository davon heute zeigt. Den Stand je Meilenstein enthält [12.1](#121-stand-der-meilensteine).
 
 | Ziel | Maßstab | Stand |
 |---|---|---|
@@ -661,7 +661,7 @@ Barrierefreiheit (M9) wird schon ab M5 mitgedacht und nicht erst am Ende angefan
 
 ### 12.1 Stand der Meilensteine
 
-Stand 21.11.2026, nach PR #121: M0 und M1 sind abgeschlossen, M2 läuft. Einige Teile späterer Meilensteine sind vorgezogen. Was der Code im Einzelnen kann, steht im Stand in [Abschnitt 11](#11-aufbau-des-repositorys).
+Stand 21.11.2026, nach PR #123: M0 und M1 sind abgeschlossen, M2 läuft. Einige Teile späterer Meilensteine sind vorgezogen. Was der Code im Einzelnen kann, steht im Stand in [Abschnitt 11](#11-aufbau-des-repositorys).
 
 | # | Stand | Erreicht | Bis zum Abschlusskriterium fehlt |
 |---|---|---|---|
