@@ -133,19 +133,26 @@ fn validate_atomic_access_on_integer_typed_array(
 }
 
 /// RevalidateAtomicAccess (Abschnitt 25.4.3.4): Die Umwandlungen der
-/// Argumente können den Puffer abgelöst oder verkleinert haben.
+/// Argumente können den Puffer abgelöst oder verkleinert haben. Das ganze
+/// Element von `kind` ab `byte_index` muss noch im Puffer liegen, auch
+/// sein letztes Byte.
 fn revalidate_atomic_access(
     agent: &mut Agent,
     typed_array: Local<'_>,
     byte_index: usize,
+    kind: ElementType,
 ) -> Completion<()> {
     let record = typed_array_record_of(agent, typed_array);
     let Some(record) = record.filter(|record| !record.is_out_of_bounds()) else {
         return Err(agent.throw_error(ErrorKind::TypeError));
     };
+    let end = byte_index
+        .checked_add(kind.size())
+        .and_then(|end| u64::try_from(end).ok());
     let in_buffer = record
         .buffer_byte_length
-        .is_some_and(|length| u64::try_from(byte_index).is_ok_and(|index| index < length));
+        .zip(end)
+        .is_some_and(|(length, end)| end <= length);
     if !in_buffer {
         return Err(agent.throw_error(ErrorKind::RangeError));
     }
@@ -220,7 +227,7 @@ fn read_modify_write<'s>(
         validate_atomic_access_on_integer_typed_array(agent, scope, typed_array, index)?;
     let value = arguments.argument(agent, scope, 2);
     let (bits, _) = element_bits(agent, scope, kind, value)?;
-    revalidate_atomic_access(agent, typed_array, byte_index)?;
+    revalidate_atomic_access(agent, typed_array, byte_index, kind)?;
     let old = update(agent, scope, typed_array, byte_index, kind, |old| {
         Some(op(old, bits))
     });
@@ -300,7 +307,7 @@ fn compare_exchange<'s>(
     let (expected, _) = element_bits(agent, scope, kind, expected)?;
     let replacement = arguments.argument(agent, scope, 3);
     let (replacement, _) = element_bits(agent, scope, kind, replacement)?;
-    revalidate_atomic_access(agent, typed_array, byte_index)?;
+    revalidate_atomic_access(agent, typed_array, byte_index, kind)?;
     // Die Bytes sind auf die Größe gekürzt, wie die gelesenen.
     let mask = match kind.size() {
         8 => u64::MAX,
@@ -334,7 +341,7 @@ fn load<'s>(
     let index = arguments.argument(agent, scope, 1);
     let (byte_index, kind) =
         validate_atomic_access_on_integer_typed_array(agent, scope, typed_array, index)?;
-    revalidate_atomic_access(agent, typed_array, byte_index)?;
+    revalidate_atomic_access(agent, typed_array, byte_index, kind)?;
     let bits = update(agent, scope, typed_array, byte_index, kind, |_| None);
     element_value(agent, scope, kind, bits)
 }
@@ -352,7 +359,7 @@ fn store<'s>(
         validate_atomic_access_on_integer_typed_array(agent, scope, typed_array, index)?;
     let value = arguments.argument(agent, scope, 2);
     let (bits, value) = element_bits(agent, scope, kind, value)?;
-    revalidate_atomic_access(agent, typed_array, byte_index)?;
+    revalidate_atomic_access(agent, typed_array, byte_index, kind)?;
     update(agent, scope, typed_array, byte_index, kind, |_| Some(bits));
     Ok(value)
 }
