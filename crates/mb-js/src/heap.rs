@@ -19,7 +19,18 @@
 //! Wrapper-Objekte haben zuerst interne Felder,
 //! danach kommen bei allen Objekten die eingebetteten Plätze. Die Felder
 //! schwacher Zellen halten ihr Ziel nicht am Leben; nach dem Sammeln zeigen
-//! sie auf den neuen Ort oder sind *undefined*.
+//! sie auf den neuen Ort oder sind *undefined*. Eine schwache Zelle mit dem
+//! Kennzeichen für Finalisierung hält im ersten Feld ihre
+//! FinalizationRegistry: Leert das Sammeln eines der übrigen Felder, kommt
+//! die Registry in die Liste, aus der der Agent Aufräum-Jobs macht
+//! ([`Heap::pop_cleanup`]).
+//!
+//! Ephemeron-Zellen tragen die Einträge von WeakMaps und WeakSets
+//! (Abschnitt 9.9.3): Einträge gleicher Breite, die Breite steht in den
+//! Kennzeichen. Das erste Feld eines Eintrags ist sein Schlüssel. Die
+//! übrigen Felder hält der Collector nur, solange der Schlüssel auf anderem
+//! Weg erreichbar ist; ist er es nicht, wird der Schlüssel zur Lücke, und
+//! Verweise in den übrigen Feldern werden *undefined*, Zahlen bleiben.
 //!
 //! Gesammelt wird in der ersten Ausbaustufe präzise und kopierend nach
 //! Cheney. Alle Seiten werden zum alten Raum, die erreichbaren Zellen wandern
@@ -29,9 +40,19 @@
 //! eine Zelle schon jetzt über eine einzige Funktion, an der dann die
 //! Schreibbarriere ansetzt.
 //!
+//! Erreicht der Lesezeiger eine Ephemeron-Zelle, ist jeder ihrer Einträge
+//! bereit, wenn sein Schlüssel schon kopiert ist, sonst wartet er in einer
+//! Tabelle nach dem alten Ort des Schlüssels. Kopiert der Collector später
+//! eine Zelle, die dort steht, werden ihre Einträge bereit. Bereite Einträge
+//! führt er nach, sobald der Lesezeiger fertig ist, und liest danach weiter,
+//! bis beides nichts mehr findet. So kommt jeder Eintrag höchstens einmal
+//! dran, auch wenn Werte die Schlüssel anderer Einträge erreichen, und die
+//! Arbeit bleibt linear. Was danach noch wartet, ist nicht erreichbar.
+//!
 //! Wurzeln sind die Handles: [`Local`] in einem Bereich ([`Heap::scope`]) und
 //! [`Persistent`] für langlebige Verweise, dazu der Registerstapel des
-//! Interpreters. Jeder offene Bereich hat eine
+//! Interpreters, die [[KeptAlive]]-Liste des Agents (Abschnitt 9.11) und
+//! die Registries, deren Aufräum-Jobs warten. Jeder offene Bereich hat eine
 //! eigene Liste von Handles. Ein Handle gehört dem Bereich, für den es
 //! angelegt wurde, auch wenn das in einem inneren Bereich geschieht, und
 //! endet erst mit ihm. Gelesene Werte ([`Value`]) leihen
@@ -78,7 +99,7 @@
 #![forbid(unsafe_code)]
 
 use std::cell::{Cell, RefCell};
-
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -141,12 +162,18 @@ const KIND_BYTES: u64 = 27;
 const KIND_ARRAY_BUFFER: u64 = 28;
 const KIND_DATA_VIEW: u64 = 29;
 const KIND_TYPED_ARRAY: u64 = 30;
+const KIND_EPHEMERON: u64 = 31;
+const KIND_WEAK_REF: u64 = 32;
+const KIND_FINALIZATION_REGISTRY: u64 = 33;
 
 /// Die Kennzeichen stehen in den Bits 8 bis 31 des Kopfworts.
 const FLAG_SHIFT: u32 = 8;
 const FLAG_MASK: u64 = 0xFF_FFFF;
 /// Kennzeichen eines negativen BigInt.
 const NEGATIVE_FLAG: u32 = 1;
+/// Kennzeichen einer schwachen Zelle, deren erstes Feld eine
+/// FinalizationRegistry hält.
+const FINALIZER_FLAG: u32 = 1;
 
 /// Wörter mit gepackten Verweisen am Anfang eines Objekts.
 const OBJECT_REFS: usize = 2;
@@ -175,12 +202,17 @@ fn with_flags(header: u64, flags: u32) -> u64 {
 fn is_value_cell(kind: u64) -> bool {
     matches!(
         kind,
-        KIND_SLOTS | KIND_SYMBOL | KIND_SHAPE | KIND_WEAK | KIND_SPARSE
+        KIND_SLOTS | KIND_SYMBOL | KIND_SHAPE | KIND_WEAK | KIND_SPARSE | KIND_EPHEMERON
     )
 }
 
+/// Die Breite der Einträge einer Ephemeron-Zelle, mindestens 1.
+fn ephemeron_width(header: u64) -> usize {
+    to_usize(header_flags(header)).max(1)
+}
+
 /// Die Arten der Objektzellen.
-const OBJECT_KINDS: [u64; 20] = [
+const OBJECT_KINDS: [u64; 22] = [
     KIND_OBJECT,
     KIND_ARRAY,
     KIND_FUNCTION,
@@ -201,6 +233,8 @@ const OBJECT_KINDS: [u64; 20] = [
     KIND_ARRAY_BUFFER,
     KIND_DATA_VIEW,
     KIND_TYPED_ARRAY,
+    KIND_WEAK_REF,
+    KIND_FINALIZATION_REGISTRY,
 ];
 
 /// Die internen Felder eines Funktionsobjekts, Werte vor den eingebetteten
@@ -256,6 +290,14 @@ pub(crate) const DATA_VIEW_FIELDS: usize = 3;
 /// und [[ByteOffset]] als Number. [[ByteLength]] ist [[ArrayLength]] mal
 /// die Größe eines Elements, ~auto~ mit [[ArrayLength]].
 pub(crate) const TYPED_ARRAY_FIELDS: usize = 4;
+/// Das interne Feld einer WeakRef: eine schwache Zelle mit
+/// [[WeakRefTarget]] im einzigen Feld.
+pub(crate) const WEAK_REF_FIELDS: usize = 1;
+/// Die internen Felder einer FinalizationRegistry: [[Realm]] als Zahl,
+/// [[CleanupCallback]], die schwache Zelle mit Registry, Zielen und
+/// Abmeldemarken ihrer [[Cells]], die Zelle mit den gehaltenen Werten und
+/// wie viele Einträge belegt sind.
+pub(crate) const FINALIZATION_REGISTRY_FIELDS: usize = 5;
 
 fn is_object(kind: u64) -> bool {
     OBJECT_KINDS.contains(&kind)
@@ -282,6 +324,8 @@ fn object_fields(kind: u64) -> usize {
         KIND_ARRAY_BUFFER => ARRAY_BUFFER_FIELDS,
         KIND_DATA_VIEW => DATA_VIEW_FIELDS,
         KIND_TYPED_ARRAY => TYPED_ARRAY_FIELDS,
+        KIND_WEAK_REF => WEAK_REF_FIELDS,
+        KIND_FINALIZATION_REGISTRY => FINALIZATION_REGISTRY_FIELDS,
         _ => 0,
     }
 }
@@ -435,6 +479,31 @@ pub struct Heap {
     collections: u64,
     /// Während einer Sammlung die schon kopierten schwachen Zellen.
     weak: Vec<u32>,
+    /// Während einer Sammlung die schon kopierten Ephemeron-Zellen.
+    ephemerons: Vec<u32>,
+    /// Während einer Sammlung die Einträge der Ephemeron-Zellen, deren
+    /// Schlüssel noch nicht kopiert ist, nach dem alten Ort des Schlüssels:
+    /// je Eintrag der neue Ort der Zelle und seine Nummer.
+    waiting: HashMap<u32, Vec<(u32, u32)>>,
+    /// Während einer Sammlung die Einträge, deren Schlüssel kopiert ist und
+    /// deren übrige Felder noch nachgeführt werden.
+    ready: Vec<(u32, u32)>,
+    /// Die [[KeptAlive]]-Liste des Agents (Abschnitt 9.11), jede Zelle
+    /// einmal, und die Orte ihrer Zellen.
+    kept: Vec<u64>,
+    kept_cells: HashSet<u32>,
+    /// FinalizationRegistries, deren Ziele das Sammeln geleert hat, bis der
+    /// Agent ihre Aufräum-Jobs ausführt.
+    cleanup: VecDeque<u64>,
+}
+
+/// Wo der Lesezeiger steht: die Nummer der kleinen Seite in der Liste, das
+/// Wort darin und die Nummer der großen Seite.
+#[derive(Default)]
+struct Position {
+    small: usize,
+    word: usize,
+    large: usize,
 }
 
 impl Default for Heap {
@@ -470,6 +539,12 @@ impl Heap {
             paused: 0,
             collections: 0,
             weak: Vec::new(),
+            ephemerons: Vec::new(),
+            waiting: HashMap::new(),
+            ready: Vec::new(),
+            kept: Vec::new(),
+            kept_cells: HashSet::new(),
+            cleanup: VecDeque::new(),
         }
     }
 
@@ -854,6 +929,78 @@ impl Heap {
         Ok(self.local(scope, Value::reference(reference, offset)))
     }
 
+    /// Legt eine Ephemeron-Zelle für `records` Einträge zu je `width`
+    /// Werten an, alle *undefined*. Das erste Feld eines Eintrags ist sein
+    /// Schlüssel; die übrigen hält die Zelle nur, solange der Schlüssel
+    /// anders erreichbar ist (siehe oben).
+    pub(crate) fn alloc_ephemerons<'s>(
+        &mut self,
+        scope: &'s Scope,
+        records: usize,
+        width: usize,
+    ) -> Result<Local<'s>, OutOfMemory> {
+        let flags = u32::try_from(width)
+            .ok()
+            .filter(|&flags| flags >= 1 && u64::from(flags) <= FLAG_MASK)
+            .ok_or(OutOfMemory)?;
+        let len = records.checked_mul(width).ok_or(OutOfMemory)?;
+        let cell = self.alloc_values(scope, KIND_EPHEMERON, len)?;
+        if let Some((_, offset)) = self.get(cell).reference_parts()
+            && let Some(head) = self.word(offset, 0)
+        {
+            self.init(offset, 0, with_flags(head, flags));
+        }
+        Ok(cell)
+    }
+
+    /// Legt eine schwache Zelle mit `len` Feldern an, alle *undefined*,
+    /// deren erstes Feld eine FinalizationRegistry halten soll: Leert das
+    /// Sammeln eines der anderen Felder, kommt die Registry in die Liste der
+    /// Aufräum-Jobs.
+    pub(crate) fn alloc_finalizer_cell<'s>(
+        &mut self,
+        scope: &'s Scope,
+        len: usize,
+    ) -> Result<Local<'s>, OutOfMemory> {
+        let cell = self.alloc_values(scope, KIND_WEAK, len)?;
+        if let Some((_, offset)) = self.get(cell).reference_parts()
+            && let Some(head) = self.word(offset, 0)
+        {
+            self.init(offset, 0, with_flags(head, FINALIZER_FLAG));
+        }
+        Ok(cell)
+    }
+
+    /// AddToKeptObjects (Abschnitt 9.11). Jede Zelle steht höchstens einmal
+    /// in der Liste.
+    pub(crate) fn add_to_kept_objects(&mut self, value: Local<'_>) {
+        let bits = self.get(value).bits();
+        if let Some((_, offset)) = Value::from_bits(bits).reference_parts()
+            && self.kept_cells.insert(offset)
+        {
+            self.kept.push(bits);
+        }
+    }
+
+    /// ClearKeptObjects (Abschnitt 9.10).
+    pub(crate) fn clear_kept_objects(&mut self) {
+        self.kept.clear();
+        self.kept_cells.clear();
+    }
+
+    /// Nimmt die nächste FinalizationRegistry aus der Liste, deren Ziele das
+    /// Sammeln geleert hat, in ein Handle des Bereichs `scope`. Wurde eine
+    /// Registry mehrmals eingetragen, kommt sie mehrmals.
+    pub(crate) fn pop_cleanup<'s>(&mut self, scope: &'s Scope) -> Option<Local<'s>> {
+        let bits = self.cleanup.pop_front()?;
+        Some(self.local(scope, Value::from_bits(bits)))
+    }
+
+    /// Ob eine FinalizationRegistry auf ihren Aufräum-Job wartet.
+    pub(crate) fn has_pending_cleanup(&self) -> bool {
+        !self.cleanup.is_empty()
+    }
+
     /// Die Zahl der Felder, 0 für einen Verweis auf etwas anderes.
     pub fn slot_count(&self, cell: Ref<'_>) -> usize {
         match self.slots_header(cell) {
@@ -1041,8 +1188,31 @@ impl Heap {
             *slot = self.evacuate(*slot);
         }
         *self.registers.get_mut() = registers;
+        let mut kept = std::mem::take(&mut self.kept);
+        for slot in &mut kept {
+            *slot = self.evacuate(*slot);
+        }
+        self.kept_cells = kept
+            .iter()
+            .filter_map(|&bits| Value::from_bits(bits).reference_parts())
+            .map(|(_, offset)| offset)
+            .collect();
+        self.kept = kept;
+        let mut cleanup = std::mem::take(&mut self.cleanup);
+        for slot in &mut cleanup {
+            *slot = self.evacuate(*slot);
+        }
+        self.cleanup = cleanup;
 
-        self.scan();
+        let mut position = Position::default();
+        loop {
+            self.scan(&mut position);
+            if self.ready.is_empty() {
+                break;
+            }
+            self.trace_ready();
+        }
+        self.clear_ephemerons();
         self.clear_weak();
 
         for index in old_small.into_iter().chain(old_large) {
@@ -1063,32 +1233,33 @@ impl Heap {
 
     /// Der Lesezeiger nach Cheney. Kleine Seiten werden der Reihe nach
     /// gelesen; neue Zellen landen immer in der letzten. Große Seiten haben
-    /// je eine Zelle und eine eigene Liste.
-    fn scan(&mut self) {
-        let (mut small, mut word, mut large) = (0, 0, 0);
+    /// je eine Zelle und eine eigene Liste. Der Lesezeiger steht in
+    /// `position` und liest beim nächsten Aufruf dort weiter.
+    fn scan(&mut self, position: &mut Position) {
+        let Position { small, word, large } = position;
         loop {
             let mut progress = false;
-            while let Some(&index) = self.small.get(small) {
+            while let Some(&index) = self.small.get(*small) {
                 let used = self
                     .pages
                     .get(index)
                     .and_then(Option::as_ref)
                     .map_or(0, |page| page.used);
-                if word < used {
-                    word = self
-                        .scan_cell(index, word)
+                if *word < used {
+                    *word = self
+                        .scan_cell(index, *word)
                         .map_or(used, |words| word.saturating_add(words));
                     progress = true;
-                } else if small + 1 < self.small.len() {
-                    small += 1;
-                    word = 0;
+                } else if *small + 1 < self.small.len() {
+                    *small += 1;
+                    *word = 0;
                 } else {
                     break;
                 }
             }
-            while let Some(&index) = self.large.get(large) {
+            while let Some(&index) = self.large.get(*large) {
                 self.scan_cell(index, 0);
-                large += 1;
+                *large += 1;
                 progress = true;
             }
             if !progress {
@@ -1105,6 +1276,7 @@ impl Heap {
         let words = cell_words(head)?;
         match header_kind(head) {
             KIND_WEAK => self.weak.push(offset),
+            KIND_EPHEMERON => self.index_ephemerons(offset, head),
             kind if is_value_cell(kind) => self.trace_values(offset, 1, words),
             kind if is_object(kind) => {
                 self.trace_packed(offset, 1, RefKind::Internal, RefKind::Object);
@@ -1146,14 +1318,98 @@ impl Heap {
             .map_or(offset, |(_, moved)| moved)
     }
 
+    /// Nimmt die Einträge der Ephemeron-Zelle bei `offset` auf, die der
+    /// Lesezeiger eben erreicht hat: Ein Eintrag, dessen Schlüssel schon
+    /// kopiert oder kein Verweis in den alten Raum ist, ist bereit, die
+    /// übrigen warten auf ihren Schlüssel.
+    fn index_ephemerons(&mut self, offset: u32, head: u64) {
+        self.ephemerons.push(offset);
+        let width = ephemeron_width(head);
+        let records = to_usize(header_length(head)) / width;
+        for record in 0..records {
+            let Some(key) = self.word(offset, 1 + record * width) else {
+                continue;
+            };
+            // Die Länge einer Zelle passt in 32 Bit, also auch die Nummer.
+            let entry = (offset, u32::try_from(record).unwrap_or(u32::MAX));
+            match self.waiting_key(key) {
+                Some(old) => self.waiting.entry(old).or_default().push(entry),
+                None => self.ready.push(entry),
+            }
+        }
+    }
+
+    /// Der alte Ort eines Schlüssels, der noch nicht kopiert ist; `None`,
+    /// wenn er es ist oder nicht im alten Raum liegt.
+    fn waiting_key(&self, bits: u64) -> Option<u32> {
+        let (_, offset) = Value::from_bits(bits).reference_parts()?;
+        if !self.page(offset).is_some_and(|page| page.old) {
+            return None;
+        }
+        let head = self.word(offset, 0)?;
+        (header_kind(head) != KIND_FORWARD).then_some(offset)
+    }
+
+    /// Führt die bereiten Einträge nach, Schlüssel und übrige Felder. Was
+    /// dabei kopiert wird, kann weitere Einträge bereit machen.
+    fn trace_ready(&mut self) {
+        while let Some((offset, record)) = self.ready.pop() {
+            let Some(head) = self.word(offset, 0) else {
+                continue;
+            };
+            let width = ephemeron_width(head);
+            let base = to_usize(record).saturating_mul(width).saturating_add(1);
+            self.trace_values(offset, base, base.saturating_add(width));
+        }
+    }
+
+    /// Leert nach dem Lesezeiger die Einträge, deren Schlüssel nicht kopiert
+    /// wurde: Der Schlüssel wird zur Lücke, Verweise in den übrigen Feldern
+    /// werden *undefined*. Die anderen hat [`Heap::trace_ready`] schon
+    /// nachgeführt.
+    fn clear_ephemerons(&mut self) {
+        for offset in std::mem::take(&mut self.ephemerons) {
+            let Some(head) = self.word(offset, 0) else {
+                continue;
+            };
+            let width = ephemeron_width(head);
+            let records = to_usize(header_length(head)) / width;
+            for record in 0..records {
+                let base = 1 + record * width;
+                let dead = self
+                    .word(offset, base)
+                    .and_then(|key| Value::from_bits(key).reference_parts())
+                    .is_some_and(|(_, key)| self.page(key).is_some_and(|page| page.old));
+                if !dead {
+                    continue;
+                }
+                self.write(offset, base, Value::HOLE.bits());
+                for slot in base + 1..base + width {
+                    let reference = self
+                        .word(offset, slot)
+                        .is_some_and(|bits| Value::from_bits(bits).reference_parts().is_some());
+                    if reference {
+                        self.write(offset, slot, Value::UNDEFINED.bits());
+                    }
+                }
+            }
+        }
+        self.waiting.clear();
+        self.ready.clear();
+    }
+
     /// Führt nach dem Lesezeiger die Felder der schwachen Zellen nach: Ein
     /// Ziel, das verschoben wurde, bekommt seinen neuen Ort, eines im alten
-    /// Raum wird *undefined*.
+    /// Raum wird *undefined*. Leert das ein Feld hinter dem ersten einer
+    /// Zelle mit [`FINALIZER_FLAG`], kommt die Registry im ersten Feld in die
+    /// Liste der Aufräum-Jobs.
     fn clear_weak(&mut self) {
         for offset in std::mem::take(&mut self.weak) {
-            let count = self
-                .word(offset, 0)
-                .map_or(0, |head| to_usize(header_length(head)));
+            let Some(head) = self.word(offset, 0) else {
+                continue;
+            };
+            let count = to_usize(header_length(head));
+            let mut emptied = false;
             for slot in 1..=count {
                 let Some(bits) = self.word(offset, slot) else {
                     continue;
@@ -1168,9 +1424,19 @@ impl Heap {
                     Some(head) if header_kind(head) == KIND_FORWARD => {
                         Value::reference(kind, header_length(head)).bits()
                     }
-                    _ => Value::UNDEFINED.bits(),
+                    _ => {
+                        emptied |= slot > 1;
+                        Value::UNDEFINED.bits()
+                    }
                 };
                 self.write(offset, slot, moved);
+            }
+            if emptied
+                && header_flags(head) & FINALIZER_FLAG != 0
+                && let Some(registry) = self.word(offset, 1)
+                && Value::from_bits(registry).reference_parts().is_some()
+            {
+                self.cleanup.push_back(registry);
             }
         }
     }
@@ -1205,6 +1471,11 @@ impl Heap {
         }
         self.write(offset, 0, header(KIND_FORWARD, moved));
         self.used = self.used.saturating_add(words.saturating_mul(8));
+        if !self.waiting.is_empty()
+            && let Some(entries) = self.waiting.remove(&offset)
+        {
+            self.ready.extend(entries);
+        }
         Value::reference(kind, moved).bits()
     }
 
@@ -1257,7 +1528,7 @@ impl Heap {
             RefKind::Object => is_object(cell),
             RefKind::Internal => matches!(
                 cell,
-                KIND_SLOTS | KIND_SHAPE | KIND_WEAK | KIND_SPARSE | KIND_BYTES
+                KIND_SLOTS | KIND_SHAPE | KIND_WEAK | KIND_SPARSE | KIND_BYTES | KIND_EPHEMERON
             ),
             RefKind::BigInt => cell == KIND_BIGINT,
         };
@@ -1288,6 +1559,12 @@ impl Heap {
         }
         for &bits in self.registers.borrow().iter() {
             check(bits, "Register")?;
+        }
+        for &bits in &self.kept {
+            check(bits, "[[KeptAlive]]")?;
+        }
+        for &bits in &self.cleanup {
+            check(bits, "Aufräum-Job")?;
         }
         for &(offset, kind) in &cells {
             let count = self

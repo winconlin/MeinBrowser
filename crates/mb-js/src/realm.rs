@@ -128,6 +128,14 @@ pub enum Intrinsic {
     SetPrototype,
     /// %SetIteratorPrototype% (Abschnitt 24.2.6.2).
     SetIteratorPrototype,
+    /// %WeakMap.prototype% (Abschnitt 24.3.3).
+    WeakMapPrototype,
+    /// %WeakSet.prototype% (Abschnitt 24.4.3).
+    WeakSetPrototype,
+    /// %WeakRef.prototype% (Abschnitt 26.1.3).
+    WeakRefPrototype,
+    /// %FinalizationRegistry.prototype% (Abschnitt 26.2.3).
+    FinalizationRegistryPrototype,
     /// %ArrayBuffer.prototype% (Abschnitt 25.1.6), ein gewöhnliches
     /// Objekt.
     ArrayBufferPrototype,
@@ -230,6 +238,14 @@ pub enum Intrinsic {
     Map,
     /// %Set% (Abschnitt 24.2.2).
     Set,
+    /// %WeakMap% (Abschnitt 24.3.1).
+    WeakMap,
+    /// %WeakSet% (Abschnitt 24.4.1).
+    WeakSet,
+    /// %WeakRef% (Abschnitt 26.1.1).
+    WeakRef,
+    /// %FinalizationRegistry% (Abschnitt 26.2.1).
+    FinalizationRegistry,
     /// %ArrayBuffer% (Abschnitt 25.1.4).
     ArrayBuffer,
     /// %DataView% (Abschnitt 25.3.2).
@@ -804,6 +820,7 @@ fn set_default_global_bindings(
         ("Date", Intrinsic::Date),
         ("Error", Intrinsic::Error),
         ("EvalError", Intrinsic::EvalError),
+        ("FinalizationRegistry", Intrinsic::FinalizationRegistry),
         ("Float16Array", Intrinsic::Float16Array),
         ("Float32Array", Intrinsic::Float32Array),
         ("Float64Array", Intrinsic::Float64Array),
@@ -830,6 +847,9 @@ fn set_default_global_bindings(
         ("Uint16Array", Intrinsic::Uint16Array),
         ("Uint32Array", Intrinsic::Uint32Array),
         ("URIError", Intrinsic::URIError),
+        ("WeakMap", Intrinsic::WeakMap),
+        ("WeakRef", Intrinsic::WeakRef),
+        ("WeakSet", Intrinsic::WeakSet),
         // Die Funktionen aus Abschnitt 19.2 und %JSON%, %Math% und
         // %Reflect% aus Abschnitt 19.4 haben dieselben Attribute.
         ("isFinite", Intrinsic::IsFinite),

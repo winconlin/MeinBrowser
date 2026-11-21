@@ -3,7 +3,7 @@
 # nur der genannte. Erzeugt von script/test262/language.rs; bei einer
 # Abweichung schreibt der Test die neue Fassung nach
 # target/test262/erwartete-fehlschlaege-built-ins.txt.
-# 17691 Dateien, 194 Vorschläge übersprungen; bestanden 16235 von 17497 Dateien und 32248 von 34712 Varianten
+# 17993 Dateien, 194 Vorschläge übersprungen; bestanden 16559 von 17799 Dateien und 32895 von 35315 Varianten
 AggregateError/newtarget-proto-fallback.js
 AggregateError/proto-from-ctor-realm.js
 Array/from/proto-from-ctor-realm.js
@@ -165,6 +165,7 @@ Date/prototype/toTemporalInstant/this-value-non-object.js
 Date/prototype/toTemporalInstant/this-value-valid-date.js
 Error/isError/non-error-objects-other-realm.js
 Error/proto-from-ctor-realm.js
+FinalizationRegistry/proto-from-ctor-realm.js
 Function/15.3.2.1-10-6gs.js
 Function/15.3.2.1-11-1-s.js
 Function/15.3.2.1-11-1.js
@@ -361,20 +362,7 @@ Iterator/zipKeyed/basic-shortest.js
 Iterator/zipKeyed/basic-strict.js
 Iterator/zipKeyed/result-is-iterator.js
 Map/proto-from-ctor-realm.js
-Map/prototype/clear/context-is-weakmap-object-throws.js
-Map/prototype/delete/context-is-weakmap-object-throws.js
-Map/prototype/entries/does-not-have-mapdata-internal-slot-weakmap.js
-Map/prototype/forEach/does-not-have-mapdata-internal-slot-weakmap.js
-Map/prototype/get/does-not-have-mapdata-internal-slot-weakmap.js
-Map/prototype/getOrInsert/does-not-have-mapdata-internal-slot-weakmap.js
 Map/prototype/getOrInsertComputed/different-types-function-callbackfn-does-not-throw.js
-Map/prototype/getOrInsertComputed/does-not-have-mapdata-internal-slot-weakmap.js
-Map/prototype/has/does-not-have-mapdata-internal-slot-weakmap.js
-Map/prototype/keys/does-not-have-mapdata-internal-slot-weakmap.js
-Map/prototype/set/does-not-have-mapdata-internal-slot-weakmap.js
-Map/prototype/size/does-not-have-mapdata-internal-slot-weakmap.js
-Map/prototype/values/does-not-have-mapdata-internal-slot-weakmap.js
-Map/valid-keys.js
 Math/ceil/S15.8.2.6_A7.js
 Math/floor/S15.8.2.9_A7.js
 Math/round/S15.8.2.15_A6.js
@@ -401,19 +389,13 @@ Object/getOwnPropertyNames/15.2.3.4-4-1.js
 Object/proto-from-ctor-realm.js
 Object/prototype/toString/Object.prototype.toString.call-function.js
 Object/prototype/toString/symbol-tag-non-str-proxy-function.js
-Object/prototype/toString/symbol-tag-weakmap-builtin.js
-Object/prototype/toString/symbol-tag-weakset-builtin.js
 Object/seal/seal-arrowfunction.js
 Object/seal/seal-asyncarrowfunction.js
 Object/seal/seal-asyncfunction.js
 Object/seal/seal-asyncgeneratorfunction.js
-Object/seal/seal-finalizationregistry.js
 Object/seal/seal-function.js
 Object/seal/seal-generatorfunction.js
 Object/seal/seal-sharedarraybuffer.js
-Object/seal/seal-weakmap.js
-Object/seal/seal-weakref.js
-Object/seal/seal-weakset.js
 Object/values/tamper-with-global-object.js
 Promise/all/ctx-non-ctor.js
 Promise/allSettled/ctx-non-ctor.js
@@ -977,14 +959,6 @@ RegExp/unicodeSets/generated/string-literal-intersection-property-of-strings-esc
 RegExp/unicodeSets/generated/string-literal-union-character-property-escape.js
 RegExp/unicodeSets/generated/string-literal-union-property-of-strings-escape.js
 Set/proto-from-ctor-realm.js
-Set/prototype/add/does-not-have-setdata-internal-slot-weakset.js
-Set/prototype/clear/does-not-have-setdata-internal-slot-weakset.js
-Set/prototype/delete/does-not-have-setdata-internal-slot-weakset.js
-Set/prototype/entries/does-not-have-setdata-internal-slot-weakset.js
-Set/prototype/forEach/does-not-have-setdata-internal-slot-weakset.js
-Set/prototype/has/does-not-have-setdata-internal-slot-weakset.js
-Set/prototype/values/does-not-have-setdata-internal-slot-weakset.js
-Set/valid-values.js
 String/S15.5.1.1_A1_T6.js
 String/S15.5.5.1_A4_T1.js
 String/S9.8_A1_T1.js
@@ -1262,6 +1236,10 @@ TypedArrayConstructors/internals/Get/indexed-value-sab.js
 TypedArrayConstructors/internals/HasProperty/BigInt/infinity-with-detached-buffer.js
 TypedArrayConstructors/internals/HasProperty/infinity-with-detached-buffer.js
 TypedArrayConstructors/internals/OwnPropertyKeys/integer-indexes.js
+WeakMap/proto-from-ctor-realm.js
+WeakMap/prototype/getOrInsertComputed/adds-value-different-callbackfn.js
+WeakRef/proto-from-ctor-realm.js
+WeakSet/proto-from-ctor-realm.js
 parseFloat/S15.1.2.3_A6.js
 parseInt/S15.1.2.2_A7.2_T1.js
 parseInt/S15.1.2.2_A7.3_T1.js

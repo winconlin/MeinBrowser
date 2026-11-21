@@ -5,11 +5,11 @@
 use super::{
     Heap, KIND_ARGUMENTS, KIND_ARRAY, KIND_ARRAY_BUFFER, KIND_ASYNC_FROM_SYNC,
     KIND_ASYNC_GENERATOR, KIND_BOUND_FUNCTION, KIND_BUILTIN, KIND_COLLECTION, KIND_DATA_VIEW,
-    KIND_DATE, KIND_ERROR, KIND_FUNCTION, KIND_GENERATOR, KIND_ITERATOR, KIND_OBJECT,
-    KIND_PRIMITIVE, KIND_PROMISE, KIND_PROXY, KIND_REGEXP, KIND_SHAPE, KIND_SLOTS, KIND_SPARSE,
-    KIND_SYMBOL, KIND_TYPED_ARRAY, KIND_WEAK, Local, NONE, OBJECT_REFS, OutOfMemory, Scope,
-    cell_words, header, header_flags, header_kind, header_length, is_object, is_value_cell,
-    object_fields, packed, packed_high, packed_low, to_usize, with_flags,
+    KIND_DATE, KIND_ERROR, KIND_FINALIZATION_REGISTRY, KIND_FUNCTION, KIND_GENERATOR,
+    KIND_ITERATOR, KIND_OBJECT, KIND_PRIMITIVE, KIND_PROMISE, KIND_PROXY, KIND_REGEXP, KIND_SHAPE,
+    KIND_SLOTS, KIND_SPARSE, KIND_SYMBOL, KIND_TYPED_ARRAY, KIND_WEAK, KIND_WEAK_REF, Local, NONE,
+    OBJECT_REFS, OutOfMemory, Scope, cell_words, header, header_flags, header_kind, header_length,
+    is_object, is_value_cell, object_fields, packed, packed_high, packed_low, to_usize, with_flags,
 };
 use crate::value::{Ref, RefKind, Value};
 
@@ -143,6 +143,14 @@ pub(crate) enum ObjectClass {
     /// und eigenen internen Methoden für Schlüssel, die kanonische
     /// numerische Zeichenketten sind.
     TypedArray,
+    /// Eine WeakRef (Abschnitt 26.1.5) mit
+    /// [`WEAK_REF_FIELDS`](super::WEAK_REF_FIELDS) internen Feldern, sonst
+    /// gewöhnlich.
+    WeakRef,
+    /// Eine FinalizationRegistry (Abschnitt 26.2.4) mit
+    /// [`FINALIZATION_REGISTRY_FIELDS`](super::FINALIZATION_REGISTRY_FIELDS)
+    /// internen Feldern, sonst gewöhnlich.
+    FinalizationRegistry,
 }
 
 impl ObjectClass {
@@ -168,6 +176,8 @@ impl ObjectClass {
             ObjectClass::ArrayBuffer => KIND_ARRAY_BUFFER,
             ObjectClass::DataView => KIND_DATA_VIEW,
             ObjectClass::TypedArray => KIND_TYPED_ARRAY,
+            ObjectClass::WeakRef => KIND_WEAK_REF,
+            ObjectClass::FinalizationRegistry => KIND_FINALIZATION_REGISTRY,
         }
     }
 
@@ -193,6 +203,8 @@ impl ObjectClass {
             KIND_ARRAY_BUFFER => Some(ObjectClass::ArrayBuffer),
             KIND_DATA_VIEW => Some(ObjectClass::DataView),
             KIND_TYPED_ARRAY => Some(ObjectClass::TypedArray),
+            KIND_WEAK_REF => Some(ObjectClass::WeakRef),
+            KIND_FINALIZATION_REGISTRY => Some(ObjectClass::FinalizationRegistry),
             _ => None,
         }
     }
@@ -785,6 +797,43 @@ impl Heap {
         value: Value<'_>,
     ) -> bool {
         self.field_word(object, KIND_TYPED_ARRAY, index)
+            .is_some_and(|word| self.store(object.offset(), word, value.bits()))
+    }
+
+    /// Ein internes Feld einer WeakRef, `None` für andere Zellen.
+    pub(crate) fn weak_ref_field(&self, object: Ref<'_>, index: usize) -> Option<Value<'_>> {
+        let word = self.field_word(object, KIND_WEAK_REF, index)?;
+        self.word(object.offset(), word).map(Value::from_bits)
+    }
+
+    /// Schreibt ein internes Feld einer WeakRef. `false`, wenn es das Feld
+    /// nicht gibt.
+    pub(crate) fn set_weak_ref_field(
+        &self,
+        object: Ref<'_>,
+        index: usize,
+        value: Value<'_>,
+    ) -> bool {
+        self.field_word(object, KIND_WEAK_REF, index)
+            .is_some_and(|word| self.store(object.offset(), word, value.bits()))
+    }
+
+    /// Ein internes Feld einer FinalizationRegistry, `None` für andere
+    /// Zellen.
+    pub(crate) fn registry_field(&self, object: Ref<'_>, index: usize) -> Option<Value<'_>> {
+        let word = self.field_word(object, KIND_FINALIZATION_REGISTRY, index)?;
+        self.word(object.offset(), word).map(Value::from_bits)
+    }
+
+    /// Schreibt ein internes Feld einer FinalizationRegistry. `false`, wenn
+    /// es das Feld nicht gibt.
+    pub(crate) fn set_registry_field(
+        &self,
+        object: Ref<'_>,
+        index: usize,
+        value: Value<'_>,
+    ) -> bool {
+        self.field_word(object, KIND_FINALIZATION_REGISTRY, index)
             .is_some_and(|word| self.store(object.offset(), word, value.bits()))
     }
 }

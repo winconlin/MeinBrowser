@@ -12,6 +12,7 @@ mod execution;
 mod idl;
 mod regexp;
 mod runtime;
+mod weak;
 pub use arraybuffer::arraybuffer;
 pub use bigint::bigint;
 pub use date::date;
@@ -19,6 +20,7 @@ pub use execution::js_execute;
 pub use idl::webidl;
 pub use regexp::regexp;
 pub use runtime::js_runtime;
+pub use weak::weak;
 
 pub const MAX_INPUT: usize = 4096;
 pub const MAX_FONT_INPUT: usize = 65536;
@@ -511,7 +513,7 @@ mod tests {
     #[test]
     fn start_corpora_and_empty_inputs_exercise_all_harnesses() {
         type Harness = fn(&[u8]);
-        let targets: [(&str, Harness); 20] = [
+        let targets: [(&str, Harness); 21] = [
             ("html", html),
             ("css", css),
             ("url", url),
@@ -532,6 +534,7 @@ mod tests {
             ("bigint", bigint),
             ("date", date),
             ("arraybuffer", arraybuffer),
+            ("weak", weak),
         ];
         for (name, check) in targets {
             check(&[]);

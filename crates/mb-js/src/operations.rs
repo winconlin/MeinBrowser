@@ -57,6 +57,16 @@ fn array_status(heap: &Heap, value: Value<'_>) -> Option<bool> {
     }
 }
 
+/// CanBeHeldWeakly (Abschnitt 9.13): Objekte und Symbole, die nicht in der
+/// GlobalSymbolRegistry stehen.
+pub(crate) fn can_be_held_weakly(heap: &Heap, value: Value<'_>) -> bool {
+    match value.kind() {
+        Kind::Object(_) => true,
+        Kind::Symbol(symbol) => !heap.is_registered_symbol(symbol),
+        _ => false,
+    }
+}
+
 /// IsCallable (Abschnitt 7.2.3): ECMAScript-Funktionsobjekte, eingebaute
 /// und gebundene Funktionen und Proxys um eine aufrufbare Funktion.
 pub fn is_callable(heap: &Heap, value: Value<'_>) -> bool {
@@ -78,6 +88,8 @@ pub fn is_callable(heap: &Heap, value: Value<'_>) -> bool {
                 | ObjectClass::Collection
                 | ObjectClass::RegExp
                 | ObjectClass::Date
+                | ObjectClass::WeakRef
+                | ObjectClass::FinalizationRegistry
                 | ObjectClass::ArrayBuffer
                 | ObjectClass::DataView
                 | ObjectClass::TypedArray,

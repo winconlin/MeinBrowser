@@ -167,6 +167,265 @@ fn weak_fields_forget_unreachable_cells() {
 }
 
 #[test]
+fn ephemeron_values_live_only_with_their_keys() {
+    let mut heap = checked();
+    heap.scope(|heap, scope| {
+        let table = heap.alloc_ephemerons(scope, 3, 3).expect("Speicher");
+        let key = heap.alloc_slots(scope, 1).expect("Speicher");
+        heap.scope(|heap, scope| {
+            let kept = heap.alloc_slots(scope, 1).expect("Speicher");
+            let lost = heap.alloc_slots(scope, 1).expect("Speicher");
+            let lost_value = heap.alloc_slots(scope, 2).expect("Speicher");
+            let cells = cell(heap.get(table));
+            heap.set_field(cells, 0, heap.get(key));
+            heap.set_field(cells, 1, heap.get(kept));
+            heap.set_field(cells, 2, Value::int32(5));
+            heap.set_field(cells, 3, heap.get(lost));
+            heap.set_field(cells, 4, heap.get(lost_value));
+            heap.set_field(cells, 5, Value::int32(6));
+            // Ein Eintrag ohne Verweis als Schlüssel hält seine Felder.
+            heap.set_field(cells, 6, Value::HOLE);
+            heap.set_field(cells, 7, heap.get(key));
+        });
+        heap.collect();
+        let cells = cell(heap.get(table));
+        let key = cell(heap.get(key));
+        assert_eq!(
+            heap.field(cells, 0).map(Value::kind),
+            Some(Kind::Internal(key))
+        );
+        let kept = heap.field(cells, 1).map(Value::kind);
+        assert!(matches!(kept, Some(Kind::Internal(value)) if heap.field_count(value) == 1));
+        assert_eq!(heap.field(cells, 2).and_then(Value::as_int32), Some(5));
+        assert!(heap.field(cells, 3).is_some_and(Value::is_hole));
+        assert!(heap.field(cells, 4).is_some_and(Value::is_undefined));
+        assert_eq!(heap.field(cells, 5).and_then(Value::as_int32), Some(6));
+        assert!(heap.field(cells, 6).is_some_and(Value::is_hole));
+        assert_eq!(
+            heap.field(cells, 7).map(Value::kind),
+            Some(Kind::Internal(key))
+        );
+        // Die Zelle mit neun Feldern, der Schlüssel und der gehaltene Wert.
+        assert_eq!(heap.used_bytes(), 80 + 16 + 16);
+    });
+}
+
+#[test]
+fn ephemeron_chains_are_followed_in_any_order() {
+    const LENGTH: usize = 300;
+    let mut heap = checked();
+    heap.scope(|heap, scope| {
+        let table = heap
+            .alloc_ephemerons(scope, LENGTH + 2, 2)
+            .expect("Speicher");
+        let first = heap.alloc_slots(scope, 1).expect("Speicher");
+        heap.scope(|heap, scope| {
+            let mut keys = vec![first];
+            for _ in 1..LENGTH {
+                keys.push(heap.alloc_slots(scope, 1).expect("Speicher"));
+            }
+            // Zwei Schlüssel, die sich gegenseitig als Wert halten, aber
+            // sonst niemand.
+            let a = heap.alloc_slots(scope, 1).expect("Speicher");
+            let b = heap.alloc_slots(scope, 1).expect("Speicher");
+            // Jeder Schlüssel hält über seinen Wert den nächsten; die
+            // Einträge stehen rückwärts, der erste Schlüssel ganz hinten.
+            let cells = cell(heap.get(table));
+            for (record, pair) in keys.windows(2).rev().enumerate() {
+                heap.set_field(cells, record * 2, heap.get(pair[0]));
+                heap.set_field(cells, record * 2 + 1, heap.get(pair[1]));
+            }
+            let base = (LENGTH - 1) * 2;
+            heap.set_field(cells, base, heap.get(a));
+            heap.set_field(cells, base + 1, heap.get(b));
+            heap.set_field(cells, base + 2, heap.get(b));
+            heap.set_field(cells, base + 3, heap.get(a));
+            // Der letzte Wert hält den ersten Schlüssel; das ändert nichts.
+            let last = cell(heap.get(keys[LENGTH - 1]));
+            heap.set_field(last, 0, heap.get(first));
+        });
+        heap.collect();
+        let cells = cell(heap.get(table));
+        for record in 0..LENGTH - 1 {
+            assert!(
+                matches!(
+                    heap.field(cells, record * 2).map(Value::kind),
+                    Some(Kind::Internal(_))
+                ),
+                "Eintrag {record}"
+            );
+        }
+        let base = (LENGTH - 1) * 2;
+        for field in base..base + 4 {
+            assert!(!matches!(
+                heap.field(cells, field).map(Value::kind),
+                Some(Kind::Internal(_))
+            ));
+        }
+        // Die Zelle und alle Schlüssel der Kette, die beiden anderen nicht.
+        let table_bytes = 8 * (1 + (LENGTH + 2) * 2);
+        assert_eq!(heap.used_bytes(), table_bytes + LENGTH * 16);
+    });
+}
+
+#[test]
+fn a_value_that_holds_its_own_key_does_not_keep_it() {
+    let mut heap = checked();
+    heap.scope(|heap, scope| {
+        let table = heap.alloc_ephemerons(scope, 1, 2).expect("Speicher");
+        let weak = heap.alloc_cell(scope, CellKind::Weak, 1).expect("Speicher");
+        heap.scope(|heap, scope| {
+            let key = heap.alloc_slots(scope, 1).expect("Speicher");
+            let value = heap.alloc_slots(scope, 1).expect("Speicher");
+            heap.set_field(cell(heap.get(value)), 0, heap.get(key));
+            let cells = cell(heap.get(table));
+            heap.set_field(cells, 0, heap.get(key));
+            heap.set_field(cells, 1, heap.get(value));
+            // Eine schwache Zelle hält den Wert nicht.
+            heap.set_field(cell(heap.get(weak)), 0, heap.get(value));
+        });
+        heap.collect();
+        let cells = cell(heap.get(table));
+        assert!(heap.field(cells, 0).is_some_and(Value::is_hole));
+        assert!(heap.field(cells, 1).is_some_and(Value::is_undefined));
+        assert!(
+            heap.field(cell(heap.get(weak)), 0)
+                .is_some_and(Value::is_undefined)
+        );
+        assert_eq!(heap.used_bytes(), 24 + 16);
+    });
+}
+
+#[test]
+fn ephemeron_values_keep_what_weak_cells_name() {
+    let mut heap = checked();
+    heap.scope(|heap, scope| {
+        let table = heap.alloc_ephemerons(scope, 1, 2).expect("Speicher");
+        let weak = heap.alloc_cell(scope, CellKind::Weak, 1).expect("Speicher");
+        let key = heap.alloc_slots(scope, 1).expect("Speicher");
+        heap.scope(|heap, scope| {
+            let value = heap.alloc_slots(scope, 1).expect("Speicher");
+            let cells = cell(heap.get(table));
+            heap.set_field(cells, 0, heap.get(key));
+            heap.set_field(cells, 1, heap.get(value));
+            heap.set_field(cell(heap.get(weak)), 0, heap.get(value));
+        });
+        heap.collect();
+        let value = heap.field(cell(heap.get(table)), 1).map(Value::kind);
+        assert!(matches!(value, Some(Kind::Internal(_))));
+        assert_eq!(heap.field(cell(heap.get(weak)), 0).map(Value::kind), value);
+    });
+}
+
+#[test]
+fn emptied_finalizer_cells_report_their_registry() {
+    let mut heap = checked();
+    heap.scope(|heap, scope| {
+        let registry = heap.alloc_slots(scope, 1).expect("Speicher");
+        let cells = heap.alloc_finalizer_cell(scope, 3).expect("Speicher");
+        let token = heap.alloc_slots(scope, 1).expect("Speicher");
+        let target = heap.alloc_slots(scope, 1).expect("Speicher");
+        {
+            let weak = cell(heap.get(cells));
+            heap.set_field(weak, 0, heap.get(registry));
+            heap.set_field(weak, 1, heap.get(target));
+            heap.set_field(weak, 2, heap.get(token));
+        }
+        // Solange das Ziel lebt, gibt es nichts aufzuräumen.
+        heap.collect();
+        assert!(heap.pop_cleanup(scope).is_none());
+        heap.set(target, Value::UNDEFINED);
+        heap.collect();
+        let weak = cell(heap.get(cells));
+        assert!(heap.field(weak, 1).is_some_and(Value::is_undefined));
+        assert_eq!(
+            heap.field(weak, 2).map(Value::kind),
+            Some(Kind::Internal(cell(heap.get(token))))
+        );
+        let pending = heap.pop_cleanup(scope).expect("Aufräum-Job");
+        assert_eq!(
+            heap.get(pending).kind(),
+            Kind::Internal(cell(heap.get(registry)))
+        );
+        assert!(heap.pop_cleanup(scope).is_none());
+        // Ein leeres Feld leert das Sammeln nicht noch einmal.
+        heap.collect();
+        assert!(heap.pop_cleanup(scope).is_none());
+    });
+}
+
+#[test]
+fn pending_registries_stay_alive_until_they_are_taken() {
+    let mut heap = checked();
+    heap.scope(|heap, scope| {
+        let cells = heap.alloc_finalizer_cell(scope, 2).expect("Speicher");
+        heap.scope(|heap, scope| {
+            let registry = heap.alloc_slots(scope, 3).expect("Speicher");
+            let target = heap.alloc_slots(scope, 1).expect("Speicher");
+            let weak = cell(heap.get(cells));
+            heap.set_field(weak, 0, heap.get(registry));
+            heap.set_field(weak, 1, heap.get(target));
+            // Ohne die Registry kein Aufräum-Job: Hier lebt sie, weil der
+            // Bereich sie bei der Sammlung hält.
+            heap.set(target, Value::UNDEFINED);
+            heap.collect();
+        });
+        // Jetzt hält nur die Liste der Aufräum-Jobs die Registry.
+        heap.collect();
+        heap.collect();
+        let pending = heap.pop_cleanup(scope).expect("Aufräum-Job");
+        assert!(matches!(heap.get(pending).kind(), Kind::Internal(registry) if heap.field_count(registry) == 3));
+    });
+    heap.collect();
+    assert_eq!(heap.used_bytes(), 0);
+    heap.scope(|heap, scope| {
+        let cells = heap.alloc_finalizer_cell(scope, 2).expect("Speicher");
+        heap.scope(|heap, scope| {
+            let registry = heap.alloc_slots(scope, 3).expect("Speicher");
+            let target = heap.alloc_slots(scope, 1).expect("Speicher");
+            let weak = cell(heap.get(cells));
+            heap.set_field(weak, 0, heap.get(registry));
+            heap.set_field(weak, 1, heap.get(target));
+        });
+        // Registry und Ziel sterben zusammen: kein Aufräum-Job.
+        heap.collect();
+        assert!(heap.pop_cleanup(scope).is_none());
+    });
+}
+
+#[test]
+fn kept_objects_live_until_they_are_cleared() {
+    let mut heap = checked();
+    heap.scope(|heap, scope| {
+        let weak = heap.alloc_cell(scope, CellKind::Weak, 1).expect("Speicher");
+        heap.scope(|heap, scope| {
+            let target = heap.alloc_slots(scope, 1).expect("Speicher");
+            heap.set_field(cell(heap.get(weak)), 0, heap.get(target));
+            heap.add_to_kept_objects(target);
+            heap.add_to_kept_objects(target);
+        });
+        heap.collect();
+        heap.collect();
+        let kept = heap
+            .field(cell(heap.get(weak)), 0)
+            .unwrap_or(Value::UNDEFINED);
+        assert!(matches!(kept.kind(), Kind::Internal(_)));
+        // Nach dem Verschieben kommt dieselbe Zelle nicht noch einmal dazu.
+        let kept = heap.local(scope, kept);
+        heap.add_to_kept_objects(kept);
+        assert_eq!(heap.kept.len(), 1);
+        heap.set(kept, Value::UNDEFINED);
+        heap.clear_kept_objects();
+        heap.collect();
+        assert!(
+            heap.field(cell(heap.get(weak)), 0)
+                .is_some_and(Value::is_undefined)
+        );
+        assert_eq!(heap.used_bytes(), 16);
+    });
+}
+
+#[test]
 fn handles_belong_to_the_scope_they_were_made_for() {
     let mut heap = checked();
     heap.scope(|heap, outer| {
