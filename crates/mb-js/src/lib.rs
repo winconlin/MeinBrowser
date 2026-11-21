@@ -8,6 +8,7 @@ mod async_function;
 mod async_generator;
 pub mod bigint;
 mod bound_function;
+mod buffer;
 pub mod builtin;
 mod builtins;
 pub mod bytecode;

@@ -169,3 +169,10 @@ path = "fuzz_targets/date.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "arraybuffer"
+path = "fuzz_targets/arraybuffer.rs"
+test = false
+doc = false
+bench = false

@@ -410,3 +410,98 @@ fn persistent_handles_can_be_replaced() {
     assert_eq!(heap.string_units(text), units("zwei"));
     heap.release(handle);
 }
+
+#[test]
+fn byte_cells_read_write_and_survive_collection() {
+    let mut heap = checked();
+    heap.scope(|heap, scope| {
+        let empty = heap.alloc_bytes(scope, 0).expect("Speicher");
+        let bytes = heap.alloc_bytes(scope, 21).expect("Speicher");
+        // Groß genug für eine eigene Seite.
+        let large = heap.alloc_bytes(scope, 300_000).expect("Speicher");
+        assert_eq!(heap.byte_len(cell(heap.get(empty))), Some(0));
+        let block = cell(heap.get(bytes));
+        assert_eq!(heap.byte_len(block), Some(21));
+        let mut out = [0xAA; 21];
+        assert!(heap.read_bytes(block, 0, &mut out));
+        assert_eq!(out, [0; 21]);
+        let data: Vec<u8> = (1..=13).collect();
+        assert!(heap.write_bytes(block, 5, &data));
+        // Nichts außerhalb der Zelle.
+        assert!(!heap.write_bytes(block, 9, &data));
+        assert!(!heap.read_bytes(block, 20, &mut [0; 2]));
+        assert!(heap.read_bytes(block, 21, &mut []));
+        assert!(heap.write_bytes(cell(heap.get(large)), 299_999, &[7]));
+        heap.collect();
+        let block = cell(heap.get(bytes));
+        assert!(heap.read_bytes(block, 0, &mut out));
+        let mut expected = [0u8; 21];
+        expected[5..18].copy_from_slice(&data);
+        assert_eq!(out, expected);
+        let mut last = [0];
+        assert!(heap.read_bytes(cell(heap.get(large)), 299_999, &mut last));
+        assert_eq!(last, [7]);
+        // Kein Verweis: ein Wort aus Bytes, das wie ein Verweis aussieht,
+        // bleibt beim Sammeln unverändert.
+        let pattern = Value::reference(RefKind::Object, 8).bits().to_le_bytes();
+        assert!(heap.write_bytes(block, 8, &pattern));
+        heap.collect();
+        let block = cell(heap.get(bytes));
+        let mut word = [0; 8];
+        assert!(heap.read_bytes(block, 8, &mut word));
+        assert_eq!(word, pattern);
+    });
+}
+
+#[test]
+fn byte_copies_overlap_like_memmove() {
+    let mut heap = checked();
+    heap.scope(|heap, scope| {
+        // Mehr als ein Stück des Zwischenpuffers.
+        let len = 10_000;
+        let data: Vec<u8> = (0..len).map(|index| (index % 251) as u8).collect();
+        for (from, to, count) in [
+            (0, 3, 9_000),
+            (3, 0, 9_000),
+            (100, 5_000, 4_100),
+            (5, 5, 50),
+        ] {
+            let bytes = heap.alloc_bytes(scope, len).expect("Speicher");
+            let block = cell(heap.get(bytes));
+            assert!(heap.write_bytes(block, 0, &data));
+            assert!(heap.copy_bytes(block, to, block, from, count));
+            let mut expected = data.clone();
+            expected.copy_within(from..from + count, to);
+            let mut out = vec![0; len];
+            assert!(heap.read_bytes(block, 0, &mut out));
+            assert_eq!(out, expected, "{from} → {to}");
+        }
+        let small = heap.alloc_bytes(scope, 4).expect("Speicher");
+        let other = heap.alloc_bytes(scope, 8).expect("Speicher");
+        let (small, other) = (cell(heap.get(small)), cell(heap.get(other)));
+        assert!(heap.write_bytes(other, 0, &[1, 2, 3, 4, 5, 6, 7, 8]));
+        assert!(heap.copy_bytes(small, 1, other, 4, 3));
+        assert!(!heap.copy_bytes(small, 2, other, 0, 3));
+        assert!(!heap.copy_bytes(small, 0, other, 6, 3));
+        let mut out = [0; 4];
+        assert!(heap.read_bytes(small, 0, &mut out));
+        assert_eq!(out, [0, 5, 6, 7]);
+    });
+}
+
+#[test]
+fn byte_cells_count_against_the_limit() {
+    let mut heap = Heap::with_options(Options {
+        limit: MIN_TRIGGER,
+        ..Options::default()
+    });
+    assert!(heap.bytes_fit(1 << 20));
+    assert!(!heap.bytes_fit(u64::try_from(MIN_TRIGGER).expect("Größe")));
+    assert!(!heap.bytes_fit(u64::MAX));
+    heap.scope(|heap, scope| {
+        let first = heap.alloc_bytes(scope, 3 << 20).expect("Speicher");
+        assert!(heap.alloc_bytes(scope, 2 << 20).is_err());
+        heap.set(first, Value::UNDEFINED);
+        assert!(heap.alloc_bytes(scope, 2 << 20).is_ok());
+    });
+}

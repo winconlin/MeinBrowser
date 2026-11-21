@@ -1,6 +1,6 @@
 //! Der Host für Test262 mit den Funktionen aus INTERPRETING.md
 //! („Host-Defined Functions“): `print` und `$262` mit `createRealm`,
-//! `evalScript`, `gc` und `global`. Es fehlen `detachArrayBuffer`,
+//! `detachArrayBuffer`, `evalScript`, `gc` und `global`. Es fehlen
 //! `IsHTMLDDA`, `agent` und `AbstractModuleSource`, denn die Engine hat die
 //! Teile dafür noch nicht.
 //!
@@ -8,13 +8,16 @@
 //! `$262` haben dieselben Attribute wie `print` und `$262` selbst
 //! (beschreibbar, konfigurierbar, nicht aufzählbar). `evalScript` und
 //! `print` wandeln ihr erstes Argument mit ToString. `length` ist die Zahl
-//! der Argumente, die die Funktion liest.
+//! der Argumente, die die Funktion liest. `detachArrayBuffer` wirft für
+//! etwas anderes als einen ArrayBuffer einen TypeError, wo die abstrakte
+//! Operation nur zusichert, und gibt sonst *undefined* zurück.
 
 use std::any::Any;
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::agent::{Abrupt, Agent, Completion, ErrorKind};
+use crate::buffer;
 use crate::builtin::{Builtin, BuiltinCall, define_builtin_function};
 use crate::conversion::to_string;
 use crate::descriptor::PropertyDescriptor;
@@ -46,12 +49,18 @@ static PRINT: Builtin = Builtin {
     behaviour: print,
 };
 
-static FUNCTIONS: [Builtin; 3] = [
+static FUNCTIONS: [Builtin; 4] = [
     Builtin {
         name: "createRealm",
         length: 0,
         constructor: false,
         behaviour: create_realm,
+    },
+    Builtin {
+        name: "detachArrayBuffer",
+        length: 1,
+        constructor: false,
+        behaviour: detach_array_buffer,
     },
     Builtin {
         name: "evalScript",
@@ -165,6 +174,21 @@ fn eval_script<'s>(
         Err(ScriptError::Unsupported(position)) => Err(Abrupt::Unsupported(position)),
         Err(ScriptError::Abrupt(abrupt)) => Err(abrupt),
     }
+}
+
+/// `$262.detachArrayBuffer(buffer)`: DetachArrayBuffer (Abschnitt
+/// 25.1.3.5) ohne Schlüssel.
+fn detach_array_buffer<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    arguments: &BuiltinCall<'_, '_>,
+) -> Completion<Local<'s>> {
+    let value = arguments.argument(agent, scope, 0);
+    if !buffer::is_array_buffer(agent, value) {
+        return Err(agent.throw_error(ErrorKind::TypeError));
+    }
+    buffer::detach_array_buffer(agent, value);
+    Ok(agent.heap().local(scope, Value::UNDEFINED))
 }
 
 /// `$262.gc()`: eine Sammlung des Heaps.

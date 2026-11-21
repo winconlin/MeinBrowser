@@ -12,10 +12,12 @@
 //! sowie %Map% und %Set% mit ihren Prototypen und Iteratoren (Welle 8e),
 //! %Reflect% und %Proxy% (Welle 8f), %String% mit %String.prototype% und
 //! %RegExp% mit %RegExp.prototype% und %RegExpStringIteratorPrototype%
-//! (Welle 8g), %BigInt% mit %BigInt.prototype% (Welle 8h) und %Date% mit
-//! %Date.prototype% (Welle 8i); %Function% selbst wartet auf `eval`. Dazu
-//! kommen, was `for`-`of` und die Ausbreitung brauchen: die Iteratoren für Arrays und Zeichenketten
-//! mit den Methoden für @@iterator. Generatoren und async-Generatoren bringen ihre Prototypen
+//! (Welle 8g), %BigInt% mit %BigInt.prototype% (Welle 8h), %Date% mit
+//! %Date.prototype% (Welle 8i) und %ArrayBuffer% und %DataView% mit ihren
+//! Prototypen (Welle 8j, Teil 1); %Function% selbst wartet auf `eval`.
+//! Dazu kommen, was `for`-`of` und die Ausbreitung brauchen: die
+//! Iteratoren für Arrays und Zeichenketten mit den Methoden für
+//! @@iterator. Generatoren und async-Generatoren bringen ihre Prototypen
 //! mit `next`, `return` und `throw` mit, async-Funktionen ihren Prototyp,
 //! und `for await` braucht %AsyncIteratorPrototype% und
 //! %AsyncFromSyncIteratorPrototype%. %Promise% ist vollständig, mit
@@ -28,12 +30,14 @@
 #![forbid(unsafe_code)]
 
 mod array;
+mod array_buffer;
 mod async_function;
 mod async_generator;
 mod async_iterator;
 mod bigint;
 mod boolean;
 mod collection;
+mod data_view;
 mod date;
 mod error;
 mod function;
@@ -100,6 +104,8 @@ pub(crate) fn create_intrinsics(
     json::create(agent, scope, realm)?;
     map::create(agent, scope, realm)?;
     set::create(agent, scope, realm)?;
+    array_buffer::create(agent, scope, realm)?;
+    data_view::create(agent, scope, realm)?;
     reflect::create(agent, scope, realm)?;
     proxy::create(agent, scope, realm)?;
     promise::create(agent, scope, realm)

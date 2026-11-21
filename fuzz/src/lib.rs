@@ -5,12 +5,14 @@
 
 use std::hint::black_box;
 
+mod arraybuffer;
 mod bigint;
 mod date;
 mod execution;
 mod idl;
 mod regexp;
 mod runtime;
+pub use arraybuffer::arraybuffer;
 pub use bigint::bigint;
 pub use date::date;
 pub use execution::js_execute;
@@ -509,7 +511,7 @@ mod tests {
     #[test]
     fn start_corpora_and_empty_inputs_exercise_all_harnesses() {
         type Harness = fn(&[u8]);
-        let targets: [(&str, Harness); 19] = [
+        let targets: [(&str, Harness); 20] = [
             ("html", html),
             ("css", css),
             ("url", url),
@@ -529,6 +531,7 @@ mod tests {
             ("regexp", regexp),
             ("bigint", bigint),
             ("date", date),
+            ("arraybuffer", arraybuffer),
         ];
         for (name, check) in targets {
             check(&[]);
