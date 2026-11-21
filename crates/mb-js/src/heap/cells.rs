@@ -7,9 +7,10 @@ use super::{
     KIND_ASYNC_GENERATOR, KIND_BOUND_FUNCTION, KIND_BUILTIN, KIND_COLLECTION, KIND_DATA_VIEW,
     KIND_DATE, KIND_ERROR, KIND_FINALIZATION_REGISTRY, KIND_FUNCTION, KIND_GENERATOR,
     KIND_ITERATOR, KIND_OBJECT, KIND_PRIMITIVE, KIND_PROMISE, KIND_PROXY, KIND_REGEXP, KIND_SHAPE,
-    KIND_SLOTS, KIND_SPARSE, KIND_SYMBOL, KIND_TYPED_ARRAY, KIND_WEAK, KIND_WEAK_REF, Local, NONE,
-    OBJECT_REFS, OutOfMemory, Scope, cell_words, header, header_flags, header_kind, header_length,
-    is_object, is_value_cell, object_fields, packed, packed_high, packed_low, to_usize, with_flags,
+    KIND_SHARED_ARRAY_BUFFER, KIND_SLOTS, KIND_SPARSE, KIND_SYMBOL, KIND_TYPED_ARRAY, KIND_WEAK,
+    KIND_WEAK_REF, Local, NONE, OBJECT_REFS, OutOfMemory, Scope, cell_words, header, header_flags,
+    header_kind, header_length, is_object, is_value_cell, object_fields, packed, packed_high,
+    packed_low, to_usize, with_flags,
 };
 use crate::value::{Ref, RefKind, Value};
 
@@ -151,6 +152,9 @@ pub(crate) enum ObjectClass {
     /// [`FINALIZATION_REGISTRY_FIELDS`](super::FINALIZATION_REGISTRY_FIELDS)
     /// internen Feldern, sonst gewöhnlich.
     FinalizationRegistry,
+    /// Ein SharedArrayBuffer (Abschnitt 25.2) mit denselben internen
+    /// Feldern wie ein ArrayBuffer, sonst gewöhnlich.
+    SharedArrayBuffer,
 }
 
 impl ObjectClass {
@@ -178,6 +182,7 @@ impl ObjectClass {
             ObjectClass::TypedArray => KIND_TYPED_ARRAY,
             ObjectClass::WeakRef => KIND_WEAK_REF,
             ObjectClass::FinalizationRegistry => KIND_FINALIZATION_REGISTRY,
+            ObjectClass::SharedArrayBuffer => KIND_SHARED_ARRAY_BUFFER,
         }
     }
 
@@ -205,6 +210,7 @@ impl ObjectClass {
             KIND_TYPED_ARRAY => Some(ObjectClass::TypedArray),
             KIND_WEAK_REF => Some(ObjectClass::WeakRef),
             KIND_FINALIZATION_REGISTRY => Some(ObjectClass::FinalizationRegistry),
+            KIND_SHARED_ARRAY_BUFFER => Some(ObjectClass::SharedArrayBuffer),
             _ => None,
         }
     }
@@ -746,22 +752,28 @@ impl Heap {
             .is_some_and(|word| self.store(object.offset(), word, Value::number(value).bits()))
     }
 
-    /// Ein internes Feld eines ArrayBuffer, `None` für andere Zellen.
+    /// Ein internes Feld eines ArrayBuffer oder SharedArrayBuffer, `None`
+    /// für andere Zellen.
     pub(crate) fn array_buffer_field(&self, object: Ref<'_>, index: usize) -> Option<Value<'_>> {
-        let word = self.field_word(object, KIND_ARRAY_BUFFER, index)?;
+        let word = self.buffer_field_word(object, index)?;
         self.word(object.offset(), word).map(Value::from_bits)
     }
 
-    /// Schreibt ein internes Feld eines ArrayBuffer. `false`, wenn es das
-    /// Feld nicht gibt.
+    /// Schreibt ein internes Feld eines ArrayBuffer oder SharedArrayBuffer.
+    /// `false`, wenn es das Feld nicht gibt.
     pub(crate) fn set_array_buffer_field(
         &self,
         object: Ref<'_>,
         index: usize,
         value: Value<'_>,
     ) -> bool {
-        self.field_word(object, KIND_ARRAY_BUFFER, index)
+        self.buffer_field_word(object, index)
             .is_some_and(|word| self.store(object.offset(), word, value.bits()))
+    }
+
+    fn buffer_field_word(&self, object: Ref<'_>, index: usize) -> Option<usize> {
+        self.field_word(object, KIND_ARRAY_BUFFER, index)
+            .or_else(|| self.field_word(object, KIND_SHARED_ARRAY_BUFFER, index))
     }
 
     /// Ein internes Feld eines DataView, `None` für andere Zellen.

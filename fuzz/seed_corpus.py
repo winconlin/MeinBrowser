@@ -417,6 +417,25 @@ def main():
     weak("sets-and-errors", [(4, 0, 0, 0), (7, 0, 0, 0), (9, 0, 0, 0), (10, 0, 0, 0), (0, 0, 0, 0), (9, 0, 0, 8),
                              (6, 0, 0, 0), (6, 0, 0, 0), (1, 1, 0, 0), (6, 1, 0, 0), (6, 0, 0, 1), (5, 0, 0, 0),
                              (4, 1, 0, 9), (5, 1, 0, 1), (7, 1, 3, 0), (2, 1, 0, 0), (11, 0, 0, 0), (8, 2, 3, 0)])
+    def atomics(name, header, steps):
+        # Lengths, extra maximum and growth, then twelve bytes per step: the operation (modulo 13),
+        # the element type with switches, an index, switches for the value and eight value bytes,
+        # low first (src/atomics.rs).
+        data = bytes(header)
+        for op, kind, position, flags, value in steps:
+            data += bytes([op, kind, position, flags]) + struct.pack("<q", value)
+        write("atomics", name, data)
+    atomics("read-modify-write", (3, 2, 1), [(op, 4, 1, 0, 5 + op) for op in range(9)]
+            + [(0, 6, 1, 1, -5), (0, 6, 1, 0, -5), (0, 0x80, 0, 0, 1), (0, 4, 11, 0, 1), (7, 4, 0x82, 0, 0)])
+    atomics("every-type", (4, 0, 0), [(index % 9, index // 6, 3, (0, 2, 4, 6, 0x11, 0xF0)[index % 6],
+                                       -0x123456789ABCDEF1) for index in range(48)])
+    atomics("grow-and-slice", (1, 4, 1), [(9, 0, 20, 0, 0), (8, 1, 19, 0, 7), (9, 0, 12, 0, 0), (9, 0x40, 30, 0, 0),
+                                          (12, 0, 4, 0, 30), (12, 0, 0x2f, 8, 0), (12, 0x40, 4, 8, 0),
+                                          (9, 0, 40, 0, 0), (0, 6, 4, 1, 1 << 62)])
+    atomics("wait-and-notify", (2, 0, 0), [(10, 4 | 0x10, 2, 8, 0), (10, 6 | 0x20, 1, 8, 0), (10, 4, 2, 8, 0),
+                                           (10, 4 | 0x30, 2, 8, 0), (10, 4 | 0x10, 3, 0, 1), (10, 0x44, 0, 8, 0),
+                                           (11, 4, 2, 0x10, 0), (11, 6, 1, 8, 0), (11, 0x44, 2, 8, 0),
+                                           (11, 2, 0, 8, 0), (10, 4 | 0x10, 0x87, 8, 0), (11, 4, 0x85, 0x40, 0)])
     part = b"\x1f\x1f"  # PART_SEPARATOR in src/lib.rs
     write("page", "document", "<!doctype html><style>@media (max-width: 400px) { p { margin: 0 } }"
           " p { border: 2px dashed red; padding: 4px; font-style: italic }"

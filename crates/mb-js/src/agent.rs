@@ -16,7 +16,10 @@
 //! warten, jeder mit den Promise-Jobs, die er anstößt, als eigene Folge von
 //! Ausführungen; vorher und nach den Promise-Jobs leert ClearKeptObjects
 //! (Abschnitt 9.10) die Liste [[KeptAlive]], denn dann ist eine solche
-//! Folge zu Ende, wie in HTML nach den Microtasks.
+//! Folge zu Ende, wie in HTML nach den Microtasks. Danach kommen die
+//! Aufgaben, die Warter von `Atomics.waitAsync` wecken (siehe
+//! `crate::waiting`), eine nach der anderen, jede wieder mit ihren
+//! Promise-Jobs.
 //!
 //! Atome sind die Zeichenketten, die als Eigenschaftsschlüssel dienen. Zu
 //! jedem Inhalt gibt es höchstens eines, also vergleicht man Schlüssel über
@@ -192,6 +195,8 @@ pub struct Agent {
     collection_hasher: RandomState,
     /// Die übersetzten Programme der regulären Ausdrücke.
     pub(crate) regexps: crate::regexp::cache::Programs,
+    /// [[CanBlock]] und die Warter von `Atomics.waitAsync`.
+    pub(crate) waiting: crate::waiting::Waiting,
 }
 
 impl Agent {
@@ -224,6 +229,7 @@ impl Agent {
             jobs: VecDeque::new(),
             collection_hasher: RandomState::new(),
             regexps: crate::regexp::cache::Programs::default(),
+            waiting: crate::waiting::Waiting::default(),
         };
         agent.scope(|agent, scope| -> Result<(), OutOfMemory> {
             for symbol in WellKnownSymbol::ALL {
@@ -422,9 +428,12 @@ impl Agent {
         self.jobs.push_back(Job { cell, realm });
     }
 
-    /// Ob Jobs warten, auch Aufräum-Jobs von FinalizationRegistries.
+    /// Ob Jobs warten, auch Aufräum-Jobs von FinalizationRegistries und
+    /// Aufgaben für geweckte Warter von `Atomics.waitAsync`. Zeitgeber, die
+    /// noch nicht abgelaufen sind, zählen nicht; siehe
+    /// [`Agent::next_timer`].
     pub fn has_pending_jobs(&self) -> bool {
-        !self.jobs.is_empty() || self.heap.has_pending_cleanup()
+        !self.jobs.is_empty() || self.heap.has_pending_cleanup() || self.has_pending_tasks()
     }
 
     /// ClearKeptObjects (Abschnitt 9.10): Eine Folge von Ausführungen ist zu
@@ -439,7 +448,9 @@ impl Agent {
     /// Führt die wartenden Jobs aus, auch die, die dabei dazukommen, bis
     /// keine mehr warten: erst alle Promise-Jobs, dann ClearKeptObjects,
     /// dann einen Aufräum-Job, dann wieder die Promise-Jobs, die er
-    /// angestoßen hat, und so fort. Jeder Job kostet einen Arbeitsschritt;
+    /// angestoßen hat, und so fort; erst wenn kein Aufräum-Job mehr wartet,
+    /// eine Aufgabe für einen geweckten oder abgelaufenen Warter von
+    /// `Atomics.waitAsync`. Jeder Job kostet einen Arbeitsschritt;
     /// ohne Quote des Hosts teilen sich alle die Standardquote eines
     /// äußersten Aufrufs. Endet ein Job abrupt, kommt das zurück, und die
     /// übrigen warten weiter; bei [`Abrupt::Throw`] hält der Agent die
@@ -471,6 +482,9 @@ impl Agent {
                 }
                 agent.heap.clear_kept_objects();
                 if !agent.heap.has_pending_cleanup() {
+                    if agent.run_next_task()? {
+                        continue;
+                    }
                     return Ok(());
                 }
                 agent.spend_execution_steps(1)?;

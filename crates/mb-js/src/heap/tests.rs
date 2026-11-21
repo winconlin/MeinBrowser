@@ -764,3 +764,80 @@ fn byte_cells_count_against_the_limit() {
         assert!(heap.alloc_bytes(scope, 2 << 20).is_ok());
     });
 }
+
+#[test]
+fn shared_blocks_live_while_a_cell_names_them() {
+    let mut heap = checked();
+    let block = heap.scope(|heap, scope| {
+        let first = heap.alloc_shared(scope, 100, None).expect("Speicher");
+        let second = heap.alloc_shared(scope, 10, Some(1000)).expect("Speicher");
+        assert_eq!(heap.external_bytes(), 1100);
+        let block = std::sync::Arc::clone(heap.shared_block(cell(heap.get(first))).expect("Block"));
+        assert_eq!((block.len(), block.capacity()), (100, 100));
+        assert!(block.write(99, &[7]));
+        heap.set(second, Value::UNDEFINED);
+        heap.collect();
+        // Die Zelle ist verschoben und nennt noch denselben Block.
+        assert_eq!(heap.external_bytes(), 100);
+        let moved = heap.shared_block(cell(heap.get(first))).expect("Block");
+        assert!(std::sync::Arc::ptr_eq(moved, &block));
+        // Nur Zellen für geteilte Blöcke haben einen.
+        let bytes = heap.alloc_bytes(scope, 8).expect("Speicher");
+        assert!(heap.shared_block(cell(heap.get(bytes))).is_none());
+        block
+    });
+    heap.collect();
+    assert_eq!(heap.external_bytes(), 0);
+    // Wer den Block sonst hält, behält ihn, etwa ein anderer Agent.
+    let mut out = [0];
+    assert!(block.read(99, &mut out));
+    assert_eq!(out, [7]);
+    heap.scope(|heap, scope| {
+        let adopted = heap
+            .adopt_shared(scope, std::sync::Arc::clone(&block))
+            .expect("Speicher");
+        assert_eq!(heap.external_bytes(), 100);
+        heap.collect();
+        let moved = heap.shared_block(cell(heap.get(adopted))).expect("Block");
+        assert!(std::sync::Arc::ptr_eq(moved, &block));
+    });
+    heap.collect();
+    assert_eq!(heap.external_bytes(), 0);
+}
+
+#[test]
+fn shared_blocks_survive_stress_collections() {
+    let mut heap = Heap::with_options(Options {
+        stress: true,
+        verify: true,
+        ..Options::default()
+    });
+    heap.scope(|heap, scope| {
+        let cells: Vec<_> = (0..20)
+            .map(|index| heap.alloc_shared(scope, index, Some(32)).expect("Speicher"))
+            .collect();
+        heap.alloc_slots(scope, 4).expect("Speicher");
+        for (index, local) in cells.iter().enumerate() {
+            let block = heap.shared_block(cell(heap.get(*local))).expect("Block");
+            assert_eq!(block.len(), index);
+        }
+        assert_eq!(heap.external_bytes(), 20 * 32);
+    });
+}
+
+#[test]
+fn shared_blocks_count_against_the_limit() {
+    let mut heap = Heap::with_options(Options {
+        limit: MIN_TRIGGER,
+        ..Options::default()
+    });
+    heap.scope(|heap, scope| {
+        let first = heap.alloc_shared(scope, 3 << 20, None).expect("Speicher");
+        assert!(heap.alloc_shared(scope, 2 << 20, None).is_err());
+        assert!(heap.alloc_bytes(scope, 2 << 20).is_err());
+        // Ein wachsender Block zählt mit seinem Maximum.
+        assert!(heap.alloc_shared(scope, 0, Some(2 << 20)).is_err());
+        heap.set(first, Value::UNDEFINED);
+        assert!(heap.alloc_shared(scope, 2 << 20, None).is_ok());
+    });
+}

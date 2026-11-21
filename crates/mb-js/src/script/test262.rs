@@ -7,6 +7,7 @@
 
 use std::collections::BTreeSet;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use crate::agent::{Abrupt, Agent, Budget, ErrorKind, Exception};
 use crate::compare::same_value;
@@ -29,6 +30,9 @@ use metadata::{Metadata, Mode, Negative};
 
 const STEPS: u64 = 100_000;
 const HEAP_BYTES: usize = 8 << 20;
+/// So lange wartet der Läufer nach einem Script höchstens auf Zeitgeber
+/// von `Atomics.waitAsync`.
+const TIMER_WAIT: Duration = Duration::from_secs(1);
 const SELECTION: &str = include_str!("test262/runtime.txt");
 
 /// Ergebnisse bleiben ohne JavaScript-Aufrufe beobachtbar. Insbesondere
@@ -125,13 +129,14 @@ fn thrown(agent: &mut Agent, scope: &Scope) -> Outcome {
 }
 
 /// Ein Script und danach alle Jobs, die es und die Jobs selbst anstoßen,
-/// mit derselben Quote. Wirft ein Job, zählt das wie eine Ausnahme des
-/// Scripts.
+/// mit derselben Quote, auch die der Zeitgeber von `Atomics.waitAsync`,
+/// die in [`TIMER_WAIT`] ablaufen. Wirft ein Job, zählt das wie eine
+/// Ausnahme des Scripts.
 fn evaluate(agent: &mut Agent, realm: RealmId, source: &str, budget: &Rc<Budget>) -> Outcome {
     let source: Vec<u16> = source.encode_utf16().collect();
     let outcome = agent.scope(|agent, scope| {
         match agent.evaluate_script_within(scope, realm, &source, Rc::clone(budget)) {
-            Ok(_) => match agent.with_execution_budget(Rc::clone(budget), Agent::run_jobs) {
+            Ok(_) => match run_jobs_and_timers(agent, budget) {
                 Ok(()) => Outcome::Normal,
                 Err(Abrupt::Throw) => thrown(agent, scope),
                 Err(Abrupt::Unsupported(_)) => Outcome::Unsupported,
@@ -151,12 +156,28 @@ fn evaluate(agent: &mut Agent, realm: RealmId, source: &str, budget: &Rc<Budget>
     outcome
 }
 
+/// Lässt die Jobs laufen und wartet danach auf den nächsten Zeitgeber, bis
+/// keiner mehr wartet oder der nächste erst nach [`TIMER_WAIT`] abliefe.
+fn run_jobs_and_timers(agent: &mut Agent, budget: &Rc<Budget>) -> Result<(), Abrupt> {
+    let end = Instant::now().checked_add(TIMER_WAIT);
+    loop {
+        agent.with_execution_budget(Rc::clone(budget), Agent::run_jobs)?;
+        match (agent.next_timer(), end) {
+            (Some(next), Some(end)) if next <= end => {
+                std::thread::sleep(next.saturating_duration_since(Instant::now()));
+            }
+            _ => return Ok(()),
+        }
+    }
+}
+
 /// Das Ergebnis eines Tests mit `async`, der normal endete, nach den
 /// Ausgaben von `print` (INTERPRETING.md, Flag `async`): Er besteht, wenn er
 /// `Test262:AsyncTestComplete` ausgab und nie etwas mit
 /// `Test262:AsyncTestFailure:` am Anfang. Ohne beides ist er nicht fertig
-/// geworden; länger zu warten hilft nicht, denn die Warteschlange ist leer
-/// und Zeitgeber gibt es nicht.
+/// geworden; länger zu warten hilft nicht, denn die Warteschlange ist leer,
+/// und Zeitgeber gibt es nur für `Atomics.waitAsync`, auf die
+/// [`run_jobs_and_timers`] schon gewartet hat.
 fn async_outcome(printed: &[Vec<u16>]) -> Outcome {
     let failure: Vec<u16> = "Test262:AsyncTestFailure:".encode_utf16().collect();
     let complete: Vec<u16> = "Test262:AsyncTestComplete".encode_utf16().collect();
@@ -196,6 +217,7 @@ fn run(
     .map_err(|error| format!("Agent: {error:?}"))?;
     let host = Rc::new(Test262Host::default());
     agent.set_host(Rc::<Test262Host>::clone(&host));
+    agent.set_can_block(metadata.can_block());
     let realm = agent
         .create_realm()
         .map_err(|error| format!("Realm: {error:?}"))?;

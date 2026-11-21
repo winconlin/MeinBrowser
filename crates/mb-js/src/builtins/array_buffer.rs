@@ -76,8 +76,7 @@ pub(super) fn create(agent: &mut Agent, scope: &Scope, realm: RealmId) -> Comple
 // Helfer
 
 /// RequireInternalSlot(*this*, [[ArrayBufferData]]) mit dem Schritt
-/// danach, der einen SharedArrayBuffer abweist; bis es die gibt, ist das
-/// dieselbe Prüfung.
+/// danach, der einen SharedArrayBuffer abweist.
 fn require_array_buffer(agent: &mut Agent, value: Local<'_>) -> Completion<()> {
     if buffer::is_array_buffer(agent, value) {
         Ok(())
@@ -96,7 +95,7 @@ fn boolean<'s>(agent: &Agent, scope: &'s Scope, value: bool) -> Local<'s> {
 }
 
 /// GetArrayBufferMaxByteLengthOption (Abschnitt 25.1.3.7).
-fn max_byte_length_option(
+pub(super) fn max_byte_length_option(
     agent: &mut Agent,
     scope: &Scope,
     options: Local<'_>,
@@ -114,7 +113,7 @@ fn max_byte_length_option(
 
 /// ToClampedIndex (Abschnitt 7.1.26) mit ToAbsoluteIndex (Abschnitt
 /// 7.1.25).
-fn to_clamped_index(
+pub(super) fn to_clamped_index(
     agent: &mut Agent,
     scope: &Scope,
     value: Local<'_>,
@@ -240,7 +239,9 @@ fn resize<'s>(
 ) -> Completion<Local<'s>> {
     let this = arguments.this;
     // RequireInternalSlot(*this*, [[ArrayBufferMaxByteLength]]): nur ein
-    // veränderlicher ArrayBuffer hat es.
+    // veränderlicher ArrayBuffer hat es; ein wachsender SharedArrayBuffer
+    // hat es auch, ist aber geteilt. Beides ist ein TypeError.
+    require_array_buffer(agent, this)?;
     let Some(max) = buffer::max_byte_length(agent, this) else {
         return Err(agent.throw_error(ErrorKind::TypeError));
     };

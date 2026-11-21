@@ -18,7 +18,8 @@
 //! %TypedArray%, %TypedArray.prototype%, den zwölf Konstruktoren und
 //! Base64 und Hex an %Uint8Array% (Welle 8j, Teil 2) sowie %WeakMap%,
 //! %WeakSet%, %WeakRef% und %FinalizationRegistry% mit ihren Prototypen
-//! (Welle 8k); %Function% selbst wartet auf `eval`.
+//! (Welle 8k) und %SharedArrayBuffer% mit seinem Prototyp und %Atomics%
+//! (letzter Teil von Schritt 8); %Function% selbst wartet auf `eval`.
 //! Dazu kommen, was `for`-`of` und die Ausbreitung brauchen: die
 //! Iteratoren für Arrays, typisierte Arrays und Zeichenketten mit den
 //! Methoden für @@iterator. Generatoren und async-Generatoren bringen ihre Prototypen
@@ -38,6 +39,7 @@ mod array_buffer;
 mod async_function;
 mod async_generator;
 mod async_iterator;
+mod atomics;
 mod bigint;
 mod boolean;
 mod collection;
@@ -58,6 +60,7 @@ mod proxy;
 mod reflect;
 mod regexp;
 mod set;
+mod shared_array_buffer;
 mod string;
 mod symbol;
 mod typed_array;
@@ -114,6 +117,8 @@ pub(crate) fn create_intrinsics(
     set::create(agent, scope, realm)?;
     weak_collection::create(agent, scope, realm)?;
     array_buffer::create(agent, scope, realm)?;
+    shared_array_buffer::create(agent, scope, realm)?;
+    atomics::create(agent, scope, realm)?;
     data_view::create(agent, scope, realm)?;
     typed_array::create(agent, scope, realm)?;
     reflect::create(agent, scope, realm)?;

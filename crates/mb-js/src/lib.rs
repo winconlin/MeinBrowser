@@ -36,4 +36,6 @@ pub mod realm;
 pub mod reference;
 pub mod regexp;
 pub mod script;
+mod shared;
 pub mod value;
+mod waiting;

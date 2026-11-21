@@ -91,6 +91,7 @@ pub fn is_callable(heap: &Heap, value: Value<'_>) -> bool {
                 | ObjectClass::WeakRef
                 | ObjectClass::FinalizationRegistry
                 | ObjectClass::ArrayBuffer
+                | ObjectClass::SharedArrayBuffer
                 | ObjectClass::DataView
                 | ObjectClass::TypedArray,
             )

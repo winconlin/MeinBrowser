@@ -5638,3 +5638,321 @@ fn weak_collections_survive_collections() {
     assert_eq!(run(&mut agent, realm, result), "\"30:27\"");
     finish_and_collect(&mut agent);
 }
+
+#[test]
+fn shared_array_buffers_grow_and_slice() {
+    check(&[
+        ("new SharedArrayBuffer(8).byteLength", "8"),
+        ("new SharedArrayBuffer().byteLength", "0"),
+        ("SharedArrayBuffer(1)", "TypeError"),
+        ("new SharedArrayBuffer(-1)", "RangeError"),
+        ("new SharedArrayBuffer(2 ** 40)", "RangeError"),
+        // Ein wachsender Block belegt gleich sein Maximum.
+        (
+            "new SharedArrayBuffer(0, { maxByteLength: 2 ** 40 })",
+            "RangeError",
+        ),
+        (
+            "new SharedArrayBuffer(4, { maxByteLength: 2 })",
+            "RangeError",
+        ),
+        (
+            "var b = new SharedArrayBuffer(2, { maxByteLength: 6 }); \
+             [b.growable, b.maxByteLength, b.byteLength].join()",
+            "\"true,6,2\"",
+        ),
+        (
+            "var b = new SharedArrayBuffer(4); [b.growable, b.maxByteLength].join()",
+            "\"false,4\"",
+        ),
+        (
+            "var b = new SharedArrayBuffer(2, { maxByteLength: 6 }); \
+             var all = new Uint8Array(b), one = new Uint8Array(b, 0, 1); \
+             b.grow(5); all[4] = 7; [b.byteLength, all.length, one.length, all[4], b.grow(5)].join()",
+            "\"5,5,1,7,\"",
+        ),
+        (
+            "new SharedArrayBuffer(2, { maxByteLength: 6 }).grow(1)",
+            "RangeError",
+        ),
+        (
+            "new SharedArrayBuffer(2, { maxByteLength: 6 }).grow(7)",
+            "RangeError",
+        ),
+        ("new SharedArrayBuffer(2).grow(2)", "TypeError"),
+        (
+            "ArrayBuffer.prototype.resize.call(new SharedArrayBuffer(2, { maxByteLength: 6 }), 4)",
+            "TypeError",
+        ),
+        (
+            "Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'byteLength').get\
+             .call(new SharedArrayBuffer(2))",
+            "TypeError",
+        ),
+        (
+            "Object.getOwnPropertyDescriptor(SharedArrayBuffer.prototype, 'byteLength').get\
+             .call(new ArrayBuffer(2))",
+            "TypeError",
+        ),
+        (
+            "SharedArrayBuffer.prototype.slice.call(new ArrayBuffer(2))",
+            "TypeError",
+        ),
+        (
+            "var b = new SharedArrayBuffer(6); new Uint8Array(b).set([1, 2, 3, 4, 5, 6]); \
+             Array.from(new Uint8Array(b.slice(1, -1))).join()",
+            "\"2,3,4,5\"",
+        ),
+        (
+            "var b = new SharedArrayBuffer(4); var s = b.slice(); \
+             [s instanceof SharedArrayBuffer, s !== b, s.byteLength].join()",
+            "\"true,true,4\"",
+        ),
+        (
+            "var b = new SharedArrayBuffer(4); b.constructor = {}; \
+             b.constructor[Symbol.species] = function () { return b; }; b.slice()",
+            "TypeError",
+        ),
+        (
+            "var b = new SharedArrayBuffer(4); b.constructor = {}; \
+             b.constructor[Symbol.species] = function () { return new ArrayBuffer(4); }; b.slice()",
+            "TypeError",
+        ),
+        (
+            "Object.prototype.toString.call(new SharedArrayBuffer(1))",
+            "\"[object SharedArrayBuffer]\"",
+        ),
+        (
+            "var b = new SharedArrayBuffer(8); var v = new DataView(b, 2); v.setInt16(0, -2); \
+             [v.getInt16(0), new Uint8Array(b)[2], v.buffer === b, ArrayBuffer.isView(v)].join()",
+            "\"-2,255,true,true\"",
+        ),
+        // Dieselben Bytes unter zwei Arten: Die Quelle wird vorher kopiert.
+        (
+            "var b = new SharedArrayBuffer(8); var i = new Int16Array(b), u = new Uint8Array(b); \
+             u.set([1, 2, 3, 4]); i.set(u.subarray(1, 4), 0); Array.from(u).join()",
+            "\"2,0,3,0,4,0,0,0\"",
+        ),
+        // Zwischen geteilten und nicht geteilten Puffern.
+        (
+            "var s = new Uint8Array(new SharedArrayBuffer(4)); s.set([9, 8, 7, 6]); \
+             var c = new Uint8Array(s); var t = s.slice(1, 3); \
+             [c.buffer instanceof ArrayBuffer, Array.from(c).join(''), Array.from(t).join(''), \
+              t.buffer instanceof ArrayBuffer].join()",
+            "\"true,9876,87,true\"",
+        ),
+        (
+            "var s = new Uint8Array(new SharedArrayBuffer(6)); s.set([1, 2, 3, 4, 5, 6]); \
+             s.copyWithin(1, 0, 4); Array.from(s).join('')",
+            "\"112346\"",
+        ),
+    ]);
+}
+
+#[test]
+fn atomics_read_modify_write_elements() {
+    check(&[
+        (
+            "var a = new Int32Array(new SharedArrayBuffer(16)); \
+             [Atomics.add(a, 1, 5), Atomics.sub(a, 1, 2), Atomics.and(a, 1, 1), Atomics.or(a, 1, 6), \
+              Atomics.xor(a, 1, 3), Atomics.exchange(a, 1, 9), Atomics.load(a, 1), a[0], a[2]].join()",
+            "\"0,5,3,1,7,4,9,0,0\"",
+        ),
+        (
+            "var a = new Uint8Array(new SharedArrayBuffer(4)); \
+             [Atomics.store(a, 0, 255), Atomics.add(a, 0, 2), a[0], Atomics.sub(a, 1, 1), a[1]].join()",
+            "\"255,255,1,0,255\"",
+        ),
+        // Auch auf ArrayBuffern, die nicht geteilt sind.
+        (
+            "var a = new Int8Array(4); \
+             [Atomics.store(a, 0, 200), a[0], Atomics.store(a, 1, 3.7), a[1], \
+              Object.is(Atomics.store(a, 2, -0), 0), Atomics.store(a, 3, Infinity), a[3]].join()",
+            "\"200,-56,3,3,true,Infinity,0\"",
+        ),
+        (
+            "var a = new Int16Array(new SharedArrayBuffer(8)); a[0] = -1; \
+             [Atomics.compareExchange(a, 0, -1, 7), a[0], Atomics.compareExchange(a, 0, 1, 9), a[0], \
+              Atomics.compareExchange(a, 0, 65543, 3), a[0]].join()",
+            "\"-1,7,7,7,7,3\"",
+        ),
+        (
+            "var a = new BigInt64Array(new SharedArrayBuffer(16)); \
+             [Atomics.add(a, 0, 5n), Atomics.sub(a, 0, 7n), Atomics.load(a, 0), \
+              Atomics.compareExchange(a, 1, 0n, -1n), Atomics.load(a, 1), Atomics.store(a, 0, 2n ** 64n + 3n), a[0]].join()",
+            "\"0,5,-2,0,-1,18446744073709551619,3\"",
+        ),
+        (
+            "var a = new BigUint64Array(2); Atomics.sub(a, 0, 1n); a[0]",
+            "18446744073709551615n",
+        ),
+        ("Atomics.add(new Float64Array(4), 0, 1)", "TypeError"),
+        ("Atomics.add(new Uint8ClampedArray(4), 0, 1)", "TypeError"),
+        ("Atomics.load(new Float16Array(4), 0)", "TypeError"),
+        ("Atomics.load(new Int32Array(4), 4)", "RangeError"),
+        ("Atomics.load(new Int32Array(4), -1)", "RangeError"),
+        ("Atomics.load(new Int32Array(4), '1')", "0"),
+        ("Atomics.add({}, 0, 0)", "TypeError"),
+        ("Atomics.add(new Int32Array(4), 0, 1n)", "TypeError"),
+        ("Atomics.add(new BigInt64Array(4), 0, 1)", "TypeError"),
+        // Die Umwandlung des Werts löst den Puffer ab oder verkleinert ihn.
+        (
+            "var b = new ArrayBuffer(8); var a = new Int32Array(b); \
+             Atomics.store(a, 0, { valueOf() { b.transfer(); return 1; } })",
+            "TypeError",
+        ),
+        (
+            "var b = new ArrayBuffer(8, { maxByteLength: 8 }); var a = new Int32Array(b); \
+             Atomics.store(a, 1, { valueOf() { b.resize(4); return 1; } })",
+            "RangeError",
+        ),
+        (
+            "[1, 2, 3, 4, 8, 16, -0].map(Atomics.isLockFree).join()",
+            "\"true,true,false,true,true,false,false\"",
+        ),
+        (
+            "Object.prototype.toString.call(Atomics)",
+            "\"[object Atomics]\"",
+        ),
+        (
+            "[Atomics.pause(), Atomics.pause(5), Atomics.pause(-0), Atomics.pause(2 ** 53)].join()",
+            "\",,,\"",
+        ),
+        ("Atomics.pause(1.5)", "TypeError"),
+        ("Atomics.pause('1')", "TypeError"),
+        ("Atomics.pause(Infinity)", "TypeError"),
+        ("typeof Atomics", "\"object\""),
+        ("new Atomics()", "TypeError"),
+    ]);
+}
+
+#[test]
+fn atomics_wait_needs_a_shared_int32_or_bigint64_array() {
+    check(&[
+        // [[CanBlock]] ist zunächst *false*.
+        (
+            "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 0)",
+            "TypeError",
+        ),
+        ("Atomics.wait(new Int32Array(4), 0, 0, 0)", "TypeError"),
+        (
+            "Atomics.wait(new Int16Array(new SharedArrayBuffer(4)), 0, 0, 0)",
+            "TypeError",
+        ),
+        (
+            "Atomics.waitAsync(new Uint32Array(new SharedArrayBuffer(4)), 0, 0, 0)",
+            "TypeError",
+        ),
+        ("Atomics.notify(new Int32Array(4), 0)", "0"),
+        ("Atomics.notify(new Int32Array(4), 4)", "RangeError"),
+        (
+            "Atomics.notify(new Float64Array(new SharedArrayBuffer(8)), 0)",
+            "TypeError",
+        ),
+        (
+            "Atomics.notify(new Int32Array(new SharedArrayBuffer(8)), 1, 5)",
+            "0",
+        ),
+        (
+            "var a = new Int32Array(new SharedArrayBuffer(8)); var r = Atomics.waitAsync(a, 0, 1); \
+             [r.async, r.value].join()",
+            "\"false,not-equal\"",
+        ),
+        (
+            "var a = new Int32Array(new SharedArrayBuffer(8)); var r = Atomics.waitAsync(a, 0, 0, -5); \
+             [r.async, r.value, Atomics.notify(a, 0)].join()",
+            "\"false,timed-out,0\"",
+        ),
+        (
+            "var a = new BigInt64Array(new SharedArrayBuffer(16)); a[1] = -1n; \
+             var r = Atomics.waitAsync(a, 1, 2n ** 64n - 1n); \
+             [r.async, r.value instanceof Promise, Atomics.notify(a, 1, 0), \
+              Atomics.notify(a, 1), Atomics.notify(a, 1)].join()",
+            "\"true,true,0,1,0\"",
+        ),
+    ]);
+}
+
+#[test]
+fn atomics_wait_blocks_with_can_block() {
+    let (mut agent, realm) = agent_with(false);
+    agent.set_can_block(true);
+    let source = "
+        var a = new Int32Array(new SharedArrayBuffer(8)); a[1] = 3;
+        [Atomics.wait(a, 1, 2), Atomics.wait(a, 1, 3, 5), Atomics.wait(a, 0, 0, -Infinity),
+         Atomics.wait(a, 0, 0, NaN === NaN ? 1 : 0), Atomics.notify(a, 1)].join()";
+    assert_eq!(
+        run(&mut agent, realm, source),
+        "\"not-equal,timed-out,timed-out,timed-out,0\""
+    );
+}
+
+#[test]
+fn atomics_wait_async_promises_settle_in_tasks() {
+    let (mut agent, realm) = agent_with(true);
+    let source = "
+        var a = new Int32Array(new SharedArrayBuffer(16)), log = [];
+        Atomics.waitAsync(a, 0, 0).value.then(function (v) { log.push('a:' + v); });
+        Atomics.waitAsync(a, 0, 0).value.then(function (v) { log.push('b:' + v); });
+        Atomics.waitAsync(a, 2, 0, 1).value.then(function (v) { log.push('c:' + v); });
+        Promise.resolve().then(function () { log.push('micro'); });
+        Atomics.notify(a, 0, 1)";
+    assert_eq!(run(&mut agent, realm, source), "1");
+    agent.run_jobs().expect("Jobs");
+    agent.heap_mut().collect();
+    // Der Zeitgeber von c kann schon abgelaufen sein.
+    assert_eq!(
+        run(&mut agent, realm, "log.slice(0, 2).join()"),
+        "\"micro,a:ok\""
+    );
+    if let Some(next) = agent.next_timer() {
+        std::thread::sleep(next.saturating_duration_since(std::time::Instant::now()));
+        assert!(agent.has_pending_jobs());
+    }
+    agent.run_jobs().expect("Jobs");
+    assert_eq!(
+        run(&mut agent, realm, "log.join()"),
+        "\"micro,a:ok,c:timed-out\""
+    );
+    assert_eq!(run(&mut agent, realm, "Atomics.notify(a, 0)"), "1");
+    agent.run_jobs().expect("Jobs");
+    assert_eq!(
+        run(&mut agent, realm, "log.join()"),
+        "\"micro,a:ok,c:timed-out,b:ok\""
+    );
+    assert_eq!(agent.next_timer(), None);
+    finish_and_collect(&mut agent);
+}
+
+#[test]
+fn shared_array_buffers_survive_collections() {
+    let (mut agent, realm) = agent_with(true);
+    let source = "
+        var buffers = [], views = [];
+        for (var i = 0; i < 20; i++) {
+          var b = new SharedArrayBuffer(16, { maxByteLength: 64 });
+          var v = new Int32Array(b);
+          Atomics.store(v, 0, i);
+          new DataView(b).setInt32(4, -i, true);
+          b.grow(32);
+          if (i % 2) { buffers.push(b); views.push(new Int32Array(b, 8)); }
+        }
+        1";
+    assert_eq!(run(&mut agent, realm, source), "1");
+    finish_and_collect(&mut agent);
+    // Die Hälfte der Blöcke lebt noch, jeder mit 64 Bytes.
+    assert_eq!(agent.heap().external_bytes(), 10 * 64);
+    let check = "
+        var sum = 0;
+        for (var i = 0; i < 10; i++) {
+          var v = new Int32Array(buffers[i]);
+          sum += Atomics.load(v, 0) - v[1] + views[i].length;
+        }
+        sum";
+    // 2 · (1 + 3 + … + 19) + 10 · 6.
+    assert_eq!(run(&mut agent, realm, check), "260");
+    let drop = "buffers = views = b = v = undefined; 1";
+    assert_eq!(run(&mut agent, realm, drop), "1");
+    finish_and_collect(&mut agent);
+    assert_eq!(agent.heap().external_bytes(), 0);
+}
