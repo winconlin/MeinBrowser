@@ -13,9 +13,10 @@
 //! Aufräum-Jobs aus HostEnqueueFinalizationRegistryCleanupJob (Abschnitt
 //! 9.9.4.1) stellt der Collector in eine eigene Liste im Heap, wenn er ein
 //! Ziel einer Registry leert. Sie laufen erst, wenn keine Promise-Jobs mehr
-//! warten, jeder als eigene Folge von Ausführungen; vorher und danach
-//! leert ClearKeptObjects (Abschnitt 9.10) die Liste [[KeptAlive]], denn
-//! dann ist eine solche Folge zu Ende.
+//! warten, jeder mit den Promise-Jobs, die er anstößt, als eigene Folge von
+//! Ausführungen; vorher und nach den Promise-Jobs leert ClearKeptObjects
+//! (Abschnitt 9.10) die Liste [[KeptAlive]], denn dann ist eine solche
+//! Folge zu Ende, wie in HTML nach den Microtasks.
 //!
 //! Atome sind die Zeichenketten, die als Eigenschaftsschlüssel dienen. Zu
 //! jedem Inhalt gibt es höchstens eines, also vergleicht man Schlüssel über
@@ -473,11 +474,12 @@ impl Agent {
                     return Ok(());
                 }
                 agent.spend_execution_steps(1)?;
+                // ClearKeptObjects erst nach den Promise-Jobs, die der
+                // Aufräum-Job anstößt, wie in HTML nach den Microtasks.
                 agent.scope(|agent, scope| match agent.heap.pop_cleanup(scope) {
                     Some(registry) => cleanup_finalization_registry(agent, scope, registry),
                     None => Ok(()),
                 })?;
-                agent.heap.clear_kept_objects();
             }
         })
     }

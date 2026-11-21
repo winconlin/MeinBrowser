@@ -5575,6 +5575,32 @@ fn cleanup_callbacks_can_register_unregister_and_throw() {
 }
 
 #[test]
+fn weak_refs_from_cleanup_callbacks_live_through_their_promise_jobs() {
+    // Mit erzwungenem GC: Jede Anlage im Promise-Job sammelt.
+    let (mut agent, realm) = agent_with(true);
+    let source = "
+        var ref, result = 'kein Callback';
+        var registry = new FinalizationRegistry(function () {
+          ref = new WeakRef({});
+          Promise.resolve().then(function () {
+            var other = {};
+            result = ref.deref() !== undefined;
+          });
+        });
+        (function () { registry.register({}, 1); })();
+        1";
+    assert_eq!(run(&mut agent, realm, source), "1");
+    // Das Sammeln leert das Ziel der Registry, dann läuft der Aufräum-Job.
+    // Wie in HTML endet die Folge von Ausführungen erst nach den
+    // Promise-Jobs, die er angestoßen hat.
+    finish_and_collect(&mut agent);
+    agent.run_jobs().expect("Jobs");
+    agent.heap_mut().collect();
+    let result = "String(result) + ':' + String(ref.deref())";
+    assert_eq!(run(&mut agent, realm, result), "\"true:undefined\"");
+}
+
+#[test]
 fn weak_collections_survive_collections() {
     let (mut agent, realm) = agent_with(true);
     let source = "
