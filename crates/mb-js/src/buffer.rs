@@ -1,4 +1,5 @@
-//! ArrayBuffer und ihre Data Blocks (Abschnitte 6.2.9 und 25.1): die Arten
+//! ArrayBuffer, SharedArrayBuffer und ihre Data Blocks (Abschnitte 6.2.9,
+//! 25.1 und 25.2): die Arten
 //! der Elemente aus der Tabelle der TypedArray-Konstruktoren (Abschnitt
 //! 23.2), die Umwandlung zwischen Zahlen und Bytes (RawBytesToNumeric und
 //! NumericToRawBytes, Abschnitte 25.1.3.14 und 25.1.3.17) mit binary16, und
@@ -13,6 +14,14 @@
 //! [[ArrayBufferDetachKey]] ist immer ~empty~: Nur Einbettungen setzen einen
 //! Schlüssel (Abschnitt 25.1.7), und diese setzt keinen.
 //!
+//! Ein SharedArrayBuffer ist ein Objekt der Art
+//! [`ObjectClass::SharedArrayBuffer`] mit denselben Feldern. Das erste zeigt
+//! auf eine Zelle für einen geteilten Block ([`SharedBlock`]), dessen Bytes
+//! außerhalb des Heaps liegen; abgelöst wird er nie. Seine Länge liest jeder
+//! Zugriff neu, denn ein anderer Agent kann den Block wachsen lassen. Die
+//! Bytes eines geteilten Blocks werden ~unordered~ gelesen und geschrieben,
+//! nur `Atomics` greift ~seq-cst~ zu ([`update_element`]).
+//!
 //! Festlegungen:
 //! - Ein Data Block lässt sich anlegen (CreateByteDataBlock, Abschnitt
 //!   6.2.9.1), wenn er in den freien Teil des Speicherbudgets des Heaps
@@ -22,6 +31,10 @@
 //!   9.a), wenn ein Block dieser Größe in das ganze Speicherbudget passt.
 //!   Ein veränderlicher ArrayBuffer reserviert nichts im Voraus: `resize`
 //!   legt einen neuen Block an und kopiert, was die Anmerkung dort erlaubt.
+//! - Ein wachsender SharedArrayBuffer reserviert dagegen gleich
+//!   [[ArrayBufferMaxByteLength]] Bytes, denn andere Agents lesen seine
+//!   Bytes ohne Sperre; ein neuer Block würde ihnen entgehen. Reserviert
+//!   wird aus dem freien Teil des Speicherbudgets, wie beim Anlegen.
 //! - HostResizeArrayBuffer (Abschnitt 25.1.3.8) gibt immer ~unhandled~.
 //! - [[LittleEndian]] des Agents ist *true*; so lesen und schreiben die
 //!   typisierten Arrays ihre Elemente.
@@ -33,12 +46,15 @@
 
 #![forbid(unsafe_code)]
 
+use std::sync::Arc;
+
 use crate::agent::{Agent, Completion, ErrorKind};
 use crate::bigint::{self, BigInt};
 use crate::heap::{Heap, Local, ObjectClass, Scope};
 use crate::number;
 use crate::object::{INLINE, get_prototype_from_constructor};
 use crate::realm::{Intrinsic, RealmId};
+use crate::shared::SharedBlock;
 use crate::value::{Kind, Ref, Value};
 
 /// Das Feld mit [[ArrayBufferData]].
@@ -353,9 +369,10 @@ pub(crate) fn f16_value(bits: u16) -> f64 {
     if negative { -magnitude } else { magnitude }
 }
 
-// ArrayBuffer
+// ArrayBuffer und SharedArrayBuffer
 
-/// Das Objekt hinter einem Handle, wenn es ein ArrayBuffer ist.
+/// Das Objekt hinter einem Handle, wenn es ein ArrayBuffer ist, der nicht
+/// geteilt ist.
 fn buffer_ref<'h>(agent: &'h Agent, buffer: Local<'_>) -> Option<Ref<'h>> {
     let heap = agent.heap();
     match heap.get(buffer).kind() {
@@ -366,14 +383,132 @@ fn buffer_ref<'h>(agent: &'h Agent, buffer: Local<'_>) -> Option<Ref<'h>> {
     }
 }
 
-/// Die Länge des Blocks des ArrayBuffer `buffer`, `None`, wenn er
-/// abgelöst oder kein ArrayBuffer ist. Für Aufrufer, die nur den Heap
-/// haben.
-pub(crate) fn block_length(heap: &Heap, buffer: Ref<'_>) -> Option<usize> {
-    match heap.array_buffer_field(buffer, DATA)?.kind() {
-        Kind::Internal(block) => heap.byte_len(block),
+/// Das Objekt hinter einem Handle, wenn es ein ArrayBuffer oder ein
+/// SharedArrayBuffer ist.
+fn any_buffer_ref<'h>(agent: &'h Agent, buffer: Local<'_>) -> Option<Ref<'h>> {
+    let heap = agent.heap();
+    match heap.get(buffer).kind() {
+        Kind::Object(object)
+            if matches!(
+                heap.object_class(object),
+                Some(ObjectClass::ArrayBuffer | ObjectClass::SharedArrayBuffer)
+            ) =>
+        {
+            Some(object)
+        }
         _ => None,
     }
+}
+
+/// Ein Data Block: eine Zelle aus Bytes im Heap oder ein geteilter Block.
+#[derive(Clone, Copy)]
+enum Block<'h> {
+    Bytes(Ref<'h>),
+    Shared(&'h Arc<SharedBlock>),
+}
+
+impl<'h> Block<'h> {
+    /// Der Block in der Zelle `cell`, einer Zelle aus Bytes oder einer für
+    /// einen geteilten Block.
+    fn of_cell(heap: &'h Heap, cell: Ref<'h>) -> Block<'h> {
+        match heap.shared_block(cell) {
+            Some(shared) => Block::Shared(shared),
+            None => Block::Bytes(cell),
+        }
+    }
+
+    /// [[ArrayBufferData]] von `buffer`, `None`, wenn er abgelöst oder
+    /// kein ArrayBuffer oder SharedArrayBuffer ist.
+    fn of_buffer(heap: &'h Heap, buffer: Ref<'_>) -> Option<Block<'h>> {
+        match heap.array_buffer_field(buffer, DATA)?.kind() {
+            Kind::Internal(cell) => Some(Block::of_cell(heap, cell)),
+            _ => None,
+        }
+    }
+
+    /// Die Länge in Bytes; bei einem geteilten Block mit ~seq-cst~
+    /// gelesen.
+    fn len(self, heap: &Heap) -> usize {
+        match self {
+            Block::Bytes(cell) => heap.byte_len(cell).unwrap_or(0),
+            Block::Shared(shared) => shared.len(),
+        }
+    }
+
+    /// Liest Bytes ab `index`, nicht atomar (~unordered~). `false`, wenn
+    /// sie nicht alle im Block liegen.
+    fn read(self, heap: &Heap, index: usize, bytes: &mut [u8]) -> bool {
+        match self {
+            Block::Bytes(cell) => heap.read_bytes(cell, index, bytes),
+            Block::Shared(shared) => shared.read(index, bytes),
+        }
+    }
+
+    /// Schreibt Bytes ab `index`, nicht atomar (~unordered~). `false`,
+    /// wenn sie nicht alle im Block liegen.
+    fn write(self, heap: &Heap, index: usize, bytes: &[u8]) -> bool {
+        match self {
+            Block::Bytes(cell) => heap.write_bytes(cell, index, bytes),
+            Block::Shared(shared) => shared.write(index, bytes),
+        }
+    }
+}
+
+/// CopyDataBlockBytes (Abschnitt 6.2.9.3) zwischen zwei Blöcken, mit dem
+/// Ergebnis von `memmove`, wenn es derselbe ist. `false` und nichts
+/// kopiert, wenn ein Bereich nicht in seinem Block liegt.
+fn copy_between(
+    heap: &Heap,
+    to: Block<'_>,
+    to_index: usize,
+    from: Block<'_>,
+    from_index: usize,
+    count: usize,
+) -> bool {
+    match (to, from) {
+        (Block::Bytes(to), Block::Bytes(from)) => {
+            heap.copy_bytes(to, to_index, from, from_index, count)
+        }
+        (Block::Shared(to), Block::Shared(from)) => from.copy_to(to, to_index, from_index, count),
+        // Eine Zelle des Heaps und ein geteilter Block sind nie derselbe
+        // Block, also gibt es keine Überlappung.
+        _ => {
+            let fits = |block: Block<'_>, index: usize| {
+                index
+                    .checked_add(count)
+                    .is_some_and(|end| end <= block.len(heap))
+            };
+            if !fits(to, to_index) || !fits(from, from_index) {
+                return false;
+            }
+            let mut chunk = vec![0u8; count.min(COPY_CHUNK)];
+            let mut done = 0;
+            while done < count {
+                let size = chunk.len().min(count - done);
+                let Some(part) = chunk.get_mut(..size) else {
+                    return false;
+                };
+                if !from.read(heap, from_index + done, part)
+                    || !to.write(heap, to_index + done, part)
+                {
+                    return false;
+                }
+                done += size;
+            }
+            true
+        }
+    }
+}
+
+/// So viele Bytes kopiert [`copy_between`] zwischen einer Zelle und einem
+/// geteilten Block auf einmal.
+const COPY_CHUNK: usize = 4096;
+
+/// Die Länge des Blocks von `buffer`, einem ArrayBuffer oder
+/// SharedArrayBuffer; `None`, wenn er abgelöst oder keiner ist. Für
+/// Aufrufer, die nur den Heap haben.
+pub(crate) fn block_length(heap: &Heap, buffer: Ref<'_>) -> Option<usize> {
+    Block::of_buffer(heap, buffer).map(|block| block.len(heap))
 }
 
 /// IsFixedLengthArrayBuffer (Abschnitt 25.1.3.9) für Aufrufer, die nur den
@@ -383,68 +518,118 @@ pub(crate) fn is_fixed_length(heap: &Heap, buffer: Ref<'_>) -> bool {
         .is_none_or(|max| max.is_undefined())
 }
 
-/// Liest `bytes.len()` Bytes ab `index` aus dem Block des ArrayBuffer
-/// `buffer`; `false`, wenn er abgelöst ist.
-pub(crate) fn read_block(heap: &Heap, buffer: Ref<'_>, index: usize, bytes: &mut [u8]) -> bool {
-    match heap
-        .array_buffer_field(buffer, DATA)
-        .map(|value| value.kind())
-    {
-        Some(Kind::Internal(block)) => {
-            heap.read_bytes(block, index, bytes);
-            true
-        }
+/// IsSharedArrayBuffer (Abschnitt 25.2.2.2) für Aufrufer, die nur den Heap
+/// haben.
+pub(crate) fn is_shared(heap: &Heap, buffer: Ref<'_>) -> bool {
+    heap.object_class(buffer) == Some(ObjectClass::SharedArrayBuffer)
+}
+
+/// Ob zwei Puffer SharedArrayBuffer mit demselben Block sind, wie
+/// SetTypedArrayFromTypedArray (Abschnitt 23.2.3.26.1, Schritt 15) sie
+/// vergleicht.
+pub(crate) fn same_shared_block(heap: &Heap, left: Ref<'_>, right: Ref<'_>) -> bool {
+    match (Block::of_buffer(heap, left), Block::of_buffer(heap, right)) {
+        (Some(Block::Shared(left)), Some(Block::Shared(right))) => Arc::ptr_eq(left, right),
         _ => false,
     }
 }
 
-/// Schreibt `bytes` ab `index` in den Block des ArrayBuffer `buffer`, wenn
-/// er nicht abgelöst ist.
+/// Liest `bytes.len()` Bytes ab `index` aus dem Block von `buffer`, nicht
+/// atomar; `false`, wenn er abgelöst ist oder sie nicht darin liegen.
+pub(crate) fn read_block(heap: &Heap, buffer: Ref<'_>, index: usize, bytes: &mut [u8]) -> bool {
+    Block::of_buffer(heap, buffer).is_some_and(|block| block.read(heap, index, bytes))
+}
+
+/// Schreibt `bytes` ab `index` in den Block von `buffer`, nicht atomar,
+/// wenn er nicht abgelöst ist und sie darin liegen.
 pub(crate) fn write_block(heap: &Heap, buffer: Ref<'_>, index: usize, bytes: &[u8]) {
-    if let Some(Kind::Internal(block)) = heap
-        .array_buffer_field(buffer, DATA)
-        .map(|value| value.kind())
-    {
-        heap.write_bytes(block, index, bytes);
+    if let Some(block) = Block::of_buffer(heap, buffer) {
+        block.write(heap, index, bytes);
     }
 }
 
-/// Ob `value` ein ArrayBuffer ist (RequireInternalSlot mit
-/// [[ArrayBufferData]], Abschnitt 10.1.15). SharedArrayBuffer gibt es
-/// noch nicht.
+/// Liest das Element von `size` Bytes bei `index` im Block von `buffer`
+/// und ersetzt es durch `operation(alter Wert)`, wenn das `Some` ist; die
+/// Bytes als Zahl, das erste im niedrigsten. Bei einem SharedArrayBuffer
+/// ist das ein atomarer Schritt (~seq-cst~, siehe
+/// [`SharedBlock::update`]), sonst läuft ohnehin nur dieser Agent. Das
+/// Ergebnis ist der alte Wert, `None`, wenn das Element nicht im Block
+/// liegt.
+pub(crate) fn update_element(
+    heap: &Heap,
+    buffer: Ref<'_>,
+    index: usize,
+    size: usize,
+    operation: impl Fn(u64) -> Option<u64>,
+) -> Option<u64> {
+    match Block::of_buffer(heap, buffer)? {
+        Block::Shared(shared) => shared.update(index, size, operation),
+        Block::Bytes(cell) => {
+            let mut raw = [0u8; 8];
+            if !heap.read_bytes(cell, index, raw.get_mut(..size)?) {
+                return None;
+            }
+            let old = u64::from_le_bytes(raw);
+            if let Some(new) = operation(old) {
+                heap.write_bytes(cell, index, new.to_le_bytes().get(..size)?);
+            }
+            Some(old)
+        }
+    }
+}
+
+/// Ob `value` ein ArrayBuffer ist, der nicht geteilt ist
+/// (RequireInternalSlot mit [[ArrayBufferData]], Abschnitt 10.1.15, und
+/// IsSharedArrayBuffer ist *false*).
 pub(crate) fn is_array_buffer(agent: &Agent, value: Local<'_>) -> bool {
     buffer_ref(agent, value).is_some()
 }
 
-/// Die Zelle aus Bytes, `None` bei einem abgelösten ArrayBuffer oder
-/// einem anderen Wert.
-fn data_block<'h>(agent: &'h Agent, buffer: Local<'_>) -> Option<Ref<'h>> {
-    let object = buffer_ref(agent, buffer)?;
-    match agent.heap().array_buffer_field(object, DATA)?.kind() {
-        Kind::Internal(block) => Some(block),
-        _ => None,
-    }
+/// Ob `value` ein SharedArrayBuffer ist (IsSharedArrayBuffer, Abschnitt
+/// 25.2.2.2, für ein Objekt mit [[ArrayBufferData]]).
+pub(crate) fn is_shared_array_buffer(agent: &Agent, value: Local<'_>) -> bool {
+    any_buffer_ref(agent, value).is_some_and(|object| is_shared(agent.heap(), object))
 }
 
-/// IsDetachedBuffer (Abschnitt 25.1.3.4).
+/// Ob `value` [[ArrayBufferData]] hat, also ein ArrayBuffer oder ein
+/// SharedArrayBuffer ist.
+pub(crate) fn has_array_buffer_data(agent: &Agent, value: Local<'_>) -> bool {
+    any_buffer_ref(agent, value).is_some()
+}
+
+/// Der Block, `None` bei einem abgelösten ArrayBuffer oder einem anderen
+/// Wert.
+fn data_block<'h>(agent: &'h Agent, buffer: Local<'_>) -> Option<Block<'h>> {
+    Block::of_buffer(agent.heap(), any_buffer_ref(agent, buffer)?)
+}
+
+/// IsDetachedBuffer (Abschnitt 25.1.3.4). Ein SharedArrayBuffer ist nie
+/// abgelöst.
 pub(crate) fn is_detached(agent: &Agent, buffer: Local<'_>) -> bool {
     data_block(agent, buffer).is_none()
 }
 
-/// [[ArrayBufferByteLength]], 0 bei einem abgelösten ArrayBuffer.
+/// [[ArrayBufferByteLength]], 0 bei einem abgelösten ArrayBuffer; bei
+/// einem SharedArrayBuffer ArrayBufferByteLength mit ~seq-cst~.
 pub(crate) fn byte_length(agent: &Agent, buffer: Local<'_>) -> usize {
-    data_block(agent, buffer)
-        .and_then(|block| agent.heap().byte_len(block))
-        .unwrap_or(0)
+    data_block(agent, buffer).map_or(0, |block| block.len(agent.heap()))
 }
 
 /// [[ArrayBufferMaxByteLength]], `None` bei fester Länge
 /// (IsFixedLengthArrayBuffer, Abschnitt 25.1.3.9).
 pub(crate) fn max_byte_length(agent: &Agent, buffer: Local<'_>) -> Option<u64> {
-    let object = buffer_ref(agent, buffer)?;
+    let object = any_buffer_ref(agent, buffer)?;
     let value = agent.heap().array_buffer_field(object, MAX_BYTE_LENGTH)?;
     // Das Feld hält nur ganze Zahlen bis zur Größe des Heaps.
     value.as_number().map(|length| length as u64)
+}
+
+/// Der geteilte Block eines SharedArrayBuffer.
+pub(crate) fn shared_block(agent: &Agent, buffer: Local<'_>) -> Option<Arc<SharedBlock>> {
+    match data_block(agent, buffer)? {
+        Block::Shared(shared) => Some(Arc::clone(shared)),
+        Block::Bytes(_) => None,
+    }
 }
 
 /// Bezahlt `bytes` Bytes Arbeit aus der Arbeitsquote, wenn eine läuft,
@@ -504,14 +689,80 @@ pub(crate) fn allocate_array_buffer<'s>(
     if max_byte_length.is_some_and(|max| !agent.heap().bytes_fit(max)) {
         return Err(agent.throw_error(ErrorKind::RangeError));
     }
-    let shape = agent.empty_shape(scope);
-    let object = agent.heap_mut().alloc_object(
+    buffer_object(
+        agent,
         scope,
         ObjectClass::ArrayBuffer,
-        INLINE,
-        shape,
-        Some(prototype),
+        prototype,
+        block,
+        max_byte_length,
+    )
+}
+
+/// AllocateSharedArrayBuffer (Abschnitt 25.2.2.1) mit dem Konstruktor
+/// `constructor`; `max_byte_length` ist `Some` für einen wachsenden
+/// SharedArrayBuffer, dessen Block gleich so groß angelegt wird
+/// (CreateSharedByteDataBlock, Abschnitt 6.2.9.2, ein RangeError, wenn es
+/// ihn nicht geben kann). `current` ist der aktuelle Realm für
+/// GetPrototypeFromConstructor.
+pub(crate) fn allocate_shared_array_buffer<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    constructor: Local<'_>,
+    byte_length: u64,
+    max_byte_length: Option<u64>,
+    current: RealmId,
+) -> Completion<Local<'s>> {
+    if max_byte_length.is_some_and(|max| byte_length > max) {
+        return Err(agent.throw_error(ErrorKind::RangeError));
+    }
+    let prototype = get_prototype_from_constructor(
+        agent,
+        scope,
+        constructor,
+        Intrinsic::SharedArrayBufferPrototype,
+        current,
     )?;
+    let capacity = max_byte_length.unwrap_or(byte_length);
+    let (Ok(length), Ok(max), Ok(capacity)) = (
+        usize::try_from(byte_length),
+        max_byte_length.map(usize::try_from).transpose(),
+        usize::try_from(capacity),
+    ) else {
+        return Err(agent.throw_error(ErrorKind::RangeError));
+    };
+    if capacity > agent.heap().limit() {
+        return Err(agent.throw_error(ErrorKind::RangeError));
+    }
+    pay(agent, capacity)?;
+    let block = match agent.heap_mut().alloc_shared(scope, length, max) {
+        Ok(block) => block,
+        Err(_) => return Err(agent.throw_error(ErrorKind::RangeError)),
+    };
+    buffer_object(
+        agent,
+        scope,
+        ObjectClass::SharedArrayBuffer,
+        prototype,
+        block,
+        max_byte_length,
+    )
+}
+
+/// Das Objekt eines ArrayBuffer oder SharedArrayBuffer mit dem Block
+/// `block` in [[ArrayBufferData]].
+fn buffer_object<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    class: ObjectClass,
+    prototype: Local<'_>,
+    block: Local<'_>,
+    max_byte_length: Option<u64>,
+) -> Completion<Local<'s>> {
+    let shape = agent.empty_shape(scope);
+    let object = agent
+        .heap_mut()
+        .alloc_object(scope, class, INLINE, shape, Some(prototype))?;
     let heap = agent.heap();
     if let Kind::Object(reference) = heap.get(object).kind() {
         heap.set_array_buffer_field(reference, DATA, heap.get(block));
@@ -522,7 +773,8 @@ pub(crate) fn allocate_array_buffer<'s>(
     Ok(object)
 }
 
-/// Ersetzt [[ArrayBufferData]] durch `block`, etwa nach `resize`.
+/// Ersetzt [[ArrayBufferData]] eines ArrayBuffer durch `block`, etwa nach
+/// `resize`.
 pub(crate) fn set_data_block(agent: &Agent, buffer: Local<'_>, block: Local<'_>) {
     let heap = agent.heap();
     if let Some(object) = buffer_ref(agent, buffer) {
@@ -540,10 +792,10 @@ pub(crate) fn detach_array_buffer(agent: &Agent, buffer: Local<'_>) {
     }
 }
 
-/// CopyDataBlockBytes (Abschnitt 6.2.9.3) zwischen den Blöcken zweier
-/// nicht abgelöster ArrayBuffer, bezahlt aus der Arbeitsquote. Liegt ein
-/// Bereich nicht im Block, wird nichts kopiert; die Aufrufer prüfen die
-/// Grenzen vorher, wie es die Zusicherungen dort verlangen.
+/// CopyDataBlockBytes (Abschnitt 6.2.9.3) zwischen zwei Blöcken, wie
+/// [`data_block_local`] sie liefert, bezahlt aus der Arbeitsquote. Liegt
+/// ein Bereich nicht im Block, wird nichts kopiert; die Aufrufer prüfen
+/// die Grenzen vorher, wie es die Zusicherungen dort verlangen.
 pub(crate) fn copy_block_bytes(
     agent: &Agent,
     to: Local<'_>,
@@ -556,26 +808,34 @@ pub(crate) fn copy_block_bytes(
     let heap = agent.heap();
     if let (Kind::Internal(to), Kind::Internal(from)) = (heap.get(to).kind(), heap.get(from).kind())
     {
-        heap.copy_bytes(to, to_index, from, from_index, count);
+        copy_between(
+            heap,
+            Block::of_cell(heap, to),
+            to_index,
+            Block::of_cell(heap, from),
+            from_index,
+            count,
+        );
     }
     Ok(())
 }
 
-/// Der Block eines nicht abgelösten ArrayBuffer als Handle.
+/// Die Zelle mit dem Block eines nicht abgelösten ArrayBuffer oder eines
+/// SharedArrayBuffer als Handle.
 pub(crate) fn data_block_local<'s>(
     agent: &Agent,
     scope: &'s Scope,
     buffer: Local<'_>,
 ) -> Option<Local<'s>> {
-    let object = buffer_ref(agent, buffer)?;
+    let object = any_buffer_ref(agent, buffer)?;
     let heap = agent.heap();
     let value = heap.array_buffer_field(object, DATA)?;
     matches!(value.kind(), Kind::Internal(_)).then(|| heap.local(scope, value))
 }
 
-/// GetValueFromBuffer (Abschnitt 25.1.3.16) für einen nicht geteilten
-/// ArrayBuffer. Die Aufrufer haben geprüft, dass er nicht abgelöst ist und
-/// die Bytes darin liegen; sonst ist das Ergebnis 0.
+/// GetValueFromBuffer (Abschnitt 25.1.3.16) mit ~unordered~. Die Aufrufer
+/// haben geprüft, dass der Puffer nicht abgelöst ist und die Bytes darin
+/// liegen; sonst ist das Ergebnis 0.
 pub(crate) fn get_value_from_buffer<'s>(
     agent: &mut Agent,
     scope: &'s Scope,
@@ -586,7 +846,7 @@ pub(crate) fn get_value_from_buffer<'s>(
 ) -> Completion<Local<'s>> {
     let mut raw = [0u8; 8];
     if let (Some(block), Some(slot)) = (data_block(agent, buffer), raw.get_mut(..kind.size())) {
-        agent.heap().read_bytes(block, index, slot);
+        block.read(agent.heap(), index, slot);
     }
     numeric_value(agent, scope, raw_bytes_to_numeric(kind, &raw, little))
 }
@@ -633,9 +893,9 @@ pub(crate) fn raw_bytes_of_value(
     }
 }
 
-/// SetValueInBuffer (Abschnitt 25.1.3.18) für einen nicht geteilten
-/// ArrayBuffer. Die Aufrufer haben geprüft, dass er nicht abgelöst ist und
-/// die Bytes darin liegen; sonst geschieht nichts.
+/// SetValueInBuffer (Abschnitt 25.1.3.18) mit ~unordered~. Die Aufrufer
+/// haben geprüft, dass der Puffer nicht abgelöst ist und die Bytes darin
+/// liegen; sonst geschieht nichts.
 pub(crate) fn set_value_in_buffer(
     agent: &Agent,
     buffer: Local<'_>,
@@ -646,7 +906,7 @@ pub(crate) fn set_value_in_buffer(
 ) {
     let raw = raw_bytes_of(agent, value, kind, little);
     if let (Some(block), Some(bytes)) = (data_block(agent, buffer), raw.get(..kind.size())) {
-        agent.heap().write_bytes(block, index, bytes);
+        block.write(agent.heap(), index, bytes);
     }
 }
 

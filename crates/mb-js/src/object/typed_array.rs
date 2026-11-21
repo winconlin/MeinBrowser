@@ -156,8 +156,8 @@ fn buffer_of<'h>(heap: &'h Heap, object: Ref<'h>) -> Option<Ref<'h>> {
 }
 
 /// MakeTypedArrayWithBufferWitnessRecord (Abschnitt 10.4.5.10) für das
-/// TypedArray `object`; ~seq-cst~ und ~unordered~ unterscheiden sich ohne
-/// SharedArrayBuffer nicht.
+/// TypedArray `object`. Die Länge eines SharedArrayBuffer wird immer mit
+/// ~seq-cst~ gelesen; das ist auch für ~unordered~ erlaubt.
 pub(crate) fn record(heap: &Heap, object: Ref<'_>) -> Option<Record> {
     let kind = kind_of(heap, object)?;
     let length = heap.typed_array_field(object, ARRAY_LENGTH)?;
@@ -184,13 +184,17 @@ pub(crate) fn record_of(agent: &Agent, value: Local<'_>) -> Option<Record> {
     record(heap, typed_array_ref(heap, heap.get(value))?)
 }
 
-/// IsTypedArrayFixedLength (Abschnitt 10.4.5.15).
+/// IsTypedArrayFixedLength (Abschnitt 10.4.5.15). Ein SharedArrayBuffer
+/// wird nie kürzer, also hat ein TypedArray mit fester Länge darauf auch
+/// dann eine feste Länge, wenn er wächst.
 pub(crate) fn is_fixed_length(heap: &Heap, object: Ref<'_>) -> bool {
     let fixed_array = heap
         .typed_array_field(object, ARRAY_LENGTH)
         .is_some_and(|length| !length.is_undefined());
     fixed_array
-        && buffer_of(heap, object).is_some_and(|buffer| buffer::is_fixed_length(heap, buffer))
+        && buffer_of(heap, object).is_some_and(|buffer| {
+            buffer::is_fixed_length(heap, buffer) || buffer::is_shared(heap, buffer)
+        })
 }
 
 /// IsValidIntegerIndex (Abschnitt 10.4.5.16).

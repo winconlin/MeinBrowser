@@ -571,7 +571,7 @@ fn typed_array_constructor<'s>(
     let object = allocate_typed_array(agent, scope, realm, kind, new_target, None)?;
     if typed_array_record_of(agent, first).is_some() {
         initialize_from_typed_array(agent, scope, realm, object, kind, first)?;
-    } else if buffer::is_array_buffer(agent, first) {
+    } else if buffer::has_array_buffer_data(agent, first) {
         let byte_offset = arguments.argument(agent, scope, 1);
         let length = arguments.argument(agent, scope, 2);
         initialize_from_array_buffer(agent, scope, object, kind, first, byte_offset, length)?;

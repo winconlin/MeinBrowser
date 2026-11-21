@@ -32,6 +32,12 @@
 //! Weg erreichbar ist; ist er es nicht, wird der Schlüssel zur Lücke, und
 //! Verweise in den übrigen Feldern werden *undefined*, Zahlen bleiben.
 //!
+//! Die Bytes eines SharedArrayBuffer liegen nicht im Heap, denn andere
+//! Agents sollen sie lesen können. Eine Zelle der Art für geteilte Blöcke
+//! hält nur die Nummer eines Eintrags in einer Tabelle des Heaps, und der
+//! Eintrag hält den Block. Das Sammeln gibt Einträge frei, deren Zelle es
+//! nicht erreicht hat. Die Bytes der Blöcke zählen zum Speicherbudget.
+//!
 //! Gesammelt wird in der ersten Ausbaustufe präzise und kopierend nach
 //! Cheney. Alle Seiten werden zum alten Raum, die erreichbaren Zellen wandern
 //! in neue Seiten, und ein Lesezeiger über die neuen Zellen führt deren
@@ -165,6 +171,8 @@ const KIND_TYPED_ARRAY: u64 = 30;
 const KIND_EPHEMERON: u64 = 31;
 const KIND_WEAK_REF: u64 = 32;
 const KIND_FINALIZATION_REGISTRY: u64 = 33;
+const KIND_SHARED: u64 = 34;
+const KIND_SHARED_ARRAY_BUFFER: u64 = 35;
 
 /// Die Kennzeichen stehen in den Bits 8 bis 31 des Kopfworts.
 const FLAG_SHIFT: u32 = 8;
@@ -212,7 +220,7 @@ fn ephemeron_width(header: u64) -> usize {
 }
 
 /// Die Arten der Objektzellen.
-const OBJECT_KINDS: [u64; 22] = [
+const OBJECT_KINDS: [u64; 23] = [
     KIND_OBJECT,
     KIND_ARRAY,
     KIND_FUNCTION,
@@ -235,6 +243,7 @@ const OBJECT_KINDS: [u64; 22] = [
     KIND_TYPED_ARRAY,
     KIND_WEAK_REF,
     KIND_FINALIZATION_REGISTRY,
+    KIND_SHARED_ARRAY_BUFFER,
 ];
 
 /// Die internen Felder eines Funktionsobjekts, Werte vor den eingebetteten
@@ -277,7 +286,9 @@ pub(crate) const DATE_FIELDS: usize = 1;
 /// aus Bytes oder *null*, wenn er abgelöst ist, und
 /// [[ArrayBufferMaxByteLength]], eine Number oder *undefined* für einen
 /// ArrayBuffer fester Länge. [[ArrayBufferByteLength]] ist die Länge der
-/// Zelle.
+/// Zelle. Ein SharedArrayBuffer hat dieselben Felder; [[ArrayBufferData]]
+/// ist bei ihm eine Zelle für einen geteilten Block, der auch
+/// [[ArrayBufferByteLengthData]] hält.
 pub(crate) const ARRAY_BUFFER_FIELDS: usize = 2;
 /// Die internen Felder eines DataView: [[ViewedArrayBuffer]],
 /// [[ByteLength]] als Number oder *undefined* für ~auto~ und
@@ -321,7 +332,7 @@ fn object_fields(kind: u64) -> usize {
         KIND_PROXY => PROXY_FIELDS,
         KIND_REGEXP => REGEXP_FIELDS,
         KIND_DATE => DATE_FIELDS,
-        KIND_ARRAY_BUFFER => ARRAY_BUFFER_FIELDS,
+        KIND_ARRAY_BUFFER | KIND_SHARED_ARRAY_BUFFER => ARRAY_BUFFER_FIELDS,
         KIND_DATA_VIEW => DATA_VIEW_FIELDS,
         KIND_TYPED_ARRAY => TYPED_ARRAY_FIELDS,
         KIND_WEAK_REF => WEAK_REF_FIELDS,
@@ -355,6 +366,7 @@ fn cell_words(header: u64) -> Option<usize> {
         KIND_UTF16 => length.div_ceil(4),
         KIND_BIGINT => length,
         KIND_BYTES => length.div_ceil(8),
+        KIND_SHARED => length,
         kind if is_value_cell(kind) => length,
         kind if is_object(kind) => length
             .checked_add(OBJECT_REFS)?
@@ -495,6 +507,15 @@ pub struct Heap {
     /// FinalizationRegistries, deren Ziele das Sammeln geleert hat, bis der
     /// Agent ihre Aufräum-Jobs ausführt.
     cleanup: VecDeque<u64>,
+    /// Die geteilten Data Blocks, die Zellen dieses Heaps nennen, und die
+    /// freien Plätze der Tabelle.
+    shared: Vec<Option<shared::Entry>>,
+    free_shared: Vec<usize>,
+    /// Bytes in diesen Blöcken; sie zählen zum Budget.
+    external: usize,
+    /// Ein Eintrag, dessen Zelle gerade angelegt wird, siehe
+    /// [`Heap::adopt_shared`].
+    pinned_shared: Option<usize>,
 }
 
 /// Wo der Lesezeiger steht: die Nummer der kleinen Seite in der Liste, das
@@ -545,6 +566,10 @@ impl Heap {
             kept: Vec::new(),
             kept_cells: HashSet::new(),
             cleanup: VecDeque::new(),
+            shared: Vec::new(),
+            free_shared: Vec::new(),
+            external: 0,
+            pinned_shared: None,
         }
     }
 
@@ -1077,12 +1102,15 @@ impl Heap {
 
     fn allocate(&mut self, words: usize) -> Result<u32, OutOfMemory> {
         let bytes = words.checked_mul(8).ok_or(OutOfMemory)?;
-        if (self.options.stress && self.paused == 0)
-            || self.used.saturating_add(bytes) > self.trigger
-        {
+        let total = |heap: &Heap| {
+            heap.used
+                .saturating_add(heap.external)
+                .saturating_add(bytes)
+        };
+        if (self.options.stress && self.paused == 0) || total(self) > self.trigger {
             self.collect();
         }
-        if self.used.saturating_add(bytes) > self.options.limit {
+        if total(self) > self.options.limit {
             return Err(OutOfMemory);
         }
         let offset = self.bump(words).ok_or(OutOfMemory)?;
@@ -1214,12 +1242,14 @@ impl Heap {
         }
         self.clear_ephemerons();
         self.clear_weak();
+        self.sweep_shared();
 
         for index in old_small.into_iter().chain(old_large) {
             self.release_page(index);
         }
         self.trigger = self
             .used
+            .saturating_add(self.external)
             .saturating_mul(2)
             .max(MIN_TRIGGER)
             .min(self.options.limit);
@@ -1277,6 +1307,7 @@ impl Heap {
         match header_kind(head) {
             KIND_WEAK => self.weak.push(offset),
             KIND_EPHEMERON => self.index_ephemerons(offset, head),
+            KIND_SHARED => self.reach_shared(offset),
             kind if is_value_cell(kind) => self.trace_values(offset, 1, words),
             kind if is_object(kind) => {
                 self.trace_packed(offset, 1, RefKind::Internal, RefKind::Object);
@@ -1528,7 +1559,13 @@ impl Heap {
             RefKind::Object => is_object(cell),
             RefKind::Internal => matches!(
                 cell,
-                KIND_SLOTS | KIND_SHAPE | KIND_WEAK | KIND_SPARSE | KIND_BYTES | KIND_EPHEMERON
+                KIND_SLOTS
+                    | KIND_SHAPE
+                    | KIND_WEAK
+                    | KIND_SPARSE
+                    | KIND_BYTES
+                    | KIND_EPHEMERON
+                    | KIND_SHARED
             ),
             RefKind::BigInt => cell == KIND_BIGINT,
         };
@@ -1574,6 +1611,12 @@ impl Heap {
                 for slot in 1..=count {
                     check(self.word(offset, slot).unwrap_or(0), "Feld")?;
                 }
+            } else if kind == KIND_SHARED {
+                if !self.shared_cell_is_valid(offset) {
+                    return Err(format!(
+                        "Zelle {offset:#x} nennt keinen geteilten Data Block"
+                    ));
+                }
             } else if is_object(kind) {
                 let refs = self.word(offset, 1).unwrap_or(0);
                 if packed_low(refs) == NONE {
@@ -1597,6 +1640,7 @@ impl Heap {
 
 mod bytes;
 mod cells;
+mod shared;
 
 pub(crate) use cells::{CellKind, ObjectClass};
 

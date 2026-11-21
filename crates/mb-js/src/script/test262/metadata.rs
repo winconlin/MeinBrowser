@@ -164,7 +164,13 @@ impl Metadata {
         for flag in &self.flags {
             if !matches!(
                 flag.as_str(),
-                "raw" | "noStrict" | "onlyStrict" | "generated" | "async"
+                "raw"
+                    | "noStrict"
+                    | "onlyStrict"
+                    | "generated"
+                    | "async"
+                    | "CanBlockIsFalse"
+                    | "CanBlockIsTrue"
             ) {
                 return Err(format!("Flag wird noch nicht ausgeführt: {flag}"));
             }
@@ -176,6 +182,9 @@ impl Metadata {
             || (self.flag("noStrict") && self.flag("onlyStrict"))
         {
             return Err("widersprüchliche Modusflags".to_owned());
+        }
+        if self.flag("CanBlockIsFalse") && self.flag("CanBlockIsTrue") {
+            return Err("widersprüchliche Flags für [[CanBlock]]".to_owned());
         }
         if self
             .includes
@@ -224,6 +233,13 @@ impl Metadata {
     /// Ob der Test sein Ergebnis über `print` meldet (Flag `async`).
     pub(super) fn is_async(&self) -> bool {
         self.flag("async")
+    }
+
+    /// [[CanBlock]] des Agents, in dem der Test läuft: *false* nur mit dem
+    /// Flag `CanBlockIsFalse`. Ohne Flag darf der Host wählen; wie die
+    /// Shells der Engines lässt der Läufer den Agent schlafen.
+    pub(super) fn can_block(&self) -> bool {
+        !self.flag("CanBlockIsFalse")
     }
 
     pub(super) fn modes(&self) -> Vec<Mode> {
