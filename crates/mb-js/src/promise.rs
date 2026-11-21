@@ -415,7 +415,7 @@ fn reject_function<'s>(
 /// Die Schritte der Funktion *resolve* ab der Prüfung auf das Promise
 /// selbst: `promise` folgt `resolution`. Hat `resolution` eine Methode
 /// `then`, ruft sie erst ein Job. `realm` ist der aktuelle Realm.
-fn resolve_promise(
+pub(crate) fn resolve_promise(
     agent: &mut Agent,
     scope: &Scope,
     realm: RealmId,

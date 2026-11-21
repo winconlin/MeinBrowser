@@ -66,7 +66,7 @@ fn unsupported_or_ambiguous_metadata_cannot_silently_pass() {
     for text in [
         "flags: [async, raw]",
         "flags: [module, raw]",
-        "flags: [CanBlockIsTrue]",
+        "flags: [CanBlockIsFalse, CanBlockIsTrue]",
         "flags: [unknown]",
         "flags: [raw, onlyStrict]",
         "flags: [noStrict, onlyStrict]",
@@ -480,5 +480,49 @@ fn jobs_run_after_each_script_and_count_like_it() {
     assert_eq!(
         ordinary("function loop() { Promise.resolve().then(loop); } loop();"),
         Outcome::Host(Abrupt::Exhausted(crate::agent::Exhausted::Steps))
+    );
+}
+
+#[test]
+fn can_block_and_wait_async_timers_follow_the_runner() {
+    assert!(metadata("").can_block());
+    assert!(metadata("flags: [CanBlockIsTrue]").can_block());
+    assert!(!metadata("flags: [CanBlockIsFalse]").can_block());
+    let source = "var i32a = new Int32Array(new SharedArrayBuffer(4));\n\
+                  if (Atomics.wait(i32a, 0, 0, 1) !== 'timed-out') {\n\
+                    throw new Test262Error('wait');\n\
+                  }";
+    let blocking = metadata("flags: [CanBlockIsTrue]");
+    assert_eq!(
+        run(source, &blocking, Mode::Sloppy, &harness(&blocking), false),
+        Ok(Outcome::Normal)
+    );
+    let not_blocking = metadata("flags: [CanBlockIsFalse]");
+    assert_eq!(
+        run(
+            source,
+            &not_blocking,
+            Mode::Sloppy,
+            &harness(&not_blocking),
+            false
+        ),
+        Ok(Outcome::Error(ErrorKind::TypeError))
+    );
+    // Der Läufer wartet nach dem Script auf den Zeitgeber, sonst bliebe
+    // der Test unfertig.
+    let source = "var i32a = new Int32Array(new SharedArrayBuffer(4));\n\
+                  Atomics.waitAsync(i32a, 0, 0, 20).value.then(function (v) {\n\
+                    if (v !== 'timed-out') throw new Test262Error(v);\n\
+                  }).then($DONE, $DONE);";
+    let asynchronous = metadata("flags: [async]");
+    assert_eq!(
+        run(
+            source,
+            &asynchronous,
+            Mode::Strict,
+            &harness(&asynchronous),
+            false
+        ),
+        Ok(Outcome::Normal)
     );
 }

@@ -139,6 +139,9 @@ pub enum Intrinsic {
     /// %ArrayBuffer.prototype% (Abschnitt 25.1.6), ein gewöhnliches
     /// Objekt.
     ArrayBufferPrototype,
+    /// %SharedArrayBuffer.prototype% (Abschnitt 25.2.5), ein gewöhnliches
+    /// Objekt.
+    SharedArrayBufferPrototype,
     /// %DataView.prototype% (Abschnitt 25.3.4), ein gewöhnliches Objekt.
     DataViewPrototype,
     /// %TypedArray.prototype% (Abschnitt 23.2.3), ein gewöhnliches Objekt.
@@ -248,6 +251,10 @@ pub enum Intrinsic {
     FinalizationRegistry,
     /// %ArrayBuffer% (Abschnitt 25.1.4).
     ArrayBuffer,
+    /// %SharedArrayBuffer% (Abschnitt 25.2.3).
+    SharedArrayBuffer,
+    /// %Atomics% (Abschnitt 25.4).
+    Atomics,
     /// %DataView% (Abschnitt 25.3.2).
     DataView,
     /// %TypedArray% (Abschnitt 23.2.1), ohne globalen Namen.
@@ -838,6 +845,7 @@ fn set_default_global_bindings(
         ("ReferenceError", Intrinsic::ReferenceError),
         ("RegExp", Intrinsic::RegExp),
         ("Set", Intrinsic::Set),
+        ("SharedArrayBuffer", Intrinsic::SharedArrayBuffer),
         ("String", Intrinsic::String),
         ("Symbol", Intrinsic::Symbol),
         ("SyntaxError", Intrinsic::SyntaxError),
@@ -850,12 +858,13 @@ fn set_default_global_bindings(
         ("WeakMap", Intrinsic::WeakMap),
         ("WeakRef", Intrinsic::WeakRef),
         ("WeakSet", Intrinsic::WeakSet),
-        // Die Funktionen aus Abschnitt 19.2 und %JSON%, %Math% und
-        // %Reflect% aus Abschnitt 19.4 haben dieselben Attribute.
+        // Die Funktionen aus Abschnitt 19.2 und %Atomics%, %JSON%, %Math%
+        // und %Reflect% aus Abschnitt 19.4 haben dieselben Attribute.
         ("isFinite", Intrinsic::IsFinite),
         ("isNaN", Intrinsic::IsNaN),
         ("parseFloat", Intrinsic::ParseFloat),
         ("parseInt", Intrinsic::ParseInt),
+        ("Atomics", Intrinsic::Atomics),
         ("JSON", Intrinsic::Json),
         ("Math", Intrinsic::Math),
         ("Reflect", Intrinsic::Reflect),

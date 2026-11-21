@@ -58,6 +58,8 @@ Ein Abbruch ist kein Rollback. Vorherige Zuweisungen und angelegte Bindungen ble
 
 Schritte sind keine Laufzeit- oder RAM-Messung. Parser, Compiler, globale Deklarationsarbeit, Garbage Collection und die vollständigen Kosten einer einzelnen nativen Operation werden damit nicht umfassend budgetiert. Ein großes String- oder Objektkommando kann mehr Arbeit als ein einfacher Sprung kosten. Abbruchsignale wirken an den Kontrollpunkten; das Paket liefert keine feste maximale Reaktionszeit für jede native Operation.
 
+Schlafen in `Atomics.wait` kostet keine Schritte, denn es ist keine Arbeit. Es endet mit seiner Wartezeit, durch `Atomics.notify` oder spätestens etwa 10 ms nach einem Abbruchsignal der aktiven Quote; ohne Abbruchsignal und mit unendlicher Wartezeit schläft ein Agent ohne Ende. Darum darf ein Agent nur schlafen, wenn sein Host [[CanBlock]] mit `Agent::set_can_block` erlaubt hat; sonst wirft `Atomics.wait` einen TypeError. Die Zeitgeber von `Atomics.waitAsync` prüft der Agent nur in `run_jobs`; ein Host, der auf sie warten will, fragt `Agent::next_timer` und wartet selbst.
+
 Das bestehende Rust-Stapelbudget bleibt erhalten. Die Quotenverwaltung verspricht wie `Agent::scope` keine Wiederverwendung nach einem abgefangenen Rust-Panic. Prozessisolation, Sandbox, Ereignisschleife und die weiteren M2-/M5-Schutzschichten bleiben eigenständige Aufgaben.
 
 ## Fuzzing und Prüfung

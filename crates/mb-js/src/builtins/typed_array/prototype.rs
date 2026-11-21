@@ -9,7 +9,7 @@ use super::{
     typed_array_species_create, validate_typed_array,
 };
 use crate::agent::{Agent, Completion, ErrorKind};
-use crate::buffer::ElementType;
+use crate::buffer::{self, ElementType};
 use crate::builtin::{Builtin, BuiltinCall, create_builtin_function};
 use crate::builtins::array::{
     find_via_predicate_in, index_key, join_indexed_properties, sort_typed_array_elements, step,
@@ -28,7 +28,7 @@ use crate::object::{
 };
 use crate::operations::{call, define_property_or_throw, get, has_property, is_callable};
 use crate::realm::{Intrinsic, RealmId};
-use crate::value::Value;
+use crate::value::{Kind, Value};
 
 /// Ein Eintrag der Tabelle der Methoden.
 const fn method(name: &'static str, length: u32, behaviour: crate::builtin::Behaviour) -> Builtin {
@@ -225,6 +225,21 @@ fn each_element(
     Ok(())
 }
 
+/// Ob zwei Puffer derselbe sind oder SharedArrayBuffer mit demselben Block
+/// (SetTypedArrayFromTypedArray, Abschnitt 23.2.3.26.1, Schritte 15 und
+/// 16).
+fn same_buffer(agent: &Agent, left: Local<'_>, right: Local<'_>) -> bool {
+    let heap = agent.heap();
+    let (left, right) = (heap.get(left), heap.get(right));
+    if same_value(heap, left, right) {
+        return true;
+    }
+    match (left.kind(), right.kind()) {
+        (Kind::Object(left), Kind::Object(right)) => buffer::same_shared_block(heap, left, right),
+        _ => false,
+    }
+}
+
 /// Kopiert `count` Bytes von `from` nach `to` im selben ArrayBuffer oder
 /// zwischen zwei ArrayBuffern Byte für Byte aufsteigend, wie es `slice`
 /// verlangt (Abschnitt 23.2.3.27, Schritt 14.b.ix): Liegt das Ziel im
@@ -239,10 +254,7 @@ fn copy_ascending(
     from: u64,
     count: u64,
 ) -> Completion<()> {
-    let same = {
-        let heap = agent.heap();
-        same_value(heap, heap.get(to_buffer), heap.get(from_buffer))
-    };
+    let same = same_buffer(agent, to_buffer, from_buffer);
     let distance = to.saturating_sub(from);
     if !same || to <= from || distance >= count {
         return copy_buffer_bytes(agent, to_buffer, to, from_buffer, from, count);
@@ -1027,10 +1039,7 @@ fn set_from_typed_array(
             count,
         );
     }
-    let same = {
-        let heap = agent.heap();
-        same_value(heap, heap.get(source_buffer), heap.get(target_buffer))
-    };
+    let same = same_buffer(agent, source_buffer, target_buffer);
     let (source_buffer, source_index) = if same {
         let byte_length = source_record.byte_length();
         let offset = source_record.byte_offset;

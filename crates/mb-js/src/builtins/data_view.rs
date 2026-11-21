@@ -172,7 +172,7 @@ fn data_view_constructor<'s>(
         return Err(agent.throw_error(ErrorKind::TypeError));
     };
     let buffer = arguments.argument(agent, scope, 0);
-    if !buffer::is_array_buffer(agent, buffer) {
+    if !buffer::has_array_buffer_data(agent, buffer) {
         return Err(agent.throw_error(ErrorKind::TypeError));
     }
     let byte_offset = arguments.argument(agent, scope, 1);

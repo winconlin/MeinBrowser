@@ -183,3 +183,10 @@ path = "fuzz_targets/weak.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "atomics"
+path = "fuzz_targets/atomics.rs"
+test = false
+doc = false
+bench = false

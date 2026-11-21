@@ -1,16 +1,19 @@
 //! Der Host für Test262 mit den Funktionen aus INTERPRETING.md
 //! („Host-Defined Functions“): `print` und `$262` mit `createRealm`,
 //! `detachArrayBuffer`, `evalScript`, `gc` und `global`. Es fehlen
-//! `IsHTMLDDA`, `agent` und `AbstractModuleSource`, denn die Engine hat die
-//! Teile dafür noch nicht.
+//! `IsHTMLDDA` und `AbstractModuleSource`, denn die Engine hat die Teile
+//! dafür noch nicht, und `agent`: Jeder weitere Agent bräuchte einen
+//! eigenen Faden mit eigenem Heap. Die Tests, die mehrere Agents starten,
+//! scheitern deshalb noch erwartet.
 //!
 //! Lesarten, wo INTERPRETING.md nichts festlegt: Die Eigenschaften von
 //! `$262` haben dieselben Attribute wie `print` und `$262` selbst
 //! (beschreibbar, konfigurierbar, nicht aufzählbar). `evalScript` und
 //! `print` wandeln ihr erstes Argument mit ToString. `length` ist die Zahl
 //! der Argumente, die die Funktion liest. `detachArrayBuffer` wirft für
-//! etwas anderes als einen ArrayBuffer einen TypeError, wo die abstrakte
-//! Operation nur zusichert, und gibt sonst *undefined* zurück.
+//! etwas anderes als einen ArrayBuffer, auch für einen SharedArrayBuffer,
+//! einen TypeError, wo die abstrakte Operation nur zusichert, und gibt
+//! sonst *undefined* zurück.
 
 use std::any::Any;
 use std::cell::RefCell;
