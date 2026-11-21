@@ -5806,6 +5806,22 @@ fn atomics_read_modify_write_elements() {
              Atomics.store(a, 1, { valueOf() { b.resize(4); return 1; } })",
             "RangeError",
         ),
+        // Ein Rest von 6 Bytes schneidet das Element 4 bis 7 durch.
+        (
+            "var b = new ArrayBuffer(8, { maxByteLength: 8 }); var a = new Int32Array(b); \
+             Atomics.store(a, 1, { valueOf() { b.resize(6); return 42; } })",
+            "RangeError",
+        ),
+        (
+            "var b = new ArrayBuffer(16, { maxByteLength: 16 }); var a = new BigInt64Array(b); \
+             Atomics.compareExchange(a, 1, 0n, { valueOf() { b.resize(12); return 1n; } })",
+            "RangeError",
+        ),
+        (
+            "var b = new ArrayBuffer(8, { maxByteLength: 8 }); var a = new Uint16Array(b); \
+             [Atomics.add(a, 2, { valueOf() { b.resize(6); return 3; } }), a[2], a.length].join()",
+            "\"0,3,3\"",
+        ),
         (
             "[1, 2, 3, 4, 8, 16, -0].map(Atomics.isLockFree).join()",
             "\"true,true,false,true,true,false,false\"",
