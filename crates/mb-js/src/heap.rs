@@ -140,6 +140,7 @@ const KIND_DATE: u64 = 26;
 const KIND_BYTES: u64 = 27;
 const KIND_ARRAY_BUFFER: u64 = 28;
 const KIND_DATA_VIEW: u64 = 29;
+const KIND_TYPED_ARRAY: u64 = 30;
 
 /// Die Kennzeichen stehen in den Bits 8 bis 31 des Kopfworts.
 const FLAG_SHIFT: u32 = 8;
@@ -179,7 +180,7 @@ fn is_value_cell(kind: u64) -> bool {
 }
 
 /// Die Arten der Objektzellen.
-const OBJECT_KINDS: [u64; 19] = [
+const OBJECT_KINDS: [u64; 20] = [
     KIND_OBJECT,
     KIND_ARRAY,
     KIND_FUNCTION,
@@ -199,6 +200,7 @@ const OBJECT_KINDS: [u64; 19] = [
     KIND_DATE,
     KIND_ARRAY_BUFFER,
     KIND_DATA_VIEW,
+    KIND_TYPED_ARRAY,
 ];
 
 /// Die internen Felder eines Funktionsobjekts, Werte vor den eingebetteten
@@ -248,6 +250,12 @@ pub(crate) const ARRAY_BUFFER_FIELDS: usize = 2;
 /// [[ByteOffset]] als Number. [[DataView]] hat keinen Wert, die Art sagt
 /// alles.
 pub(crate) const DATA_VIEW_FIELDS: usize = 3;
+/// Die internen Felder eines TypedArray: [[ViewedArrayBuffer]], die Art der
+/// Elemente als Zahl (sie steht für [[TypedArrayName]] und
+/// [[ContentType]]), [[ArrayLength]] als Number oder *undefined* für ~auto~
+/// und [[ByteOffset]] als Number. [[ByteLength]] ist [[ArrayLength]] mal
+/// die Größe eines Elements, ~auto~ mit [[ArrayLength]].
+pub(crate) const TYPED_ARRAY_FIELDS: usize = 4;
 
 fn is_object(kind: u64) -> bool {
     OBJECT_KINDS.contains(&kind)
@@ -273,6 +281,7 @@ fn object_fields(kind: u64) -> usize {
         KIND_DATE => DATE_FIELDS,
         KIND_ARRAY_BUFFER => ARRAY_BUFFER_FIELDS,
         KIND_DATA_VIEW => DATA_VIEW_FIELDS,
+        KIND_TYPED_ARRAY => TYPED_ARRAY_FIELDS,
         _ => 0,
     }
 }

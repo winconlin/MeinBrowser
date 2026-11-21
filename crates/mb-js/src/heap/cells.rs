@@ -7,9 +7,9 @@ use super::{
     KIND_ASYNC_GENERATOR, KIND_BOUND_FUNCTION, KIND_BUILTIN, KIND_COLLECTION, KIND_DATA_VIEW,
     KIND_DATE, KIND_ERROR, KIND_FUNCTION, KIND_GENERATOR, KIND_ITERATOR, KIND_OBJECT,
     KIND_PRIMITIVE, KIND_PROMISE, KIND_PROXY, KIND_REGEXP, KIND_SHAPE, KIND_SLOTS, KIND_SPARSE,
-    KIND_SYMBOL, KIND_WEAK, Local, NONE, OBJECT_REFS, OutOfMemory, Scope, cell_words, header,
-    header_flags, header_kind, header_length, is_object, is_value_cell, object_fields, packed,
-    packed_high, packed_low, to_usize, with_flags,
+    KIND_SYMBOL, KIND_TYPED_ARRAY, KIND_WEAK, Local, NONE, OBJECT_REFS, OutOfMemory, Scope,
+    cell_words, header, header_flags, header_kind, header_length, is_object, is_value_cell,
+    object_fields, packed, packed_high, packed_low, to_usize, with_flags,
 };
 use crate::value::{Ref, RefKind, Value};
 
@@ -138,6 +138,11 @@ pub(crate) enum ObjectClass {
     /// [`DATA_VIEW_FIELDS`](super::DATA_VIEW_FIELDS) internen Feldern,
     /// sonst gewöhnlich.
     DataView,
+    /// Ein TypedArray (Abschnitt 10.4.5) mit
+    /// [`TYPED_ARRAY_FIELDS`](super::TYPED_ARRAY_FIELDS) internen Feldern
+    /// und eigenen internen Methoden für Schlüssel, die kanonische
+    /// numerische Zeichenketten sind.
+    TypedArray,
 }
 
 impl ObjectClass {
@@ -162,6 +167,7 @@ impl ObjectClass {
             ObjectClass::Date => KIND_DATE,
             ObjectClass::ArrayBuffer => KIND_ARRAY_BUFFER,
             ObjectClass::DataView => KIND_DATA_VIEW,
+            ObjectClass::TypedArray => KIND_TYPED_ARRAY,
         }
     }
 
@@ -186,6 +192,7 @@ impl ObjectClass {
             KIND_DATE => Some(ObjectClass::Date),
             KIND_ARRAY_BUFFER => Some(ObjectClass::ArrayBuffer),
             KIND_DATA_VIEW => Some(ObjectClass::DataView),
+            KIND_TYPED_ARRAY => Some(ObjectClass::TypedArray),
             _ => None,
         }
     }
@@ -760,6 +767,24 @@ impl Heap {
         value: Value<'_>,
     ) -> bool {
         self.field_word(object, KIND_DATA_VIEW, index)
+            .is_some_and(|word| self.store(object.offset(), word, value.bits()))
+    }
+
+    /// Ein internes Feld eines TypedArray, `None` für andere Zellen.
+    pub(crate) fn typed_array_field(&self, object: Ref<'_>, index: usize) -> Option<Value<'_>> {
+        let word = self.field_word(object, KIND_TYPED_ARRAY, index)?;
+        self.word(object.offset(), word).map(Value::from_bits)
+    }
+
+    /// Schreibt ein internes Feld eines TypedArray. `false`, wenn es das
+    /// Feld nicht gibt.
+    pub(crate) fn set_typed_array_field(
+        &self,
+        object: Ref<'_>,
+        index: usize,
+        value: Value<'_>,
+    ) -> bool {
+        self.field_word(object, KIND_TYPED_ARRAY, index)
             .is_some_and(|word| self.store(object.offset(), word, value.bits()))
     }
 }

@@ -79,7 +79,8 @@ pub fn is_callable(heap: &Heap, value: Value<'_>) -> bool {
                 | ObjectClass::RegExp
                 | ObjectClass::Date
                 | ObjectClass::ArrayBuffer
-                | ObjectClass::DataView,
+                | ObjectClass::DataView
+                | ObjectClass::TypedArray,
             )
             | None => false,
         },

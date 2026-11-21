@@ -14,6 +14,7 @@
 mod from_async;
 mod sort;
 
+pub(super) use self::sort::sort_typed_array_elements;
 use self::sort::{Holes, sort_indexed_properties};
 use super::iterator::{ENTRIES, KEYS, VALUES, iterator_create};
 use super::object::object_prototype_to_string;
@@ -973,6 +974,20 @@ fn find_via_predicate<'s>(
 ) -> Completion<(f64, Local<'s>)> {
     let object = this_object(agent, scope, arguments)?;
     let length = length_of_array_like(agent, scope, object)?;
+    find_via_predicate_in(agent, scope, object, length, arguments, from_end)
+}
+
+/// FindViaPredicate für ein Objekt, dessen Länge feststeht; das
+/// Prädikat und *thisArg* sind die Argumente 0 und 1. Auch für
+/// TypedArrays (Abschnitt 23.2.3.11 und folgende).
+pub(super) fn find_via_predicate_in<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    object: Local<'_>,
+    length: f64,
+    arguments: &BuiltinCall<'_, '_>,
+    from_end: bool,
+) -> Completion<(f64, Local<'s>)> {
     let predicate = callable(agent, scope, arguments, 0)?;
     let this_arg = arguments.argument(agent, scope, 1);
     let found = undefined(agent, scope);
@@ -1341,12 +1356,36 @@ fn array_prototype_join<'s>(
         let string = to_string(agent, scope, separator)?;
         units_of(agent, string)
     };
+    join_indexed_properties(
+        agent,
+        scope,
+        arguments.realm,
+        object,
+        length,
+        &separator,
+        false,
+    )
+}
+
+/// JoinIndexedProperties (Abschnitt 23.1.3.18.1): die Elemente von
+/// `object` bis `length` als Zeichenketten, getrennt durch `separator`;
+/// mit `locale` über ihre Methode `toLocaleString` ohne Argumente. `realm`
+/// ist der aktuelle Realm für Invoke.
+pub(super) fn join_indexed_properties<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    realm: RealmId,
+    object: Local<'_>,
+    length: f64,
+    separator: &[u16],
+    locale: bool,
+) -> Completion<Local<'s>> {
     let mut text = Vec::new();
     let mut k = 0.0;
     while k < length {
         step(agent)?;
         if k > 0.0 {
-            append(agent, &mut text, &separator)?;
+            append(agent, &mut text, separator)?;
         }
         agent.scope(|agent, inner| -> Completion<()> {
             let key = index_key(agent, inner, k)?;
@@ -1355,7 +1394,13 @@ fn array_prototype_join<'s>(
             if found.is_undefined() || found.is_null() {
                 return Ok(());
             }
-            let string = to_string(agent, inner, element)?;
+            let string = if locale {
+                let key = agent.key_from_units(inner, &units("toLocaleString"))?;
+                let result = invoke(agent, inner, realm, element, key, &[])?;
+                to_string(agent, inner, result)?
+            } else {
+                to_string(agent, inner, element)?
+            };
             append(agent, &mut text, &units_of(agent, string))
         })?;
         k += 1.0;
@@ -1554,32 +1599,18 @@ fn array_prototype_to_locale_string<'s>(
     scope: &'s Scope,
     arguments: &BuiltinCall<'_, '_>,
 ) -> Completion<Local<'s>> {
-    let realm = arguments.realm;
     let object = this_object(agent, scope, arguments)?;
     let length = length_of_array_like(agent, scope, object)?;
-    let separator = units(",");
-    let mut text = Vec::new();
-    let mut k = 0.0;
-    while k < length {
-        step(agent)?;
-        if k > 0.0 {
-            append(agent, &mut text, &separator)?;
-        }
-        agent.scope(|agent, inner| -> Completion<()> {
-            let key = index_key(agent, inner, k)?;
-            let element = get(agent, inner, object, key)?;
-            let found = agent.heap().get(element);
-            if found.is_undefined() || found.is_null() {
-                return Ok(());
-            }
-            let key = agent.key_from_units(inner, &units("toLocaleString"))?;
-            let result = invoke(agent, inner, realm, element, key, &[])?;
-            let string = to_string(agent, inner, result)?;
-            append(agent, &mut text, &units_of(agent, string))
-        })?;
-        k += 1.0;
-    }
-    Ok(agent.heap_mut().alloc_string(scope, &text)?)
+    // LocalizedListSeparator ohne ECMA-402.
+    join_indexed_properties(
+        agent,
+        scope,
+        arguments.realm,
+        object,
+        length,
+        &units(","),
+        true,
+    )
 }
 
 /// Array.prototype.toString ( ) (Abschnitt 23.1.3.36): `join`, wenn das
