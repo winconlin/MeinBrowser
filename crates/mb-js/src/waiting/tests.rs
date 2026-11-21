@@ -157,7 +157,10 @@ fn async_waiters_settle_after_notify_or_timeout() {
     let shared = block();
     let (started, notified) = wait_async(&mut agent, realm, &shared, f64::INFINITY);
     assert_eq!(started, None);
-    let (started, timed) = wait_async(&mut agent, realm, &shared, 5.0);
+    // Der Zeitgeber des zweiten darf nicht ablaufen, solange der erste
+    // geweckt wird; mit 5 ms lief er auf einem ausgelasteten Rechner schon
+    // in `fulfilled_with` ab. Eine Minute reicht dafür in jedem Fall.
+    let (started, later) = wait_async(&mut agent, realm, &shared, 60_000.0);
     assert_eq!(started, None);
     assert_eq!(agent.async_waiter_count(), 2);
     assert!(agent.next_timer().is_some());
@@ -166,6 +169,16 @@ fn async_waiters_settle_after_notify_or_timeout() {
     assert!(agent.has_pending_jobs());
     assert_eq!(fulfilled_with(&mut agent, realm, &notified), "ok");
     assert_eq!(agent.async_waiter_count(), 1);
+    assert!(agent.next_timer().is_some());
+    // Wer vor seinem Zeitgeber geweckt wird, bekommt *"ok"*.
+    assert_eq!(notify(&shared, 0, 1), 1);
+    assert_eq!(fulfilled_with(&mut agent, realm, &later), "ok");
+    assert_eq!(agent.async_waiter_count(), 0);
+    assert_eq!(agent.next_timer(), None);
+    // Ein kurzer Zeitgeber läuft ab; der Test wartet nur darauf, er wettet
+    // nicht gegen ihn.
+    let (started, timed) = wait_async(&mut agent, realm, &shared, 5.0);
+    assert_eq!(started, None);
     let next = agent.next_timer().expect("Zeitgeber");
     std::thread::sleep(next.saturating_duration_since(Instant::now()));
     assert!(agent.has_pending_jobs());
@@ -186,6 +199,7 @@ fn async_waiters_settle_after_notify_or_timeout() {
     );
     assert_eq!(agent.async_waiter_count(), 0);
     agent.heap_mut().release(notified);
+    agent.heap_mut().release(later);
     agent.heap_mut().release(timed);
 }
 
