@@ -34,7 +34,7 @@ use crate::heap::{Local, ObjectClass, OutOfMemory, Scope};
 use crate::iterator::create_iterator_result_object;
 use crate::key::{PropertyKey, WellKnownSymbol};
 use crate::number;
-use crate::object::{INLINE, array_create, ordinary_object_create};
+use crate::object::{INLINE, array_create, ordinary_object_create, typed_array_record_of};
 use crate::operations::{create_data_property_or_throw, define_property_or_throw, get};
 use crate::realm::{Intrinsic, RealmId};
 use crate::value::{Kind, Value};
@@ -253,15 +253,15 @@ fn iterator_prototype_iterator<'s>(
     Ok(heap.local(scope, heap.get(arguments.this)))
 }
 
-/// %ArrayIteratorPrototype%.next ( ) (Abschnitt 23.1.5.2.1). Arrays mit
-/// [[TypedArrayName]] gibt es noch nicht.
+/// %ArrayIteratorPrototype%.next ( ) (Abschnitt 23.1.5.2.1): GeneratorResume
+/// für die Closure aus CreateArrayIterator (Abschnitt 23.1.5.1). Wirft
+/// sie, ist der Generator danach fertig wie nach ihrem Ende.
 fn array_iterator_next<'s>(
     agent: &mut Agent,
     scope: &'s Scope,
     arguments: &BuiltinCall<'_, '_>,
 ) -> Completion<Local<'s>> {
     let this = arguments.this;
-    let realm = arguments.realm;
     let kind = match kind_of(agent, scope, this) {
         Some(kind @ (KEYS | VALUES | ENTRIES)) => kind,
         _ => return Err(agent.throw_error(ErrorKind::TypeError)),
@@ -270,15 +270,42 @@ fn array_iterator_next<'s>(
         return Err(agent.throw_error(ErrorKind::TypeError));
     };
     if agent.heap().get(array).is_undefined() {
-        return done(agent, scope, realm);
+        return done(agent, scope, arguments.realm);
     }
+    let result = array_iterator_step(agent, scope, arguments, array, kind);
+    if result.is_err() {
+        set_field(agent, this, TARGET, Value::UNDEFINED);
+    }
+    result
+}
+
+/// Ein Schritt der Closure aus CreateArrayIterator für das Array oder
+/// TypedArray `array`.
+fn array_iterator_step<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    arguments: &BuiltinCall<'_, '_>,
+    array: Local<'_>,
+    kind: i32,
+) -> Completion<Local<'s>> {
+    let this = arguments.this;
+    let realm = arguments.realm;
     let index = field(agent, scope, this, INDEX)
         .and_then(|index| agent.heap().get(index).as_number())
         .unwrap_or(0.0);
-    // LengthOfArrayLike (Abschnitt 7.3.18).
-    let key = agent.key_from_units(scope, &units("length"))?;
-    let length = get(agent, scope, array, key)?;
-    let length = to_length(agent, scope, length)?;
+    let length = if let Some(record) = typed_array_record_of(agent, array) {
+        // Schritt 1.b.i: TypedArrayLength, ein TypeError außerhalb der
+        // Grenzen. Längen liegen unter 2⁵³.
+        match record.length_in_bounds() {
+            Some(length) => length as f64,
+            None => return Err(agent.throw_error(ErrorKind::TypeError)),
+        }
+    } else {
+        // LengthOfArrayLike (Abschnitt 7.3.18).
+        let key = agent.key_from_units(scope, &units("length"))?;
+        let length = get(agent, scope, array, key)?;
+        to_length(agent, scope, length)?
+    };
     if index >= length {
         set_field(agent, this, TARGET, Value::UNDEFINED);
         return done(agent, scope, realm);

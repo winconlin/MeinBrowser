@@ -2,7 +2,7 @@
 //! der Elemente aus der Tabelle der TypedArray-Konstruktoren (Abschnitt
 //! 23.2), die Umwandlung zwischen Zahlen und Bytes (RawBytesToNumeric und
 //! NumericToRawBytes, Abschnitte 25.1.3.14 und 25.1.3.17) mit binary16, und
-//! die abstrakten Operationen auf ArrayBuffern, die DataView und später die
+//! die abstrakten Operationen auf ArrayBuffern, die DataView und die
 //! typisierten Arrays teilen.
 //!
 //! Ein ArrayBuffer ist ein Objekt der Art [`ObjectClass::ArrayBuffer`]. Sein
@@ -23,8 +23,8 @@
 //!   Ein veränderlicher ArrayBuffer reserviert nichts im Voraus: `resize`
 //!   legt einen neuen Block an und kopiert, was die Anmerkung dort erlaubt.
 //! - HostResizeArrayBuffer (Abschnitt 25.1.3.8) gibt immer ~unhandled~.
-//! - [[LittleEndian]] des Agents ist *true*. Beobachten lässt es sich erst
-//!   mit den typisierten Arrays.
+//! - [[LittleEndian]] des Agents ist *true*; so lesen und schreiben die
+//!   typisierten Arrays ihre Elemente.
 //! - Ein NaN wird als das NaN geschrieben, das auch Rust für `f64::NAN` und
 //!   `f32::NAN` nimmt, bei binary16 als 0x7E00 (NumericToRawBytes lässt die
 //!   Wahl).
@@ -35,7 +35,7 @@
 
 use crate::agent::{Agent, Completion, ErrorKind};
 use crate::bigint::{self, BigInt};
-use crate::heap::{Local, ObjectClass, Scope};
+use crate::heap::{Heap, Local, ObjectClass, Scope};
 use crate::number;
 use crate::object::{INLINE, get_prototype_from_constructor};
 use crate::realm::{Intrinsic, RealmId};
@@ -63,12 +63,12 @@ const BYTES_PER_STEP: u64 = 256;
 const MAX_SIZE: u64 = (1 << 53) - 1;
 
 /// Die Arten der Elemente (Abschnitt 23.2, Tabelle der
-/// TypedArray-Konstruktoren), bisher ohne ~uint8clamped~, das erst die
-/// typisierten Arrays brauchen.
+/// TypedArray-Konstruktoren), in der Reihenfolge der Tabelle.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ElementType {
     Int8,
     Uint8,
+    Uint8Clamped,
     Int16,
     Uint16,
     Int32,
@@ -81,10 +81,67 @@ pub(crate) enum ElementType {
 }
 
 impl ElementType {
+    /// Alle Arten in der Reihenfolge der Tabelle.
+    pub(crate) const ALL: [ElementType; 12] = [
+        ElementType::Int8,
+        ElementType::Uint8,
+        ElementType::Uint8Clamped,
+        ElementType::Int16,
+        ElementType::Uint16,
+        ElementType::Int32,
+        ElementType::Uint32,
+        ElementType::BigInt64,
+        ElementType::BigUint64,
+        ElementType::Float16,
+        ElementType::Float32,
+        ElementType::Float64,
+    ];
+
+    /// Die Zeile in der Tabelle, von 0 an.
+    pub(crate) fn index(self) -> u8 {
+        match self {
+            ElementType::Int8 => 0,
+            ElementType::Uint8 => 1,
+            ElementType::Uint8Clamped => 2,
+            ElementType::Int16 => 3,
+            ElementType::Uint16 => 4,
+            ElementType::Int32 => 5,
+            ElementType::Uint32 => 6,
+            ElementType::BigInt64 => 7,
+            ElementType::BigUint64 => 8,
+            ElementType::Float16 => 9,
+            ElementType::Float32 => 10,
+            ElementType::Float64 => 11,
+        }
+    }
+
+    /// Die Art in der Zeile `index` der Tabelle.
+    pub(crate) fn from_index(index: u8) -> Option<ElementType> {
+        ElementType::ALL.get(usize::from(index)).copied()
+    }
+
+    /// Der Constructor Name aus der Tabelle, zugleich [[TypedArrayName]].
+    pub(crate) fn constructor_name(self) -> &'static str {
+        match self {
+            ElementType::Int8 => "Int8Array",
+            ElementType::Uint8 => "Uint8Array",
+            ElementType::Uint8Clamped => "Uint8ClampedArray",
+            ElementType::Int16 => "Int16Array",
+            ElementType::Uint16 => "Uint16Array",
+            ElementType::Int32 => "Int32Array",
+            ElementType::Uint32 => "Uint32Array",
+            ElementType::BigInt64 => "BigInt64Array",
+            ElementType::BigUint64 => "BigUint64Array",
+            ElementType::Float16 => "Float16Array",
+            ElementType::Float32 => "Float32Array",
+            ElementType::Float64 => "Float64Array",
+        }
+    }
+
     /// Element Size: die Zahl der Bytes eines Elements.
     pub(crate) fn size(self) -> usize {
         match self {
-            ElementType::Int8 | ElementType::Uint8 => 1,
+            ElementType::Int8 | ElementType::Uint8 | ElementType::Uint8Clamped => 1,
             ElementType::Int16 | ElementType::Uint16 | ElementType::Float16 => 2,
             ElementType::Int32 | ElementType::Uint32 | ElementType::Float32 => 4,
             ElementType::BigInt64 | ElementType::BigUint64 | ElementType::Float64 => 8,
@@ -130,6 +187,7 @@ pub(crate) fn number_to_raw_bytes(kind: ElementType, value: f64, little: bool) -
             let double = if value.is_nan() { f64::NAN } else { value };
             put(&mut bytes, &double.to_le_bytes());
         }
+        ElementType::Uint8Clamped => put(&mut bytes, &[to_uint8_clamp(value)]),
         // ToInt8 bis ToUint32 (Abschnitte 7.1.8 bis 7.1.13): Der Rest
         // modulo 2³² hat dieselben unteren Bytes wie der modulo 2⁸ oder
         // 2¹⁶, das Vorzeichen ergibt sich aus dem Zweierkomplement.
@@ -154,6 +212,22 @@ pub(crate) fn bigint_to_raw_bytes(negative: bool, low: u64, little: bool) -> Raw
     }
 }
 
+/// NumericToRawBytes für einen Wert, wie ihn [`raw_bytes_to_numeric`]
+/// liefert, etwa beim Umwandeln zwischen zwei Arten. Eine Art mit Numbers
+/// und ein BigInt oder umgekehrt ergeben 0; die Aufrufer haben die
+/// [[ContentType]] beider Seiten verglichen.
+pub(crate) fn numeric_to_raw_bytes(kind: ElementType, value: Numeric, little: bool) -> RawBytes {
+    match (value, kind.is_bigint()) {
+        (Numeric::Number(number), false) => number_to_raw_bytes(kind, number, little),
+        // Die 64 Bit des Zweierkomplements sind dieselben.
+        (Numeric::BigInt64(bits), true) => {
+            bigint_to_raw_bytes(false, u64::from_le_bytes(bits.to_le_bytes()), little)
+        }
+        (Numeric::BigUint64(bits), true) => bigint_to_raw_bytes(false, bits, little),
+        _ => [0; 8],
+    }
+}
+
 /// RawBytesToNumeric (Abschnitt 25.1.3.14). `bytes` hat mindestens
 /// [`ElementType::size`] Bytes; fehlende gelten als 0.
 pub(crate) fn raw_bytes_to_numeric(kind: ElementType, bytes: &[u8], little: bool) -> Numeric {
@@ -167,7 +241,7 @@ pub(crate) fn raw_bytes_to_numeric(kind: ElementType, bytes: &[u8], little: bool
     let [b0, b1, b2, b3, ..] = raw;
     match kind {
         ElementType::Int8 => Numeric::Number(f64::from(i8::from_le_bytes([b0]))),
-        ElementType::Uint8 => Numeric::Number(f64::from(b0)),
+        ElementType::Uint8 | ElementType::Uint8Clamped => Numeric::Number(f64::from(b0)),
         ElementType::Int16 => Numeric::Number(f64::from(i16::from_le_bytes([b0, b1]))),
         ElementType::Uint16 => Numeric::Number(f64::from(u16::from_le_bytes([b0, b1]))),
         ElementType::Int32 => Numeric::Number(f64::from(i32::from_le_bytes([b0, b1, b2, b3]))),
@@ -177,6 +251,26 @@ pub(crate) fn raw_bytes_to_numeric(kind: ElementType, bytes: &[u8], little: bool
         ElementType::Float16 => Numeric::Number(f16_value(u16::from_le_bytes([b0, b1]))),
         ElementType::Float32 => Numeric::Number(f64::from(f32::from_le_bytes([b0, b1, b2, b3]))),
         ElementType::Float64 => Numeric::Number(f64::from_le_bytes(raw)),
+    }
+}
+
+/// ToUint8Clamp (Abschnitt 7.1.12): auf 0 bis 255 begrenzt, zur nächsten
+/// ganzen Zahl gerundet, bei Gleichstand zur geraden.
+pub(crate) fn to_uint8_clamp(value: f64) -> u8 {
+    if value.is_nan() || value <= 0.0 {
+        return 0;
+    }
+    if value >= 255.0 {
+        return 255;
+    }
+    // Zwischen 0 und 255, also verlustfrei.
+    let floor = value.floor();
+    let lower = floor as u8;
+    let rest = value - floor;
+    if rest > 0.5 || (rest == 0.5 && lower % 2 == 1) {
+        lower + 1
+    } else {
+        lower
     }
 }
 
@@ -269,6 +363,49 @@ fn buffer_ref<'h>(agent: &'h Agent, buffer: Local<'_>) -> Option<Ref<'h>> {
             Some(object)
         }
         _ => None,
+    }
+}
+
+/// Die Länge des Blocks des ArrayBuffer `buffer`, `None`, wenn er
+/// abgelöst oder kein ArrayBuffer ist. Für Aufrufer, die nur den Heap
+/// haben.
+pub(crate) fn block_length(heap: &Heap, buffer: Ref<'_>) -> Option<usize> {
+    match heap.array_buffer_field(buffer, DATA)?.kind() {
+        Kind::Internal(block) => heap.byte_len(block),
+        _ => None,
+    }
+}
+
+/// IsFixedLengthArrayBuffer (Abschnitt 25.1.3.9) für Aufrufer, die nur den
+/// Heap haben.
+pub(crate) fn is_fixed_length(heap: &Heap, buffer: Ref<'_>) -> bool {
+    heap.array_buffer_field(buffer, MAX_BYTE_LENGTH)
+        .is_none_or(|max| max.is_undefined())
+}
+
+/// Liest `bytes.len()` Bytes ab `index` aus dem Block des ArrayBuffer
+/// `buffer`; `false`, wenn er abgelöst ist.
+pub(crate) fn read_block(heap: &Heap, buffer: Ref<'_>, index: usize, bytes: &mut [u8]) -> bool {
+    match heap
+        .array_buffer_field(buffer, DATA)
+        .map(|value| value.kind())
+    {
+        Some(Kind::Internal(block)) => {
+            heap.read_bytes(block, index, bytes);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Schreibt `bytes` ab `index` in den Block des ArrayBuffer `buffer`, wenn
+/// er nicht abgelöst ist.
+pub(crate) fn write_block(heap: &Heap, buffer: Ref<'_>, index: usize, bytes: &[u8]) {
+    if let Some(Kind::Internal(block)) = heap
+        .array_buffer_field(buffer, DATA)
+        .map(|value| value.kind())
+    {
+        heap.write_bytes(block, index, bytes);
     }
 }
 
@@ -476,7 +613,17 @@ pub(crate) fn raw_bytes_of(
     little: bool,
 ) -> RawBytes {
     let heap = agent.heap();
-    match heap.get(value).kind() {
+    raw_bytes_of_value(heap, heap.get(value), kind, little)
+}
+
+/// [`raw_bytes_of`] für einen Wert im Heap.
+pub(crate) fn raw_bytes_of_value(
+    heap: &Heap,
+    value: Value<'_>,
+    kind: ElementType,
+    little: bool,
+) -> RawBytes {
+    match value.kind() {
         Kind::BigInt(cell) => {
             let (negative, low) = heap.bigint_low_word(cell).unwrap_or((false, 0));
             bigint_to_raw_bytes(negative, low, little)

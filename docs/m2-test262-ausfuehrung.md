@@ -131,7 +131,7 @@ mit `module`. Eine Panik der Engine lässt den Test immer scheitern,
 sie kann nicht erwartet werden. Jede Datei der festen Auswahl muss auch hier
 bestehen.
 
-Mit diesem Stand bestehen 20.623 von 23.296 ausgeführten Dateien und 39.937
+Mit diesem Stand bestehen 20.666 von 23.296 ausgeführten Dateien und 40.023
 von 43.794 Varianten. Seit Schritt 7 gibt es async-Funktionen, `for await`
 und async-Generatoren, seit Schritt 8a `Object` mit allen Funktionen,
 `Object.prototype` und `Function.prototype` vollständig und gebundene
@@ -141,11 +141,12 @@ Funktionen für Zahlen, seit Schritt 8d `Iterator` mit den Helfern und
 `JSON`, seit Schritt 8e `Map` und `Set`, seit Schritt 8f `Reflect` und
 `Proxy`, seit Schritt 8g `String` und `RegExp` mit der Engine für reguläre
 Ausdrücke und den Literalen, seit Schritt 8h BigInt mit den Literalen, seit
-Schritt 8i `Date`, seit Schritt 8j `ArrayBuffer` und `DataView`. Seit
+Schritt 8i `Date`, seit Schritt 8j `ArrayBuffer`, `DataView` und die
+typisierten Arrays. Seit
 Schritt 8c endet keine Datei
 der Harness mehr an `Math.pow`. Den meisten Dateien, die noch scheitern, fehlt `eval`: Es gibt
 noch keine globale Funktion `eval`, ein Aufruf endet also mit einem
-ReferenceError. Der Name steht im Quelltext von 520 der 573 Dateien, die mit
+ReferenceError. Der Name steht im Quelltext von 520 der 532 Dateien, die mit
 einem ReferenceError scheitern, und von allen 388 mit `Test262Error`. Das
 sind Suchen nach den Namen, nicht für jede Datei einzeln geprüfte Gründe.
 Vor Schritt 8g scheiterten weitere 130 Dateien mit `Test262Error`, in denen
@@ -162,9 +163,9 @@ Operatoren für Rechnen, Vergleichen und Verschieben, 20 unter
 `literals/bigint/` und zwei unter `statements/class/elements/`
 (`privatefieldget-primitive-receiver.js` und
 `privatefieldput-primitive-receiver.js`). Von den Dateien, die noch
-scheitern und BigInt nennen, brauchen sechs die typisierten Arrays mit
-veränderlichem `ArrayBuffer` aus `resizableArrayBufferUtils.js`, zwei
-`BigInt64Array` als Unterklasse und drei `import()`. Mit `Date` bestehen
+scheitern und BigInt nennen, brauchen sechs die Harness
+`resizableArrayBufferUtils.js` für typisierte Arrays auf veränderlichen
+ArrayBuffern, die `Function` aufruft, und drei `import()`. Mit `Date` bestehen
 neun Dateien mehr: vier mit Unterklassen von `Date`, drei davon unter
 `statements/class/` und eine unter `expressions/class/subclass-builtins/`,
 je zwei unter `expressions/property-accessors/` und `expressions/typeof/`
@@ -174,6 +175,14 @@ und `expressions/addition/S11.6.1_A2.2_T2.js`. Mit `ArrayBuffer` und
 `expressions/class/subclass-builtins/` und `statements/class/subclass-builtins/`
 und je `regular-subclassing.js` und `super-must-be-called.js` unter
 `statements/class/subclass/builtin-objects/ArrayBuffer/` und `DataView/`.
+Mit den typisierten Arrays bestehen 43 Dateien mehr: die Unterklassen von elf
+Konstruktoren (`subclass-*Array.js` unter `expressions/class/subclass-builtins/`
+und `statements/class/subclass-builtins/`, für `Float16Array` gibt es keine),
+`regular-subclassing.js` und `super-must-be-called.js` unter
+`statements/class/subclass/builtin-objects/TypedArray/`, die vorher an der
+Harness `testTypedArray.js` scheiterten, `statements/class/subclass/builtins.js`
+und unter `statements/for-of/` die 18 Dateien `*array.js` und
+`*array-mutate.js` zu neun Konstruktoren.
 Sonst kann der Übersetzer ein Konstrukt noch nicht, etwa `import()`, `with`
 oder Templates mit Tag, oder `Function(...)` endet bis
 Schritt 9 als `Unsupported`. Dateien mit `async` und `module` scheitern am
@@ -187,14 +196,13 @@ Fehlschläge gibt der Test mit `--nocapture` aus:
 | Varianten | Grund |
 | ---: | --- |
 | 1.426 | Der Übersetzer kann ein Konstrukt noch nicht (`Unsupported`) |
-| 988 | ReferenceError im Test |
+| 906 | ReferenceError im Test |
 | 698 | Flag `module` |
 | 572 | `Test262Error`: Eine Assertion schlug fehl |
 | 59 | Ein Test mit `async` meldete einen Fehlschlag (`AsyncFailure`) |
 | 58 | Eine Datei der Harness endet als `Unsupported`, etwa `fnGlobalObject.js`, das `Function` aufruft |
 | 30 | Die Arbeitsschritte sind erschöpft |
 | 22 | TypeError im Test |
-| 4 | Eine Datei der Harness endet mit einem ReferenceError |
 
 ## `built-ins/` und `annexB/built-ins/` mit erwarteten Ergebnissen
 
@@ -205,11 +213,11 @@ cargo test --locked -p mb-js script::test262::language::test262_annex_b_built_in
 
 Derselbe Läufer nimmt die Teile von `test/built-ins/`, deren eingebaute
 Objekte es schon mit allen Eigenschaften gibt: `AggregateError/`, `Array/`,
-`ArrayBuffer/`, `BigInt/`, `Boolean/`, `DataView/`, `Date/`, `Error/`, `Function/`, `Iterator/`, `JSON/`, `Map/`,
+`ArrayBuffer/`, `ArrayIteratorPrototype/`, `BigInt/`, `Boolean/`, `DataView/`, `Date/`, `Error/`, `Function/`, `Iterator/`, `JSON/`, `Map/`,
 `MapIteratorPrototype/`, `Math/`, `NativeErrors/`, `Number/`, `Object/`,
 `Promise/`, `Proxy/`, `Reflect/`, `RegExp/`, `RegExpStringIteratorPrototype/`,
 `Set/`, `SetIteratorPrototype/`, `String/`, `StringIteratorPrototype/`,
-`Symbol/` und die globalen Funktionen `isFinite/`,
+`Symbol/`, `TypedArray/`, `TypedArrayConstructors/`, `Uint8Array/` und die globalen Funktionen `isFinite/`,
 `isNaN/`, `parseFloat/` und `parseInt/`. Ihre erwarteten Fehlschläge stehen in
 `crates/mb-js/src/script/test262/erwartete-fehlschlaege-built-ins.txt`, mit
 Pfaden relativ zu `test/built-ins/`, sonst wie oben. Dass es eine eigene
@@ -219,21 +227,23 @@ ein neuer Teil von `built-ins/` ändert nur die zweite. Ein dritter Lauf
 nimmt ebenso die Teile von `test/annexB/built-ins/`, bisher `Date/`,
 `Object/`, `RegExp/` und `String/`, gegen `erwartete-fehlschlaege-annexb-built-ins.txt`.
 
-Von 15.403 Dateien laufen 15.221. Übersprungen werden 182 mit Vorschlägen aus
-`features.txt`: 89 unter `Promise/`, 40 mit `immutable-arraybuffer`, 29 unter
-`ArrayBuffer/` und elf unter `DataView/`, 35 unter `Error/` mit
+Von 17.691 Dateien laufen 17.497. Übersprungen werden 194 mit Vorschlägen aus
+`features.txt`: 89 unter `Promise/`, 52 mit `immutable-arraybuffer`, 29 unter
+`ArrayBuffer/`, elf unter `DataView/`, acht unter `TypedArray/` und je zwei
+unter `TypedArrayConstructors/` und `Uint8Array/`, 35 unter `Error/` mit
 `error-stack-accessor` und 18 unter `Iterator/prototype/join/` mit
-`Iterator.prototype.join`. Es bestehen 14.121 Dateien und 28.068 von 30.214
+`Iterator.prototype.join`. Es bestehen 16.235 Dateien und 32.248 von 34.712
 Varianten:
 
 | Teil | Dateien | Varianten |
 | --- | ---: | ---: |
 | `AggregateError/` | 23 von 25 | 46 von 50 |
-| `Array/` | 2.977 von 3.083 | 5.907 von 6.119 |
-| `ArrayBuffer/` | 149 von 192 | 298 von 384 |
+| `Array/` | 2.990 von 3.083 | 5.933 von 6.119 |
+| `ArrayBuffer/` | 182 von 192 | 364 von 384 |
+| `ArrayIteratorPrototype/` | 27 von 27 | 46 von 46 |
 | `BigInt/` | 77 von 77 | 154 von 154 |
 | `Boolean/` | 48 von 51 | 95 von 101 |
-| `DataView/` | 479 von 549 | 958 von 1.098 |
+| `DataView/` | 509 von 549 | 1.018 von 1.098 |
 | `Date/` | 583 von 594 | 1.166 von 1.188 |
 | `Error/` | 56 von 58 | 112 von 116 |
 | `Function/` | 323 von 509 | 564 von 893 |
@@ -244,7 +254,7 @@ Varianten:
 | `Math/` | 324 von 327 | 648 von 654 |
 | `NativeErrors/` | 88 von 94 | 176 von 188 |
 | `Number/` | 339 von 340 | 678 von 680 |
-| `Object/` | 3.370 von 3.411 | 6.720 von 6.802 |
+| `Object/` | 3.381 von 3.411 | 6.742 von 6.802 |
 | `Promise/` | 634 von 643 | 1.262 von 1.280 |
 | `Proxy/` | 294 von 311 | 583 von 607 |
 | `Reflect/` | 152 von 153 | 304 von 306 |
@@ -255,6 +265,9 @@ Varianten:
 | `String/` | 1.195 von 1.223 | 2.388 von 2.443 |
 | `StringIteratorPrototype/` | 7 von 7 | 14 von 14 |
 | `Symbol/` | 98 von 98 | 192 von 192 |
+| `TypedArray/` | 1.269 von 1.445 | 2.522 von 2.874 |
+| `TypedArrayConstructors/` | 663 von 736 | 1.302 von 1.442 |
+| `Uint8Array/` | 68 von 68 | 136 von 136 |
 | `isFinite/` | 15 von 15 | 30 von 30 |
 | `isNaN/` | 15 von 15 | 30 von 30 |
 | `parseFloat/` | 53 von 54 | 106 von 108 |
@@ -274,16 +287,16 @@ noch nicht hat, und scheitern;
 Arbeitsschritte.
 
 Seit Welle 8c endet `propertyHelper.js` nicht mehr an `Math.pow`; vorher
-scheiterten daran 1.077 Dateien. Die meisten der 1.100 Dateien, die jetzt noch
+scheiterten daran 1.077 Dateien. Die meisten der 1.262 Dateien, die jetzt noch
 scheitern, nutzen im Quelltext oder in ihren `includes` ein eingebautes
 Objekt, das noch fehlt, oder ein Konstrukt, das der Übersetzer noch nicht
-kann. Von den 60 Dateien außerhalb von `ArrayBuffer/` und `DataView/` mit
-einem ReferenceError im Test nennen außerhalb von Kommentaren 34 `eval`,
-die übrigen 26 bis auf
-`Function/prototype/toString/line-terminator-normalisation-CR.js`
-typisierte Arrays, die schwachen Sammlungen,
-`WeakRef`, `FinalizationRegistry` oder `SharedArrayBuffer`. Vor Welle 8j
-waren es 63 Dateien. Vor Welle 8i
+kann. Von den 45 Dateien außerhalb von `ArrayBuffer/`, `DataView/`,
+`TypedArray/` und `TypedArrayConstructors/` mit einem ReferenceError im Test
+nennen außerhalb von Kommentaren 34 `eval`, die übrigen elf bis auf
+`Function/prototype/toString/line-terminator-normalisation-CR.js` die
+schwachen Sammlungen, `WeakRef`, `FinalizationRegistry` oder
+`SharedArrayBuffer`. Vor Teil 2 von Welle 8j waren es 60 Dateien, 17 davon
+nannten typisierte Arrays, vor Welle 8j 63. Vor Welle 8i
 nannten von damals 206 Dateien 141 `Date`. Vor Teil 2 von Welle 8g nannten von damals 315 Dateien 120
 `RegExp`. Seit Welle 8d gibt es `JSON`, daran scheiterten
 vorher 68 dieser Dateien, seit Welle 8f `Proxy` und `Reflect`: Vor der Welle
@@ -326,36 +339,50 @@ für Eigenschaften und Deskriptoren, 21 unter `Array/`, drei unter `RegExp/`, je
 `Boolean/`, `Function/`, `Number/` und `Reflect/` und je eine unter
 `BigInt/` und `Symbol/`. Keine Datei außerhalb von `Date/` scheitert neu.
 
-Mit Welle 8j (Teil 1) bestehen unter `ArrayBuffer/` 149 von 192 Dateien und
-unter `DataView/` 479 von 549. Jede der 113 gescheiterten Dateien ist nach
-dem Grund zugeordnet, den der Läufer meldet; bei denen mit einem
-ReferenceError sind es die fehlenden Namen, die sie nennen:
+Mit Welle 8j bestehen unter `ArrayBuffer/` 182 von 192 Dateien und unter
+`DataView/` 509 von 549; nach Teil 1 waren es 149 und 479, die übrigen 63
+brauchten die typisierten Arrays aus Teil 2. Jede der 50 Dateien, die dort
+noch scheitern, ist nach dem Grund zugeordnet, den der Läufer meldet; bei
+denen mit einem ReferenceError sind es die fehlenden Namen, die sie nennen:
 
 | Dateien | Grund unter `ArrayBuffer/` und `DataView/` |
 | ---: | --- |
-| 58 | ReferenceError im Test, der Quelltext nennt `SharedArrayBuffer` (20 unter `ArrayBuffer/`, 38 unter `DataView/`) |
-| 46 | ReferenceError im Test, der Quelltext nennt nur typisierte Arrays wie `Int8Array` oder `Uint8Array`, etwa um eine falsche Art von *this* zu prüfen (16 unter `ArrayBuffer/`, 30 unter `DataView/`) |
-| 5 | ReferenceError in der Harness: `testTypedArray.js` unter `ArrayBuffer/isView/` |
+| 46 | ReferenceError im Test, der Quelltext nennt `SharedArrayBuffer` (acht unter `ArrayBuffer/`, 38 unter `DataView/`) |
 | 3 | `Unsupported`: `proto-from-ctor-realm.js` beider Konstruktoren und `DataView/proto-from-ctor-realm-sab.js` holen den Konstruktor `Function` aus `$262.createRealm()` |
 | 1 | `Test262Error`: In `ArrayBuffer/prototype/slice/this-is-sharedarraybuffer.js` fällt der ReferenceError an `SharedArrayBuffer` in `assert.throws(TypeError, …)` |
 
-Die übrigen Teile mit typisierten Arrays und `SharedArrayBuffer` folgen in
-Teil 2 der Welle und danach. In den älteren Teilen bestehen vier Dateien
-mehr: `Array/from/items-is-arraybuffer.js`,
-`Array/fromAsync/asyncitems-arraybuffer.js`, das vorher mit `AsyncFailure`
-scheiterte, `Object/seal/seal-arraybuffer.js` und
-`Object/seal/seal-dataview.js`. Keine Datei scheitert neu.
+Mit Teil 2 laufen `ArrayIteratorPrototype/`, `TypedArray/`,
+`TypedArrayConstructors/` und `Uint8Array/` neu mit. `ArrayIteratorPrototype/`
+und `Uint8Array/` bestehen ganz, `TypedArray/` mit 1.269 von 1.445 Dateien
+und `TypedArrayConstructors/` mit 663 von 736. Auch hier ist jede der 249
+gescheiterten Dateien zugeordnet:
 
-Unter `Array/` ist jede der 106 gescheiterten Dateien nach dem Grund
+| Dateien | Grund unter `TypedArray/` und `TypedArrayConstructors/` |
+| ---: | --- |
+| 101 | `Unsupported` in der Harness: `resizableArrayBufferUtils.js` ruft `Function` auf (99 unter `TypedArray/`, zwei unter `TypedArrayConstructors/`) |
+| 73 | Die Arbeitsschritte sind erschöpft (70 unter `TypedArray/`, drei unter `TypedArrayConstructors/`), siehe unten |
+| 61 | ReferenceError im Test, der Quelltext nennt `SharedArrayBuffer` (sieben unter `TypedArray/`, 54 unter `TypedArrayConstructors/`) |
+| 12 | `Unsupported`: die `proto-from-ctor-realm.js` und `proto-from-ctor-realm-sab.js` unter `ctors/` und `ctors-bigint/` holen den Konstruktor `Function` aus `$262.createRealm()` |
+| 2 | `Unsupported`: `with` in `internals/HasProperty/infinity-with-detached-buffer.js` und `internals/HasProperty/BigInt/infinity-with-detached-buffer.js` (die Dateien laufen nur ohne strikten Modus) |
+
+In den älteren Teilen bestehen mit Teil 2 87 Dateien mehr, die die
+typisierten Arrays brauchten: 33 unter `ArrayBuffer/` (fünf davon unter
+`isView/` über die Harness `testTypedArray.js`), 30 unter `DataView/`, 13
+unter `Array/` (die elf `callbackfn-resize-arraybuffer.js` über
+`testTypedArray.js` und zwei unter `flatMap/`) und elf unter `Object/seal/`.
+`Array.prototype.concat_large-typed-array.js` und
+`Array.prototype.concat_small-typed-array.js` unter `Array/prototype/concat/`
+kommen jetzt bis an die Quote. Keine Datei scheitert neu.
+
+Unter `Array/` ist jede der 93 gescheiterten Dateien nach dem Grund
 zugeordnet, den der Läufer meldet:
 
 | Dateien | Grund unter `Array/` |
 | ---: | --- |
 | 71 | `Unsupported` in der Harness: `resizableArrayBufferUtils.js` ruft `Function` auf |
-| 10 | ReferenceError im Test an einem fehlenden Objekt: `eval` (6) und die typisierten Arrays (4) |
+| 11 | Die Arbeitsschritte sind erschöpft, siehe unten |
+| 6 | ReferenceError im Test an `eval` |
 | 5 | `Unsupported` im Test: der Konstruktor `Function` |
-| 11 | ReferenceError in der Harness: `testTypedArray.js` an den typisierten Arrays |
-| 9 | Die Arbeitsschritte sind erschöpft, siehe unten |
 
 In den Teilen aus Welle 8c scheitern 21 Dateien. Hier ist jede Datei
 einzeln gelesen und dem Konstrukt zugeordnet, an dem sie zuerst scheitert:
@@ -383,7 +410,7 @@ ihre Iteratoren bestehen ganz. Auch hier ist jede Datei einzeln zugeordnet:
 | ---: | --- |
 | 19 | `WeakMap` und `WeakSet`: Die Methoden müssen sie als falsches *this* ablehnen (zwölf unter `Map/`, sieben unter `Set/`) |
 | 3 | Der Konstruktor `Function`: `getOrInsertComputed/different-types-function-callbackfn-does-not-throw.js` und `proto-from-ctor-realm.js` beider Konstruktoren, die ihn aus `$262.createRealm()` holen |
-| 2 | Die typisierten Arrays `BigInt64Array` und `BigUint64Array` in `Map/valid-keys.js` und `Set/valid-values.js` |
+| 2 | `WeakMap` in `Map/valid-keys.js` und `Set/valid-values.js`, die auch `WeakRef` und `WeakSet` nennen; vor Teil 2 von Welle 8j scheiterten sie schon an den typisierten Arrays |
 
 Unter `Proxy/` und `Reflect/` aus Welle 8f scheitern 18 Dateien, ebenso
 einzeln zugeordnet:
@@ -453,8 +480,22 @@ einem einmaligen Lauf ohne diese Ausnahme bestanden vor Welle 8h 17 davon;
 die achtzehnte, `receiver-not-object.js`, enthält ein BigInt-Literal und ist
 seitdem nicht wieder geprüft.
 
-Von den 95 Dateien, die die 100.000 Arbeitsschritte erschöpfen, gehören 72
-zu `RegExp/` (siehe oben). Von den übrigen 23 laufen sieben unter `Array/`
+Von den 170 Dateien, die die 100.000 Arbeitsschritte erschöpfen, gehören 72
+zu `RegExp/` (siehe oben) und 73 zu `TypedArray/` und
+`TypedArrayConstructors/`. Diese 73 nehmen alle die Harness
+`testTypedArray.js`, deren `testWithTypedArrayConstructors` den Test für
+jeden Konstruktor mit acht Arten von Argument wiederholt: dem Wert selbst,
+einem Array, einem Array-ähnlichen Objekt, einem Iterable und vier
+ArrayBuffern, von denen drei veränderlich sind und Byte für Byte in
+JavaScript gefüllt werden. Ein einmaliger Lauf mit
+100.000.000 Arbeitsschritten und 64 MiB Heap brachte alle 73 zum normalen
+Ende, 70 mit 102.872 bis 483.527 Schritten, `sort/stability.js` mit gut 3
+Millionen und die drei `coerced-values-*-detached*.js` unter `copyWithin/`
+mit je knapp 27 Millionen, die für jeden Konstruktor und jede Art von
+Argument ein Array mit 10.000 Elementen umwandeln. Die beiden
+`Array.prototype.concat_*-typed-array.js` unter `Array/prototype/concat/`
+vergleichen Arrays mit 4.000 Elementen; sie endeten im selben Lauf nach 1,0
+und 3,2 Millionen Schritten normal. Von den übrigen 23 laufen sieben unter `Array/`
 mit `every`, `filter`, `forEach`, `indexOf`,
 `lastIndexOf`, `map` und `some` über dünn besetzte Arrays mit einer Länge
 bis 1.000.000. Abschnitt 23.1.3 verlangt HasProperty für jeden Index, und
@@ -473,13 +514,12 @@ Die Gründe aller Varianten:
 
 | Varianten | Grund |
 | ---: | --- |
-| 1.325 | Der Übersetzer kann ein Konstrukt noch nicht, `Function` wurde aufgerufen, oder ein Muster nennt eine Unicode-Eigenschaft ohne Daten (`Unsupported`) |
-| 322 | ReferenceError im Test |
-| 190 | Die Arbeitsschritte sind erschöpft |
-| 164 | Eine Datei der Harness endet als `Unsupported` |
+| 1.351 | Der Übersetzer kann ein Konstrukt noch nicht, `Function` wurde aufgerufen, oder ein Muster nennt eine Unicode-Eigenschaft ohne Daten (`Unsupported`) |
+| 366 | Eine Datei der Harness endet als `Unsupported` |
+| 340 | Die Arbeitsschritte sind erschöpft |
+| 294 | ReferenceError im Test |
 | 72 | `Test262Error`: Eine Assertion schlug fehl |
 | 40 | TypeError im Test, meist der Aufruf einer Funktion, die fehlt |
-| 32 | Eine Datei der Harness endet mit einem ReferenceError |
 | 1 | Flag `module` |
 
 ## Fehler und Ressourcen

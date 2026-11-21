@@ -1,42 +1,53 @@
-//! `ArrayBuffer` und `DataView` über JavaScript, gegen ein Modell der Bytes
-//! im Script.
+//! `ArrayBuffer`, `DataView` und typisierte Arrays über JavaScript, gegen
+//! ein Modell der Bytes im Script.
 //!
 //! Die ersten drei Bytes legen den ersten ArrayBuffer fest: seine Länge
 //! (Byte 0 modulo 33), was sein Maximum darüber liegt (Byte 1 modulo 33)
 //! und ob er veränderlich ist (Bit 0 von Byte 2). Danach beschreiben je elf
 //! Bytes einen Schritt, höchstens [`MAX_STEPS`]: die Art des Schritts
-//! (Byte 0 modulo 8, die Bits 3 und 4 wählen die Art einer Number), die Art
-//! der Elemente (Byte 1 modulo 11, Bit 7 für little-endian), einen Abstand
-//! (Byte 2) und acht Bytes für den Wert (niedriges Byte zuerst); das erste
-//! davon dient auch als zweiter Abstand und als Wert eines Bytes. Ein BigInt
-//! ist die ganze Zahl aus den acht Bytes, um bis zu 63 Bits verschoben;
-//! eine Number ist eine ganze Zahl bis 2⁵⁹, die Bits einer
-//! Gleitkommazahl, ein Viertel einer kleinen ganzen Zahl oder ein Randwert
-//! wie NaN, -0 oder ein Gleichstand beim Runden auf binary16.
+//! (Byte 0 modulo 8, Bit 5 für die Schritte mit typisierten Arrays, die
+//! Bits 3 und 4 wählen die Art einer Number), die Art der Elemente (Byte 1
+//! modulo 11, Bit 7 für little-endian, bei typisierten Arrays macht es aus
+//! `Uint8` die Art `Uint8Clamped`), einen Abstand (Byte 2) und acht Bytes
+//! für den Wert (niedriges Byte zuerst); das erste davon dient auch als
+//! zweiter Abstand und als Wert eines Bytes. Ein BigInt ist die ganze Zahl
+//! aus den acht Bytes, um bis zu 63 Bits verschoben; eine Number ist eine
+//! ganze Zahl bis 2⁵⁹, die Bits einer Gleitkommazahl, ein Viertel einer
+//! kleinen ganzen Zahl oder ein Randwert wie NaN, -0 oder ein Gleichstand
+//! beim Runden auf binary16.
 //!
 //! Die Schritte schreiben und lesen jede Art von Elementen über einen
 //! `DataView` auf dem ganzen ArrayBuffer und über einen zweiten auf einem
 //! Teil, ändern die Größe, übertragen mit `transfer` und
 //! `transferToFixedLength`, schneiden mit `slice` aus, legen Sichten und
-//! neue ArrayBuffer an. Das Script führt die Bytes als Array mit und prüft:
+//! neue ArrayBuffer an. Die Schritte mit typisierten Arrays legen ein
+//! typisiertes Array jeder Art auf dem ArrayBuffer an, auch mit Länge
+//! ~auto~, schreiben Elemente auch mit Schlüsseln wie `"-0"`, füllen mit
+//! `fill`, kopieren mit `copyWithin`, nehmen Teile mit `subarray` und
+//! `slice`, drehen um und sortieren (auch als Kopie) und setzen aus einem
+//! zweiten typisierten Array anderer Art auf demselben ArrayBuffer. Das
+//! Script führt die Bytes als Array mit und prüft:
 //!
 //! - Jeder Schritt wirft genau dann, wenn das Modell es verlangt, mit
 //!   TypeError oder RangeError, und lässt dann alles unverändert.
 //! - Nach jedem Schritt stimmen Länge, Maximum, `resizable`, `detached` und
 //!   jedes Byte mit dem Modell überein, ebenso `byteLength` und
-//!   `byteOffset` beider Sichten, auch wenn sie außerhalb liegen.
+//!   `byteOffset` beider Sichten, auch wenn sie außerhalb liegen, und
+//!   `length`, `byteLength`, `byteOffset` und jedes Element des
+//!   typisierten Arrays.
 //! - Ein geschriebener Wert kommt so zurück, wie ihn die Operatoren der
 //!   Sprache umwandeln: `<<` und `>>` für die kleinen ganzen Zahlen, `|`
 //!   und `>>>` für 32 Bit, `BigInt.asIntN` und `BigInt.asUintN` für 64 Bit,
-//!   `Math.fround` und `Math.f16round` für binary32 und binary16.
-//!   Schreiben ändert nur seine Bytes; ganze Zahlen ergeben sich aus den
-//!   Bytes in der gewählten Reihenfolge, und Lesen in der anderen
-//!   Reihenfolge liest die umgedrehten Bytes.
+//!   `Math.fround` und `Math.f16round` für binary32 und binary16 und ein
+//!   eigenes ToUint8Clamp. Schreiben ändert nur seine Bytes; ganze Zahlen
+//!   ergeben sich aus den Bytes in der gewählten Reihenfolge, und Lesen in
+//!   der anderen Reihenfolge liest die umgedrehten Bytes.
 //!
 //! Erlaubt sind ein bestandenes Script und das Ende einer Quote. Wie bei
 //! den Zielen `bigint` und `date` läuft jede achte Eingabe (nach der Summe
-//! ihrer Bytes) außerdem im Belastungsmodus des Collectors, und beide Läufe
-//! müssen dasselbe ergeben, außer wenn einer den Speicher erschöpft.
+//! ihrer Bytes) außerdem im Belastungsmodus des Collectors, dort mit den
+//! ersten [`STRESS_STEPS`] Schritten, und ein gewöhnlicher Lauf derselben
+//! Schritte muss dasselbe ergeben, außer wenn einer den Speicher erschöpft.
 
 use std::fmt::Write as _;
 use std::rc::Rc;
@@ -50,12 +61,22 @@ const SCRIPT_STEPS: u64 = 200_000;
 const HEAP_BYTES: usize = 4 << 20;
 /// Jede so vielte Eingabe läuft auch im Belastungsmodus.
 const STRESS_EVERY: u32 = 8;
+/// So viele Schritte laufen im Belastungsmodus. Er sammelt vor jeder
+/// Anforderung. Gemessen mit `cargo fuzz build` (AddressSanitizer) braucht
+/// er schon ohne Schritte etwa 2,6 s, fast alles für die rund 430
+/// Sammlungen, während das Script seine Funktionen anlegt, und je Schritt
+/// bis etwa 0,35 s. Mit allen 48 Schritten brauchte eine Eingabe mehr als
+/// die 10 s, die `run.py` libFuzzer für eine Eingabe vorgibt.
+const STRESS_STEPS: usize = 8;
 /// Höchstens so viele Schritte liest das Ziel aus einer Eingabe.
 const MAX_STEPS: usize = 48;
 /// Die Bytes eines Schritts.
 const STEP_BYTES: usize = 11;
 /// Die Bytes vor den Schritten.
 const HEADER_BYTES: usize = 3;
+/// Dieses Bit im ersten Byte eines Schritts wählt die Schritte mit
+/// typisierten Arrays.
+const TYPED: u8 = 0x20;
 /// So viele Randwerte kennt [`special`].
 const SPECIALS: u8 = 16;
 
@@ -91,9 +112,9 @@ function same(a, b) {
   if (typeof a === "bigint" || typeof b === "bigint") return a === b;
   return Object.is(a, b) || (a !== a && b !== b);
 }
-function throws(kind, f, what) {
+function throws(kind, f, what, where) {
   try { f(); } catch (e) { if (e instanceof kind) return; throw e; }
-  fail("kein " + kind.name + ": " + what);
+  fail("kein " + kind.name + ": " + what + (where === undefined ? "" : " " + where));
 }
 function expected(t, x) {
   switch (TYPES[t]) {
@@ -110,7 +131,14 @@ function expected(t, x) {
   }
   return x;
 }
-var B, M, MAX, V, VOFF, VLEN, W, WOFF, WLEN;
+var TNAMES = TYPES.concat(["Uint8Clamped"]);
+var TSIZES = SIZES.concat([1]);
+var CTORS = [Int8Array, Uint8Array, Int16Array, Uint16Array, Int32Array, Uint32Array, BigInt64Array,
+  BigUint64Array, Float16Array, Float32Array, Float64Array, Uint8ClampedArray];
+var GETS = TYPES.map(function (name) { return "get" + name; });
+var SETS = TYPES.map(function (name) { return "set" + name; });
+var S8 = new DataView(new ArrayBuffer(8));
+var B, M, MAX, V, VOFF, VLEN, W, WOFF, WLEN, T, TT, TOFF, TLEN;
 function zeros(n) { var a = []; for (var i = 0; i < n; i++) a.push(0); return a; }
 function fresh(length, max) {
   B = max === null ? new ArrayBuffer(length) : new ArrayBuffer(length, { maxByteLength: max });
@@ -120,6 +148,7 @@ function fresh(length, max) {
   VOFF = 0;
   VLEN = max === null ? length : undefined;
   W = V; WOFF = VOFF; WLEN = VLEN;
+  T = new Uint8Array(B); TT = 1; TOFF = 0; TLEN = VLEN;
 }
 function viewLength(off, len) {
   if (M === null || off > M.length) return -1;
@@ -127,11 +156,13 @@ function viewLength(off, len) {
   return off + len > M.length ? -1 : len;
 }
 function compose(o, size, le) {
-  var v = size === 8 ? 0n : 0;
-  for (var i = 0; i < size; i++) {
-    var b = M[o + (le ? size - 1 - i : i)];
-    v = size === 8 ? v * 256n + BigInt(b) : v * 256 + b;
+  // 64 Bit aus zwei Hälften: vier BigInts statt sechzehn.
+  if (size === 8) {
+    var high = compose(o + (le ? 4 : 0), 4, le), low = compose(o + (le ? 0 : 4), 4, le);
+    return BigInt(high) * 4294967296n + BigInt(low);
   }
+  var v = 0;
+  for (var i = 0; i < size; i++) v = v * 256 + M[o + (le ? size - 1 - i : i)];
   return v;
 }
 function fromBytes(t, o, le) {
@@ -143,56 +174,59 @@ function fromBytes(t, o, le) {
     case "BigInt64": return BigInt.asIntN(64, u);
     case "Uint8": case "Uint16": case "Uint32": case "BigUint64": return u;
   }
-  var s = new DataView(new ArrayBuffer(8));
-  for (var i = 0; i < size; i++) s.setUint8(i, M[o + i]);
-  return s["get" + TYPES[t]](0, le);
+  for (var i = 0; i < size; i++) S8.setUint8(i, M[o + i]);
+  return S8[GETS[t]](0, le);
+}
+// V ist immer die Sicht auf den ganzen ArrayBuffer, auch nach resize.
+function absorb(from, to) {
+  for (var i = 0; i < M.length; i++) {
+    var b = V.getUint8(i);
+    if (i < from || i >= to) { if (b !== M[i]) fail("Nachbarbyte " + i); }
+    else M[i] = b;
+  }
 }
 function checkView(view, off, len, where) {
   var n = viewLength(off, len);
   if (view.buffer !== B) fail("buffer der Sicht " + where);
   if (n < 0) {
     if (view.byteLength !== 0 || view.byteOffset !== 0) fail("Sicht außerhalb " + where);
-    throws(TypeError, function () { view.getInt8(0); }, "Sicht außerhalb " + where);
+    throws(TypeError, function () { view.getInt8(0); }, "Sicht außerhalb", where);
     return;
   }
   if (view.byteLength !== n || view.byteOffset !== off) fail("Sicht " + where);
   for (var i = 0; i < n; i++) if (view.getUint8(i) !== M[off + i]) fail("Byte der Sicht " + where);
-  throws(RangeError, function () { view.getUint8(n); }, "hinter der Sicht " + where);
+  throws(RangeError, function () { view.getUint8(n); }, "hinter der Sicht", where);
 }
 function check(where) {
   if (B.resizable !== (MAX !== null)) fail("resizable " + where);
   if (M === null) {
     if (!B.detached || B.byteLength !== 0 || B.maxByteLength !== 0) fail("abgelöst " + where);
-    throws(TypeError, function () { B.slice(0); }, "slice abgelöst " + where);
+    throws(TypeError, function () { B.slice(0); }, "slice abgelöst", where);
   } else {
     if (B.detached || B.byteLength !== M.length) fail("Länge " + where);
     if (B.maxByteLength !== (MAX === null ? M.length : MAX)) fail("Maximum " + where);
-    var all = new DataView(B);
-    for (var i = 0; i < M.length; i++) if (all.getUint8(i) !== M[i]) fail("Byte " + i + " " + where);
+    for (var i = 0; i < M.length; i++) if (V.getUint8(i) !== M[i]) fail("Byte " + i + " " + where);
   }
   checkView(V, VOFF, VLEN, where);
   checkView(W, WOFF, WLEN, where);
+  checkTyped(where);
 }
 function set(t, r, x, le) {
   var size = SIZES[t], n = viewLength(VOFF, VLEN), o = r % (n < 0 ? 4 : n + 4);
-  var name = TYPES[t];
-  if (n < 0) { throws(TypeError, function () { V["set" + name](o, x, le); }, "set außerhalb"); return; }
-  if (o + size > n) { throws(RangeError, function () { V["set" + name](o, x, le); }, "set " + o); return; }
-  V["set" + name](o, x, le);
-  var all = new DataView(B), start = VOFF + o;
-  for (var i = 0; i < M.length; i++) {
-    var b = all.getUint8(i);
-    if (i < start || i >= start + size) { if (b !== M[i]) fail("Nachbarbyte " + i); }
-    else M[i] = b;
-  }
+  var name = TYPES[t], setter = SETS[t], getter = GETS[t];
+  if (n < 0) { throws(TypeError, function () { V[setter](o, x, le); }, "set außerhalb"); return; }
+  if (o + size > n) { throws(RangeError, function () { V[setter](o, x, le); }, "set", o); return; }
+  V[setter](o, x, le);
+  var start = VOFF + o;
+  absorb(start, start + size);
   var want = expected(t, x);
-  if (!same(V["get" + name](o, le), want)) fail("Rundreise " + name + " " + x);
+  if (!same(V[getter](o, le), want)) fail("Rundreise " + name + " " + x);
   if (!same(fromBytes(t, start, le), want)) fail("Bytes " + name + " " + x);
-  if (!same(V["get" + name](o, !le), fromBytes(t, start, !le))) fail("andere Reihenfolge " + name);
+  if (!same(V[getter](o, !le), fromBytes(t, start, !le))) fail("andere Reihenfolge " + name);
 }
 function get(t, r, le) {
   var size = SIZES[t], n = viewLength(WOFF, WLEN), o = r % (n < 0 ? 4 : n + 4);
-  var name = "get" + TYPES[t];
+  var name = GETS[t];
   if (n < 0) { throws(TypeError, function () { W[name](o, le); }, "get außerhalb"); return; }
   if (o + size > n) { throws(RangeError, function () { W[name](o, le); }, "get " + o); return; }
   if (!same(W[name](o, le), fromBytes(t, WOFF + o, le))) fail(name + " " + o);
@@ -221,6 +255,7 @@ function transfer(t, r, s, fixed) {
   MAX = max;
   V = new DataView(B); VOFF = 0; VLEN = max === null ? n : undefined;
   W = V; WOFF = VOFF; WLEN = VLEN;
+  T = new Uint8Array(B); TT = 1; TOFF = 0; TLEN = VLEN;
 }
 function cut(t, r, s) {
   var start = (r % 41) - 20, end = t % 3 === 0 ? undefined : (s % 41) - 20;
@@ -258,6 +293,167 @@ function replace(r, s, resizable) {
   }
   fresh(length, max);
 }
+function kindOf(t, le) { return t === 1 && le ? 11 : t; }
+function isBig(k) { return k === 6 || k === 7; }
+function clamp(x) {
+  if (!(x > 0)) return 0;
+  if (x >= 255) return 255;
+  var f = Math.floor(x);
+  if (f + 0.5 < x) return f + 1;
+  if (x < f + 0.5) return f;
+  return f % 2 === 0 ? f : f + 1;
+}
+function expectedT(k, x) { return k === 11 ? clamp(x) : expected(k, x); }
+function element(k, o) {
+  if (!isBig(k)) return fromBytes(k === 11 ? 1 : k, o, true);
+  // compose prüft die Reihenfolge der Bytes schon bei den Schritten mit
+  // DataView; hier reicht die Hilfssicht.
+  for (var i = 0; i < 8; i++) S8.setUint8(i, M[o + i]);
+  return S8[GETS[k]](0, true);
+}
+function rel(x, n) { return x < 0 ? Math.max(n + x, 0) : Math.min(x, n); }
+function typedLength() {
+  if (M === null || TOFF > M.length) return -1;
+  var size = TSIZES[TT];
+  if (TLEN === undefined) return Math.floor((M.length - TOFF) / size);
+  return TOFF + TLEN * size > M.length ? -1 : TLEN;
+}
+function checkTyped(where) {
+  var n = typedLength(), size = TSIZES[TT];
+  if (T.buffer !== B || !(T instanceof CTORS[TT])) fail("typisiertes Array " + where);
+  if (n < 0) {
+    if (T.length !== 0 || T.byteLength !== 0 || T.byteOffset !== 0) fail("typisiertes Array außerhalb " + where);
+    if (T[0] !== undefined || 0 in T || Object.keys(T).length !== 0) fail("Element außerhalb " + where);
+    throws(TypeError, function () { T.at(0); }, "at außerhalb", where);
+    return;
+  }
+  if (T.length !== n || T.byteLength !== n * size || T.byteOffset !== TOFF) fail("Länge des typisierten Arrays " + where);
+  var name = GETS[TT === 11 ? 1 : TT];
+  for (var i = 0; i < n; i++) if (!same(T[i], V[name](TOFF + i * size, true))) fail("Element " + i + " " + where);
+  if (T[n] !== undefined || n in T || T["-0"] !== undefined) fail("hinter dem typisierten Array " + where);
+}
+function create(t, r, s, le) {
+  var k = kindOf(t, le), size = TSIZES[k], n = M === null ? 0 : M.length, off = r % (n + 3);
+  if (s & 1) off -= off % size;
+  var length = s & 2 ? undefined : (s >> 2) % (Math.floor(n / size) + 3);
+  var f = function () { return new CTORS[k](B, off, length); };
+  if (off % size !== 0) { throws(RangeError, f, "Versatz " + off); return; }
+  if (M === null) { throws(TypeError, f, "typisiertes Array abgelöst"); return; }
+  if (length === undefined ? off > n || (MAX === null && n % size !== 0) : off + length * size > n) {
+    throws(RangeError, f, "typisiertes Array " + off);
+    return;
+  }
+  T = f(); TT = k; TOFF = off;
+  TLEN = length !== undefined ? length : MAX === null ? (n - off) / size : undefined;
+}
+function write(r, x, s) {
+  var n = typedLength(), o = r % ((n < 0 ? 0 : n) + 4), key = (s & 3) === 3 ? "-" + o : o;
+  var f = function () { T[key] = x; };
+  if (isBig(TT) !== (typeof x === "bigint")) { throws(TypeError, f, "Element der falschen Art"); return; }
+  f();
+  if (typeof key === "string") { if (key in T || T[key] !== undefined) fail("Schlüssel " + key); return; }
+  if (n < 0 || o >= n) { if (T[o] !== undefined) fail("Element außerhalb " + o); return; }
+  var size = TSIZES[TT], start = TOFF + o * size, want = expectedT(TT, x);
+  absorb(start, start + size);
+  if (!same(T[o], want) || !same(element(TT, start), want)) fail("Element " + TNAMES[TT] + " " + x);
+}
+function fillTyped(t, r, x, s) {
+  var n = typedLength(), start = (r % 21) - 10, end = t % 3 === 0 ? undefined : (s % 21) - 10;
+  var f = function () { return T.fill(x, start, end); };
+  if (n < 0 || isBig(TT) !== (typeof x === "bigint")) { throws(TypeError, f, "fill"); return; }
+  if (f() !== T) fail("fill gibt nicht das Array zurück");
+  var size = TSIZES[TT], first = rel(start, n), last = end === undefined ? n : rel(end, n);
+  var want = expectedT(TT, x);
+  absorb(TOFF + first * size, TOFF + Math.max(last, first) * size);
+  for (var k = first; k < last; k++) if (!same(element(TT, TOFF + k * size), want)) fail("fill " + k);
+}
+function copyTyped(t, r, s) {
+  var n = typedLength(), target = (r % 21) - 10, start = (s % 21) - 10;
+  var end = t % 3 === 0 ? undefined : ((r * 31 + s) % 21) - 10;
+  var f = function () { return T.copyWithin(target, start, end); };
+  if (n < 0) { throws(TypeError, f, "copyWithin außerhalb"); return; }
+  var size = TSIZES[TT], to = rel(target, n), from = rel(start, n);
+  var count = Math.min((end === undefined ? n : rel(end, n)) - from, n - to);
+  if (f() !== T) fail("copyWithin gibt nicht das Array zurück");
+  if (count <= 0) return;
+  var piece = M.slice(TOFF + from * size, TOFF + (from + count) * size);
+  for (var i = 0; i < piece.length; i++) M[TOFF + to * size + i] = piece[i];
+}
+function sub(t, r, s) {
+  var n = typedLength(), size = TSIZES[TT], len = n < 0 ? 0 : n;
+  var begin = (r % 21) - 10, end = t % 3 === 0 ? undefined : (s % 21) - 10;
+  var first = rel(begin, len), off = TOFF + first * size;
+  var length = TLEN === undefined && end === undefined ? undefined
+    : Math.max((end === undefined ? len : rel(end, len)) - first, 0);
+  var f = function () { return T.subarray(begin, end); };
+  if (M === null) { throws(TypeError, f, "subarray abgelöst"); return; }
+  if (length === undefined ? off > M.length : off + length * size > M.length) {
+    throws(RangeError, f, "subarray " + off);
+    return;
+  }
+  var next = f();
+  if (next === T || next.buffer !== B || !(next instanceof CTORS[TT])) fail("subarray");
+  T = next; TOFF = off; TLEN = length;
+}
+function cutTyped(t, r, s) {
+  var n = typedLength(), start = (r % 21) - 10, end = t % 3 === 0 ? undefined : (s % 21) - 10;
+  var f = function () { return T.slice(start, end); };
+  if (n < 0) { throws(TypeError, f, "slice außerhalb"); return; }
+  var size = TSIZES[TT], first = rel(start, n), last = end === undefined ? n : rel(end, n);
+  var count = Math.max(last - first, 0), piece = f();
+  if (piece === T || piece.buffer === B || piece.length !== count || !(piece instanceof CTORS[TT])) {
+    fail("slice des typisierten Arrays");
+  }
+  for (var i = 0; i < count; i++) if (!same(piece[i], element(TT, TOFF + (first + i) * size))) fail("slice " + i);
+}
+function compareT(x, y) {
+  if (x !== x) return y !== y ? 0 : 1;
+  if (y !== y) return -1;
+  if (x < y) return -1;
+  if (x > y) return 1;
+  if (x === 0 && y === 0) { var a = 1 / x, b = 1 / y; return a < b ? -1 : a > b ? 1 : 0; }
+  return 0;
+}
+function order(t, r) {
+  var n = typedLength(), size = TSIZES[TT], copy = (r & 1) === 1, sort = t % 2 === 1;
+  var f = function () {
+    if (copy) return sort ? T.toSorted() : T.toReversed();
+    return sort ? T.sort() : T.reverse();
+  };
+  if (n < 0) { throws(TypeError, f, sort ? "sort" : "reverse"); return; }
+  var values = [];
+  for (var i = 0; i < n; i++) values.push(element(TT, TOFF + i * size));
+  if (sort) values.sort(compareT); else values.reverse();
+  var result = f();
+  if (copy) {
+    if (result === T || result.buffer === B || result.length !== n || !(result instanceof CTORS[TT])) fail("toSorted/toReversed");
+    for (var i = 0; i < n; i++) if (!same(result[i], values[i])) fail("Kopie " + i);
+    return;
+  }
+  if (result !== T) fail("sort/reverse gibt nicht das Array zurück");
+  absorb(TOFF, TOFF + n * size);
+  for (var i = 0; i < n; i++) if (!same(element(TT, TOFF + i * size), values[i])) fail("Reihenfolge " + i);
+}
+function setFrom(t, r, s, le) {
+  var n = typedLength(), offset = r % 6;
+  if (M === null) { throws(TypeError, function () { T.set([], offset); }, "set abgelöst"); return; }
+  var k = kindOf(t, le), size = TSIZES[k], from = s % (M.length + 1);
+  from -= from % size;
+  var count = Math.min(Math.floor((M.length - from) / size), (s >> 3) % 5);
+  var U = new CTORS[k](B, from, count), values = [];
+  for (var i = 0; i < count; i++) values.push(element(k, from + i * size));
+  var f = function () { return T.set(U, offset); };
+  // Die Längen prüft SetTypedArrayFromTypedArray vor den Arten.
+  if (n < 0) { throws(TypeError, f, "set außerhalb"); return; }
+  if (count + offset > n) { throws(RangeError, f, "set " + offset); return; }
+  if (isBig(TT) !== isBig(k)) { throws(TypeError, f, "set mit typisiertem Array"); return; }
+  if (f() !== undefined) fail("set gibt etwas zurück");
+  var target = TSIZES[TT], start = TOFF + offset * target;
+  absorb(start, start + count * target);
+  for (var i = 0; i < count; i++) {
+    if (!same(element(TT, start + i * target), expectedT(TT, values[i]))) fail("set " + TNAMES[k] + " " + i);
+  }
+}
 function main() {
   fresh(START[0], START[1]);
   check("am Anfang");
@@ -271,7 +467,15 @@ function main() {
       case 4: cut(t, r, s); break;
       case 5: view(t, r, s); break;
       case 6: byte(r, s); break;
-      default: replace(r, s, le);
+      case 7: replace(r, s, le); break;
+      case 8: create(t, r, s, le); break;
+      case 9: write(r, x, s); break;
+      case 10: fillTyped(t, r, x, s); break;
+      case 11: copyTyped(t, r, s); break;
+      case 12: sub(t, r, s); break;
+      case 13: cutTyped(t, r, s); break;
+      case 14: order(t, r); break;
+      default: setFrom(t, r, s, le);
     }
     check("nach Schritt " + i);
   }
@@ -291,14 +495,22 @@ pub fn arraybuffer(data: &[u8]) {
     if data.len() > crate::MAX_INPUT {
         return;
     }
-    let source = script(data);
-    let normal = run(&source, false);
+    let normal = run(&script(data), false);
     let sum = data
         .iter()
         .fold(0u32, |sum, &byte| sum.wrapping_add(u32::from(byte)));
     if sum % STRESS_EVERY != 0 {
         return;
     }
+    let prefix = data
+        .get(..HEADER_BYTES + STRESS_STEPS * STEP_BYTES)
+        .unwrap_or(data);
+    let source = script(prefix);
+    let normal = if prefix.len() == data.len() {
+        normal
+    } else {
+        run(&source, false)
+    };
     let stress = run(&source, true);
     if normal != Outcome::OutOfMemory && stress != Outcome::OutOfMemory {
         assert_eq!(normal, stress, "Ergebnis hängt vom Collector ab");
@@ -357,7 +569,7 @@ fn script(data: &[u8]) -> String {
         let _ = write!(
             steps,
             "[{}, {kind}, {}, {}, {}, {}],",
-            step[0] % 8,
+            step[0] % 8 + if step[0] & TYPED != 0 { 8 } else { 0 },
             step[2],
             step[1] >= 128,
             value(kind, step[0], step[1] >> 1, bytes),
@@ -466,6 +678,66 @@ mod tests {
             (5, 0, 200, 0x41),  // Sicht außerhalb
         ] {
             data.extend(step(op, kind, offset, [second; 8]));
+        }
+        assert_eq!(outcome(&data), Outcome::Passed);
+    }
+
+    #[test]
+    fn typed_array_steps_reach_the_engine_and_their_checks() {
+        const T: u8 = TYPED;
+        let minus = (-5i64 << 4).to_le_bytes();
+        let pi = std::f64::consts::PI.to_bits().to_le_bytes();
+        let mut data = vec![16, 8, 1];
+        for kind in 0..11 {
+            // (kind | 128) % 11 durchläuft jede Art, little-endian macht
+            // aus Uint8 einmal Uint8Clamped.
+            for (op, kind, offset, value) in [
+                (T, kind | 128, 8, [3; 8]), // anlegen ab 8, ausgerichtet, ~auto~
+                (T | 1, kind, 1, minus),    // Element 1 schreiben
+                (T | 1, 6, 2, [1; 8]),      // ein BigInt, bei Numbers ein TypeError
+                (T | 1, kind, 0, [3; 8]),   // Schlüssel "-0"
+                (T | 1 | (1 << 3), kind, 3, pi),
+                (T | 2, kind, 12, [25; 8]), // fill ab 2
+                (T | 3, kind, 11, [9; 8]),  // copyWithin
+                (T | 5, kind, 9, [15; 8]),  // slice
+                (T | 6, 0, 0, [0; 8]),      // reverse
+                (T | 6, 1, 0, [0; 8]),      // sort
+                (T | 6, 1, 1, [0; 8]),      // toSorted
+                (T | 6, 0, 1, [0; 8]),      // toReversed
+                (T | 7, 9, 1, [0x1b; 8]),   // set aus einem Float32Array
+                (T | 7, 7, 0, [0x18; 8]),   // set aus einem BigUint64Array
+                (T | 4, kind, 11, [3; 8]),  // subarray ab 1
+                (T, kind, 0, [0; 8]),       // anlegen mit fester Länge 0
+                (T, kind, 3, [0; 8]),       // Versatz 3: RangeError ab zwei Bytes
+            ] {
+                data.extend(step(op, kind, offset, value));
+            }
+        }
+        assert_eq!(outcome(&data), Outcome::Passed);
+        let mut data = vec![16, 8, 1];
+        for (op, kind, offset, value) in [
+            (T, 133, 4, [3; 8]), // 133 % 11 = 1 mit Bit 7: Uint8ClampedArray ab 4, ~auto~
+            (T | 1, 1, 0, (300i64 << 4).to_le_bytes()),
+            (T | 1 | (2 << 3), 1, 1, [6, 0, 0, 0, 0, 0, 0, 0]), // 1.5 rundet auf 2
+            (2, 0, 2, [0; 8]),                                  // resize auf 2: außerhalb
+            (T | 1, 1, 0, [0; 8]),
+            (T | 2, 1, 0, [0; 8]),
+            (T | 3, 1, 0, [0; 8]),
+            (T | 4, 1, 0, [0; 8]), // subarray außerhalb: RangeError
+            (T | 5, 1, 0, [0; 8]),
+            (T | 6, 1, 0, [0; 8]),
+            (T | 7, 1, 0, [0; 8]),
+            (2, 0, 20, [0; 8]),     // resize auf 20: wieder innerhalb
+            (T | 4, 0, 30, [0; 8]), // subarray mit ~auto~
+            (3, 0, 0, [0x41; 8]),   // transferToFixedLength(), weiter mit dem alten
+            (T, 2, 0, [3; 8]),      // anlegen auf dem abgelösten: TypeError
+            (T | 4, 0, 0, [0; 8]),
+            (T | 7, 0, 0, [0; 8]),
+            (7, 0, 12, [0x41; 8]), // neuer fester ArrayBuffer
+            (T, 2, 0, [2; 8]),     // Länge 12 ist durch 2 teilbar
+            (T, 10, 0, [2; 8]),    // aber nicht durch 8: RangeError
+        ] {
+            data.extend(step(op, kind, offset, value));
         }
         assert_eq!(outcome(&data), Outcome::Passed);
     }

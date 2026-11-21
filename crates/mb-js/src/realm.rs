@@ -133,6 +133,23 @@ pub enum Intrinsic {
     ArrayBufferPrototype,
     /// %DataView.prototype% (Abschnitt 25.3.4), ein gewöhnliches Objekt.
     DataViewPrototype,
+    /// %TypedArray.prototype% (Abschnitt 23.2.3), ein gewöhnliches Objekt.
+    TypedArrayPrototype,
+    /// Die Prototypen der zwölf Konstruktoren für TypedArrays (Abschnitt
+    /// 23.2.7), gewöhnliche Objekte mit %TypedArray.prototype% als
+    /// Prototyp, in der Reihenfolge der Tabelle der Konstruktoren.
+    Int8ArrayPrototype,
+    Uint8ArrayPrototype,
+    Uint8ClampedArrayPrototype,
+    Int16ArrayPrototype,
+    Uint16ArrayPrototype,
+    Int32ArrayPrototype,
+    Uint32ArrayPrototype,
+    BigInt64ArrayPrototype,
+    BigUint64ArrayPrototype,
+    Float16ArrayPrototype,
+    Float32ArrayPrototype,
+    Float64ArrayPrototype,
     /// %Array.prototype.values% (Abschnitt 23.1.3.38), auch @@iterator von
     /// Arrays und arguments-Objekten.
     ArrayPrototypeValues,
@@ -217,6 +234,22 @@ pub enum Intrinsic {
     ArrayBuffer,
     /// %DataView% (Abschnitt 25.3.2).
     DataView,
+    /// %TypedArray% (Abschnitt 23.2.1), ohne globalen Namen.
+    TypedArray,
+    /// Die zwölf Konstruktoren für TypedArrays (Abschnitt 23.2.5) mit
+    /// %TypedArray% als Prototyp.
+    Int8Array,
+    Uint8Array,
+    Uint8ClampedArray,
+    Int16Array,
+    Uint16Array,
+    Int32Array,
+    Uint32Array,
+    BigInt64Array,
+    BigUint64Array,
+    Float16Array,
+    Float32Array,
+    Float64Array,
     /// %Reflect% (Abschnitt 28.1).
     Reflect,
     /// %Proxy% (Abschnitt 28.2.1).
@@ -764,12 +797,20 @@ fn set_default_global_bindings(
         ("Array", Intrinsic::Array),
         ("ArrayBuffer", Intrinsic::ArrayBuffer),
         ("BigInt", Intrinsic::BigInt),
+        ("BigInt64Array", Intrinsic::BigInt64Array),
+        ("BigUint64Array", Intrinsic::BigUint64Array),
         ("Boolean", Intrinsic::Boolean),
         ("DataView", Intrinsic::DataView),
         ("Date", Intrinsic::Date),
         ("Error", Intrinsic::Error),
         ("EvalError", Intrinsic::EvalError),
+        ("Float16Array", Intrinsic::Float16Array),
+        ("Float32Array", Intrinsic::Float32Array),
+        ("Float64Array", Intrinsic::Float64Array),
         ("Function", Intrinsic::Function),
+        ("Int8Array", Intrinsic::Int8Array),
+        ("Int16Array", Intrinsic::Int16Array),
+        ("Int32Array", Intrinsic::Int32Array),
         ("Iterator", Intrinsic::Iterator),
         ("Map", Intrinsic::Map),
         ("Number", Intrinsic::Number),
@@ -784,6 +825,10 @@ fn set_default_global_bindings(
         ("Symbol", Intrinsic::Symbol),
         ("SyntaxError", Intrinsic::SyntaxError),
         ("TypeError", Intrinsic::TypeError),
+        ("Uint8Array", Intrinsic::Uint8Array),
+        ("Uint8ClampedArray", Intrinsic::Uint8ClampedArray),
+        ("Uint16Array", Intrinsic::Uint16Array),
+        ("Uint32Array", Intrinsic::Uint32Array),
         ("URIError", Intrinsic::URIError),
         // Die Funktionen aus Abschnitt 19.2 und %JSON%, %Math% und
         // %Reflect% aus Abschnitt 19.4 haben dieselben Attribute.

@@ -1,5 +1,7 @@
 //! SortIndexedProperties (Abschnitt 23.1.3.30.1) und CompareArrayElements
-//! (Abschnitt 23.1.3.30.2) für `sort` und `toSorted`.
+//! (Abschnitt 23.1.3.30.2) für `sort` und `toSorted`, dazu
+//! CompareTypedArrayElements (Abschnitt 23.2.4.8) für die gleichnamigen
+//! Methoden der TypedArrays.
 //!
 //! Die Sortierung ist eine stabile Mischsortierung von unten nach oben ohne
 //! Rekursion. Sie hört beim ersten Fehler eines Vergleichs auf, wie Schritt
@@ -36,6 +38,57 @@ pub(super) fn sort_indexed_properties<'s>(
     comparator: Local<'_>,
     holes: Holes,
 ) -> Completion<Vec<Local<'s>>> {
+    sort_with(
+        agent,
+        scope,
+        object,
+        length,
+        comparator,
+        holes,
+        Order::Array,
+    )
+}
+
+/// SortIndexedProperties mit ~read-through-holes~ und
+/// CompareTypedArrayElements für die Elemente eines TypedArray, die alle
+/// Numbers oder alle BigInts sind.
+pub(in crate::builtins) fn sort_typed_array_elements<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    object: Local<'_>,
+    length: f64,
+    comparator: Local<'_>,
+) -> Completion<Vec<Local<'s>>> {
+    let holes = Holes::ReadThrough;
+    sort_with(
+        agent,
+        scope,
+        object,
+        length,
+        comparator,
+        holes,
+        Order::TypedArray,
+    )
+}
+
+/// Welcher Vergleich ohne Vergleichsfunktion gilt.
+#[derive(Clone, Copy)]
+enum Order {
+    /// CompareArrayElements: nach ToString, *undefined* ans Ende.
+    Array,
+    /// CompareTypedArrayElements: numerisch, NaN ans Ende.
+    TypedArray,
+}
+
+fn sort_with<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    object: Local<'_>,
+    length: f64,
+    comparator: Local<'_>,
+    holes: Holes,
+    order: Order,
+) -> Completion<Vec<Local<'s>>> {
     let mut items = Vec::new();
     let mut k = 0.0;
     while k < length {
@@ -50,7 +103,7 @@ pub(super) fn sort_indexed_properties<'s>(
         }
         k += 1.0;
     }
-    merge_sort(agent, &mut items, comparator)?;
+    merge_sort(agent, &mut items, comparator, order)?;
     Ok(items)
 }
 
@@ -61,6 +114,7 @@ fn merge_sort<'s>(
     agent: &mut Agent,
     items: &mut Vec<Local<'s>>,
     comparator: Local<'_>,
+    order: Order,
 ) -> Completion<()> {
     let count = items.len();
     let mut buffer = items.clone();
@@ -74,7 +128,7 @@ fn merge_sort<'s>(
                 items.get(start..middle).unwrap_or_default(),
                 items.get(middle..end).unwrap_or_default(),
             );
-            let merged = merge(agent, left, right, comparator)?;
+            let merged = merge(agent, left, right, comparator, order)?;
             if let Some(target) = buffer.get_mut(start..end) {
                 target.copy_from_slice(&merged);
             }
@@ -93,11 +147,16 @@ fn merge<'s>(
     left: &[Local<'s>],
     right: &[Local<'s>],
     comparator: Local<'_>,
+    order: Order,
 ) -> Completion<Vec<Local<'s>>> {
     let mut merged = Vec::with_capacity(left.len().saturating_add(right.len()));
     let (mut i, mut j) = (0, 0);
     while let (Some(&x), Some(&y)) = (left.get(i), right.get(j)) {
-        if compare(agent, y, x, comparator)? < 0.0 {
+        let ordering = match order {
+            Order::Array => compare(agent, y, x, comparator)?,
+            Order::TypedArray => compare_typed_array_elements(agent, y, x, comparator)?,
+        };
+        if ordering < 0.0 {
             merged.push(y);
             j = j.saturating_add(1);
         } else {
@@ -150,4 +209,52 @@ fn compare(
         }
         Ok(0.0)
     })
+}
+
+/// CompareTypedArrayElements (Abschnitt 23.2.4.8): `x` und `y` sind beide
+/// Numbers oder beide BigInts.
+fn compare_typed_array_elements(
+    agent: &mut Agent,
+    x: Local<'_>,
+    y: Local<'_>,
+    comparator: Local<'_>,
+) -> Completion<f64> {
+    step(agent)?;
+    agent.scope(|agent, inner| -> Completion<f64> {
+        if !agent.heap().get(comparator).is_undefined() {
+            let undefined = agent.heap().local(inner, Value::UNDEFINED);
+            let result = call(agent, inner, comparator, undefined, &[x, y])?;
+            let order = to_number(agent, inner, result)?;
+            return Ok(if order.is_nan() { 0.0 } else { order });
+        }
+        let heap = agent.heap();
+        if let (Some(x), Some(y)) = (heap.get(x).as_number(), heap.get(y).as_number()) {
+            return Ok(compare_numbers(x, y));
+        }
+        // Zwei BigInts: IsLessThan ruft keinen Code auf.
+        if is_less_than(agent, inner, x, y, true)? == Some(true) {
+            return Ok(-1.0);
+        }
+        if is_less_than(agent, inner, y, x, true)? == Some(true) {
+            return Ok(1.0);
+        }
+        Ok(0.0)
+    })
+}
+
+/// Die Schritte 2 bis 9 von CompareTypedArrayElements für zwei Numbers.
+fn compare_numbers(x: f64, y: f64) -> f64 {
+    match (x.is_nan(), y.is_nan()) {
+        (true, true) => 0.0,
+        (true, false) => 1.0,
+        (false, true) => -1.0,
+        (false, false) if x < y => -1.0,
+        (false, false) if x > y => 1.0,
+        // Gleich: nur -0 und +0 unterscheiden sich noch.
+        (false, false) => match (x.is_sign_negative(), y.is_sign_negative()) {
+            (true, false) => -1.0,
+            (false, true) => 1.0,
+            _ => 0.0,
+        },
+    }
 }

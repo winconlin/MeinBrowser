@@ -389,6 +389,17 @@ def main():
                                       (3, 0, 0, b"\x41" * 8), (0, 0, 0, bytes(8)), (7, 128, 7, b"\x41" * 8)])
     arraybuffer("bigints", 8, 0, 0, [(0, 6, 0, struct.pack("<q", -1)), (0, 7 | 128, 0, struct.pack("<q", 1 << 62)),
                                      (0, 6 + 11 * 10, 0, struct.pack("<q", -(1 << 63)))])
+    typed = 0x20  # bit 5 of the step: the steps with typed arrays
+    minus = struct.pack("<q", -5 << 4)
+    arraybuffer("typed-arrays", 16, 8, 1, [
+        step for kind in (0, 5, 6, 8, 10) for step in [
+            (typed, kind | 128, 8, bytes([3]) * 8), (typed | 1, kind, 1, minus), (typed | 2, kind, 12, bytes([25]) * 8),
+            (typed | 3, kind, 11, bytes([9]) * 8), (typed | 6, 1, 0, bytes(8)), (typed | 7, 9, 1, bytes([0x1b]) * 8),
+        ]])
+    arraybuffer("typed-resize", 16, 8, 1, [
+        (typed, 133, 4, bytes([3]) * 8), (typed | 1, 1, 0, struct.pack("<q", 300 << 4)), (2, 0, 2, bytes(8)),
+        (typed | 2, 1, 0, bytes(8)), (typed | 4, 1, 0, bytes(8)), (2, 0, 20, bytes(8)), (typed | 4, 0, 30, bytes(8)),
+        (typed | 5, 1, 9, bytes([15]) * 8), (3, 0, 0, b"\x41" * 8), (typed, 2, 0, bytes([3]) * 8)])
     part = b"\x1f\x1f"  # PART_SEPARATOR in src/lib.rs
     write("page", "document", "<!doctype html><style>@media (max-width: 400px) { p { margin: 0 } }"
           " p { border: 2px dashed red; padding: 4px; font-style: italic }"

@@ -14,7 +14,11 @@
 //! Felder dazu haben, und arguments-Objekte (`arguments`). Deren verknüpfte Indizes lesen ihren
 //! Wert aus der Bindung des Parameters, schon beim Suchen einer eigenen
 //! Eigenschaft; so folgen [[GetOwnProperty]], [[Get]] und [[Set]] ihrer
-//! Fassung, ohne die Prototypkette anders zu durchlaufen. Alle Arten, die
+//! Fassung, ohne die Prototypkette anders zu durchlaufen. Typisierte Arrays
+//! (`typed_array`, Abschnitt 10.4.5) lesen und schreiben jeden Schlüssel,
+//! der eine kanonische numerische Zeichenkette ist, als Element in ihrem
+//! ArrayBuffer; ein solcher Schlüssel endet immer bei ihnen und erreicht nie
+//! ihre Prototypkette. Alle Arten, die
 //! [[GetOwnProperty]], [[GetPrototypeOf]], [[Get]], [[Set]] und
 //! [[HasProperty]] so umsetzen, durchlaufen die Prototypkette in einer
 //! Schleife statt rekursiv (RS-8). Nur Proxys (`proxy`) haben für alle
@@ -38,6 +42,7 @@ mod primitive;
 mod proxy;
 pub(crate) mod shape;
 mod storage;
+mod typed_array;
 
 use crate::agent::{Abrupt, Agent, Completion, ErrorKind};
 use crate::compare::same_value;
@@ -58,6 +63,12 @@ pub(crate) use primitive::{primitive_object_create, string_create};
 pub(crate) use proxy::{
     Step, has_call, has_construct, is_proxy, proxy_call, proxy_construct, proxy_create,
     proxy_target, revoke,
+};
+pub(crate) use typed_array::{
+    Record as TypedArrayRecord, get_element as typed_array_get_element,
+    initialize as initialize_typed_array, is_valid_integer_index,
+    record_of as typed_array_record_of, set_element as typed_array_set_element, typed_array_create,
+    typed_array_ref, viewed_buffer, write_element as typed_array_write_element,
 };
 
 /// Eingebettete Plätze eines gewöhnlichen Objekts, eines Funktionsobjekts
@@ -227,7 +238,8 @@ pub fn get_prototype_of<'s>(
             | ObjectClass::RegExp
             | ObjectClass::Date
             | ObjectClass::ArrayBuffer
-            | ObjectClass::DataView => {
+            | ObjectClass::DataView
+            | ObjectClass::TypedArray => {
                 let heap = agent.heap();
                 let prototype =
                     object_of(heap, cursor).and_then(|object| heap.object_prototype(object));
@@ -266,7 +278,8 @@ pub fn set_prototype_of(
         | ObjectClass::RegExp
         | ObjectClass::Date
         | ObjectClass::ArrayBuffer
-        | ObjectClass::DataView => ordinary_set_prototype_of(agent, object, prototype),
+        | ObjectClass::DataView
+        | ObjectClass::TypedArray => ordinary_set_prototype_of(agent, object, prototype),
         ObjectClass::Proxy => agent.scope(|agent, scope| {
             let heap = agent.heap();
             let cursor = heap.local(scope, heap.get(object));
@@ -346,7 +359,8 @@ pub fn is_extensible(agent: &mut Agent, object: Local<'_>) -> Completion<bool> {
         | ObjectClass::RegExp
         | ObjectClass::Date
         | ObjectClass::ArrayBuffer
-        | ObjectClass::DataView => Ok(ordinary_is_extensible(agent.heap(), object)),
+        | ObjectClass::DataView
+        | ObjectClass::TypedArray => Ok(ordinary_is_extensible(agent.heap(), object)),
         ObjectClass::Proxy => agent.scope(|agent, scope| {
             let heap = agent.heap();
             let cursor = heap.local(scope, heap.get(object));
@@ -388,6 +402,7 @@ pub fn prevent_extensions(agent: &mut Agent, object: Local<'_>) -> Completion<bo
         | ObjectClass::Date
         | ObjectClass::ArrayBuffer
         | ObjectClass::DataView => Ok(ordinary_prevent_extensions(agent.heap(), object)),
+        ObjectClass::TypedArray => Ok(typed_array::prevent_extensions(agent.heap(), object)),
         ObjectClass::Proxy => agent.scope(|agent, scope| {
             let heap = agent.heap();
             let cursor = heap.local(scope, heap.get(object));
@@ -396,7 +411,7 @@ pub fn prevent_extensions(agent: &mut Agent, object: Local<'_>) -> Completion<bo
                     return Ok(result);
                 }
                 if class(agent, cursor)? != ObjectClass::Proxy {
-                    return Ok(ordinary_prevent_extensions(agent.heap(), cursor));
+                    return prevent_extensions(agent, cursor);
                 }
             }
         }),
@@ -447,6 +462,7 @@ pub fn get_own_property<'s>(
         | ObjectClass::Date
         | ObjectClass::ArrayBuffer
         | ObjectClass::DataView => Ok(ordinary_get_own_property(agent.heap(), scope, object, key)),
+        ObjectClass::TypedArray => typed_array::get_own_property(agent, scope, object, key),
         ObjectClass::Proxy => {
             let heap = agent.heap();
             let cursor = heap.local(scope, heap.get(object));
@@ -520,6 +536,9 @@ pub fn define_own_property(
             ordinary_define_own_property(agent, scope, object, key, descriptor)
         }
         ObjectClass::Array => array::define_own_property(agent, scope, object, key, descriptor),
+        ObjectClass::TypedArray => {
+            typed_array::define_own_property(agent, scope, object, key, descriptor)
+        }
         ObjectClass::Arguments => {
             arguments::define_own_property(agent, scope, object, key, descriptor)
         }
@@ -846,11 +865,18 @@ fn ordinary_has_property(
     key: PropertyKey<'_>,
     cursor: Option<Local<'_>>,
 ) -> Found {
+    let property = key;
     let key = key_in(heap, key);
     let Some(mut current) = object_of(heap, object) else {
         return Found::Done(false);
     };
     loop {
+        // [[HasProperty]] eines TypedArray (Abschnitt 10.4.5.3).
+        if heap.object_class(current) == Some(ObjectClass::TypedArray)
+            && let Some(index) = typed_array::numeric_key(heap, property)
+        {
+            return Found::Done(typed_array::is_valid_integer_index(heap, current, index));
+        }
         if find_own(heap, current, key).is_some() {
             return Found::Done(true);
         }
@@ -891,6 +917,9 @@ pub fn get<'s>(
                 }
                 return call(agent, scope, getter, receiver, &[]);
             }
+            Walk::Element(typed_array, index) => {
+                return typed_array::get_element(agent, scope, typed_array, index);
+            }
             Walk::Proxy(proxy) => match proxy::get(agent, scope, proxy, key, receiver)? {
                 Step::Done(value) => return Ok(value),
                 Step::Forward if class(agent, proxy)? == ObjectClass::Proxy => {}
@@ -904,6 +933,9 @@ pub fn get<'s>(
 enum Walk<'s> {
     Value(Local<'s>),
     Getter(Local<'s>),
+    /// Ein TypedArray und der numerische Index, den der Schlüssel nennt
+    /// (Abschnitt 10.4.5.5).
+    Element(Local<'s>, f64),
     /// Ein Proxy, an den [[Get]] weitergeht.
     Proxy(Local<'s>),
 }
@@ -916,11 +948,17 @@ fn ordinary_get_walk<'s>(
     object: Local<'_>,
     key: PropertyKey<'_>,
 ) -> Walk<'s> {
+    let property = key;
     let key = key_in(heap, key);
     let Some(mut current) = object_of(heap, object) else {
         return Walk::Value(heap.local(scope, Value::UNDEFINED));
     };
     loop {
+        if heap.object_class(current) == Some(ObjectClass::TypedArray)
+            && let Some(index) = typed_array::numeric_key(heap, property)
+        {
+            return Walk::Element(heap.local(scope, Value::object(current)), index);
+        }
         match find_own(heap, current, key) {
             Some(Own::Data { value, .. }) => return Walk::Value(heap.local(scope, value)),
             Some(Own::Accessor { getter, .. }) => return Walk::Getter(heap.local(scope, getter)),
@@ -941,6 +979,9 @@ enum Holder<'s> {
     Writable,
     ReadOnly,
     Setter(Local<'s>),
+    /// Ein TypedArray und der numerische Index, den der Schlüssel nennt
+    /// (Abschnitt 10.4.5.6).
+    Element(Local<'s>, f64),
     /// Ein Proxy, an den [[Set]] weitergeht.
     Proxy(Local<'s>),
 }
@@ -952,11 +993,17 @@ fn ordinary_set_walk<'s>(
     object: Local<'_>,
     key: PropertyKey<'_>,
 ) -> Holder<'s> {
+    let property = key;
     let key = key_in(heap, key);
     let Some(mut current) = object_of(heap, object) else {
         return Holder::ReadOnly;
     };
     loop {
+        if heap.object_class(current) == Some(ObjectClass::TypedArray)
+            && let Some(index) = typed_array::numeric_key(heap, property)
+        {
+            return Holder::Element(heap.local(scope, Value::object(current)), index);
+        }
         match find_own(heap, current, key) {
             Some(Own::Data { attributes, .. }) if attributes & WRITABLE == 0 => {
                 return Holder::ReadOnly;
@@ -1010,22 +1057,46 @@ pub fn set(
             call(agent, scope, setter, receiver, &[value])?;
             Ok(true)
         }
-        Holder::Writable => {
-            if object_of(agent.heap(), receiver).is_none() {
-                return Ok(false);
+        Holder::Element(typed_array, index) => {
+            let heap = agent.heap();
+            if same_value(heap, heap.get(typed_array), heap.get(receiver)) {
+                typed_array::set_element(agent, scope, typed_array, index, value)?;
+                return Ok(true);
             }
-            match get_own_property(agent, scope, receiver, key)? {
-                None => create_data_property(agent, scope, receiver, key, value),
-                Some(existing) if existing.is_accessor() => Ok(false),
-                Some(existing) if existing.writable == Some(false) => Ok(false),
-                Some(_) => {
-                    let descriptor = PropertyDescriptor {
-                        value: Some(value),
-                        ..PropertyDescriptor::default()
-                    };
-                    define_own_property(agent, scope, receiver, key, &descriptor)
-                }
+            let valid = object_of(heap, typed_array)
+                .is_some_and(|object| typed_array::is_valid_integer_index(heap, object, index));
+            if !valid {
+                return Ok(true);
             }
+            // OrdinarySet findet eine beschreibbare Dateneigenschaft.
+            set_on_receiver(agent, scope, key, value, receiver)
+        }
+        Holder::Writable => set_on_receiver(agent, scope, key, value, receiver),
+    }
+}
+
+/// OrdinarySetWithOwnDescriptor (Abschnitt 10.1.9.2) ab Schritt 2.b für
+/// eine beschreibbare Dateneigenschaft: Der Wert kommt an den Empfänger.
+fn set_on_receiver(
+    agent: &mut Agent,
+    scope: &Scope,
+    key: PropertyKey<'_>,
+    value: Local<'_>,
+    receiver: Local<'_>,
+) -> Completion<bool> {
+    if object_of(agent.heap(), receiver).is_none() {
+        return Ok(false);
+    }
+    match get_own_property(agent, scope, receiver, key)? {
+        None => create_data_property(agent, scope, receiver, key, value),
+        Some(existing) if existing.is_accessor() => Ok(false),
+        Some(existing) if existing.writable == Some(false) => Ok(false),
+        Some(_) => {
+            let descriptor = PropertyDescriptor {
+                value: Some(value),
+                ..PropertyDescriptor::default()
+            };
+            define_own_property(agent, scope, receiver, key, &descriptor)
         }
     }
 }
@@ -1039,7 +1110,14 @@ pub fn delete(
     object: Local<'_>,
     key: PropertyKey<'_>,
 ) -> Completion<bool> {
-    if class(agent, object)? == ObjectClass::Proxy {
+    let object_class = class(agent, object)?;
+    // [[Delete]] eines TypedArray (Abschnitt 10.4.5.7).
+    if object_class == ObjectClass::TypedArray
+        && let Some(result) = typed_array::delete(agent.heap(), object, key)
+    {
+        return Ok(result);
+    }
+    if object_class == ObjectClass::Proxy {
         let heap = agent.heap();
         let cursor = heap.local(scope, heap.get(object));
         loop {
@@ -1106,12 +1184,15 @@ fn remove_property(
 
 /// [[OwnPropertyKeys]] (Abschnitt 10.1.11, OrdinaryOwnPropertyKeys
 /// 10.1.11.1): Array-Indizes aufsteigend, dann Zeichenketten und danach
-/// Symbole, jeweils in der Reihenfolge, in der sie entstanden sind.
+/// Symbole, jeweils in der Reihenfolge, in der sie entstanden sind. Ein
+/// TypedArray nennt zuerst die Indizes seiner Elemente (Abschnitt
+/// 10.4.5.8).
 pub fn own_property_keys<'s>(
     agent: &mut Agent,
     scope: &'s Scope,
     object: Local<'_>,
 ) -> Completion<Vec<PropertyKey<'s>>> {
+    let mut keys: Vec<PropertyKey<'s>> = Vec::new();
     match class(agent, object)? {
         ObjectClass::Ordinary
         | ObjectClass::Array
@@ -1131,6 +1212,7 @@ pub fn own_property_keys<'s>(
         | ObjectClass::Date
         | ObjectClass::ArrayBuffer
         | ObjectClass::DataView => {}
+        ObjectClass::TypedArray => typed_array::index_keys(agent, scope, object, &mut keys)?,
         ObjectClass::Proxy => {
             let heap = agent.heap();
             let cursor = heap.local(scope, heap.get(object));
@@ -1146,12 +1228,13 @@ pub fn own_property_keys<'s>(
     }
     let heap = agent.heap();
     let Some(object) = object_of(heap, object) else {
-        return Ok(Vec::new());
+        return Ok(keys);
     };
-    let mut keys: Vec<PropertyKey<'s>> = storage::indices(heap, object)
-        .into_iter()
-        .map(PropertyKey::Index)
-        .collect();
+    keys.extend(
+        storage::indices(heap, object)
+            .into_iter()
+            .map(PropertyKey::Index),
+    );
     let entries = heap
         .object_shape(object)
         .map(|shape| shape::entries(heap, shape))

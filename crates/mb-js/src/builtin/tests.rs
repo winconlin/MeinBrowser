@@ -4795,3 +4795,455 @@ fn buffer_bytes_survive_collections() {
     let expected: u32 = (0..300_000u32).step_by(9973).map(|i| i % 256).sum();
     assert_eq!(run(&mut agent, realm, source), expected.to_string());
 }
+
+#[test]
+fn typed_arrays_construct_from_every_kind_of_argument() {
+    check(&[
+        ("new Int8Array().length", "0"),
+        ("new Uint16Array(3).byteLength", "6"),
+        ("new Float64Array(2).BYTES_PER_ELEMENT", "8"),
+        ("Float16Array.BYTES_PER_ELEMENT", "2"),
+        ("Uint8Array(1)", "TypeError"),
+        ("new Uint8Array(-1)", "RangeError"),
+        ("new Uint8Array(2 ** 40)", "RangeError"),
+        ("new Int16Array([1, 2, 3]).join()", "\"1,2,3\""),
+        (
+            "new Uint8Array({ length: 2, 0: 5, 1: 300 }).join()",
+            "\"5,44\"",
+        ),
+        (
+            "new Uint8ClampedArray([300, -5, 1.5, 2.5]).join()",
+            "\"255,0,2,2\"",
+        ),
+        ("new Int8Array(new Set([1, 2])).join()", "\"1,2\""),
+        (
+            "new Float32Array(new Int16Array([-1, 7])).join()",
+            "\"-1,7\"",
+        ),
+        ("new BigInt64Array(new Int8Array(1))", "TypeError"),
+        ("new BigInt64Array([1n, -1n]).join()", "\"1,-1\""),
+        ("new BigUint64Array([-1n])[0]", "18446744073709551615n"),
+        ("new BigInt64Array([1])", "TypeError"),
+        (
+            "var b = new ArrayBuffer(8); var a = new Uint16Array(b, 2, 2); \
+             [a.length, a.byteOffset, a.byteLength, a.buffer === b].join()",
+            "\"2,2,4,true\"",
+        ),
+        ("new Uint16Array(new ArrayBuffer(8), 1)", "RangeError"),
+        ("new Uint16Array(new ArrayBuffer(7))", "RangeError"),
+        ("new Uint16Array(new ArrayBuffer(8), 2, 4)", "RangeError"),
+        ("new Uint8Array(new ArrayBuffer(8), 9)", "RangeError"),
+        (
+            "var b = new ArrayBuffer(4); new Uint8Array(b, 0).length",
+            "4",
+        ),
+        (
+            "class Bytes extends Uint8Array {} var x = new Bytes(2); \
+             [x instanceof Uint8Array, Object.getPrototypeOf(Uint8Array) === Object.getPrototypeOf(Int8Array)].join()",
+            "\"true,true\"",
+        ),
+        (
+            "var T = Object.getPrototypeOf(Int8Array); new T()",
+            "TypeError",
+        ),
+        (
+            "var T = Object.getPrototypeOf(Int8Array); T.name + T.length",
+            "\"TypedArray0\"",
+        ),
+        ("Int8Array.length + Uint8Array.name", "\"3Uint8Array\""),
+        (
+            "Object.getPrototypeOf(Int8Array.prototype) === Object.getPrototypeOf(Int8Array).prototype",
+            "true",
+        ),
+        ("ArrayBuffer.isView(new Int8Array(1))", "true"),
+    ]);
+}
+
+#[test]
+fn typed_array_elements_use_canonical_numeric_keys() {
+    check(&[
+        ("var a = new Uint8Array(2); a[1] = 258; a[1]", "2"),
+        (
+            "var a = new Uint8Array(2); a[5] = 1; [a[5], 5 in a].join()",
+            "\",false\"",
+        ),
+        (
+            "var a = new Uint8Array(2); a['-0'] = 1; [a['-0'], '-0' in a].join()",
+            "\",false\"",
+        ),
+        (
+            "var a = new Uint8Array(2); a['1.5'] = 1; Object.keys(a).join()",
+            "\"0,1\"",
+        ),
+        (
+            "var a = new Uint8Array(2); a['01'] = 1; Object.keys(a).join()",
+            "\"0,1,01\"",
+        ),
+        (
+            "var a = new Int8Array(2); a.foo = 1; Object.keys(a).join()",
+            "\"0,1,foo\"",
+        ),
+        ("var a = new Int8Array(2); delete a[0]", "false"),
+        ("var a = new Int8Array(2); delete a[2]", "true"),
+        (
+            "var a = new Int8Array(1); Object.getOwnPropertyDescriptor(a, 0).writable",
+            "true",
+        ),
+        (
+            "var a = new Int8Array(1); Object.defineProperty(a, 0, { value: 3 }); a[0]",
+            "3",
+        ),
+        (
+            "var a = new Int8Array(1); Reflect.defineProperty(a, 0, { value: 3, configurable: false })",
+            "false",
+        ),
+        (
+            "var a = new Int8Array(1); Reflect.defineProperty(a, 1, { value: 3 })",
+            "false",
+        ),
+        ("Object.freeze(new Int8Array(1))", "TypeError"),
+        ("Object.isFrozen(Object.freeze(new Int8Array(0)))", "true"),
+        (
+            "var b = new ArrayBuffer(2, { maxByteLength: 4 }); Reflect.preventExtensions(new Int8Array(b))",
+            "false",
+        ),
+        (
+            "Object.prototype[3] = 'p'; var a = new Int8Array(2); [a[3], 3 in a].join()",
+            "\",false\"",
+        ),
+        (
+            "var a = new Int8Array(2); var o = Object.create(a); o[0] = 5; \
+             [a[0], Object.hasOwn(o, 0), o[0]].join()",
+            "\"0,true,5\"",
+        ),
+        (
+            "var a = new Int8Array(2); var o = Object.create(a); o[7] = 5; \
+             [Object.hasOwn(o, 7), o[7]].join()",
+            "\"false,\"",
+        ),
+        (
+            "var a = new Float64Array(1); a[0] = -0; Object.is(a[0], -0)",
+            "true",
+        ),
+        (
+            "var a = new Float32Array(1); a[0] = 1.1; a[0] === Math.fround(1.1)",
+            "true",
+        ),
+        (
+            "var a = new Float16Array(1); a[0] = 1.1; a[0] === Math.f16round(1.1)",
+            "true",
+        ),
+        (
+            "var a = new Int8Array(1); var log = []; a[0] = { valueOf() { log.push('v'); return 1; } }; \
+             a[5] = { valueOf() { log.push('w'); return 1; } }; log.join()",
+            "\"v,w\"",
+        ),
+    ]);
+}
+
+#[test]
+fn typed_arrays_follow_their_array_buffer() {
+    check(&[
+        (
+            "var b = new ArrayBuffer(4, { maxByteLength: 8 }); var a = new Uint8Array(b); \
+             b.resize(8); var l = a.length; b.resize(2); [l, a.length].join()",
+            "\"8,2\"",
+        ),
+        (
+            "var b = new ArrayBuffer(4, { maxByteLength: 8 }); var a = new Uint8Array(b, 2, 2); \
+             b.resize(3); [a.length, a.byteOffset, a.byteLength, a[0]].join()",
+            "\"0,0,0,\"",
+        ),
+        (
+            "var b = new ArrayBuffer(4); var a = new Uint8Array(b); b.transfer(); \
+             [a.length, a[0], 0 in a, Object.keys(a).length].join()",
+            "\"0,,false,0\"",
+        ),
+        (
+            "var b = new ArrayBuffer(4); var a = new Uint8Array(b); b.transfer(); a.fill(0)",
+            "TypeError",
+        ),
+        (
+            "var a = new Uint8Array([1, 2]); var it = a.values(); it.next(); \
+             a.buffer.transfer(); var r; try { it.next(); } catch (e) { r = e.name; } \
+             r + ':' + it.next().done",
+            "\"TypeError:true\"",
+        ),
+        (
+            "var b = new ArrayBuffer(4); new DataView(b).setUint16(0, 0x0102, true); \
+             new Uint16Array(b)[0]",
+            "258",
+        ),
+    ]);
+}
+
+#[test]
+fn typed_array_prototype_methods() {
+    check(&[
+        ("new Int8Array([1, 2, 3]).at(-1)", "3"),
+        (
+            "new Int8Array([1, 2, 3, 4, 5]).copyWithin(0, 3).join()",
+            "\"4,5,3,4,5\"",
+        ),
+        (
+            "new Int8Array([1, 2, 3, 4, 5]).copyWithin(1, 0, 3).join()",
+            "\"1,1,2,3,5\"",
+        ),
+        (
+            "[...new Int8Array([7, 8]).entries()].join(';')",
+            "\"0,7;1,8\"",
+        ),
+        ("[...new Int8Array([7, 8]).keys()].join()", "\"0,1\""),
+        ("[...new Int8Array([7, 8])].join()", "\"7,8\""),
+        ("new Int8Array([2, 4]).every(x => x % 2 === 0)", "true"),
+        ("new Int8Array([2, 5]).some(x => x % 2 === 1)", "true"),
+        ("new Int8Array(4).fill(7, 1, 3).join()", "\"0,7,7,0\""),
+        ("new BigInt64Array(2).fill(3n).join()", "\"3,3\""),
+        (
+            "new Int8Array([1, 2, 3, 4]).filter(x => x > 2).join()",
+            "\"3,4\"",
+        ),
+        ("new Int8Array([1, 2, 3]).find(x => x > 1)", "2"),
+        ("new Int8Array([1, 2, 3]).findIndex(x => x > 1)", "1"),
+        ("new Int8Array([1, 2, 3]).findLast(x => x < 3)", "2"),
+        ("new Int8Array([1, 2, 3]).findLastIndex(x => x > 5)", "-1"),
+        (
+            "var s = 0; new Int8Array([1, 2, 3]).forEach(x => s += x); s",
+            "6",
+        ),
+        ("new Float32Array([NaN]).includes(NaN)", "true"),
+        ("new Float32Array([NaN]).indexOf(NaN)", "-1"),
+        ("new Int8Array([1, 2, 1]).lastIndexOf(1)", "2"),
+        ("new Int8Array([1, 2, 1]).lastIndexOf(1, -2)", "0"),
+        ("new Int8Array([1, 2]).join('-')", "\"1-2\""),
+        (
+            "new Int8Array([1, 2]).map(x => x * 100).join()",
+            "\"100,-56\"",
+        ),
+        ("new Int8Array([1, 2, 3]).reduce((a, b) => a + b)", "6"),
+        (
+            "new Int8Array([1, 2, 3]).reduceRight((a, b) => a + '' + b, '')",
+            "\"321\"",
+        ),
+        ("new Int8Array([]).reduce((a, b) => a)", "TypeError"),
+        ("new Int8Array([1, 2, 3]).reverse().join()", "\"3,2,1\""),
+        // reverse geht über Get und Set: Ein NaN verliert seine Nutzlast.
+        (
+            "var u = new Uint8Array([1, 0, 0, 0, 0, 0, 248, 127, 0, 0, 0, 0, 0, 0, 0, 0]); \
+             new Float64Array(u.buffer).reverse(); u.join()",
+            "\"0,0,0,0,0,0,0,0,0,0,0,0,0,0,248,127\"",
+        ),
+        (
+            "var a = new Int8Array(4); a.set([1, 2], 1); a.join()",
+            "\"0,1,2,0\"",
+        ),
+        ("var a = new Int8Array(2); a.set([1, 2, 3])", "RangeError"),
+        ("var a = new Int8Array(2); a.set([1], -1)", "RangeError"),
+        (
+            "var a = new Uint8Array([1, 2, 3, 4]); a.set(a.subarray(0, 3), 1); a.join()",
+            "\"1,1,2,3\"",
+        ),
+        (
+            "var b = new ArrayBuffer(4); var a = new Uint8Array(b); a.set([1, 2, 3, 4]); \
+             new Uint8Array(b, 2, 2).set(new Uint16Array(b, 0, 2)); a.join()",
+            "\"1,2,1,3\"",
+        ),
+        (
+            "var a = new Int8Array(2); a.set(new BigInt64Array(1))",
+            "TypeError",
+        ),
+        ("new Int8Array([1, 2, 3, 4]).slice(1, -1).join()", "\"2,3\""),
+        ("new Int8Array([3, 1, 2]).sort().join()", "\"1,2,3\""),
+        (
+            "new Float64Array([0, -0, NaN, -1]).sort().join()",
+            "\"-1,0,0,NaN\"",
+        ),
+        ("Object.is(new Float64Array([0, -0]).sort()[0], -0)", "true"),
+        (
+            "new BigInt64Array([3n, -1n, 2n]).sort().join()",
+            "\"-1,2,3\"",
+        ),
+        (
+            "new Int8Array([1, 2, 3]).sort((a, b) => b - a).join()",
+            "\"3,2,1\"",
+        ),
+        ("new Int8Array([1, 2, 3]).sort(1)", "TypeError"),
+        (
+            "var a = new Int8Array([1, 2, 3, 4]); var s = a.subarray(1, 3); s[0] = 9; \
+             [a.join(), s.length, s.byteOffset].join(';')",
+            "\"1,9,3,4;2;1\"",
+        ),
+        (
+            "var b = new ArrayBuffer(4, { maxByteLength: 8 }); var s = new Uint8Array(b).subarray(1); \
+             b.resize(8); s.length",
+            "7",
+        ),
+        ("new Int8Array([1, 2]).toLocaleString()", "\"1,2\""),
+        ("new Int8Array([1, 2, 3]).toReversed().join()", "\"3,2,1\""),
+        ("new Int8Array([3, 1, 2]).toSorted().join()", "\"1,2,3\""),
+        ("new Int8Array([1, 2, 3]).with(-1, 9).join()", "\"1,2,9\""),
+        ("new Int8Array([1, 2, 3]).with(3, 9)", "RangeError"),
+        ("new Int8Array([1, 2]).toString()", "\"1,2\""),
+        (
+            "var P = Object.getPrototypeOf(Int8Array.prototype); \
+             [P.toString === Array.prototype.toString, P.values === P[Symbol.iterator]].join()",
+            "\"true,true\"",
+        ),
+        (
+            "Object.prototype.toString.call(new Uint8ClampedArray(1))",
+            "\"[object Uint8ClampedArray]\"",
+        ),
+        (
+            "var P = Object.getPrototypeOf(Int8Array.prototype); \
+             Object.getOwnPropertyDescriptor(P, Symbol.toStringTag).get.call(3)",
+            "undefined",
+        ),
+        ("Int8Array.from([1, 2], x => x * 2).join()", "\"2,4\""),
+        ("Int8Array.from({ length: 2, 0: 1 }).join()", "\"1,0\""),
+        ("Int16Array.of(1, 2, 3).join()", "\"1,2,3\""),
+        ("Int8Array.of.call(Array, 1)", "TypeError"),
+        (
+            "class Small extends Int8Array { static get [Symbol.species]() { return Int8Array; } } \
+             var m = new Small([1, 2]).map(x => x); m.constructor === Int8Array",
+            "true",
+        ),
+        (
+            "class Bad extends Int8Array { static get [Symbol.species]() { return BigInt64Array; } } \
+             new Bad([1]).map(x => x)",
+            "TypeError",
+        ),
+    ]);
+}
+
+#[test]
+fn uint8_arrays_encode_and_decode_base64_and_hex() {
+    check(&[
+        ("new Uint8Array([72, 105]).toBase64()", "\"SGk=\""),
+        (
+            "new Uint8Array([72, 105]).toBase64({ omitPadding: true })",
+            "\"SGk\"",
+        ),
+        (
+            "new Uint8Array([251, 255]).toBase64({ alphabet: 'base64url' })",
+            "\"-_8=\"",
+        ),
+        ("new Uint8Array([1, 171]).toHex()", "\"01ab\""),
+        ("Uint8Array.fromBase64('SGk=').join()", "\"72,105\""),
+        ("Uint8Array.fromBase64(' S G k ').join()", "\"72,105\""),
+        (
+            "Uint8Array.fromBase64('SGk', { lastChunkHandling: 'strict' })",
+            "SyntaxError",
+        ),
+        (
+            "Uint8Array.fromBase64('SGk', { lastChunkHandling: 'stop-before-partial' }).length",
+            "0",
+        ),
+        (
+            "Uint8Array.fromBase64('SGl=', { lastChunkHandling: 'strict' })",
+            "SyntaxError",
+        ),
+        ("Uint8Array.fromBase64('SGl=').join()", "\"72,105\""),
+        ("Uint8Array.fromBase64('S')", "SyntaxError"),
+        (
+            "Uint8Array.fromBase64('-_8', { alphabet: 'base64url' }).join()",
+            "\"251,255\"",
+        ),
+        (
+            "Uint8Array.fromBase64('+/8', { alphabet: 'base64url' })",
+            "SyntaxError",
+        ),
+        ("Uint8Array.fromBase64(1)", "TypeError"),
+        (
+            "Uint8Array.fromBase64('', { alphabet: 'other' })",
+            "TypeError",
+        ),
+        ("Uint8Array.fromHex('01aB').join()", "\"1,171\""),
+        ("Uint8Array.fromHex('0')", "SyntaxError"),
+        ("Uint8Array.fromHex('0g')", "SyntaxError"),
+        (
+            "var a = new Uint8Array(4); var r = a.setFromBase64('SGVsbG8='); \
+             [r.read, r.written, a.join()].join(';')",
+            "\"4;3;72,101,108,0\"",
+        ),
+        (
+            "var a = new Uint8Array(2); var r = a.setFromHex('0102ff'); [r.read, r.written, a.join()].join(';')",
+            "\"4;2;1,2\"",
+        ),
+        (
+            "var a = new Uint8Array(4); try { a.setFromHex('01zz'); } catch (e) { a[0] + e.name }",
+            "\"1SyntaxError\"",
+        ),
+        ("new Int8Array(1).toHex", "undefined"),
+        (
+            "Uint8Array.prototype.toHex.call(new Int8Array(1))",
+            "TypeError",
+        ),
+    ]);
+}
+
+/// Typisierte Arrays mit erzwungenem Sammeln bei jeder Anlage: Konstruktoren
+/// aus Arrays, Iterablen, Array-ähnlichen Objekten und anderen typisierten
+/// Arrays, Unterklassen über @@species, Methoden mit Rückrufen, die Müll
+/// anlegen, und BigInt-Arten auf einem geteilten ArrayBuffer.
+#[test]
+fn typed_arrays_survive_collections() {
+    let (mut agent, realm) = agent_with(true);
+    let source = r#"
+    var kinds = [Int8Array, Uint8ClampedArray, Uint32Array, Float64Array];
+    var out = [];
+    var garbage = [];
+    for (var k = 0; k < kinds.length; k++) {
+      var TA = kinds[k];
+      var src = [];
+      for (var i = 0; i < 12; i++) src.push((i * 37) % 101 - 20);
+      var a = new TA(src);
+      var it = { [Symbol.iterator]: function () { return src.values(); } };
+      var b = new TA(it);
+      var c = new TA({ length: 12, 3: 7, 11: -1 });
+      var d = new TA(a);
+      garbage = [[k], { k: k }];
+      class Sub extends TA {}
+      var e = new Sub(a.buffer, TA.BYTES_PER_ELEMENT * 2, 8);
+      var m = e.map(function (x) { garbage = [x]; return x * 2; });
+      var f = a.filter(function (x) { return x > 10; });
+      var s = d.subarray(1, 10).slice(2, 7);
+      d.set(b.subarray(0, 4), 8);
+      var sorted = b.toSorted(function (x, y) { garbage = {}; return y - x; });
+      b.sort();
+      var w = a.with(1, 99);
+      var vals = [];
+      for (var v of c.entries()) { if (v[1]) vals.push(v.join(':')); }
+      out.push([
+        a.reduce(function (p, x) { return p + x; }, 0),
+        b[0] + '/' + b[11],
+        vals.join(';'),
+        d.join('').length,
+        e.length + '/' + (m instanceof Sub) + '/' + m[3],
+        f.length,
+        s.length + '/' + s[0],
+        d[9],
+        sorted[0] + '/' + sorted[11],
+        w[1] + '/' + a[1],
+        Object.keys(a).length,
+      ].join(','));
+    }
+    var big = new BigInt64Array([5n, -3n, 2n ** 62n]);
+    var ubig = new BigUint64Array(big.buffer);
+    garbage.length = 0;
+    out.push(big.toSorted().join() + '|' + ubig[1] + '|' + Array.from(ubig.subarray(1).reverse()).join());
+    out.join('\n');
+"#;
+    let expected = [
+        "283,-20/74,3:7;11:-1,27,8/true/-128,7,5/-10,17,74/-20,99/17,12",
+        "330,0/74,3:7,19,8/true/128,7,5/0,17,74/0,99/17,12",
+        "12884902171,0/4294967286,3:7;11:4294967295,55,8/true/128,10,5/4294967286,17,4294967286/0,99/17,12",
+        "283,-20/74,3:7;11:-1,27,8/true/128,7,5/-10,17,74/-20,99/17,12",
+        "-3,5,4611686018427387904|18446744073709551613|4611686018427387904,18446744073709551613",
+    ];
+    assert_eq!(
+        run(&mut agent, realm, source),
+        format!("{:?}", expected.join("\n"))
+    );
+    agent.heap_mut().collect();
+    agent.heap().verify().expect("gültiger Heap");
+}

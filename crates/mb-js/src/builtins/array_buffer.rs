@@ -158,7 +158,7 @@ fn array_buffer_constructor<'s>(
 }
 
 /// ArrayBuffer.isView ( arg ) (Abschnitt 25.1.5.1): ob `arg`
-/// [[ViewedArrayBuffer]] hat, bisher nur ein DataView.
+/// [[ViewedArrayBuffer]] hat, also ein DataView oder ein TypedArray ist.
 fn is_view<'s>(
     agent: &mut Agent,
     scope: &'s Scope,
@@ -167,7 +167,10 @@ fn is_view<'s>(
     let value = arguments.argument(agent, scope, 0);
     let heap = agent.heap();
     let view = match heap.get(value).kind() {
-        Kind::Object(object) => heap.object_class(object) == Some(ObjectClass::DataView),
+        Kind::Object(object) => matches!(
+            heap.object_class(object),
+            Some(ObjectClass::DataView | ObjectClass::TypedArray)
+        ),
         _ => false,
     };
     Ok(boolean(agent, scope, view))
