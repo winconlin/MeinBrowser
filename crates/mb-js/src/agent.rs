@@ -4,11 +4,18 @@
 //! Funktionen, der Host, die Ausnahme, die gerade geworfen wird, und die
 //! Warteschlange der Jobs. Das Symbolregister kommt mit `Symbol.for`.
 //!
-//! Jobs (Abschnitt 9.5) gibt es bisher nur für Promises. HostEnqueuePromiseJob
-//! (Abschnitt 9.5.5) hängt sie hinten an die Warteschlange; der Host lässt
-//! sie mit [`Agent::run_jobs`] laufen, wenn kein Script läuft, und sie
-//! laufen in der Reihenfolge, in der sie kamen. Jeder Job ist eine interne
-//! Zelle in einem dauerhaften Handle, also eine Wurzel, bis er läuft.
+//! Jobs (Abschnitt 9.5) gibt es für Promises und für das Aufräumen von
+//! FinalizationRegistries. HostEnqueuePromiseJob (Abschnitt 9.5.5) hängt
+//! einen Promise-Job hinten an die Warteschlange; der Host lässt sie mit
+//! [`Agent::run_jobs`] laufen, wenn kein Script läuft, und sie laufen in
+//! der Reihenfolge, in der sie kamen. Jeder Job ist eine interne Zelle in
+//! einem dauerhaften Handle, also eine Wurzel, bis er läuft. Die
+//! Aufräum-Jobs aus HostEnqueueFinalizationRegistryCleanupJob (Abschnitt
+//! 9.9.4.1) stellt der Collector in eine eigene Liste im Heap, wenn er ein
+//! Ziel einer Registry leert. Sie laufen erst, wenn keine Promise-Jobs mehr
+//! warten, jeder als eigene Folge von Ausführungen; vorher und danach
+//! leert ClearKeptObjects (Abschnitt 9.10) die Liste [[KeptAlive]], denn
+//! dann ist eine solche Folge zu Ende.
 //!
 //! Atome sind die Zeichenketten, die als Eigenschaftsschlüssel dienen. Zu
 //! jedem Inhalt gibt es höchstens eines, also vergleicht man Schlüssel über
@@ -30,6 +37,7 @@ use std::rc::Rc;
 pub use mb_base::{Budget, Cancel, Exhausted};
 
 use crate::builtin::Builtin;
+use crate::builtins::cleanup_finalization_registry;
 use crate::function::SharedFunction;
 use crate::heap::{Heap, Local, Options, OutOfMemory, Persistent, Scope};
 use crate::host::Host;
@@ -413,17 +421,31 @@ impl Agent {
         self.jobs.push_back(Job { cell, realm });
     }
 
-    /// Ob Jobs warten.
+    /// Ob Jobs warten, auch Aufräum-Jobs von FinalizationRegistries.
     pub fn has_pending_jobs(&self) -> bool {
-        !self.jobs.is_empty()
+        !self.jobs.is_empty() || self.heap.has_pending_cleanup()
+    }
+
+    /// ClearKeptObjects (Abschnitt 9.10): Eine Folge von Ausführungen ist zu
+    /// Ende, die Ziele von WeakRefs, die sie angelegt oder gelesen hat,
+    /// darf der Collector wieder leeren. [`Agent::run_jobs`] tut das selbst,
+    /// wenn keine Promise-Jobs mehr warten; ein Host ruft es, wenn er ohne
+    /// Jobs weitermacht.
+    pub fn clear_kept_objects(&mut self) {
+        self.heap.clear_kept_objects();
     }
 
     /// Führt die wartenden Jobs aus, auch die, die dabei dazukommen, bis
-    /// die Warteschlange leer ist. Jeder Job kostet einen Arbeitsschritt;
+    /// keine mehr warten: erst alle Promise-Jobs, dann ClearKeptObjects,
+    /// dann einen Aufräum-Job, dann wieder die Promise-Jobs, die er
+    /// angestoßen hat, und so fort. Jeder Job kostet einen Arbeitsschritt;
     /// ohne Quote des Hosts teilen sich alle die Standardquote eines
     /// äußersten Aufrufs. Endet ein Job abrupt, kommt das zurück, und die
     /// übrigen warten weiter; bei [`Abrupt::Throw`] hält der Agent die
-    /// Ausnahme wie nach einem Script.
+    /// Ausnahme wie nach einem Script. Bricht ein Aufräum-Job ab, bekommen
+    /// die übrigen geleerten Records seiner Registry ihren Callback erst,
+    /// wenn das Sammeln wieder ein Ziel der Registry leert; die
+    /// Spezifikation erlaubt, Callbacks auszulassen (Abschnitt 9.9.3).
     ///
     /// Jobs laufen nur, wenn kein Script und kein anderer Job läuft
     /// (Abschnitt 9.5); ruft eine Funktion des Hosts dies aus JavaScript
@@ -433,19 +455,30 @@ impl Agent {
             return Ok(());
         }
         self.with_default_execution_budget(|agent| {
-            while !agent.jobs.is_empty() {
+            loop {
+                while !agent.jobs.is_empty() {
+                    agent.spend_execution_steps(1)?;
+                    let Some(job) = agent.jobs.pop_front() else {
+                        break;
+                    };
+                    agent.scope(|agent, scope| {
+                        let heap = agent.heap();
+                        let cell = heap.local(scope, heap.get_persistent(&job.cell));
+                        agent.heap_mut().release(job.cell);
+                        run_job(agent, scope, cell, job.realm)
+                    })?;
+                }
+                agent.heap.clear_kept_objects();
+                if !agent.heap.has_pending_cleanup() {
+                    return Ok(());
+                }
                 agent.spend_execution_steps(1)?;
-                let Some(job) = agent.jobs.pop_front() else {
-                    break;
-                };
-                agent.scope(|agent, scope| {
-                    let heap = agent.heap();
-                    let cell = heap.local(scope, heap.get_persistent(&job.cell));
-                    agent.heap_mut().release(job.cell);
-                    run_job(agent, scope, cell, job.realm)
+                agent.scope(|agent, scope| match agent.heap.pop_cleanup(scope) {
+                    Some(registry) => cleanup_finalization_registry(agent, scope, registry),
+                    None => Ok(()),
                 })?;
+                agent.heap.clear_kept_objects();
             }
-            Ok(())
         })
     }
 

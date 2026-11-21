@@ -16,8 +16,9 @@
 //! %Date.prototype% (Welle 8i), %ArrayBuffer% und %DataView% mit ihren
 //! Prototypen (Welle 8j, Teil 1) und die typisierten Arrays mit
 //! %TypedArray%, %TypedArray.prototype%, den zwölf Konstruktoren und
-//! Base64 und Hex an %Uint8Array% (Welle 8j, Teil 2); %Function% selbst
-//! wartet auf `eval`.
+//! Base64 und Hex an %Uint8Array% (Welle 8j, Teil 2) sowie %WeakMap%,
+//! %WeakSet%, %WeakRef% und %FinalizationRegistry% mit ihren Prototypen
+//! (Welle 8k); %Function% selbst wartet auf `eval`.
 //! Dazu kommen, was `for`-`of` und die Ausbreitung brauchen: die
 //! Iteratoren für Arrays, typisierte Arrays und Zeichenketten mit den
 //! Methoden für @@iterator. Generatoren und async-Generatoren bringen ihre Prototypen
@@ -60,6 +61,8 @@ mod set;
 mod string;
 mod symbol;
 mod typed_array;
+mod weak_collection;
+mod weak_ref;
 
 use crate::agent::{Agent, Completion};
 use crate::builtin::{Builtin, BuiltinCall, create_builtin_function};
@@ -74,6 +77,7 @@ pub(crate) use function::HAS_INSTANCE as FUNCTION_PROTOTYPE_HAS_INSTANCE;
 pub(crate) use function::PROTOTYPE as FUNCTION_PROTOTYPE;
 pub(crate) use math::random_seed;
 pub(crate) use regexp::regexp_create as create_regexp;
+pub(crate) use weak_ref::cleanup_finalization_registry;
 
 fn units(text: &str) -> Vec<u16> {
     text.encode_utf16().collect()
@@ -108,11 +112,13 @@ pub(crate) fn create_intrinsics(
     json::create(agent, scope, realm)?;
     map::create(agent, scope, realm)?;
     set::create(agent, scope, realm)?;
+    weak_collection::create(agent, scope, realm)?;
     array_buffer::create(agent, scope, realm)?;
     data_view::create(agent, scope, realm)?;
     typed_array::create(agent, scope, realm)?;
     reflect::create(agent, scope, realm)?;
     proxy::create(agent, scope, realm)?;
+    weak_ref::create(agent, scope, realm)?;
     promise::create(agent, scope, realm)
 }
 

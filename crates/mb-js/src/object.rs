@@ -237,6 +237,8 @@ pub fn get_prototype_of<'s>(
             | ObjectClass::Collection
             | ObjectClass::RegExp
             | ObjectClass::Date
+            | ObjectClass::WeakRef
+            | ObjectClass::FinalizationRegistry
             | ObjectClass::ArrayBuffer
             | ObjectClass::DataView
             | ObjectClass::TypedArray => {
@@ -277,6 +279,8 @@ pub fn set_prototype_of(
         | ObjectClass::Collection
         | ObjectClass::RegExp
         | ObjectClass::Date
+        | ObjectClass::WeakRef
+        | ObjectClass::FinalizationRegistry
         | ObjectClass::ArrayBuffer
         | ObjectClass::DataView
         | ObjectClass::TypedArray => ordinary_set_prototype_of(agent, object, prototype),
@@ -358,6 +362,8 @@ pub fn is_extensible(agent: &mut Agent, object: Local<'_>) -> Completion<bool> {
         | ObjectClass::Collection
         | ObjectClass::RegExp
         | ObjectClass::Date
+        | ObjectClass::WeakRef
+        | ObjectClass::FinalizationRegistry
         | ObjectClass::ArrayBuffer
         | ObjectClass::DataView
         | ObjectClass::TypedArray => Ok(ordinary_is_extensible(agent.heap(), object)),
@@ -400,6 +406,8 @@ pub fn prevent_extensions(agent: &mut Agent, object: Local<'_>) -> Completion<bo
         | ObjectClass::Collection
         | ObjectClass::RegExp
         | ObjectClass::Date
+        | ObjectClass::WeakRef
+        | ObjectClass::FinalizationRegistry
         | ObjectClass::ArrayBuffer
         | ObjectClass::DataView => Ok(ordinary_prevent_extensions(agent.heap(), object)),
         ObjectClass::TypedArray => Ok(typed_array::prevent_extensions(agent.heap(), object)),
@@ -460,6 +468,8 @@ pub fn get_own_property<'s>(
         | ObjectClass::Collection
         | ObjectClass::RegExp
         | ObjectClass::Date
+        | ObjectClass::WeakRef
+        | ObjectClass::FinalizationRegistry
         | ObjectClass::ArrayBuffer
         | ObjectClass::DataView => Ok(ordinary_get_own_property(agent.heap(), scope, object, key)),
         ObjectClass::TypedArray => typed_array::get_own_property(agent, scope, object, key),
@@ -531,6 +541,8 @@ pub fn define_own_property(
         | ObjectClass::Collection
         | ObjectClass::RegExp
         | ObjectClass::Date
+        | ObjectClass::WeakRef
+        | ObjectClass::FinalizationRegistry
         | ObjectClass::ArrayBuffer
         | ObjectClass::DataView => {
             ordinary_define_own_property(agent, scope, object, key, descriptor)
@@ -1210,6 +1222,8 @@ pub fn own_property_keys<'s>(
         | ObjectClass::Collection
         | ObjectClass::RegExp
         | ObjectClass::Date
+        | ObjectClass::WeakRef
+        | ObjectClass::FinalizationRegistry
         | ObjectClass::ArrayBuffer
         | ObjectClass::DataView => {}
         ObjectClass::TypedArray => typed_array::index_keys(agent, scope, object, &mut keys)?,

@@ -1,7 +1,8 @@
 //! Die Tabelle hinter [[MapData]] und [[SetData]] (Abschnitte 24.1 und
-//! 24.2) und was Maps und Sets teilen: das Objekt mit RequireInternalSlot,
-//! die Iteratoren und `forEach`. Konstruktoren und Prototypen stehen in
-//! [`super::map`] und [`super::set`].
+//! 24.2), [[WeakMapData]] und [[WeakSetData]] (Abschnitte 24.3 und 24.4)
+//! und was Maps und Sets teilen: das Objekt mit RequireInternalSlot, die
+//! Iteratoren und `forEach`. Konstruktoren und Prototypen stehen in
+//! [`super::map`], [`super::set`] und [`super::weak_collection`].
 //!
 //! Die Spezifikation beschreibt [[MapData]] als Liste: Gelöschte Einträge
 //! werden ~empty~, neue kommen hinten dazu, und Iteratoren und `forEach`
@@ -32,6 +33,13 @@
 //! mehr als das Kopieren der Tabelle beim Sammeln. Die Hashwerte kommen aus
 //! dem [`RandomState`] des Agents, die Reihenfolge der Einträge hängt nicht
 //! davon ab.
+//!
+//! Eine schwache Tabelle für WeakMaps und WeakSets hält ihre Einträge in
+//! einer Ephemeron-Zelle (siehe `heap`): Schlüssel und Wert bleiben nur,
+//! solange der Schlüssel anders erreichbar ist, sonst macht der Collector
+//! den Eintrag zur Lücke. Ihre Schlüssel sind alle Objekte oder Symbole,
+//! also berechnet sie nach jeder Sammlung die Ketten neu und zählt dabei
+//! die Einträge, die noch da sind.
 
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hasher};
@@ -53,6 +61,8 @@ use crate::value::{Kind, Ref, Value};
 /// Die Art einer Sammlung im ersten internen Feld.
 pub(super) const MAP: i32 = 0;
 pub(super) const SET: i32 = 1;
+pub(super) const WEAK_MAP: i32 = 2;
+pub(super) const WEAK_SET: i32 = 3;
 
 /// Die internen Felder des Objekts: die Art und die Tabelle.
 const COLLECTION_KIND: usize = 0;
@@ -74,7 +84,9 @@ const IDENTITIES: usize = 5;
 /// sind.
 const CURSORS: usize = 6;
 const CURSOR_COUNT: usize = 7;
-const TABLE_FIELDS: usize = 8;
+/// *true* für eine schwache Tabelle.
+const WEAK: usize = 8;
+const TABLE_FIELDS: usize = 9;
 
 /// Ein Eintrag besteht aus vier Werten.
 const WIDTH: usize = 4;
@@ -207,6 +219,22 @@ pub(super) fn table_create<'s>(
     agent: &mut Agent,
     scope: &'s Scope,
 ) -> Result<Local<'s>, OutOfMemory> {
+    new_table(agent, scope, false)
+}
+
+/// Eine neue, leere schwache Tabelle für eine WeakMap oder ein WeakSet.
+pub(super) fn weak_table_create<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+) -> Result<Local<'s>, OutOfMemory> {
+    new_table(agent, scope, true)
+}
+
+fn new_table<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    weak: bool,
+) -> Result<Local<'s>, OutOfMemory> {
     let table = agent.heap_mut().alloc_slots(scope, TABLE_FIELDS)?;
     let heap = agent.heap();
     if let Some(cell) = internal(Some(heap.get(table))) {
@@ -214,6 +242,7 @@ pub(super) fn table_create<'s>(
             heap.set_field(cell, index, Value::int32(0));
         }
         heap.set_field(cell, EPOCH, epoch(heap));
+        heap.set_field(cell, WEAK, Value::boolean(weak));
     }
     Ok(table)
 }
@@ -229,7 +258,8 @@ pub(super) fn size(agent: &Agent, table: Local<'_>) -> usize {
 }
 
 /// Verteilt alle Einträge neu auf die Ketten, mit neuen Hashwerten für
-/// Objekte und Symbole.
+/// Objekte und Symbole, und zählt sie dabei; in einer schwachen Tabelle
+/// kann der Collector Einträge geleert haben.
 fn rechain(heap: &Heap, hasher: &RandomState, table: Ref<'_>) {
     let (Some(entries), Some(buckets)) = (
         internal(heap.field(table, ENTRIES)),
@@ -242,6 +272,7 @@ fn rechain(heap: &Heap, hasher: &RandomState, table: Ref<'_>) {
     for bucket in 0..chains {
         heap.set_field(buckets, bucket, Value::int32(END));
     }
+    let (mut size, mut identities) = (0, 0);
     for index in 0..count(heap, table, USED) {
         let base = index * WIDTH;
         let Some(key) = heap.field(entries, base + KEY) else {
@@ -250,7 +281,9 @@ fn rechain(heap: &Heap, hasher: &RandomState, table: Ref<'_>) {
         if key.is_hole() {
             continue;
         }
+        size += 1;
         let hash = if is_identity(key) {
+            identities += 1;
             let hash = hash_of(heap, hasher, key);
             heap.set_field(entries, base + HASH, hash_value(hash));
             hash
@@ -262,6 +295,8 @@ fn rechain(heap: &Heap, hasher: &RandomState, table: Ref<'_>) {
         heap.set_field(entries, base + NEXT, head);
         heap.set_field(buckets, bucket, int(index));
     }
+    heap.set_field(table, SIZE, int(size));
+    heap.set_field(table, IDENTITIES, int(identities));
     heap.set_field(table, EPOCH, epoch(heap));
 }
 
@@ -357,19 +392,30 @@ pub(super) fn set_value_at(agent: &Agent, table: Local<'_>, index: usize, value:
     }
 }
 
-/// Zellen für `capacity` Einträge und halb so viele Ketten.
+/// Zellen für `capacity` Einträge und halb so viele Ketten, für eine
+/// schwache Tabelle die Einträge in einer Ephemeron-Zelle.
 fn allocate<'s>(
     agent: &mut Agent,
     scope: &'s Scope,
     capacity: usize,
+    weak: bool,
 ) -> Result<(Local<'s>, Local<'s>), OutOfMemory> {
     let length = capacity
         .checked_mul(WIDTH)
         .filter(|&length| i32::try_from(length).is_ok())
         .ok_or(OutOfMemory)?;
-    let entries = agent.heap_mut().alloc_slots(scope, length)?;
+    let entries = if weak {
+        agent.heap_mut().alloc_ephemerons(scope, capacity, WIDTH)?
+    } else {
+        agent.heap_mut().alloc_slots(scope, length)?
+    };
     let buckets = agent.heap_mut().alloc_slots(scope, capacity / 2)?;
     Ok((entries, buckets))
+}
+
+fn is_weak(heap: &Heap, table: Ref<'_>) -> bool {
+    heap.field(table, WEAK)
+        .is_some_and(|weak| weak.kind() == Kind::Boolean(true))
 }
 
 /// Wie viele Einträge eine neue Zelle für `size` Einträge fassen soll.
@@ -438,7 +484,8 @@ fn rebuild(
     table: Local<'_>,
     capacity: usize,
 ) -> Result<(), OutOfMemory> {
-    let (entries, buckets) = allocate(agent, scope, capacity)?;
+    let weak = cell_of(agent.heap(), table).is_some_and(|cell| is_weak(agent.heap(), cell));
+    let (entries, buckets) = allocate(agent, scope, capacity, weak)?;
     // Erst nach den Anforderungen lesen, sie können verschoben haben.
     let heap = agent.heap();
     let hasher = agent.collection_hasher();
@@ -465,6 +512,8 @@ pub(super) fn append(
     let (used, capacity, size) = {
         let heap = agent.heap();
         let cell = cell_of(heap, table).ok_or(OutOfMemory)?;
+        // In einer schwachen Tabelle stimmt die Größe erst danach.
+        refresh(heap, agent.collection_hasher(), cell);
         let capacity = internal(heap.field(cell, ENTRIES))
             .map_or(0, |entries| heap.field_count(entries) / WIDTH);
         (count(heap, cell, USED), capacity, count(heap, cell, SIZE))
@@ -558,7 +607,7 @@ pub(super) fn copy<'s>(
     if size == 0 {
         return Ok(result);
     }
-    let (entries, buckets) = allocate(agent, scope, capacity_for(size)?)?;
+    let (entries, buckets) = allocate(agent, scope, capacity_for(size)?, false)?;
     let heap = agent.heap();
     let hasher = agent.collection_hasher();
     let (Some(source), Some(target), Some(entries), Some(buckets)) = (

@@ -176,3 +176,10 @@ path = "fuzz_targets/arraybuffer.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "weak"
+path = "fuzz_targets/weak.rs"
+test = false
+doc = false
+bench = false

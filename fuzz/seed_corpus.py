@@ -400,6 +400,23 @@ def main():
         (typed, 133, 4, bytes([3]) * 8), (typed | 1, 1, 0, struct.pack("<q", 300 << 4)), (2, 0, 2, bytes(8)),
         (typed | 2, 1, 0, bytes(8)), (typed | 4, 1, 0, bytes(8)), (2, 0, 20, bytes(8)), (typed | 4, 0, 30, bytes(8)),
         (typed | 5, 1, 9, bytes([15]) * 8), (3, 0, 0, b"\x41" * 8), (typed, 2, 0, bytes([3]) * 8)])
+    def weak(name, steps):
+        # Four bytes per step: the kind (modulo 12, 11 ends a round), a slot, a second slot or a
+        # WeakRef, and switches (src/weak.rs).
+        write("weak", name, b"".join(bytes(step) for step in steps))
+    weak("keys-and-refs", [(0, 0, 0, 0), (0, 1, 0, 0), (3, 0, 1, 0), (4, 1, 0, 8), (7, 0, 0, 0), (7, 1, 1, 0),
+                           (9, 1, 2, 16 | 8), (11, 0, 0, 0), (2, 0, 0, 0), (2, 1, 0, 0), (11, 0, 0, 0),
+                           (8, 2, 0, 0), (8, 3, 1, 0)])
+    weak("ephemeron-chain", [(0, 0, 0, 0), (0, 1, 0, 0), (1, 2, 0, 0), (4, 0, 1, 8), (4, 1, 2, 9), (7, 1, 0, 0),
+                             (7, 2, 1, 0), (9, 2, 0, 1), (2, 1, 0, 0), (2, 2, 0, 0), (11, 0, 0, 0), (8, 3, 0, 0),
+                             (8, 4, 1, 0), (2, 0, 0, 0), (11, 0, 0, 0), (8, 5, 0, 0), (2, 3, 0, 0), (2, 4, 0, 0),
+                             (2, 5, 0, 0)])
+    weak("registries", [step for slot in range(8) for step in [(slot % 2, slot, 0, 0), (9, slot, slot * 8 + 7, 16 | slot)]]
+         + [(10, 1, 0, 0), (10, 3, 0, 1), (2, 0, 0, 0), (2, 2, 0, 0), (2, 5, 0, 0), (11, 0, 0, 0),
+            (0, 0, 0, 0), (9, 0, 1, 8), (2, 1, 0, 0), (11, 0, 0, 0), (2, 0, 0, 0)])
+    weak("sets-and-errors", [(4, 0, 0, 0), (7, 0, 0, 0), (9, 0, 0, 0), (10, 0, 0, 0), (0, 0, 0, 0), (9, 0, 0, 8),
+                             (6, 0, 0, 0), (6, 0, 0, 0), (1, 1, 0, 0), (6, 1, 0, 0), (6, 0, 0, 1), (5, 0, 0, 0),
+                             (4, 1, 0, 9), (5, 1, 0, 1), (7, 1, 3, 0), (2, 1, 0, 0), (11, 0, 0, 0), (8, 2, 3, 0)])
     part = b"\x1f\x1f"  # PART_SEPARATOR in src/lib.rs
     write("page", "document", "<!doctype html><style>@media (max-width: 400px) { p { margin: 0 } }"
           " p { border: 2px dashed red; padding: 4px; font-style: italic }"

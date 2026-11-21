@@ -5247,3 +5247,368 @@ fn typed_arrays_survive_collections() {
     agent.heap_mut().collect();
     agent.heap().verify().expect("gültiger Heap");
 }
+
+#[test]
+fn weak_maps_and_weak_sets_follow_the_spec() {
+    check(&[
+        (
+            "var a = {}, b = function () {}, s = Symbol('s'), m = new WeakMap([[a, 1]]); \
+             m.set(b, 2).set(s, 3).set(Symbol.iterator, 4); \
+             m.get(a) + ':' + m.get(b) + ':' + m.get(s) + ':' + m.get(Symbol.iterator) + ':' + \
+             m.get({}) + m.get(1) + ':' + m.has(a) + m.has('a') + ':' + m.delete(a) + m.delete(a) + \
+             m.delete(1) + ':' + m.has(a)",
+            "\"1:2:3:4:undefinedundefined:truefalse:truefalsefalse:false\"",
+        ),
+        ("new WeakMap().set(1, 1)", "TypeError"),
+        ("new WeakMap().set(Symbol.for('r'), 1)", "TypeError"),
+        ("new WeakMap().get(Symbol.for('r'))", "undefined"),
+        ("WeakMap()", "TypeError"),
+        ("new WeakMap([1])", "TypeError"),
+        ("new WeakMap([[1, 1]])", "TypeError"),
+        ("WeakMap.prototype.get.call(new Map(), {})", "TypeError"),
+        ("Map.prototype.get.call(new WeakMap(), {})", "TypeError"),
+        ("WeakMap.prototype.has.call(new WeakSet(), {})", "TypeError"),
+        (
+            "var k = {}, j = {}, m = new WeakMap(); m.getOrInsert(k, 1) + ':' + m.getOrInsert(k, 2) + \
+             ':' + m.getOrInsertComputed(j, function (x) { m.set(j, 9); return x === j; }) + ':' + \
+             m.get(j) + ':' + m.getOrInsertComputed(j, function () { throw 1; })",
+            "\"1:1:true:true:true\"",
+        ),
+        ("new WeakMap().getOrInsert(1, 2)", "TypeError"),
+        ("new WeakMap().getOrInsertComputed({}, 2)", "TypeError"),
+        (
+            "new WeakMap().getOrInsertComputed(1, function () {})",
+            "TypeError",
+        ),
+        (
+            "var keys = [], m = new WeakMap(); for (var i = 0; i < 200; i++) { keys.push({}); \
+             m.set(keys[i], i); } for (var i = 0; i < 200; i += 2) m.delete(keys[i]); \
+             var sum = 0; for (var i = 0; i < 200; i++) sum += m.has(keys[i]) ? m.get(keys[i]) : 0; sum",
+            "10000",
+        ),
+        (
+            "var o = {}, s = new WeakSet([o, o]); s.add(o) === s && s.has(o) && !s.has({}) && \
+             !s.has(1) && s.delete(o) && !s.delete(o) && !s.delete(1) && !s.has(o)",
+            "true",
+        ),
+        ("new WeakSet().add(1)", "TypeError"),
+        ("new WeakSet([1])", "TypeError"),
+        ("WeakSet()", "TypeError"),
+        ("WeakSet.prototype.add.call(new Set(), {})", "TypeError"),
+        (
+            "var log = []; var s = new WeakSet({ [Symbol.iterator]: function () { return { \
+             next: function () { return { done: false, value: 1 }; }, \
+             return: function () { log.push('closed'); return {}; } }; } }); s",
+            "TypeError",
+        ),
+        (
+            "class M extends WeakMap { constructor(x) { super(x); this.extra = 1; } } \
+             class S extends WeakSet {} var k = {}; var m = new M([[k, 2]]); \
+             (m instanceof M) + ':' + m.get(k) + ':' + m.extra + ':' + new S([k]).has(k)",
+            "\"true:2:1:true\"",
+        ),
+        (
+            "Object.prototype.toString.call(new WeakMap()) + Object.prototype.toString.call(new WeakSet()) + \
+             WeakMap.length + WeakSet.length + WeakMap.prototype.set.length + \
+             WeakMap.prototype.getOrInsertComputed.length + WeakSet.prototype.add.length",
+            "\"[object WeakMap][object WeakSet]00221\"",
+        ),
+        (
+            "var called = 0; var old = WeakMap.prototype.set; \
+             WeakMap.prototype.set = function (k, v) { called++; return old.call(this, k, v); }; \
+             new WeakMap([[{}, 1], [{}, 2]]); called",
+            "2",
+        ),
+    ]);
+}
+
+#[test]
+fn weak_refs_and_finalization_registries_follow_the_spec() {
+    check(&[
+        (
+            "var o = {}, s = Symbol(), r = new WeakRef(o); r.deref() === o && \
+             new WeakRef(s).deref() === s && new WeakRef(Symbol.iterator).deref() === Symbol.iterator",
+            "true",
+        ),
+        ("WeakRef({})", "TypeError"),
+        ("new WeakRef(1)", "TypeError"),
+        ("new WeakRef()", "TypeError"),
+        ("new WeakRef(Symbol.for('r'))", "TypeError"),
+        ("WeakRef.prototype.deref.call({})", "TypeError"),
+        (
+            "WeakRef.prototype.deref.call(new FinalizationRegistry(function () {}))",
+            "TypeError",
+        ),
+        (
+            "Object.prototype.toString.call(new WeakRef({})) + \
+             Object.prototype.toString.call(new FinalizationRegistry(function () {})) + \
+             WeakRef.length + WeakRef.prototype.deref.length + FinalizationRegistry.length + \
+             FinalizationRegistry.prototype.register.length + \
+             FinalizationRegistry.prototype.unregister.length",
+            "\"[object WeakRef][object FinalizationRegistry]10121\"",
+        ),
+        ("FinalizationRegistry(function () {})", "TypeError"),
+        ("new FinalizationRegistry({})", "TypeError"),
+        ("new FinalizationRegistry()", "TypeError"),
+        (
+            "var r = new FinalizationRegistry(function () {}), o = {}, t = {}; \
+             String(r.register(o, 1)) + r.register(o, 2, t) + r.register(Symbol(), o, o) + ':' + \
+             r.unregister(t) + r.unregister(t) + r.unregister(o) + r.unregister({})",
+            "\"undefinedundefinedundefined:truefalsetruefalse\"",
+        ),
+        (
+            "var o = {}; new FinalizationRegistry(function () {}).register(o, o)",
+            "TypeError",
+        ),
+        (
+            "new FinalizationRegistry(function () {}).register(1, 1)",
+            "TypeError",
+        ),
+        (
+            "new FinalizationRegistry(function () {}).register({}, 1, 1)",
+            "TypeError",
+        ),
+        (
+            "new FinalizationRegistry(function () {}).register({}, 1, Symbol.for('r'))",
+            "TypeError",
+        ),
+        (
+            "new FinalizationRegistry(function () {}).unregister(1)",
+            "TypeError",
+        ),
+        (
+            "FinalizationRegistry.prototype.register.call({}, {}, 1)",
+            "TypeError",
+        ),
+        (
+            "FinalizationRegistry.prototype.unregister.call(new WeakRef({}), {})",
+            "TypeError",
+        ),
+        (
+            "var r = new FinalizationRegistry(function () {}), t = {}, keep = []; \
+             for (var i = 0; i < 100; i++) { keep.push({}); r.register(keep[i], i, i % 3 ? t : undefined); } \
+             r.unregister(t) + ':' + r.unregister(t)",
+            "\"true:false\"",
+        ),
+        (
+            "class R extends FinalizationRegistry { constructor() { super(function () {}); this.x = 1; } } \
+             class W extends WeakRef {} var o = {}; \
+             (new R() instanceof R) + ':' + new R().x + ':' + (new W(o).deref() === o)",
+            "\"true:1:true\"",
+        ),
+    ]);
+}
+
+/// Ein Agent mit `tag`, ohne Druck auf den Collector.
+fn weak_agent() -> (Agent, RealmId) {
+    let (mut agent, realm) = agent_with(false);
+    define_tag(&mut agent, realm);
+    (agent, realm)
+}
+
+/// Lässt die Jobs laufen, also auch ClearKeptObjects, und sammelt.
+fn finish_and_collect(agent: &mut Agent) {
+    agent.run_jobs().expect("Jobs");
+    agent.heap_mut().collect();
+    agent.heap().verify().expect("gültiger Heap");
+}
+
+#[test]
+fn weak_map_values_die_with_their_keys() {
+    let (mut agent, realm) = weak_agent();
+    let source = "
+        var map = new WeakMap(), set = new WeakSet(), kept = [], refs = [], keys = [];
+        (function () {
+          for (var i = 0; i < 40; i++) {
+            var key = {}, value = { i: i };
+            map.set(key, value);
+            set.add(key);
+            refs.push(new WeakRef(value));
+            keys.push(new WeakRef(key));
+            if (i % 4 === 0) kept.push(key);
+          }
+          // Eine Kette: Jeder Wert ist der Schlüssel des nächsten Eintrags.
+          var first = {}, chain = first;
+          for (var j = 0; j < 30; j++) { var next = {}; map.set(chain, next); chain = next; }
+          map.set(chain, 'end');
+          kept.push(first);
+          var dead = {}, later = {};
+          map.set(later, dead);
+          map.set(dead, later);
+          refs.push(new WeakRef(dead));
+        })();
+        'ok'";
+    assert_eq!(run(&mut agent, realm, source), "\"ok\"");
+    finish_and_collect(&mut agent);
+    let check = "
+        var alive = 0;
+        for (var i = 0; i < refs.length; i++) if (refs[i].deref() !== undefined) alive++;
+        var live = 0;
+        for (var i = 0; i < keys.length; i++) if (keys[i].deref() !== undefined) live++;
+        var ok = 0;
+        for (var i = 0; i < 40; i += 4) if (set.has(kept[i / 4]) && map.get(kept[i / 4]).i === i) ok++;
+        var chain = kept[10], length = 0;
+        while (typeof chain === 'object') { chain = map.get(chain); length++; }
+        alive + ':' + live + ':' + ok + ':' + length + ':' + chain";
+    assert_eq!(run(&mut agent, realm, check), "\"10:10:10:31:end\"");
+    // Die Tabelle nimmt danach neue Schlüssel auf und findet die alten.
+    let more = "
+        var extra = [];
+        for (var i = 0; i < 100; i++) { extra.push({}); map.set(extra[i], i); set.add(extra[i]); }
+        var sum = 0;
+        for (var i = 0; i < 100; i++) sum += map.get(extra[i]) + (set.has(extra[i]) ? 1 : 0);
+        sum + ':' + map.get(kept[0]).i";
+    assert_eq!(run(&mut agent, realm, more), "\"5050:0\"");
+    finish_and_collect(&mut agent);
+}
+
+#[test]
+fn weak_refs_keep_their_targets_until_the_jobs_end() {
+    let (mut agent, realm) = weak_agent();
+    let source = "var ref = new WeakRef({}), symbol = new WeakRef(Symbol('s')); 'ok'";
+    assert_eq!(run(&mut agent, realm, source), "\"ok\"");
+    // [[KeptAlive]] hält die Ziele, bis die Folge von Ausführungen endet.
+    agent.heap_mut().collect();
+    let alive = "(ref.deref() !== undefined) + ':' + (typeof symbol.deref())";
+    assert_eq!(run(&mut agent, realm, alive), "\"true:symbol\"");
+    // deref hat die Ziele wieder in [[KeptAlive]] gestellt.
+    agent.heap_mut().collect();
+    assert_eq!(run(&mut agent, realm, alive), "\"true:symbol\"");
+    finish_and_collect(&mut agent);
+    let dead = "String(ref.deref()) + ':' + String(symbol.deref())";
+    assert_eq!(run(&mut agent, realm, dead), "\"undefined:undefined\"");
+    // Der Host kann [[KeptAlive]] auch selbst leeren.
+    assert_eq!(
+        run(&mut agent, realm, "var other = new WeakRef({}); 1"),
+        "1"
+    );
+    agent.clear_kept_objects();
+    agent.heap_mut().collect();
+    assert_eq!(
+        run(&mut agent, realm, "String(other.deref())"),
+        "\"undefined\""
+    );
+}
+
+#[test]
+fn finalization_registries_call_back_for_collected_targets() {
+    let (mut agent, realm) = weak_agent();
+    let source = "
+        var log = [], tokens = [];
+        var registry = new FinalizationRegistry(function (held) {
+          log.push(typeof held === 'object' ? held.name : held);
+        });
+        (function () {
+          for (var i = 0; i < 10; i++) {
+            var token = {};
+            tokens.push(token);
+            registry.register({}, 'h' + i, token);
+          }
+          var self = {};
+          registry.register(self, 'self', self);
+          registry.register(Symbol('s'), { name: 'held' });
+          var keep = {};
+          tokens.push(keep);
+          registry.register(keep, 'kept');
+          var gone = new FinalizationRegistry(function () { log.push('gone'); });
+          gone.register({}, 1);
+        })();
+        registry.unregister(tokens[3]) + ':' + registry.unregister(tokens[7])";
+    assert_eq!(run(&mut agent, realm, source), "\"true:true\"");
+    assert!(!agent.has_pending_jobs());
+    finish_and_collect(&mut agent);
+    assert!(agent.has_pending_jobs());
+    agent.run_jobs().expect("Jobs");
+    assert!(!agent.has_pending_jobs());
+    let result = "log.sort().join() + ':' + registry.unregister(tokens[0])";
+    assert_eq!(
+        run(&mut agent, realm, result),
+        "\"h0,h1,h2,h4,h5,h6,h8,h9,held,self:false\""
+    );
+    finish_and_collect(&mut agent);
+    agent.run_jobs().expect("Jobs");
+    assert_eq!(run(&mut agent, realm, "log.length"), "10");
+}
+
+#[test]
+fn cleanup_callbacks_can_register_unregister_and_throw() {
+    let (mut agent, realm) = weak_agent();
+    let source = "
+        var log = [], tokens = [], round = 0;
+        var registry = new FinalizationRegistry(function (held) {
+          log.push(held);
+          if (held === 'a0') {
+            // Neue Records lassen die Zellen umziehen.
+            for (var i = 0; i < 20; i++) registry.register({}, 'b' + i);
+            registry.unregister(tokens[1]);
+          }
+          if (held === 'b5') throw 'boom';
+        });
+        (function () {
+          for (var i = 0; i < 4; i++) {
+            var token = {};
+            tokens.push(token);
+            registry.register({}, 'a' + i, token);
+          }
+        })();
+        Promise.resolve().then(function () { log.push('promise'); });
+        1";
+    assert_eq!(run(&mut agent, realm, source), "1");
+    // Erst die Promise-Jobs, dann ClearKeptObjects, dann das Sammeln.
+    agent.run_jobs().expect("Jobs");
+    agent.heap_mut().collect();
+    agent.run_jobs().expect("Jobs");
+    let first = "log.join()";
+    let text = run(&mut agent, realm, first);
+    assert!(text.starts_with("\"promise,a0,"), "{text}");
+    assert!(!text.contains("a1"), "{text}");
+    assert!(!text.contains('b'), "{text}");
+    agent.heap_mut().collect();
+    assert_eq!(agent.run_jobs(), Err(Abrupt::Throw));
+    agent.scope(|agent, scope| {
+        let thrown = agent.take_exception(scope);
+        assert!(matches!(thrown, Some(Exception::Value(_))));
+    });
+    let after = "log.indexOf('b5') >= 0";
+    assert_eq!(run(&mut agent, realm, after), "true");
+    agent.heap().verify().expect("gültiger Heap");
+}
+
+#[test]
+fn weak_collections_survive_collections() {
+    let (mut agent, realm) = agent_with(true);
+    let source = "
+        var map = new WeakMap(), set = new WeakSet(), keys = [], refs = [], log = [];
+        var registry = new FinalizationRegistry(function (held) { log.push(held); });
+        for (var i = 0; i < 60; i++) {
+          var key = i % 5 ? {} : Symbol('k' + i);
+          keys.push(key);
+          map.set(key, { i: i });
+          if (i % 2) set.add(key);
+          refs.push(new WeakRef(key));
+          registry.register(key, 'k' + i, i % 3 ? key : undefined);
+        }
+        for (var i = 0; i < 60; i += 7) {
+          map.getOrInsertComputed({}, function () { return [i, {}]; });
+          registry.unregister(keys[i]);
+        }
+        var sum = 0;
+        for (var i = 0; i < 60; i++) {
+          sum += map.get(keys[i]).i + (set.has(keys[i]) ? 1 : 0) + (refs[i].deref() === keys[i] ? 1 : 0);
+        }
+        sum";
+    assert_eq!(run(&mut agent, realm, source), "1860");
+    finish_and_collect(&mut agent);
+    // Von den Records der toten Schlüssel 30 bis 59 sind die für 35, 49
+    // und 56 abgemeldet; für Vielfache von 3 gibt es keine Abmeldemarke.
+    let drop = "keys.length = 30; key = undefined; 1";
+    assert_eq!(run(&mut agent, realm, drop), "1");
+    finish_and_collect(&mut agent);
+    agent.run_jobs().expect("Jobs");
+    let result = "
+        var alive = 0;
+        for (var i = 0; i < 60; i++) if (refs[i].deref() !== undefined) alive++;
+        alive + ':' + log.length";
+    assert_eq!(run(&mut agent, realm, result), "\"30:27\"");
+    finish_and_collect(&mut agent);
+}

@@ -3,7 +3,7 @@
 # nur der genannte. Erzeugt von script/test262/language.rs; bei einer
 # Abweichung schreibt der Test die neue Fassung nach
 # target/test262/erwartete-fehlschlaege.txt.
-# 23828 Dateien, 532 Vorschläge übersprungen; bestanden 20666 von 23296 Dateien und 40023 von 43794 Varianten
+# 23828 Dateien, 532 Vorschläge übersprungen; bestanden 20676 von 23296 Dateien und 40043 von 43794 Varianten
 arguments-object/10.5-1-s.js
 arguments-object/10.5-7-b-1-s.js
 arguments-object/10.6-13-a-2.js
@@ -557,9 +557,6 @@ expressions/class/private-static-setter-multiple-evaluations-of-class-function-c
 expressions/class/private-static-setter-multiple-evaluations-of-class-realm.js
 expressions/class/subclass-builtins/subclass-Function.js
 expressions/class/subclass-builtins/subclass-SharedArrayBuffer.js
-expressions/class/subclass-builtins/subclass-WeakMap.js
-expressions/class/subclass-builtins/subclass-WeakRef.js
-expressions/class/subclass-builtins/subclass-WeakSet.js
 expressions/coalesce/tco-pos-null.js
 expressions/coalesce/tco-pos-undefined.js
 expressions/comma/S11.14_A1.js
@@ -2172,15 +2169,8 @@ statements/class/subclass/builtin-objects/GeneratorFunction/instance-name.js
 statements/class/subclass/builtin-objects/GeneratorFunction/instance-prototype.js
 statements/class/subclass/builtin-objects/GeneratorFunction/regular-subclassing.js
 statements/class/subclass/builtin-objects/GeneratorFunction/super-must-be-called.js
-statements/class/subclass/builtin-objects/WeakMap/regular-subclassing.js
-statements/class/subclass/builtin-objects/WeakMap/super-must-be-called.js
-statements/class/subclass/builtin-objects/WeakSet/regular-subclassing.js
-statements/class/subclass/builtin-objects/WeakSet/super-must-be-called.js
 statements/class/subclass-builtins/subclass-Function.js
 statements/class/subclass-builtins/subclass-SharedArrayBuffer.js
-statements/class/subclass-builtins/subclass-WeakMap.js
-statements/class/subclass-builtins/subclass-WeakRef.js
-statements/class/subclass-builtins/subclass-WeakSet.js
 statements/const/cptn-value.js
 statements/continue/S12.7_A7.js
 statements/do-while/S12.6.1_A3.js
