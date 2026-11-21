@@ -785,7 +785,7 @@ impl EvalSite {
 
     /// Was der Code eines `eval` an dieser Stelle enthalten darf
     /// (PerformEval, Abschnitt 19.2.1.1, Schritte 4 bis 6), mit den privaten
-    /// Namen der Klassen um die Stelle.
+    /// Namen der Klassen um die Stelle und den Namen, die sie sieht.
     pub fn options(&self) -> EvalOptions {
         let function = self.function;
         let mut private_names = Vec::new();
@@ -807,6 +807,7 @@ impl EvalSite {
             super_call: function.is_some_and(|function| function.derived),
             no_arguments: function.is_some_and(|function| function.field_initializer),
             private_names,
+            visible_names: self.names.values().cloned().collect(),
         }
     }
 }

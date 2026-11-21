@@ -203,6 +203,10 @@ pub struct EvalOptions {
     /// Die privaten Namen der Klassen um die Stelle
     /// (EvalDeclarationInstantiation, Abschnitt 19.2.1.3, Schritt 5).
     pub private_names: Vec<Vec<u16>>,
+    /// Die Namen der Bindungen, die die Stelle sieht. Enthält der Code
+    /// selbst ein direktes `eval`, braucht dessen Stelle sie alle, auch die,
+    /// die der Code nicht nennt.
+    pub visible_names: Vec<Vec<u16>>,
 }
 
 /// Liest den Quelltext eines `eval` als Script (PerformEval, Abschnitt
@@ -226,6 +230,14 @@ pub fn parse_eval(source: &[u16], options: &EvalOptions) -> Result<Ast> {
     }
     let mut ast = parser.program()?;
     ast.mark_dynamic();
+    // Ohne Atom fiele ein Name beim Übersetzen aus der Kette um die Stelle,
+    // und ein `eval` im `eval` fände dann eine äußere Bindung desselben
+    // Namens oder keine.
+    if !options.visible_names.is_empty() && ast.captures().script().all {
+        for name in &options.visible_names {
+            ast.intern(name);
+        }
+    }
     Ok(ast)
 }
 

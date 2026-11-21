@@ -343,6 +343,24 @@ fn nested_eval_reaches_the_same_var_scope() {
             "function f() { return eval('(() => eval(\"this\"))()'); } f.call(9) == 9",
             "true",
         ),
+        // Namen, die nur das innere `eval` nennt, gehen auf dem Weg durch
+        // das äußere nicht verloren.
+        (
+            "var y = 100; function f() { let y = 2; return eval('eval(\"y+1\")'); } f()",
+            "3",
+        ),
+        (
+            "function f() { let y = 2; return eval('eval(\"y+1\")'); } f()",
+            "3",
+        ),
+        (
+            "function f() { var a = 1; return eval('(function () { return eval(\"a+0\"); })()'); } f()",
+            "1",
+        ),
+        (
+            "class C { #x = 4; m() { return eval('eval(\"this.#x+0\")'); } } new C().m()",
+            "4",
+        ),
     ]);
 }
 
