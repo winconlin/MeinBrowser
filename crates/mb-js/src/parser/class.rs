@@ -367,7 +367,7 @@ impl Parser<'_> {
 
     /// Am Ende einer Klasse: Was sie nicht deklariert, muss eine umgebende
     /// Klasse deklarieren (*AllPrivateIdentifiersValid*).
-    fn resolve_private_names(&mut self, scope: PrivateScope) -> Result<()> {
+    pub(super) fn resolve_private_names(&mut self, scope: PrivateScope) -> Result<()> {
         for (name, position) in scope.used {
             if scope.declared.contains_key(&name) {
                 continue;

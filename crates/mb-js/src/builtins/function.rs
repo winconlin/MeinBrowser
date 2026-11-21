@@ -1,18 +1,16 @@
 //! %Function.prototype% (Abschnitt 20.2.3) mit allen Eigenschaften,
 //! %ThrowTypeError% (Abschnitt 10.2.4.1) und
-//! %Function% (Abschnitt 20.2.1) als Konstruktor, dessen Aufruf noch nicht
-//! geht: Er übersetzt Quelltext zur Laufzeit (CreateDynamicFunction,
-//! Abschnitt 20.2.1.1.1) und kommt mit `eval` in Schritt 9 des Plans; bis
-//! dahin endet jeder Aufruf und jedes `new` wie ein Script mit einer nicht
-//! unterstützten Form ([`Abrupt::Unsupported`]), nicht mit einem Fehler,
-//! den ein Script fangen könnte.
+//! %Function% (Abschnitt 20.2.1) als Konstruktor, der Quelltext zur
+//! Laufzeit übersetzt (CreateDynamicFunction, Abschnitt 20.2.1.1.1, in
+//! `crate::eval`).
 
 use super::{define_functions, link_constructor, units};
-use crate::agent::{Abrupt, Agent, Completion, ErrorKind};
+use crate::agent::{Agent, Completion, ErrorKind};
 use crate::bound_function::bound_function_create;
 use crate::builtin::{Builtin, BuiltinCall, builtin_entry, create_builtin_function};
 use crate::conversion::to_integer_or_infinity;
 use crate::descriptor::PropertyDescriptor;
+use crate::eval::create_dynamic_function;
 use crate::function::{function_source_text, set_function_length, set_function_name};
 use crate::heap::{Local, Scope};
 use crate::key::{PropertyKey, WellKnownSymbol};
@@ -20,6 +18,7 @@ use crate::object::prevent_extensions;
 use crate::operations::{
     call, create_list_from_array_like, define_property_or_throw, get, has_own_property, is_callable,
 };
+use crate::parser::DynamicFunctionKind;
 use crate::realm::{Intrinsic, RealmId};
 use crate::reference::ordinary_has_instance;
 use crate::value::{Kind, Value};
@@ -139,10 +138,13 @@ fn function_prototype<'s>(
     Ok(agent.heap().local(scope, Value::UNDEFINED))
 }
 
-/// Function ( ...parameterArgs, bodyArg ) (Abschnitt 20.2.1.1): noch ohne
-/// CreateDynamicFunction, siehe oben.
-fn function<'s>(_: &mut Agent, _: &'s Scope, _: &BuiltinCall<'_, '_>) -> Completion<Local<'s>> {
-    Err(Abrupt::Unsupported(0))
+/// Function ( ...parameterArgs, bodyArg ) (Abschnitt 20.2.1.1).
+fn function<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    arguments: &BuiltinCall<'_, '_>,
+) -> Completion<Local<'s>> {
+    create_dynamic_function(agent, scope, arguments, DynamicFunctionKind::Normal)
 }
 
 /// Function.prototype.apply ( thisArg, argArray ) (Abschnitt 20.2.3.1).

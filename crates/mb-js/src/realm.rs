@@ -103,19 +103,19 @@ pub enum Intrinsic {
     /// `return` und `throw`.
     AsyncFromSyncIteratorPrototype,
     /// %GeneratorFunction.prototype% (Abschnitt 27.6.3), der Prototyp der
-    /// Generatorfunktionen, bisher ohne `constructor`.
+    /// Generatorfunktionen.
     GeneratorFunctionPrototype,
     /// %GeneratorPrototype% (Abschnitt 27.8.1) mit `next`, `return` und
     /// `throw`.
     GeneratorPrototype,
     /// %AsyncGeneratorFunction.prototype% (Abschnitt 27.7.3), der Prototyp
-    /// der async-Generatorfunktionen, bisher ohne `constructor`.
+    /// der async-Generatorfunktionen.
     AsyncGeneratorFunctionPrototype,
     /// %AsyncGeneratorPrototype% (Abschnitt 27.9.1) mit `next`, `return` und
     /// `throw`.
     AsyncGeneratorPrototype,
     /// %AsyncFunction.prototype% (Abschnitt 27.10.3), der Prototyp der
-    /// async-Funktionen, bisher ohne `constructor`.
+    /// async-Funktionen.
     AsyncFunctionPrototype,
     /// %Promise.prototype% (Abschnitt 27.5.5) mit `catch`, `finally` und
     /// `then`.
@@ -233,6 +233,15 @@ pub enum Intrinsic {
     ParseFloat,
     /// %parseInt% (Abschnitt 19.2.5), zugleich `Number.parseInt`.
     ParseInt,
+    /// %eval% (Abschnitt 19.2.1); ein Aufruf über den Namen `eval`, der
+    /// sie findet, ist ein direktes `eval`.
+    Eval,
+    /// %GeneratorFunction% (Abschnitt 27.6.1), ohne globalen Namen.
+    GeneratorFunction,
+    /// %AsyncGeneratorFunction% (Abschnitt 27.7.1), ohne globalen Namen.
+    AsyncGeneratorFunction,
+    /// %AsyncFunction% (Abschnitt 27.10.1), ohne globalen Namen.
+    AsyncFunction,
     /// %Iterator% (Abschnitt 27.1.3.1).
     Iterator,
     /// %JSON% (Abschnitt 25.5).
@@ -860,6 +869,7 @@ fn set_default_global_bindings(
         ("WeakSet", Intrinsic::WeakSet),
         // Die Funktionen aus Abschnitt 19.2 und %Atomics%, %JSON%, %Math%
         // und %Reflect% aus Abschnitt 19.4 haben dieselben Attribute.
+        ("eval", Intrinsic::Eval),
         ("isFinite", Intrinsic::IsFinite),
         ("isNaN", Intrinsic::IsNaN),
         ("parseFloat", Intrinsic::ParseFloat),

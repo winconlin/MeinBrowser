@@ -3,7 +3,7 @@
 # nur der genannte. Erzeugt von script/test262/language.rs; bei einer
 # Abweichung schreibt der Test die neue Fassung nach
 # target/test262/erwartete-fehlschlaege-annexb-built-ins.txt.
-# 198 Dateien, 26 Vorschläge übersprungen; bestanden 162 von 172 Dateien und 324 von 344 Varianten
+# 204 Dateien, 26 Vorschläge übersprungen; bestanden 168 von 178 Dateien und 336 von 356 Varianten
 Object/is/emulates-undefined.js
 RegExp/RegExp-leading-escape-BMP.js
 RegExp/RegExp-trailing-escape-BMP.js

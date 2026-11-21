@@ -1,0 +1,1 @@
+var g=1; function f(a){ eval('var v=a+g');{ let b=2; eval('b'); } return v; } f(3); eval('function h(){} {function k(){}}');

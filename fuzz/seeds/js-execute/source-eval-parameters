@@ -1,0 +1,1 @@
+function f(a=eval('var z=2'), b=z){ eval('var w'); return typeof w + b; } f();

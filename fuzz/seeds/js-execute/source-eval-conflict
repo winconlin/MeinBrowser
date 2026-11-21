@@ -1,0 +1,1 @@
+function f(){ let x; { eval('var x'); } }try { f(); } catch (e) {} (0,eval)('var y=1'); delete y;

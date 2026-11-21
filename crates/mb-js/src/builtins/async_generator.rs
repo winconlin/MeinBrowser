@@ -2,24 +2,30 @@
 //! async-Generatorfunktionen, und %AsyncGeneratorPrototype% (Abschnitt
 //! 27.9.1), der Prototyp ihrer `prototype`-Objekte, mit `next`, `return`
 //! und `throw`.
-//!
-//! Den Konstruktor %AsyncGeneratorFunction% (Abschnitt 27.7.1) gibt es noch
-//! nicht, denn er braucht CreateDynamicFunction (Abschnitt 20.2.1.1.1) wie
-//! `Function`; darum fehlt auch `constructor` an
-//! %AsyncGeneratorFunction.prototype%.
+//! Dazu der Konstruktor %AsyncGeneratorFunction% (Abschnitt 27.7.1) mit
+//! CreateDynamicFunction (Abschnitt 20.2.1.1.1) wie `Function`.
 
 use super::promise::if_abrupt_reject_promise;
-use super::{define_functions, define_to_string_tag, units};
+use super::{create_dynamic_constructor, define_functions, define_to_string_tag, units};
 use crate::agent::{Agent, Completion, ErrorKind};
 use crate::async_generator::{async_generator_request, is_async_generator};
 use crate::builtin::{Builtin, BuiltinCall};
 use crate::descriptor::PropertyDescriptor;
+use crate::eval::create_dynamic_function;
 use crate::generator::Resumption;
 use crate::heap::{Local, Scope};
 use crate::object::ordinary_object_create;
 use crate::operations::define_property_or_throw;
+use crate::parser::DynamicFunctionKind;
 use crate::promise::new_promise_capability;
 use crate::realm::{Intrinsic, RealmId};
+
+static CONSTRUCTOR: Builtin = Builtin {
+    name: "AsyncGeneratorFunction",
+    length: 1,
+    constructor: true,
+    behaviour: async_generator_function,
+};
 
 static ASYNC_GENERATOR_FUNCTIONS: [Builtin; 3] = [
     Builtin {
@@ -76,7 +82,23 @@ pub(super) fn create(agent: &mut Agent, scope: &Scope, realm: RealmId) -> Comple
         async_generator_function,
     );
     agent.set_intrinsic(realm, Intrinsic::AsyncGeneratorPrototype, async_generator);
-    Ok(())
+    create_dynamic_constructor(
+        agent,
+        scope,
+        realm,
+        &CONSTRUCTOR,
+        async_generator_function,
+        Intrinsic::AsyncGeneratorFunction,
+    )
+}
+
+/// AsyncGeneratorFunction ( ...parameterArgs, bodyArg ) (Abschnitt 27.7.1.1).
+fn async_generator_function<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    arguments: &BuiltinCall<'_, '_>,
+) -> Completion<Local<'s>> {
+    create_dynamic_function(agent, scope, arguments, DynamicFunctionKind::AsyncGenerator)
 }
 
 /// %AsyncGeneratorPrototype%.next ( value ) (Abschnitt 27.9.1.2).

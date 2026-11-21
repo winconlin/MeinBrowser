@@ -541,6 +541,9 @@ pub struct Ast {
     module: bool,
     strict: bool,
     overflow: bool,
+    /// Ob der Quelltext aus `eval` oder `Function` stammt, also keine Lage
+    /// im Script hat.
+    dynamic: bool,
     /// Der Quelltext, aus dem der Baum entstand, für
     /// `Function.prototype.toString`.
     source: Rc<[u16]>,
@@ -606,6 +609,15 @@ impl Ast {
     /// Ob der Code auf oberster Ebene strikt ist.
     pub fn is_strict(&self) -> bool {
         self.strict
+    }
+
+    /// Ob der Quelltext zur Laufzeit aus `eval` oder `Function` kam.
+    pub fn is_dynamic(&self) -> bool {
+        self.dynamic
+    }
+
+    pub(crate) fn mark_dynamic(&mut self) {
+        self.dynamic = true;
     }
 
     pub fn node_count(&self) -> usize {

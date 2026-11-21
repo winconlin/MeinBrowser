@@ -37,6 +37,7 @@ Ein Schritt wird an diesen Stellen verbraucht:
 2. Beim Einstieg in einen Interpreterlauf.
 3. Vor jedem Bytecodebefehl, einschließlich Sprüngen und `Return`.
 4. Vor jedem Job, den `Agent::run_jobs` aus der Warteschlange nimmt. Ohne Hostquote teilen sich alle Jobs eines Aufrufs eine Standardquote.
+5. Vor dem Lesen von Quelltext zur Laufzeit, durch `eval` und die Konstruktoren `Function`, `GeneratorFunction`, `AsyncFunction` und `AsyncGeneratorFunction`: 16 Schritte und zwei je Codeeinheit (`STEPS_PER_UNIT` und `BASE_STEPS` in `eval.rs`, am 21.11.2026 gemessen). Bei den Konstruktoren zählen Parameter und Rumpf doppelt, denn sie werden erst einzeln und dann im Ganzen gelesen. Ein so bezahlter Schritt dauerte in der Messung 76 bis 125 ns, ein Schritt des Interpreters mit einer Addition 108 ns. Danach wird das Abbruchsignal vor den Bindungen des Codes nochmals ohne Schrittverbrauch geprüft. Verschachtelte `eval` zählen wie Aufrufe zum Rust-Stapelbudget.
 
 Nach erfolgreichem Übersetzen wird das Abbruchsignal vor der Deklarationsphase nochmals ohne Schrittverbrauch geprüft. Das letzte erlaubte Kommando darf bei anschließend null verbleibenden Schritten noch enden; erst ein weiterer abgelehnter Verbrauch setzt den dauerhaften Erschöpfungsgrund.
 
@@ -56,7 +57,7 @@ Ein Abbruch ist kein Rollback. Vorherige Zuweisungen und angelegte Bindungen ble
 
 ## Grenzen
 
-Schritte sind keine Laufzeit- oder RAM-Messung. Parser, Compiler, globale Deklarationsarbeit, Garbage Collection und die vollständigen Kosten einer einzelnen nativen Operation werden damit nicht umfassend budgetiert. Ein großes String- oder Objektkommando kann mehr Arbeit als ein einfacher Sprung kosten. Abbruchsignale wirken an den Kontrollpunkten; das Paket liefert keine feste maximale Reaktionszeit für jede native Operation.
+Schritte sind keine Laufzeit- oder RAM-Messung. Parser, Compiler, globale Deklarationsarbeit, Garbage Collection und die vollständigen Kosten einer einzelnen nativen Operation werden damit nicht umfassend budgetiert. Ein großes String- oder Objektkommando kann mehr Arbeit als ein einfacher Sprung kosten. So sucht eine Gestalt ihre Eigenschaften linear: Das Lesen einer Eigenschaft eines Objekts mit 1.000 Eigenschaften dauerte bei der Messung vom 21.11.2026 2 µs je Schritt statt 90 ns bei einer Eigenschaft, und ein `eval` mit 1.000 `var` im globalen Code 743 ns je bezahltem Schritt. Abbruchsignale wirken an den Kontrollpunkten; das Paket liefert keine feste maximale Reaktionszeit für jede native Operation.
 
 Schlafen in `Atomics.wait` kostet keine Schritte, denn es ist keine Arbeit. Es endet mit seiner Wartezeit, durch `Atomics.notify` oder spätestens etwa 10 ms nach einem Abbruchsignal der aktiven Quote; ohne Abbruchsignal und mit unendlicher Wartezeit schläft ein Agent ohne Ende. Darum darf ein Agent nur schlafen, wenn sein Host [[CanBlock]] mit `Agent::set_can_block` erlaubt hat; sonst wirft `Atomics.wait` einen TypeError. Die Zeitgeber von `Atomics.waitAsync` prüft der Agent nur in `run_jobs`; ein Host, der auf sie warten will, fragt `Agent::next_timer` und wartet selbst.
 

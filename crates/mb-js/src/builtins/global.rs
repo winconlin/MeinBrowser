@@ -1,17 +1,28 @@
-//! Die Funktionen des globalen Objekts aus Abschnitt 19.2, soweit sie zu
-//! Zahlen gehören: %isFinite%, %isNaN%, %parseFloat% und %parseInt%.
+//! Die Funktionen des globalen Objekts aus Abschnitt 19.2 außer denen für
+//! URIs: %eval%, %isFinite%, %isNaN%, %parseFloat% und %parseInt%.
 //! `Number.parseFloat` und `Number.parseInt` sind dieselben
-//! Funktionsobjekte (Abschnitte 21.1.2.12 und 21.1.2.13). `eval` kommt mit
-//! Schritt 9, die Funktionen für URIs mit der Welle für Zeichenketten.
+//! Funktionsobjekte (Abschnitte 21.1.2.12 und 21.1.2.13). Ein Aufruf von
+//! %eval% hier ist ein indirektes `eval`; ein direktes erkennt der
+//! Interpreter am Aufruf.
 
 use crate::agent::{Agent, Completion};
 use crate::builtin::{Builtin, BuiltinCall, create_builtin_function};
 use crate::conversion::{parse_float, parse_int, to_int32, to_number, to_string};
+use crate::eval::perform_eval;
 use crate::heap::{Local, Scope};
 use crate::realm::{Intrinsic, RealmId};
 use crate::value::{Kind, Value};
 
-static FUNCTIONS: [(Builtin, Intrinsic); 4] = [
+static FUNCTIONS: [(Builtin, Intrinsic); 5] = [
+    (
+        Builtin {
+            name: "eval",
+            length: 1,
+            constructor: false,
+            behaviour: eval,
+        },
+        Intrinsic::Eval,
+    ),
     (
         Builtin {
             name: "isFinite",
@@ -74,6 +85,17 @@ fn string_units(agent: &mut Agent, scope: &Scope, value: Local<'_>) -> Completio
         Kind::String(string) => heap.string_units(string),
         _ => Vec::new(),
     })
+}
+
+/// eval ( x ) (Abschnitt 19.2.1): PerformEval mit *direct* gleich
+/// *false* im Realm der Funktion.
+fn eval<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    arguments: &BuiltinCall<'_, '_>,
+) -> Completion<Local<'s>> {
+    let source = arguments.argument(agent, scope, 0);
+    perform_eval(agent, scope, arguments.realm, source, None)
 }
 
 /// isFinite ( number ) (Abschnitt 19.2.2).

@@ -23,7 +23,9 @@ pub enum ScriptError {
     /// Etwas, das der Übersetzer noch nicht kann, an dieser Lage im
     /// Quelltext. Steht es im Script selbst, lief es nicht; steht es in
     /// einer Funktion, endete es beim ersten Aufruf der Funktion, denn
-    /// Funktionen werden erst dann übersetzt.
+    /// Funktionen werden erst dann übersetzt. Steht es in Code aus `eval`
+    /// oder `Function`, endete es beim Aufruf, und die Lage ist 0, denn
+    /// dieser Code hat keine Lage im Script.
     Unsupported(usize),
     /// Das Script endete abrupt. Nur bei [`Abrupt::Throw`] hält der Agent
     /// eine JavaScript-Ausnahme, siehe [`Agent::take_exception`].
@@ -200,6 +202,9 @@ mod tests;
 
 #[cfg(test)]
 mod budget_tests;
+
+#[cfg(test)]
+mod eval_tests;
 
 #[cfg(test)]
 mod test262;

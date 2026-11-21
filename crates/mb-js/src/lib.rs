@@ -18,6 +18,7 @@ pub mod conversion;
 pub mod date;
 pub mod descriptor;
 mod enumerate;
+mod eval;
 pub mod function;
 mod generator;
 pub mod heap;
