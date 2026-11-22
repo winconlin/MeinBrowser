@@ -1,0 +1,1 @@
+interface I { const octet n = 0400; };

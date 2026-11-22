@@ -4,6 +4,8 @@ use mb_webidl::lexer::{Kind, Lexer};
 use mb_webidl::parser::{self, Budget, Document, ErrorKind, Kind as NodeKind, Limits};
 use mb_webidl::{index, members, types};
 
+mod values;
+
 pub fn webidl(data: &[u8]) {
     if data.len() > crate::MAX_INPUT {
         return;
@@ -17,6 +19,7 @@ pub fn webidl(data: &[u8]) {
     type_model(data);
     dictionary_model(data);
     union_model(data);
+    values::model(data);
 }
 
 fn tokens(source: &str) {

@@ -1,0 +1,1 @@
+enum E {"on"}; dictionary D { E value = "off"; };

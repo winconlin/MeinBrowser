@@ -155,8 +155,9 @@ privat. Die neuen Seeds sind eigene Konformitätsbeispiele.
    insbesondere Interfaces versus Callback-Interfaces und native Bufferidentitäten.
 2. Transparente Wurzeln, Duplikaterkennung, Interface-Intervalle und kumulative
    Grenzen prüfen; geteilte Typedef-Untergraphen weiterhin kompakt lassen.
-3. Weitere Member-Typregeln, Defaults und Konstantenwerte, allgemeine Extended
-   Attributes und effektive Overload-Sets ergänzen. Uniongültigkeit ersetzt
+3. Die inzwischen implementierte [Default-/Konstantenprüfung](m2-webidl-values.md)
+   prüfen. Weitere Member-Typregeln, allgemeine Extended Attributes und effektive
+   Overload-Sets ergänzen. Uniongültigkeit ersetzt
    insbesondere nicht die Unterscheidbarkeit effektiver Overloads.
 4. Erst nach den übrigen semantischen Prüfungen Bindings an die dann aktuelle
    JavaScript-API anbinden und gegen DOM-/WebIDL-WPT prüfen. M2 bleibt offen.

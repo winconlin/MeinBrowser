@@ -15,6 +15,7 @@ mod check;
 mod dictionary;
 mod lower;
 mod union;
+mod values;
 
 pub const DEFAULT_STEPS: u64 = 10_000_000;
 
@@ -67,6 +68,10 @@ pub enum ErrorKind {
     DictionaryCycle,
     IndistinguishableUnion,
     InvalidCallbackAttribute,
+    ConstantValue,
+    DefaultValue,
+    UndefinedType,
+    DictionaryArgumentDefault,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Error {

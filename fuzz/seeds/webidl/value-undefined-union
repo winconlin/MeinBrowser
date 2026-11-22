@@ -1,0 +1,1 @@
+typedef (undefined or long) U; interface I { undefined f(U value); };
