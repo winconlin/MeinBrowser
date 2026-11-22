@@ -11,9 +11,9 @@
 //! Jede Variante läuft wie in der festen Auswahl ([`super::run`]) in einem
 //! frischen Agent mit dem Host für Test262, aber nur ohne erzwungene
 //! Sammlungen; den Belastungsmodus prüft die feste Auswahl. Vorschläge aus
-//! `features.txt` laufen nicht. Metadaten, die der Leser ablehnt, etwa
-//! `module`, lassen die ganze Datei scheitern. Eine Panik der Engine darf
-//! nie erwartet werden.
+//! `features.txt` laufen nicht. Metadaten, die der Leser ablehnt, lassen
+//! die ganze Datei scheitern. Ein Test mit dem Flag `module` hat nur die
+//! Variante `module`. Eine Panik der Engine darf nie erwartet werden.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::metadata::{Metadata, Mode};
-use super::{Outcome, expected, proposals, run, selection};
+use super::{Outcome, expected, proposals, run_file, selection};
 
 const SOURCE: &str = "test262";
 
@@ -125,6 +125,7 @@ enum Variant {
     File,
     Sloppy,
     Strict,
+    Module,
 }
 
 impl Variant {
@@ -132,6 +133,7 @@ impl Variant {
         match mode {
             Mode::Sloppy => Variant::Sloppy,
             Mode::Strict => Variant::Strict,
+            Mode::Module => Variant::Module,
         }
     }
 
@@ -140,6 +142,7 @@ impl Variant {
             Variant::File => "",
             Variant::Sloppy => "sloppy",
             Variant::Strict => "strict",
+            Variant::Module => "module",
         }
     }
 }
@@ -265,7 +268,7 @@ fn check_file(
     let mut variants = Vec::new();
     for mode in metadata.modes() {
         let result = catch_unwind(AssertUnwindSafe(|| {
-            run(&source, &metadata, mode, &files, false)
+            run_file(Some(file), &source, &metadata, mode, &files, false)
         }));
         let failure = match result {
             Ok(result) if result == Ok(wanted) => None,
@@ -330,6 +333,7 @@ fn failing(
         let (path, mode) = match line.split_once(' ') {
             Some((path, "sloppy")) => (path, Some(Variant::Sloppy)),
             Some((path, "strict")) => (path, Some(Variant::Strict)),
+            Some((path, "module")) => (path, Some(Variant::Module)),
             Some(_) => return Err(format!("unbekannte Zeile: {line}")),
             None => (line, None),
         };
@@ -337,9 +341,10 @@ fn failing(
             return Err(format!("keine ausgeführte Datei: {path}"));
         };
         match mode {
-            Some(mode) => {
+            Some(mode) if known.contains(&mode) => {
                 set.insert((path.to_owned(), mode));
             }
+            Some(_) => return Err(format!("keine solche Variante: {line}")),
             None => set.extend(known.iter().map(|&variant| (path.to_owned(), variant))),
         }
     }

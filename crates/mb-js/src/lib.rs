@@ -27,6 +27,7 @@ pub mod interpreter;
 mod iterator;
 pub mod key;
 pub mod lexer;
+pub mod module;
 pub mod number;
 pub mod object;
 pub mod operations;
@@ -40,3 +41,5 @@ pub mod script;
 mod shared;
 pub mod value;
 mod waiting;
+
+pub use promise::PromiseState;

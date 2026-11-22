@@ -3,7 +3,7 @@
 # nur der genannte. Erzeugt von script/test262/language.rs; bei einer
 # Abweichung schreibt der Test die neue Fassung nach
 # target/test262/erwartete-fehlschlaege-built-ins.txt.
-# 18560 Dateien, 203 Vorschläge übersprungen; bestanden 17542 von 18357 Dateien und 34823 von 36431 Varianten
+# 18560 Dateien, 203 Vorschläge übersprungen; bestanden 17543 von 18357 Dateien und 34824 von 36431 Varianten
 Array/prototype/concat/Array.prototype.concat_large-typed-array.js
 Array/prototype/concat/Array.prototype.concat_small-typed-array.js
 Array/prototype/concat/Array.prototype.concat_spreadable-sparse-object.js
@@ -184,7 +184,6 @@ Object/getOwnPropertyDescriptor/15.2.3.3-4-10.js
 Object/getOwnPropertyDescriptor/15.2.3.3-4-11.js
 Object/getOwnPropertyDescriptor/15.2.3.3-4-9.js
 Object/getOwnPropertyNames/15.2.3.4-4-1.js
-Proxy/preventExtensions/trap-is-undefined-target-is-proxy.js
 RegExp/CharacterClassEscapes/character-class-digit-class-escape-negative-cases.js
 RegExp/CharacterClassEscapes/character-class-non-digit-class-escape-positive-cases.js
 RegExp/CharacterClassEscapes/character-class-non-whitespace-class-escape-positive-cases.js

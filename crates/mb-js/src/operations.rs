@@ -93,7 +93,8 @@ pub fn is_callable(heap: &Heap, value: Value<'_>) -> bool {
                 | ObjectClass::ArrayBuffer
                 | ObjectClass::SharedArrayBuffer
                 | ObjectClass::DataView
-                | ObjectClass::TypedArray,
+                | ObjectClass::TypedArray
+                | ObjectClass::Namespace,
             )
             | None => false,
         },

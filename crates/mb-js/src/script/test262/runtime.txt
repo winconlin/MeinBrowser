@@ -77,6 +77,7 @@ test/language/expressions/function/scope-name-var-close.js
 test/language/expressions/function/scope-name-var-open-non-strict.js
 test/language/expressions/function/scope-paramsbody-var-close.js
 test/language/expressions/function/scope-paramsbody-var-open.js
+test/language/expressions/import.meta/import-meta-is-an-ordinary-object.js
 test/language/expressions/instanceof/primitive-prototype-with-object.js
 test/language/expressions/instanceof/prototype-getter-with-object-throws.js
 test/language/expressions/logical-assignment/lgcl-and-assignment-operator-namedevaluation-arrow-function.js
@@ -121,6 +122,8 @@ test/language/function-code/10.4.3-1-24-s.js
 test/language/function-code/10.4.3-1-24gs.js
 test/language/global-code/decl-lex-restricted-global.js
 test/language/identifier-resolution/assign-to-global-undefined.js
+test/language/import/import-attributes/json-invalid.js
+test/language/import/import-attributes/json-value-object.js
 test/language/line-terminators/comment-multi-lf.js
 test/language/line-terminators/comment-multi-ls.js
 test/language/line-terminators/comment-multi-ps.js
@@ -128,6 +131,17 @@ test/language/line-terminators/comment-single-cr.js
 test/language/line-terminators/comment-single-lf.js
 test/language/line-terminators/comment-single-ls.js
 test/language/line-terminators/comment-single-ps.js
+test/language/module-code/ambiguous-export-bindings/namespace-unambiguous-if-import-star-as-and-export.js
+test/language/module-code/eval-gtbndng-indirect-update.js
+test/language/module-code/eval-rqstd-abrupt.js
+test/language/module-code/eval-rqstd-order.js
+test/language/module-code/eval-self-once.js
+test/language/module-code/instn-iee-bndng-let.js
+test/language/module-code/instn-iee-err-circular.js
+test/language/module-code/instn-iee-star-cycle.js
+test/language/module-code/instn-star-props-nrml.js
+test/language/module-code/namespace/internals/define-own-property.js
+test/language/module-code/namespace/internals/get-str-found-uninit.js
 test/language/statements/const/global-use-before-initialization-in-declaration-statement.js
 test/language/statements/const/global-use-before-initialization-in-prior-statement.js
 test/language/statements/for/12.6.3_2-3-a-ii-11.js

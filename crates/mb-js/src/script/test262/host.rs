@@ -14,9 +14,20 @@
 //! etwas anderes als einen ArrayBuffer, auch für einen SharedArrayBuffer,
 //! einen TypeError, wo die abstrakte Operation nur zusichert, und gibt
 //! sonst *undefined* zurück.
+//!
+//! Module lädt der Host nach INTERPRETING.md („Modules“): Ein Bezeichner
+//! beginnt mit `./`, der Rest ist der Name einer Datei im Verzeichnis des
+//! Tests. Mit `type: "json"` wird sie ein JSON-Modul, ohne Attribut ein
+//! Modul aus Quelltext; jeder andere Typ, ein anderer Bezeichner oder eine
+//! fehlende Datei beenden das Laden mit einem TypeError, ein früher Fehler
+//! mit einem SyntaxError. Jede Datei gibt je Typ einmal ein Modul, auch die
+//! des Tests selbst. Kann der Übersetzer eine Hilfsdatei nicht, merkt sich
+//! der Host das, und der Läufer zählt den Test als nicht unterstützt.
 
 use std::any::Any;
 use std::cell::RefCell;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use crate::agent::{Abrupt, Agent, Completion, ErrorKind};
@@ -26,22 +37,106 @@ use crate::conversion::to_string;
 use crate::descriptor::PropertyDescriptor;
 use crate::heap::{Local, Scope};
 use crate::host::Host;
+use crate::module::{LoadPayload, ModuleId, ModuleRequest, Referrer};
 use crate::object::ordinary_object_create;
 use crate::operations::{define_property_or_throw, get};
 use crate::realm::{Intrinsic, RealmId};
 use crate::script::ScriptError;
 use crate::value::{Kind, Value};
 
-/// Der Host eines Agents im Läufer. Er merkt sich, was `print` ausgab.
+/// Der Host eines Agents im Läufer. Er merkt sich, was `print` ausgab,
+/// und die Module, die er geladen hat.
 #[derive(Default)]
 pub(super) struct Test262Host {
     printed: RefCell<Vec<Vec<u16>>>,
+    modules: RefCell<Modules>,
+}
+
+/// Die Module eines Tests.
+#[derive(Default)]
+struct Modules {
+    /// Das Verzeichnis des Tests.
+    directory: Option<PathBuf>,
+    /// Die geladenen Module nach Dateiname und ob als JSON.
+    loaded: BTreeMap<(Vec<u16>, bool), ModuleId>,
+    /// Ob eine Hilfsdatei den Übersetzer an eine Grenze brachte.
+    unsupported: bool,
 }
 
 impl Test262Host {
     /// Die Ausgaben von `print` in ihrer Reihenfolge.
     pub(super) fn printed(&self) -> Vec<Vec<u16>> {
         self.printed.borrow().clone()
+    }
+
+    /// Merkt sich das Modul des Tests in der Datei `file`; Bezeichner
+    /// beziehen sich auf ihr Verzeichnis.
+    pub(super) fn set_test_module(&self, file: &Path, module: ModuleId) {
+        let mut modules = self.modules.borrow_mut();
+        modules.directory = file.parent().map(Path::to_path_buf);
+        if let Some(name) = file.file_name() {
+            let name = units(&name.to_string_lossy());
+            modules.loaded.insert((name, false), module);
+        }
+    }
+
+    /// Ob der Übersetzer eine Hilfsdatei nicht übersetzen konnte.
+    pub(super) fn module_unsupported(&self) -> bool {
+        self.modules.borrow().unsupported
+    }
+
+    /// Das Modul zur Anfrage: ein schon geladenes oder ein neues aus der
+    /// Datei.
+    fn module_for(
+        &self,
+        agent: &mut Agent,
+        scope: &Scope,
+        realm: RealmId,
+        request: &ModuleRequest,
+    ) -> Completion<ModuleId> {
+        let json = match request.attribute("type") {
+            None => false,
+            Some(kind) if kind == units("json") => true,
+            Some(_) => return Err(agent.throw_error(ErrorKind::TypeError)),
+        };
+        let name = match request.specifier.strip_prefix(&units("./")[..]) {
+            Some(name) if !name.is_empty() && !name.contains(&u16::from(b'/')) => name.to_vec(),
+            _ => return Err(agent.throw_error(ErrorKind::TypeError)),
+        };
+        let key = (name, json);
+        let (known, directory) = {
+            let modules = self.modules.borrow();
+            (modules.loaded.get(&key).copied(), modules.directory.clone())
+        };
+        if let Some(module) = known {
+            return Ok(module);
+        }
+        let text = String::from_utf16(&key.0)
+            .ok()
+            .zip(directory)
+            .and_then(|(name, directory)| std::fs::read(directory.join(name)).ok())
+            .and_then(|bytes| String::from_utf8(bytes).ok());
+        let Some(text) = text else {
+            return Err(agent.throw_error(ErrorKind::TypeError));
+        };
+        let source = units(&text);
+        let module = if json {
+            agent.parse_json_module(scope, realm, &source)?
+        } else {
+            match agent.parse_module(scope, realm, &source) {
+                Ok(module) => module,
+                Err(ScriptError::Syntax(_)) => {
+                    return Err(agent.throw_error(ErrorKind::SyntaxError));
+                }
+                Err(ScriptError::Unsupported(_)) => {
+                    self.modules.borrow_mut().unsupported = true;
+                    return Err(agent.throw_error(ErrorKind::TypeError));
+                }
+                Err(ScriptError::Abrupt(abrupt)) => return Err(abrupt),
+            }
+        };
+        self.modules.borrow_mut().loaded.insert(key, module);
+        Ok(module)
     }
 }
 
@@ -99,6 +194,26 @@ impl Host for Test262Host {
         define(agent, scope, object, "global", global)?;
         define_builtin_function(agent, scope, realm, global, &PRINT)?;
         define(agent, scope, global, "$262", object)
+    }
+
+    fn load_imported_module(
+        &self,
+        agent: &mut Agent,
+        scope: &Scope,
+        referrer: Referrer,
+        request: &ModuleRequest,
+        payload: LoadPayload,
+    ) -> Completion<()> {
+        let Referrer::Module(module) = referrer;
+        let result = match agent.module_realm(module) {
+            Some(realm) => self.module_for(agent, scope, realm, request),
+            None => Err(agent.throw_error(ErrorKind::TypeError)),
+        };
+        agent.finish_loading_imported_module(scope, referrer, request, payload, result)
+    }
+
+    fn supports_import_attribute(&self, key: &[u16]) -> bool {
+        key == units("type")
     }
 }
 

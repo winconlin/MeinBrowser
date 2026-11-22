@@ -256,6 +256,17 @@ ops! {
     /// *true* oder eine neue Bindung mit *undefined* in der Erweiterung,
     /// wenn sie dort fehlt.
     DeclareVar [Constant],
+    /// GetBindingValue einer Import-Bindung eines Moduls (Abschnitt
+    /// 9.1.1.5.1), deren Platz im Akkumulator steht: Eine interne Zelle
+    /// nennt Kontext und Platz der Zielbindung, und deren Wert kommt in den
+    /// Akkumulator; hält sie die Lücke, ist das ein ReferenceError. Jeder
+    /// andere Wert ist ein Namensraum-Objekt und bleibt. Die Konstante ist
+    /// der Name.
+    LdaImport [Constant],
+    /// Akkumulator := `import.meta` (Abschnitt 13.3.12.1) des Moduls aus
+    /// der Konstante ([`Constant::Module`]). Das Objekt entsteht beim
+    /// ersten Mal.
+    ImportMeta [Constant],
 
     /// Ein neues gewöhnliches Objekt mit %Object.prototype%.
     CreateObject [],
@@ -716,6 +727,9 @@ pub enum Constant {
     /// Ein Name im var-Bereich eines `eval` für [`Op::DeclareFunction`] und
     /// [`Op::DeclareVar`]. Er wird zum Atom.
     EvalBinding(EvalBinding),
+    /// Das Modul, zu dessen Syntaxbaum der Code gehört, für
+    /// [`Op::ImportMeta`]. Es wird zur Nummer des Moduls.
+    Module,
 }
 
 /// Ein Name, den der Übersetzer nicht fest einer Bindung zuordnen kann:
@@ -957,6 +971,12 @@ pub(crate) enum BindingKind {
     /// TypeError, sonst geschieht nichts (SetMutableBinding, Abschnitt
     /// 9.1.1.1.5).
     FunctionName,
+    /// Eine Import-Bindung eines Moduls (CreateImportBinding, Abschnitt
+    /// 9.1.1.5.5), unveränderlich und schon initialisiert. Ihr Platz hält
+    /// eine interne Zelle mit Kontext und Platz der Zielbindung oder ein
+    /// Namensraum-Objekt; gelesen wird sie mit [`Op::LdaImport`], Zuweisen
+    /// wirft einen TypeError.
+    Import,
 }
 
 /// Ein gelesener Befehl.
@@ -1474,6 +1494,7 @@ impl fmt::Display for Code {
                         Some(Constant::EvalInstantiation(_)) => {
                             formatter.write_str(" declarations")?;
                         }
+                        Some(Constant::Module) => formatter.write_str(" module")?,
                         None => write!(formatter, " c{value}?")?,
                     },
                 }

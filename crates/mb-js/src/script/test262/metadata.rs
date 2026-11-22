@@ -9,6 +9,8 @@ use crate::agent::ErrorKind;
 pub(super) enum Mode {
     Sloppy,
     Strict,
+    /// Mit dem Flag `module`: der Test als Modul, nur so.
+    Module,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -17,6 +19,8 @@ pub(super) enum Negative {
     Runtime(ErrorKind),
     /// `phase: runtime` mit `type: Test262Error` aus `sta.js`.
     Test262Error,
+    /// `phase: resolution`: beim Laden oder Linken eines Moduls.
+    Resolution(ErrorKind),
 }
 
 /// Abgelehnte Metadaten: der Grund und die Features, die bis dahin gelesen
@@ -171,6 +175,7 @@ impl Metadata {
                     | "async"
                     | "CanBlockIsFalse"
                     | "CanBlockIsTrue"
+                    | "module"
             ) {
                 return Err(format!("Flag wird noch nicht ausgeführt: {flag}"));
             }
@@ -182,6 +187,9 @@ impl Metadata {
             || (self.flag("noStrict") && self.flag("onlyStrict"))
         {
             return Err("widersprüchliche Modusflags".to_owned());
+        }
+        if self.is_module() && (self.flag("noStrict") || self.flag("onlyStrict")) {
+            return Err("module mit Modusflag".to_owned());
         }
         if self.flag("CanBlockIsFalse") && self.flag("CanBlockIsTrue") {
             return Err("widersprüchliche Flags für [[CanBlock]]".to_owned());
@@ -202,16 +210,22 @@ impl Metadata {
             return Err("raw mit async wird nicht unterstützt".to_owned());
         }
         if keys.contains("negative") {
-            self.negative = Some(match (phase.as_deref(), error_type.as_deref()) {
-                (Some("parse"), Some("SyntaxError")) => Negative::Parse,
-                (Some("runtime"), Some("Test262Error")) => Negative::Test262Error,
-                (Some("runtime"), Some(name)) => Negative::Runtime(match name {
+            let kind = |name: &str| -> Result<ErrorKind, String> {
+                Ok(match name {
                     "RangeError" => ErrorKind::RangeError,
                     "ReferenceError" => ErrorKind::ReferenceError,
                     "SyntaxError" => ErrorKind::SyntaxError,
                     "TypeError" => ErrorKind::TypeError,
                     _ => return Err(format!("Fehlerart wird noch nicht geprüft: {name}")),
-                }),
+                })
+            };
+            self.negative = Some(match (phase.as_deref(), error_type.as_deref()) {
+                (Some("parse"), Some("SyntaxError")) => Negative::Parse,
+                (Some("runtime"), Some("Test262Error")) => Negative::Test262Error,
+                (Some("runtime"), Some(name)) => Negative::Runtime(kind(name)?),
+                (Some("resolution"), Some(name)) if self.is_module() => {
+                    Negative::Resolution(kind(name)?)
+                }
                 _ => {
                     return Err(
                         "negative-Phase oder Fehlerart fehlt/ist nicht unterstützt".to_owned()
@@ -230,6 +244,11 @@ impl Metadata {
         self.flag("raw")
     }
 
+    /// Ob der Test ein Modul ist (Flag `module`).
+    pub(super) fn is_module(&self) -> bool {
+        self.flag("module")
+    }
+
     /// Ob der Test sein Ergebnis über `print` meldet (Flag `async`).
     pub(super) fn is_async(&self) -> bool {
         self.flag("async")
@@ -243,7 +262,9 @@ impl Metadata {
     }
 
     pub(super) fn modes(&self) -> Vec<Mode> {
-        if self.flag("onlyStrict") {
+        if self.is_module() {
+            vec![Mode::Module]
+        } else if self.flag("onlyStrict") {
             vec![Mode::Strict]
         } else if self.raw() || self.flag("noStrict") {
             vec![Mode::Sloppy]

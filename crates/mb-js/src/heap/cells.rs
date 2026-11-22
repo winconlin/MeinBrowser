@@ -6,11 +6,11 @@ use super::{
     Heap, KIND_ARGUMENTS, KIND_ARRAY, KIND_ARRAY_BUFFER, KIND_ASYNC_FROM_SYNC,
     KIND_ASYNC_GENERATOR, KIND_BOUND_FUNCTION, KIND_BUILTIN, KIND_COLLECTION, KIND_DATA_VIEW,
     KIND_DATE, KIND_ERROR, KIND_FINALIZATION_REGISTRY, KIND_FUNCTION, KIND_GENERATOR,
-    KIND_ITERATOR, KIND_OBJECT, KIND_PRIMITIVE, KIND_PROMISE, KIND_PROXY, KIND_REGEXP, KIND_SHAPE,
-    KIND_SHARED_ARRAY_BUFFER, KIND_SLOTS, KIND_SPARSE, KIND_SYMBOL, KIND_TYPED_ARRAY, KIND_WEAK,
-    KIND_WEAK_REF, Local, NONE, OBJECT_REFS, OutOfMemory, Scope, cell_words, header, header_flags,
-    header_kind, header_length, is_object, is_value_cell, object_fields, packed, packed_high,
-    packed_low, to_usize, with_flags,
+    KIND_ITERATOR, KIND_NAMESPACE, KIND_OBJECT, KIND_PRIMITIVE, KIND_PROMISE, KIND_PROXY,
+    KIND_REGEXP, KIND_SHAPE, KIND_SHARED_ARRAY_BUFFER, KIND_SLOTS, KIND_SPARSE, KIND_SYMBOL,
+    KIND_TYPED_ARRAY, KIND_WEAK, KIND_WEAK_REF, Local, NONE, OBJECT_REFS, OutOfMemory, Scope,
+    cell_words, header, header_flags, header_kind, header_length, is_object, is_value_cell,
+    object_fields, packed, packed_high, packed_low, to_usize, with_flags,
 };
 use crate::value::{Ref, RefKind, Value};
 
@@ -155,6 +155,10 @@ pub(crate) enum ObjectClass {
     /// Ein SharedArrayBuffer (Abschnitt 25.2) mit denselben internen
     /// Feldern wie ein ArrayBuffer, sonst gewöhnlich.
     SharedArrayBuffer,
+    /// Ein Namensraum-Objekt eines Moduls (Abschnitt 10.4.6) mit
+    /// [`NAMESPACE_FIELDS`](super::NAMESPACE_FIELDS) internen Feldern und
+    /// eigenen internen Methoden für Schlüssel, die keine Symbole sind.
+    Namespace,
 }
 
 impl ObjectClass {
@@ -183,6 +187,7 @@ impl ObjectClass {
             ObjectClass::WeakRef => KIND_WEAK_REF,
             ObjectClass::FinalizationRegistry => KIND_FINALIZATION_REGISTRY,
             ObjectClass::SharedArrayBuffer => KIND_SHARED_ARRAY_BUFFER,
+            ObjectClass::Namespace => KIND_NAMESPACE,
         }
     }
 
@@ -211,6 +216,7 @@ impl ObjectClass {
             KIND_WEAK_REF => Some(ObjectClass::WeakRef),
             KIND_FINALIZATION_REGISTRY => Some(ObjectClass::FinalizationRegistry),
             KIND_SHARED_ARRAY_BUFFER => Some(ObjectClass::SharedArrayBuffer),
+            KIND_NAMESPACE => Some(ObjectClass::Namespace),
             _ => None,
         }
     }
@@ -671,6 +677,19 @@ impl Heap {
         value: Value<'_>,
     ) -> bool {
         self.field_word(object, KIND_BOUND_FUNCTION, index)
+            .is_some_and(|word| self.store(object.offset(), word, value.bits()))
+    }
+
+    /// Das interne Feld eines Namensraum-Objekts, `None` für andere Zellen.
+    pub(crate) fn namespace_field(&self, object: Ref<'_>) -> Option<Value<'_>> {
+        let word = self.field_word(object, KIND_NAMESPACE, 0)?;
+        self.word(object.offset(), word).map(Value::from_bits)
+    }
+
+    /// Schreibt das interne Feld eines Namensraum-Objekts. `false`, wenn es
+    /// das Feld nicht gibt.
+    pub(crate) fn set_namespace_field(&self, object: Ref<'_>, value: Value<'_>) -> bool {
+        self.field_word(object, KIND_NAMESPACE, 0)
             .is_some_and(|word| self.store(object.offset(), word, value.bits()))
     }
 

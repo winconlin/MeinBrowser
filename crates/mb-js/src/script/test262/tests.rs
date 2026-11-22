@@ -65,7 +65,8 @@ fn list_and_negative_fields_are_read_in_both_orders() {
 fn unsupported_or_ambiguous_metadata_cannot_silently_pass() {
     for text in [
         "flags: [async, raw]",
-        "flags: [module, raw]",
+        "flags: [module, noStrict]",
+        "flags: [module, onlyStrict]",
         "flags: [CanBlockIsFalse, CanBlockIsTrue]",
         "flags: [unknown]",
         "flags: [raw, onlyStrict]",
@@ -526,4 +527,97 @@ fn can_block_and_wait_async_timers_follow_the_runner() {
         ),
         Ok(Outcome::Normal)
     );
+}
+
+#[test]
+fn modules_run_once_and_load_their_files_from_the_test_directory() {
+    let meta = metadata("flags: [module]");
+    assert_eq!(meta.modes(), [Mode::Module]);
+    assert_eq!(metadata("flags: [module, raw]").modes(), [Mode::Module]);
+    assert_eq!(
+        metadata("flags: [module]\nnegative:\n  phase: resolution\n  type: SyntaxError").negative,
+        Some(Negative::Resolution(ErrorKind::SyntaxError))
+    );
+    let directory =
+        std::env::temp_dir().join(format!("mb-js-test262-module-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).expect("Verzeichnis");
+    for (name, text) in [
+        (
+            "dep_FIXTURE.js",
+            "export let count = 0; export function bump() { count++; }",
+        ),
+        ("bad_FIXTURE.js", "0++;"),
+        ("value_FIXTURE.json", "{\"a\": [1, 2]}"),
+        ("broken_FIXTURE.json", "{a: 1}"),
+    ] {
+        std::fs::write(directory.join(name), text).expect("Hilfsdatei");
+    }
+    let file = directory.join("main.js");
+    let files = harness(&meta);
+    let run_module = |source: &str, stress| {
+        run_file(Some(&file), source, &meta, Mode::Module, &files, stress).expect("Harness")
+    };
+    for stress in [false, true] {
+        for source in [
+            // Kein "use strict" davor, trotzdem strikt; `this` ist *undefined*.
+            "assert.sameValue(this, undefined); assert.throws(ReferenceError, function () { undeclared = 1; });",
+            "import { count, bump } from './dep_FIXTURE.js'; bump(); assert.sameValue(count, 1);",
+            "import * as self from './main.js'; export let x = 1; assert.sameValue(self.x, 1);",
+            "import value from './value_FIXTURE.json' with { type: 'json' }; assert.sameValue(value.a[1], 2);",
+            "assert.sameValue(Object.getPrototypeOf(import.meta), null);",
+        ] {
+            assert_eq!(run_module(source, stress), Outcome::Normal, "{source}");
+        }
+        for (source, wanted) in [
+            (
+                "import './missing_FIXTURE.js';",
+                Outcome::Resolution(ErrorKind::TypeError),
+            ),
+            (
+                "import '../main.js';",
+                Outcome::Resolution(ErrorKind::TypeError),
+            ),
+            (
+                "import './bad_FIXTURE.js';",
+                Outcome::Resolution(ErrorKind::SyntaxError),
+            ),
+            (
+                "import x from './broken_FIXTURE.json' with { type: 'json' };",
+                Outcome::Resolution(ErrorKind::SyntaxError),
+            ),
+            (
+                "import x from './value_FIXTURE.json' with { type: 'css' };",
+                Outcome::Resolution(ErrorKind::TypeError),
+            ),
+            (
+                "import x from './value_FIXTURE.json' with { kind: 'json' };",
+                Outcome::Resolution(ErrorKind::SyntaxError),
+            ),
+            (
+                "import { nothing } from './dep_FIXTURE.js';",
+                Outcome::Resolution(ErrorKind::SyntaxError),
+            ),
+            ("throw new Test262Error();", Outcome::Test262Error),
+            (
+                "import { count } from './dep_FIXTURE.js'; count = 1;",
+                Outcome::Error(ErrorKind::TypeError),
+            ),
+            ("export {}; await 1;", Outcome::Unsupported),
+            ("export {", Outcome::Syntax),
+        ] {
+            assert_eq!(run_module(source, stress), wanted, "{source}");
+        }
+    }
+    // Ohne Datei findet ein Modul keine anderen.
+    assert_eq!(
+        run(
+            "import './dep_FIXTURE.js';",
+            &meta,
+            Mode::Module,
+            &files,
+            false
+        ),
+        Ok(Outcome::Resolution(ErrorKind::TypeError))
+    );
+    let _ = std::fs::remove_dir_all(&directory);
 }

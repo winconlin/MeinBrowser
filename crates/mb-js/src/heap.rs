@@ -173,6 +173,7 @@ const KIND_WEAK_REF: u64 = 32;
 const KIND_FINALIZATION_REGISTRY: u64 = 33;
 const KIND_SHARED: u64 = 34;
 const KIND_SHARED_ARRAY_BUFFER: u64 = 35;
+const KIND_NAMESPACE: u64 = 36;
 
 /// Die Kennzeichen stehen in den Bits 8 bis 31 des Kopfworts.
 const FLAG_SHIFT: u32 = 8;
@@ -220,7 +221,7 @@ fn ephemeron_width(header: u64) -> usize {
 }
 
 /// Die Arten der Objektzellen.
-const OBJECT_KINDS: [u64; 23] = [
+const OBJECT_KINDS: [u64; 24] = [
     KIND_OBJECT,
     KIND_ARRAY,
     KIND_FUNCTION,
@@ -244,6 +245,7 @@ const OBJECT_KINDS: [u64; 23] = [
     KIND_WEAK_REF,
     KIND_FINALIZATION_REGISTRY,
     KIND_SHARED_ARRAY_BUFFER,
+    KIND_NAMESPACE,
 ];
 
 /// Die internen Felder eines Funktionsobjekts, Werte vor den eingebetteten
@@ -309,6 +311,9 @@ pub(crate) const WEAK_REF_FIELDS: usize = 1;
 /// Abmeldemarken ihrer [[Cells]], die Zelle mit den gehaltenen Werten und
 /// wie viele Einträge belegt sind.
 pub(crate) const FINALIZATION_REGISTRY_FIELDS: usize = 5;
+/// Das interne Feld eines Namensraum-Objekts: die Nummer seines Moduls,
+/// das für [[Module]] und [[Exports]] steht.
+pub(crate) const NAMESPACE_FIELDS: usize = 1;
 
 fn is_object(kind: u64) -> bool {
     OBJECT_KINDS.contains(&kind)
@@ -337,6 +342,7 @@ fn object_fields(kind: u64) -> usize {
         KIND_TYPED_ARRAY => TYPED_ARRAY_FIELDS,
         KIND_WEAK_REF => WEAK_REF_FIELDS,
         KIND_FINALIZATION_REGISTRY => FINALIZATION_REGISTRY_FIELDS,
+        KIND_NAMESPACE => NAMESPACE_FIELDS,
         _ => 0,
     }
 }

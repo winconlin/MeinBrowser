@@ -103,6 +103,7 @@ use crate::iterator::{
     iterator_close_on_throw, iterator_complete, iterator_step, iterator_step_value, iterator_value,
 };
 use crate::key::{PropertyKey, WellKnownSymbol, array_index, is_private_name};
+use crate::module::{ModuleId, binding_value};
 use crate::object::{
     PrivateElement, Step, array_create, create_mapped_arguments_object,
     create_unmapped_arguments_object, define_arguments_iterator, get_prototype_of, is_proxy,
@@ -271,6 +272,35 @@ fn start<'s>(
     agent.with_default_execution_budget(|agent| {
         agent.enter_interpreter()?;
         let result = start_frame(agent, scope, realm, code, unit, this, None, flags);
+        agent.leave_interpreter();
+        result
+    })
+}
+
+/// Führt den Code eines Moduls aus dem Syntaxbaum `unit` als neuen Lauf
+/// aus, mit der Umgebung des Moduls als Kontext und `this` *undefined*
+/// (ExecuteModule, Abschnitt 16.2.1.7.3.2).
+pub(crate) fn execute_module<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    realm: RealmId,
+    code: &Code,
+    unit: &Rc<Ast>,
+    environment: Local<'_>,
+) -> Completion<Local<'s>> {
+    let this = agent.heap().local(scope, Value::UNDEFINED);
+    agent.with_default_execution_budget(|agent| {
+        agent.enter_interpreter()?;
+        let result = start_frame(
+            agent,
+            scope,
+            realm,
+            code,
+            Some(unit),
+            this,
+            Some(environment),
+            &[],
+        );
         agent.leave_interpreter();
         result
     })
@@ -1197,6 +1227,14 @@ fn constant_pool<'s>(
                 // Die Befehle lesen sie aus dem Code.
                 Constant::EvalSite(_) | Constant::EvalInstantiation(_) => {
                     agent.heap().local(inner, Value::UNDEFINED)
+                }
+                Constant::Module => {
+                    let module = unit.and_then(|unit| agent.module_of_unit(unit));
+                    let Some(index) = module.and_then(|module| i32::try_from(module.index()).ok())
+                    else {
+                        return Err(agent.throw_error(ErrorKind::TypeError));
+                    };
+                    agent.heap().local(inner, Value::int32(index))
                 }
             };
             let heap = agent.heap();
@@ -2684,6 +2722,9 @@ impl<'c> Frame<'c, '_> {
                         }
                         return Ok(());
                     }
+                    if kind == BindingKind::Import {
+                        return Err(agent.throw_error(ErrorKind::TypeError));
+                    }
                     let value = self.context_value(agent, scope, depth, slot);
                     if lexical && agent.heap().get(value).is_hole() {
                         return Err(agent.throw_error(ErrorKind::ReferenceError));
@@ -2741,10 +2782,17 @@ impl<'c> Frame<'c, '_> {
             Resolution::Context {
                 depth,
                 slot,
+                kind,
                 lexical,
-                ..
             } => {
                 let value = self.context_value(agent, scope, depth, slot);
+                if kind == BindingKind::Import {
+                    let heap = agent.heap();
+                    return match binding_value(heap, heap.get(value)) {
+                        Some(value) => Ok(heap.local(scope, value)),
+                        None => Err(agent.throw_error(ErrorKind::ReferenceError)),
+                    };
+                }
                 if lexical && agent.heap().get(value).is_hole() {
                     return Err(agent.throw_error(ErrorKind::ReferenceError));
                 }
@@ -2970,6 +3018,23 @@ impl<'c> Frame<'c, '_> {
                 self.eval_declaration(agent, scope, instruction)?;
             }
             Op::CallEval => return self.call_eval(agent, scope, instruction),
+            Op::LdaImport => {
+                let heap = agent.heap();
+                let value = binding_value(heap, heap.get(self.accumulator)).map(Value::bits);
+                let Some(bits) = value else {
+                    return Err(agent.throw_error(ErrorKind::ReferenceError));
+                };
+                self.set_accumulator_value(agent, Value::from_bits(bits));
+            }
+            Op::ImportMeta => {
+                let module = self.constant(agent, scope, first);
+                let index = agent.heap().get(module).as_int32();
+                let Some(module) = index.and_then(|index| usize::try_from(index).ok()) else {
+                    return Err(agent.throw_error(ErrorKind::TypeError));
+                };
+                let meta = agent.import_meta(scope, ModuleId::from_index(module))?;
+                self.set_accumulator(agent, meta);
+            }
             Op::Add
             | Op::Sub
             | Op::Mul
