@@ -550,3 +550,50 @@ fn long_chains_need_no_rust_stack() {
     let (outcome, _) = run(&borrowed);
     assert_eq!(outcome, "Ende1");
 }
+
+#[test]
+fn an_evaluation_cut_short_by_the_host_reports_it_again() {
+    use crate::agent::{Budget, Exhausted};
+    let host = Rc::new(Sources {
+        sources: [("a", "while (true) {}")]
+            .into_iter()
+            .map(|(name, source)| (name.to_owned(), source.to_owned()))
+            .collect(),
+        loaded: RefCell::new(BTreeMap::new()),
+        loads: RefCell::new(Vec::new()),
+    });
+    let mut agent = Agent::with_options(Options {
+        verify: true,
+        ..Options::default()
+    })
+    .expect("Speicher");
+    agent.set_host(host.clone());
+    let realm = agent.create_realm().expect("Speicher");
+    agent.scope(|agent, scope| {
+        let main = agent
+            .parse_module(scope, realm, &units("import 'a'; globalThis.out = 1;"))
+            .expect("Modul");
+        let other = agent
+            .parse_module(scope, realm, &units("import 'a';"))
+            .expect("Modul");
+        for module in [main, other] {
+            agent.load_requested_modules(scope, module).expect("Laden");
+            agent.link_module(module).expect("Link");
+        }
+        let steps = Err(Abrupt::Exhausted(Exhausted::Steps));
+        for module in [main, main, other] {
+            let result = agent.with_execution_budget(Rc::new(Budget::new(1_000)), |agent| {
+                agent.evaluate_module(scope, module).map(|_| ())
+            });
+            // Nie ein Promise, das offen bleibt.
+            assert_eq!(result, steps);
+            assert_eq!(agent.module_status(module), Some(ModuleStatus::Evaluated));
+        }
+        let a = host.loaded.borrow().get("a").copied().expect("a");
+        assert_eq!(agent.module_status(a), Some(ModuleStatus::Evaluated));
+        assert!(agent.take_exception(scope).is_none());
+    });
+    assert_eq!(agent.heap_mut().push_registers(0), Some(0));
+    agent.heap_mut().collect();
+    agent.heap().verify().expect("Heap");
+}

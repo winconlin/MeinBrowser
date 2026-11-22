@@ -962,6 +962,14 @@ impl Agent {
             }
             _ => return Err(self.throw_error(ErrorKind::TypeError)),
         }
+        // Eine frühere Ausführung endete ohne Ausnahme abrupt, etwa am Ende
+        // der Quote: Sie meldet das wieder, statt ein Promise zu geben.
+        if let Some(EvaluationError::Abrupt(abrupt)) = self
+            .module_record(module)
+            .and_then(|record| record.evaluation_error.as_ref())
+        {
+            return Err(*abrupt);
+        }
         if let Some(capability) = self
             .module_record(module)
             .and_then(|record| record.top_level_capability.as_ref())
@@ -1000,6 +1008,13 @@ impl Agent {
                         record.status = ModuleStatus::Evaluated;
                         record.evaluation_error = Some(EvaluationError::Abrupt(abrupt));
                     }
+                }
+                // Das Promise bliebe für immer offen.
+                let capability = self
+                    .module_record_mut(module)
+                    .and_then(|record| record.top_level_capability.take());
+                if let Some(capability) = capability {
+                    self.heap_mut().release(capability);
                 }
                 return Err(abrupt);
             }
