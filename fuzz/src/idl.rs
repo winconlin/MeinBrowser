@@ -4,6 +4,7 @@ use mb_webidl::lexer::{Kind, Lexer};
 use mb_webidl::parser::{self, Budget, Document, ErrorKind, Kind as NodeKind, Limits};
 use mb_webidl::{index, members, types};
 
+mod special;
 mod values;
 
 pub fn webidl(data: &[u8]) {
@@ -20,6 +21,7 @@ pub fn webidl(data: &[u8]) {
     dictionary_model(data);
     union_model(data);
     values::model(data);
+    special::model(data);
 }
 
 fn tokens(source: &str) {

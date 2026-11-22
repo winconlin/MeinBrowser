@@ -1,0 +1,1 @@
+interface I { getter long a(DOMString key); getter long b(DOMString key); };
