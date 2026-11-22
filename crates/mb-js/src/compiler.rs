@@ -178,8 +178,8 @@ use crate::ast::{
 };
 use crate::bigint::BigInt;
 use crate::bytecode::{
-    BindingKind, Code, Constant, ContextBinding, ContextLayout, Emitter, Enclosing,
-    FunctionTemplate, HandlerKind, Label, Op, TooLarge,
+    BindingKind, Code, Constant, ContextBinding, ContextLayout, DynamicName, Emitter, Enclosing,
+    EvalSite, Fallback, FunctionScope, FunctionTemplate, HandlerKind, Label, Op, TooLarge,
 };
 use crate::number;
 use crate::value::Value;
@@ -232,6 +232,19 @@ const COMPLETION: i64 = 1;
 const NORMAL: i64 = 0;
 const THROW: i64 = 1;
 const FIRST_EXIT: usize = 2;
+
+/// Wie eine Funktionsdeklaration in einem Block nach Anhang B.3.2 bei ihrer
+/// Auswertung die var-Bindung setzt.
+#[derive(Clone, Copy, Debug)]
+enum Hoisting {
+    /// In einem Script oder einem `eval` mit der globalen Umgebung als
+    /// var-Bereich, wenn das Register *true* hält.
+    Global(u32),
+    /// In einer Funktion im Bereich [`Compiler::var_scope`].
+    Var,
+    /// In einem `eval`, dessen var-Bereich der einer Funktion ist.
+    Eval,
+}
 
 /// Wo eine Bindung liegt.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -299,6 +312,17 @@ struct BlockScope {
     derived: bool,
     /// Die Plätze mit den privaten Namen einer Klasse.
     privates: BTreeMap<Atom, u32>,
+    /// Der Platz für die Erweiterung, in die ein nicht striktes `eval`
+    /// Bindungen aus `var` legt ([`DynamicName`]).
+    extension: Option<u32>,
+    /// Ob der Bereich der var-Bereich ist, in dem ein solches `eval` sie
+    /// anlegt.
+    var_scope: bool,
+    /// Ob er der Bereich des Parameters von `catch` ist.
+    catch: bool,
+    /// Beim Bereich mit dem Platz für `this` einer Funktion, was für
+    /// `eval` darin gilt.
+    function_scope: Option<FunctionScope>,
 }
 
 impl BlockScope {
@@ -460,6 +484,22 @@ enum Reference {
         base: u32,
         name: u32,
     },
+    /// Ein Name, den [`Op::ResolveDynamic`] mit der Konstante aufgelöst
+    /// hat, das Ergebnis im Register.
+    Dynamic {
+        constant: i64,
+        register: u32,
+    },
+}
+
+/// Wohin ResolveBinding beim Übersetzen führt.
+enum Resolved {
+    /// Eine Bindung in einem Register oder Kontext.
+    Local(LocalBinding),
+    /// Die globale Umgebung.
+    Global,
+    /// Erst die Erweiterungen auf dem Weg, dann die Bindung dahinter.
+    Dynamic(DynamicName),
 }
 
 /// Was IsAnonymousFunctionDefinition (Abschnitt 8.4.3) fand.
@@ -587,10 +627,13 @@ struct Compiler<'a> {
     /// Die Funktionsdeklarationen in Blöcken, die nach Anhang B.3.2 auch die
     /// var-Bindung setzen, in Scripts mit dem Register, das sagt, ob es die
     /// globale Bindung gibt.
-    hoisted: BTreeMap<NodeId, Option<u32>>,
+    hoisted: BTreeMap<NodeId, Hoisting>,
     /// Ob der Übersetzer gerade eine Klasse in nicht striktem Code
     /// übersetzt; ihre Befehle bilden einen strikten Bereich.
     strict_class: bool,
+    /// Im Code einer Funktion, die keine Pfeilfunktion ist, was für `eval`
+    /// darin gilt.
+    function_scope: Option<FunctionScope>,
 }
 
 /// Übersetzt ein Script (Abschnitt 16.1).
@@ -619,7 +662,7 @@ pub fn compile_script(ast: &Ast) -> Result<Script> {
     let mut hoisted_functions = Vec::new();
     for (name, node) in compiler.hoisted_functions(body, &BTreeSet::new()) {
         let flag = compiler.allocate()?;
-        compiler.hoisted.insert(node, Some(flag));
+        compiler.hoisted.insert(node, Hoisting::Global(flag));
         hoisted_functions.push((ast.atom(name).to_vec(), flag));
     }
     // Pfeilfunktionen lesen `this` aus einem Kontext.
@@ -648,6 +691,236 @@ pub fn compile_script(ast: &Ast) -> Result<Script> {
         functions,
         hoisted_functions,
     })
+}
+
+/// Warum der Code eines `eval` nicht übersetzt wurde.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EvalError {
+    Compile(CompileError),
+    /// Eine Bindung aus `var` oder eine Funktion träfe eine lexikalische
+    /// Bindung zwischen dem `eval` und seinem var-Bereich: ein SyntaxError
+    /// aus EvalDeclarationInstantiation (Abschnitt 19.2.1.3, Schritt 3).
+    Conflict,
+}
+
+impl From<CompileError> for EvalError {
+    fn from(error: CompileError) -> EvalError {
+        EvalError::Compile(error)
+    }
+}
+
+impl From<TooLarge> for EvalError {
+    fn from(_: TooLarge) -> EvalError {
+        EvalError::Compile(CompileError::TooLarge)
+    }
+}
+
+/// Wo der Code eines `eval` Bindungen aus `var` und Funktionen anlegt.
+enum EvalTarget {
+    /// Im eigenen Bereich, im strikten Modus.
+    Own,
+    /// In der globalen Umgebung.
+    Global,
+    /// Im var-Bereich einer Funktion: dessen Kontext so viele Stufen
+    /// außerhalb des Kontexts am Aufruf, wie `depth` sagt, mit dem Platz
+    /// seiner Erweiterung und seinen Bindungen aus `var`.
+    Function {
+        depth: u32,
+        extension: u32,
+        vars: BTreeMap<Atom, u32>,
+    },
+}
+
+/// Übersetzt den Code eines `eval` (PerformEval, Abschnitt 19.2.1.1) mit
+/// EvalDeclarationInstantiation (Abschnitt 19.2.1.3) am Anfang. Ein
+/// direktes `eval` hat seine Stelle `site`: Der Code läuft mit deren
+/// Kontext als äußerem und sieht dort, was der Code an der Stelle sieht;
+/// `this`, `new.target` und `super` liest er wie eine Pfeilfunktion. Ein
+/// indirektes sieht nur die globale Umgebung, `this` ist dort das globale
+/// Objekt.
+///
+/// Die lexikalischen Deklarationen liegen in einem eigenen Bereich, im
+/// strikten Modus auch `var` und die Funktionen. Sonst gehören diese in
+/// den var-Bereich am Aufruf: Ist das die globale Umgebung, prüft
+/// [`Op::EvalInstantiate`] die Namen, und [`Op::DeclareFunction`] und
+/// [`Op::DeclareVar`] legen löschbare Bindungen an. Ist es der einer
+/// Funktion, gilt eine Bindung, die er schon hat; sonst kommt eine neue in
+/// seine Erweiterung. Trifft ein Name auf dem Weg dorthin eine lexikalische
+/// Bindung, außer dem Parameter von `catch`, ist das ein SyntaxError; das
+/// steht schon beim Übersetzen fest.
+pub fn compile_eval(ast: &Ast, site: Option<&EvalSite>) -> std::result::Result<Code, EvalError> {
+    let outer = match site {
+        Some(site) => Rc::new(translate_enclosing(&site.outer, &site.names, ast)),
+        None => Rc::default(),
+    };
+    let captures = ast.captures().script();
+    let strict = ast.is_strict();
+    let mut compiler = Compiler::new(ast, strict, outer, captures);
+    compiler.lexical_this = site.is_some();
+    compiler.allocate()?;
+    compiler.allocate()?;
+    compiler.completion = Some(COMPLETION);
+    let body = ast.body();
+    let functions = compiler.top_level_functions(body)?;
+    let mut declared = Vec::new();
+    for &item in body {
+        compiler.var_declared_names(item, &mut declared)?;
+    }
+    let mut vars: Vec<Atom> = Vec::new();
+    for atom in declared {
+        if !vars.contains(&atom) && !functions.iter().any(|&(name, _, _)| name == atom) {
+            vars.push(atom);
+        }
+    }
+    let mut lexical = Vec::new();
+    for &item in body {
+        if !matches!(ast.node(item), Node::FunctionDeclaration(_)) {
+            lexical.extend(compiler.lexical_declarations(item)?);
+        }
+    }
+    let function_names: Vec<Atom> = functions.iter().map(|&(name, _, _)| name).collect();
+    let target = if strict {
+        EvalTarget::Own
+    } else {
+        let names: Vec<Atom> = function_names.iter().chain(&vars).copied().collect();
+        compiler.eval_target(&names)?
+    };
+    // Anhang B.3.2.3: Funktionen in Blöcken, die keine Bindung auf dem Weg
+    // zum var-Bereich trifft.
+    let mut hoisted = Vec::new();
+    if !strict {
+        for (name, node) in compiler.hoisted_functions(body, &BTreeSet::new()) {
+            if !compiler.eval_conflicts(name)? {
+                hoisted.push((name, node));
+            }
+        }
+    }
+    let mut instantiation = crate::bytecode::EvalInstantiation::default();
+    for &(name, node) in &hoisted {
+        let hoisting = match target {
+            EvalTarget::Global => {
+                let flag = compiler.allocate()?;
+                instantiation.hoisted.push((ast.atom(name).to_vec(), flag));
+                Hoisting::Global(flag)
+            }
+            _ => Hoisting::Eval,
+        };
+        compiler.hoisted.insert(node, hoisting);
+    }
+    if let EvalTarget::Global = target {
+        instantiation.functions = function_names
+            .iter()
+            .map(|&a| ast.atom(a).to_vec())
+            .collect();
+        instantiation.vars = vars.iter().map(|&a| ast.atom(a).to_vec()).collect();
+        let constant = compiler.constant(Constant::EvalInstantiation(Rc::new(instantiation)))?;
+        compiler.emit(Op::EvalInstantiate, &[constant])?;
+    }
+    // Der eigene Bereich (lexicalEnv).
+    let mut own = BlockScope::default();
+    let mut holes = Vec::new();
+    for (atom, constant, end) in lexical {
+        let location = compiler.locate(&mut own, atom)?;
+        holes.push(location);
+        let kind = if constant {
+            BindingKind::Const
+        } else {
+            BindingKind::Mutable
+        };
+        let binding = LocalBinding {
+            location,
+            kind,
+            initialized_from: end,
+            in_switch: false,
+        };
+        own.bindings.insert(atom, binding);
+    }
+    if let EvalTarget::Own = target {
+        for &atom in function_names.iter().chain(&vars) {
+            let location = compiler.locate(&mut own, atom)?;
+            let binding = LocalBinding::initialized(location, BindingKind::Mutable);
+            own.bindings.insert(atom, binding);
+        }
+    }
+    // Ein indirektes `eval` hat `this` wie ein Script.
+    if captures.this && site.is_none() {
+        own.this = Some(own.add_slot()?);
+    }
+    if own.has_context() {
+        compiler.emit(Op::PushContext, &[i64::from(own.slots)])?;
+    }
+    if let Some(slot) = own.this {
+        compiler.emit(Op::Ldar, &[THIS])?;
+        compiler.emit(Op::StaContext, &[0, i64::from(slot)])?;
+    }
+    compiler.set_holes(&holes)?;
+    let own_contexts = u32::from(own.has_context());
+    compiler.scopes.push(own);
+    for &(name, id, node) in &functions {
+        compiler.function_declaration(node, id)?;
+        compiler.declare_eval_binding(&target, name, own_contexts, Op::DeclareFunction)?;
+    }
+    let hoisted_names = hoisted.iter().map(|&(name, _)| name);
+    for name in vars.iter().copied().chain(hoisted_names) {
+        if function_names.contains(&name) {
+            continue;
+        }
+        match target {
+            EvalTarget::Global if !vars.contains(&name) => {}
+            _ => compiler.declare_eval_binding(&target, name, own_contexts, Op::DeclareVar)?,
+        }
+    }
+    for &item in body {
+        compiler.top_level_item(item)?;
+    }
+    compiler.emit(Op::Ldar, &[COMPLETION])?;
+    compiler.emit(Op::Return, &[])?;
+    Ok(compiler.finish())
+}
+
+/// Die Kette `enclosing` mit den Atomen des Baums `ast` statt denen, deren
+/// Namen `names` nennt. Was `ast` nicht nennt, kann sein Code nicht
+/// erreichen und fehlt.
+fn translate_enclosing(
+    enclosing: &Rc<Enclosing>,
+    names: &BTreeMap<Atom, Vec<u16>>,
+    ast: &Ast,
+) -> Enclosing {
+    let map = |atom: &Atom| names.get(atom).and_then(|name| ast.find_atom(name));
+    // Von außen nach innen, ohne Rekursion.
+    let mut chain = Vec::new();
+    let mut current = Some(enclosing);
+    while let Some(level) = current {
+        chain.push(level);
+        current = level.parent.as_ref();
+    }
+    let mut parent: Option<Rc<Enclosing>> = None;
+    for level in chain.into_iter().rev() {
+        let contexts = level
+            .contexts
+            .iter()
+            .map(|layout| ContextLayout {
+                bindings: layout
+                    .bindings
+                    .iter()
+                    .filter_map(|(atom, &binding)| map(atom).map(|atom| (atom, binding)))
+                    .collect(),
+                privates: layout
+                    .privates
+                    .iter()
+                    .filter_map(|(atom, &slot)| map(atom).map(|atom| (atom, slot)))
+                    .collect(),
+                ..layout.clone()
+            })
+            .collect();
+        let registers = level.registers.iter().filter_map(map).collect();
+        parent = Some(Rc::new(Enclosing {
+            contexts,
+            registers,
+            parent,
+        }));
+    }
+    parent.map_or_else(Enclosing::default, |level| (*level).clone())
 }
 
 /// Ein formaler Parameter mit einem Bezeichner.
@@ -715,6 +988,16 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
     let mut compiler = Compiler::new(ast, function.strict, Rc::clone(&template.outer), captures);
     compiler.lexical_this = arrow;
     compiler.derived = function.kind == FunctionKind::DerivedConstructor;
+    if !arrow {
+        compiler.function_scope = Some(FunctionScope {
+            method: !matches!(function.kind, FunctionKind::Normal),
+            derived: compiler.derived,
+            field_initializer: function.kind == FunctionKind::FieldInitializer,
+        });
+    }
+    // Ein nicht striktes direktes `eval` legt Bindungen aus `var` im
+    // var-Bereich an, in den Parametern in einem Bereich außen um sie.
+    let extensible = captures.eval && !function.strict;
     compiler.allocate()?;
     let callee = compiler.allocate()?;
     let formals = compiler.formals(function.parameters)?;
@@ -802,7 +1085,7 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
         {
             return Err(compiler.unsupported(node));
         }
-        compiler.hoisted.insert(node, None);
+        compiler.hoisted.insert(node, Hoisting::Var);
     }
     // Der Bereich der Parameter, ohne Vorgabewerte auch der des Rumpfs.
     let mut parameters = BlockScope::default();
@@ -834,7 +1117,7 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
         }
         for (atom, binding) in &mut parameters.bindings {
             if let Location::Register(register) = binding.location
-                && (mapped || captures.names.contains(atom))
+                && (mapped || captures.captured(*atom))
             {
                 let slot = parameters
                     .slots
@@ -931,6 +1214,16 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
     if captures.this && !arrow {
         parameters.this = Some(parameters.add_slot()?);
         parameters.derived = compiler.derived;
+        parameters.function_scope = compiler.function_scope;
+    }
+    let var_scope = if has_expressions {
+        &mut separate
+    } else {
+        &mut parameters
+    };
+    if extensible {
+        var_scope.extension = Some(var_scope.add_slot()?);
+        var_scope.var_scope = true;
     }
     if captures.arrow_new_target && !arrow {
         parameters.new_target = Some(parameters.add_slot()?);
@@ -971,7 +1264,7 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
         && !parameters.bindings.contains_key(&name)
     {
         let mut outer = BlockScope::default();
-        let location = if captures.names.contains(&name) {
+        let location = if captures.captured(name) {
             let slot = outer.add_slot()?;
             compiler.emit(Op::PushContext, &[1])?;
             compiler.emit(Op::Ldar, &[i64::from(callee)])?;
@@ -983,6 +1276,17 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
         let binding = LocalBinding::initialized(location, BindingKind::FunctionName);
         outer.bindings.insert(name, binding);
         compiler.scopes.push(outer);
+    }
+    // Der Bereich für die Bindungen aus `eval` in den Parametern
+    // (FunctionDeclarationInstantiation, Schritt 20.b).
+    if extensible && has_expressions {
+        let mut callee_scope = BlockScope {
+            var_scope: true,
+            ..BlockScope::default()
+        };
+        callee_scope.extension = Some(callee_scope.add_slot()?);
+        compiler.emit(Op::PushContext, &[i64::from(callee_scope.slots)])?;
+        compiler.scopes.push(callee_scope);
     }
     if parameters.has_context() {
         compiler.emit(Op::PushContext, &[i64::from(parameters.slots)])?;
@@ -1219,6 +1523,7 @@ impl<'a> Compiler<'a> {
             var_scope: None,
             hoisted: BTreeMap::new(),
             strict_class: false,
+            function_scope: None,
         }
     }
 
@@ -1284,7 +1589,12 @@ impl<'a> Compiler<'a> {
             Constant::BigInt(value) => Some(ConstantKey::BigInt(value.clone())),
             Constant::String(units) => Some(ConstantKey::String(units.clone())),
             Constant::Name(units) => Some(ConstantKey::Name(units.clone())),
-            Constant::Function(_) | Constant::DefaultConstructor { .. } => None,
+            Constant::Function(_)
+            | Constant::DefaultConstructor { .. }
+            | Constant::Dynamic(_)
+            | Constant::EvalSite(_)
+            | Constant::EvalInstantiation(_)
+            | Constant::EvalBinding(_) => None,
         };
         if let Some(&index) = key.as_ref().and_then(|key| self.constant_index.get(key)) {
             return Ok(index);
@@ -1646,7 +1956,7 @@ impl<'a> Compiler<'a> {
     /// in seinem Kontext, wenn eine innere Funktion den Namen nennt, sonst
     /// ein Register.
     fn locate(&mut self, scope: &mut BlockScope, atom: Atom) -> Result<Location> {
-        if self.captures.names.contains(&atom) {
+        if self.captures.captured(atom) {
             let slot = scope.add_slot()?;
             return Ok(Location::Context { depth: 0, slot });
         }
@@ -1866,36 +2176,190 @@ impl<'a> Compiler<'a> {
             .eq("arguments".encode_utf16())
     }
 
-    /// ResolveBinding (Abschnitt 9.4.2) beim Übersetzen: eine Bindung in
-    /// einem Register oder Kontext oder `None` für die globale Umgebung.
-    fn resolve(&self, atom: Atom, node: NodeId) -> Result<Option<LocalBinding>> {
-        if let Some(binding) = self.lookup(atom) {
-            return Ok(Some(binding));
+    /// ResolveBinding (Abschnitt 9.4.2) beim Übersetzen mit den
+    /// Erweiterungen auf dem Weg: Liegt zwischen der Stelle und der Bindung
+    /// ein var-Bereich, in dem ein nicht striktes `eval` Bindungen anlegen
+    /// kann, ist der Name dynamisch. Der Weg beginnt im Bereich mit der
+    /// Stelle `from` in `scopes`, ohne für die innerste Stelle.
+    fn resolve_from(&self, from: Option<usize>, atom: Atom, node: NodeId) -> Result<Resolved> {
+        let mut depth: u32 = 0;
+        let mut extensions = Vec::new();
+        let end = from.map_or(self.scopes.len(), |index| index.saturating_add(1));
+        let scopes = self.scopes.get(..end).unwrap_or_default();
+        let mut found = None;
+        for scope in scopes.iter().rev() {
+            if let Some(&binding) = scope.bindings.get(&atom) {
+                found = Some(binding.at_depth(depth));
+                break;
+            }
+            if let Some(slot) = scope.extension {
+                extensions.push((depth, slot));
+            }
+            if scope.has_context() {
+                depth = depth.checked_add(1).ok_or(CompileError::TooLarge)?;
+            }
         }
-        let mut depth = self.open_contexts();
+        if found.is_none() {
+            let mut enclosing = Some(&self.outer);
+            'outer: while let Some(current) = enclosing {
+                for layout in &current.contexts {
+                    if let Some(binding) = layout.bindings.get(&atom) {
+                        let initialized_from = if binding.lexical { usize::MAX } else { 0 };
+                        found = Some(LocalBinding {
+                            location: Location::Context {
+                                depth,
+                                slot: binding.slot,
+                            },
+                            kind: binding.kind,
+                            initialized_from,
+                            in_switch: false,
+                        });
+                        break 'outer;
+                    }
+                    if let Some(slot) = layout.extension {
+                        extensions.push((depth, slot));
+                    }
+                    depth = depth.checked_add(1).ok_or(CompileError::TooLarge)?;
+                }
+                if current.registers.contains(&atom) {
+                    return Err(self.unsupported(node));
+                }
+                enclosing = current.parent.as_ref();
+            }
+        }
+        if extensions.is_empty() {
+            return Ok(found.map_or(Resolved::Global, Resolved::Local));
+        }
+        let fallback = match found {
+            None => Fallback::Global,
+            Some(LocalBinding {
+                location: Location::Context { depth, slot },
+                kind,
+                ..
+            }) => Fallback::Context {
+                depth,
+                slot,
+                kind,
+                lexical: found.is_some_and(LocalBinding::is_lexical),
+            },
+            // Was ein `eval` sehen kann, liegt in Kontexten.
+            Some(_) => return Err(self.unsupported(node)),
+        };
+        Ok(Resolved::Dynamic(DynamicName {
+            name: self.ast.atom(atom).to_vec(),
+            extensions,
+            fallback,
+        }))
+    }
+
+    /// Der var-Bereich für den Code eines nicht strikten `eval` mit den
+    /// Bindungen `names` aus `var` und Funktionen: der innerste Kontext um
+    /// den Aufruf, der ein var-Bereich ist, sonst die globale Umgebung.
+    /// Trifft ein Name vorher eine Bindung, ist das ein SyntaxError.
+    fn eval_target(&self, names: &[Atom]) -> std::result::Result<EvalTarget, EvalError> {
+        for &name in names {
+            if self.eval_conflicts(name)? {
+                return Err(EvalError::Conflict);
+            }
+        }
+        let mut depth: u32 = 0;
         let mut enclosing = Some(&self.outer);
         while let Some(current) = enclosing {
             for layout in &current.contexts {
-                if let Some(binding) = layout.bindings.get(&atom) {
-                    let initialized_from = if binding.lexical { usize::MAX } else { 0 };
-                    return Ok(Some(LocalBinding {
-                        location: Location::Context {
-                            depth,
-                            slot: binding.slot,
-                        },
-                        kind: binding.kind,
-                        initialized_from,
-                        in_switch: false,
-                    }));
+                if let (true, Some(extension)) = (layout.var_scope, layout.extension) {
+                    let vars = layout
+                        .bindings
+                        .iter()
+                        .filter(|(_, binding)| !binding.lexical)
+                        .map(|(&atom, binding)| (atom, binding.slot))
+                        .collect();
+                    return Ok(EvalTarget::Function {
+                        depth,
+                        extension,
+                        vars,
+                    });
                 }
                 depth = depth.checked_add(1).ok_or(CompileError::TooLarge)?;
             }
+            enclosing = current.parent.as_ref();
+        }
+        Ok(EvalTarget::Global)
+    }
+
+    /// Ob der Name `atom` zwischen dem Code eines `eval` und seinem
+    /// var-Bereich eine Bindung trifft (HasBinding in
+    /// EvalDeclarationInstantiation, Schritt 3.d), außer dem Parameter von
+    /// `catch` (Anhang B.3.4). Im var-Bereich selbst zählen die
+    /// lexikalischen Bindungen: In einer nicht strikten Funktion liegen sie
+    /// in der Spezifikation in einem eigenen Bereich darin.
+    fn eval_conflicts(&self, atom: Atom) -> std::result::Result<bool, EvalError> {
+        let mut enclosing = Some(&self.outer);
+        while let Some(current) = enclosing {
+            for layout in &current.contexts {
+                let binding = layout.bindings.get(&atom);
+                if layout.var_scope && layout.extension.is_some() {
+                    return Ok(binding.is_some_and(|binding| binding.lexical));
+                }
+                if binding.is_some() && !layout.catch {
+                    return Ok(true);
+                }
+            }
             if current.registers.contains(&atom) {
-                return Err(self.unsupported(node));
+                return Err(EvalError::Compile(CompileError::Unsupported(0)));
             }
             enclosing = current.parent.as_ref();
         }
-        Ok(None)
+        Ok(false)
+    }
+
+    /// Bindet den Akkumulator, eine Funktion mit `op` gleich
+    /// [`Op::DeclareFunction`], oder legt die Bindung aus `var` an, mit
+    /// [`Op::DeclareVar`], im var-Bereich `target` eines `eval`. Der Code
+    /// hat `own` eigene Kontexte geöffnet.
+    fn declare_eval_binding(
+        &mut self,
+        target: &EvalTarget,
+        name: Atom,
+        own: u32,
+        op: Op,
+    ) -> Result<()> {
+        let units = self.ast.atom(name).to_vec();
+        let extension = match *target {
+            EvalTarget::Own => {
+                if op == Op::DeclareFunction
+                    && let Some(binding) = self.lookup(name)
+                {
+                    self.store_location(binding.location)?;
+                }
+                return Ok(());
+            }
+            EvalTarget::Global => None,
+            EvalTarget::Function {
+                depth,
+                extension,
+                ref vars,
+            } => {
+                let depth = depth.checked_add(own).ok_or(CompileError::TooLarge)?;
+                if let Some(&slot) = vars.get(&name) {
+                    if op == Op::DeclareFunction {
+                        self.emit(Op::StaContext, &[i64::from(depth), i64::from(slot)])?;
+                    }
+                    return Ok(());
+                }
+                Some((depth, extension))
+            }
+        };
+        let binding = crate::bytecode::EvalBinding {
+            name: units,
+            extension,
+        };
+        let constant = self.constant(Constant::EvalBinding(binding))?;
+        self.emit(op, &[constant])
+    }
+
+    /// [`Compiler::resolve_from`] an der aktuellen Stelle.
+    fn resolve_name(&self, atom: Atom, node: NodeId) -> Result<Resolved> {
+        self.resolve_from(None, atom, node)
     }
 
     /// ResolvePrivateIdentifier (Abschnitt 9.2.1.2) beim Übersetzen: der
@@ -1944,6 +2408,10 @@ impl<'a> Compiler<'a> {
                 function: scope.function,
                 derived: scope.derived,
                 privates: scope.privates.clone(),
+                extension: scope.extension,
+                var_scope: scope.var_scope,
+                catch: scope.catch,
+                function_scope: scope.function_scope,
             };
             for (&atom, &binding) in &scope.bindings {
                 match binding.location {
@@ -2078,7 +2546,7 @@ impl<'a> Compiler<'a> {
             return Err(self.unsupported(node));
         };
         match hoisted {
-            Some(flag) => {
+            Hoisting::Global(flag) => {
                 self.emit(Op::Ldar, &[i64::from(flag)])?;
                 let skip = self.jump(Op::JumpIfFalse)?;
                 let constant = self.name(name)?;
@@ -2089,13 +2557,32 @@ impl<'a> Compiler<'a> {
                 self.release(register);
                 self.bind(skip)
             }
-            None => {
+            Hoisting::Var => {
                 let target = self
                     .var_scope
                     .and_then(|index| self.lookup_in(index, name))
                     .ok_or_else(|| self.unsupported(node))?;
                 self.load_location(binding.location)?;
                 self.store_location(target.location)
+            }
+            // Die Bindung, die der Name vom obersten Bereich des `eval` aus
+            // findet, ist die im var-Bereich: Auf dem Weg dorthin hat ihn
+            // niemand, sonst würde die Funktion nicht gehoben.
+            Hoisting::Eval => {
+                let reference = match self.resolve_from(Some(0), name, node)? {
+                    Resolved::Local(binding) => Reference::Local(binding, name),
+                    Resolved::Dynamic(dynamic) => {
+                        let constant = self.constant(Constant::Dynamic(dynamic))?;
+                        let register = self.allocate()?;
+                        self.emit(Op::ResolveDynamic, &[constant, i64::from(register)])?;
+                        Reference::Dynamic { constant, register }
+                    }
+                    Resolved::Global => return Err(self.unsupported(node)),
+                };
+                self.load_location(binding.location)?;
+                self.put_value(reference, usize::MAX)?;
+                self.release_reference(reference);
+                Ok(())
             }
         }
     }
@@ -2137,19 +2624,11 @@ impl<'a> Compiler<'a> {
                     let Some(init) = init else {
                         continue;
                     };
-                    if let Some(binding) = self.resolve(atom, target)? {
-                        self.named_expression(init, units)?;
-                        self.position(declarator)?;
-                        self.store_local(binding, atom, self.ast.range(declarator).end)?;
-                        continue;
-                    }
-                    let name = self.name(atom)?;
-                    let register = self.allocate()?;
-                    self.emit(Op::ResolveGlobal, &[name, i64::from(register)])?;
+                    let reference = self.reference(target)?;
                     self.named_expression(init, units)?;
                     self.position(declarator)?;
-                    self.emit(Op::StaGlobal, &[name, i64::from(register)])?;
-                    self.release(register);
+                    self.put_value(reference, self.ast.range(declarator).end)?;
+                    self.release_reference(reference);
                 }
                 DeclarationKind::Let | DeclarationKind::Const => {
                     match init {
@@ -2618,18 +3097,11 @@ impl<'a> Compiler<'a> {
             return Err(self.unsupported(left));
         };
         let units = ast.atom(atom);
-        if let Some(binding) = self.resolve(atom, target)? {
-            self.named_expression(init, units)?;
-            self.position(left)?;
-            return self.store_local(binding, atom, ast.range(left).end);
-        }
-        let name = self.name(atom)?;
-        let register = self.allocate()?;
-        self.emit(Op::ResolveGlobal, &[name, i64::from(register)])?;
+        let reference = self.reference(target)?;
         self.named_expression(init, units)?;
         self.position(left)?;
-        self.emit(Op::StaGlobal, &[name, i64::from(register)])?;
-        self.release(register);
+        self.put_value(reference, ast.range(left).end)?;
+        self.release_reference(reference);
         Ok(())
     }
 
@@ -2688,19 +3160,14 @@ impl<'a> Compiler<'a> {
                 Ok(Some(block))
             }
             ForTarget::Var(target) => {
-                let Node::BindingIdentifier(atom) = *self.ast.node(target) else {
+                if !matches!(self.ast.node(target), Node::BindingIdentifier(_)) {
                     self.destructure(target, Init::Put)?;
                     return Ok(None);
-                };
-                if let Some(binding) = self.resolve(atom, target)? {
-                    self.store_local(binding, atom, position)?;
-                    return Ok(None);
                 }
-                let name = self.name(atom)?;
-                let register = self.allocate()?;
-                self.emit(Op::ResolveGlobal, &[name, i64::from(register)])?;
-                self.emit(Op::StaGlobal, &[name, i64::from(register)])?;
-                self.release(register);
+                // Einen Bezeichner aufzulösen lässt den Akkumulator stehen.
+                let reference = self.reference(target)?;
+                self.put_value(reference, position)?;
+                self.release_reference(reference);
                 Ok(None)
             }
             ForTarget::Expression => {
@@ -3010,7 +3477,10 @@ impl<'a> Compiler<'a> {
             return self.catch_pattern(parameter, body);
         };
         let mark = self.next_register;
-        let mut scope = BlockScope::default();
+        let mut scope = BlockScope {
+            catch: true,
+            ..BlockScope::default()
+        };
         let location = self.locate(&mut scope, atom)?;
         let binding = LocalBinding::initialized(location, BindingKind::Mutable);
         scope.bindings.insert(atom, binding);
@@ -3034,7 +3504,10 @@ impl<'a> Compiler<'a> {
         let mut names = Vec::new();
         self.bound_names(parameter, &mut names);
         let end = self.ast.range(parameter).end;
-        let mut scope = BlockScope::default();
+        let mut scope = BlockScope {
+            catch: true,
+            ..BlockScope::default()
+        };
         let mut holes = Vec::new();
         for atom in names {
             let location = self.locate(&mut scope, atom)?;
@@ -4393,12 +4866,75 @@ impl<'a> Compiler<'a> {
             self.emit(Op::LdaUndefined, &[])?;
             self.emit(Op::Star, &[register + 1])?;
         }
-        let op = if self.tail_calls.contains(&node) {
+        let op = if !has_this && self.is_direct_eval(node) {
+            Op::CallEval
+        } else if self.tail_calls.contains(&node) {
             Op::TailCall
         } else {
             Op::Call
         };
         self.call_arguments(node, op, callee, arguments)
+    }
+
+    /// Ob der Aufruf `node` ein direktes `eval` sein kann: Sein Ausdruck ist
+    /// der Bezeichner `eval`, auch in Klammern, ohne `?.` (Abschnitt
+    /// 13.3.6.1, Schritt 6).
+    fn is_direct_eval(&self, node: NodeId) -> bool {
+        match *self.ast.node(node) {
+            Node::Call {
+                callee,
+                optional: false,
+                ..
+            } => self.ast.is_eval_reference(callee),
+            _ => false,
+        }
+    }
+
+    /// Die Konstante für [`Op::CallEval`] an der aktuellen Stelle.
+    fn eval_site(&mut self, node: NodeId, arguments: u32, spread: bool) -> Result<i64> {
+        let function = if self.lexical_this {
+            let mut found = None;
+            let mut enclosing = Some(&self.outer);
+            'outer: while let Some(current) = enclosing {
+                for layout in &current.contexts {
+                    if layout.this.is_some() {
+                        found = Some(layout.function_scope);
+                        break 'outer;
+                    }
+                }
+                enclosing = current.parent.as_ref();
+            }
+            found.ok_or_else(|| self.unsupported(node))?
+        } else {
+            self.function_scope
+        };
+        let outer = self.enclosing();
+        let mut names = BTreeMap::new();
+        let mut enclosing = Some(&outer);
+        while let Some(current) = enclosing {
+            for layout in &current.contexts {
+                for &atom in layout.bindings.keys().chain(layout.privates.keys()) {
+                    names
+                        .entry(atom)
+                        .or_insert_with(|| self.ast.atom(atom).to_vec());
+                }
+            }
+            for &atom in &current.registers {
+                names
+                    .entry(atom)
+                    .or_insert_with(|| self.ast.atom(atom).to_vec());
+            }
+            enclosing = current.parent.as_ref();
+        }
+        let site = EvalSite {
+            arguments,
+            spread,
+            strict: self.is_strict(),
+            function,
+            outer,
+            names,
+        };
+        self.constant(Constant::EvalSite(Rc::new(site)))
     }
 
     /// `new` (EvaluateNew, Abschnitt 13.3.5.1.1): erst der Konstruktor,
@@ -4439,7 +4975,13 @@ impl<'a> Compiler<'a> {
         }
         self.position(node)?;
         let count = i64::try_from(arguments.len()).map_err(|_| CompileError::TooLarge)?;
-        self.emit(op, &[register, count])?;
+        if op == Op::CallEval {
+            let count = u32::try_from(count).map_err(|_| CompileError::TooLarge)?;
+            let site = self.eval_site(node, count, false)?;
+            self.emit(op, &[register, site])?;
+        } else {
+            self.emit(op, &[register, count])?;
+        }
         self.release(first);
         Ok(())
     }
@@ -4458,6 +5000,7 @@ impl<'a> Compiler<'a> {
             Op::TailCall => Op::TailCallSpread,
             Op::Construct => Op::ConstructSpread,
             Op::SuperCall => Op::SuperCallSpread,
+            Op::CallEval => Op::CallEval,
             _ => Op::CallSpread,
         };
         let array = self.allocate()?;
@@ -4475,7 +5018,12 @@ impl<'a> Compiler<'a> {
             }
         }
         self.position(node)?;
-        self.emit(op, &[i64::from(callee)])?;
+        if op == Op::CallEval {
+            let site = self.eval_site(node, 0, true)?;
+            self.emit(op, &[i64::from(callee), site])?;
+        } else {
+            self.emit(op, &[i64::from(callee)])?;
+        }
         self.release(array);
         Ok(())
     }
@@ -4927,11 +5475,19 @@ impl<'a> Compiler<'a> {
 
     /// Ein Bezeichner als Ausdruck: ResolveBinding und GetValue.
     fn load_identifier(&mut self, node: NodeId, atom: Atom) -> Result<()> {
-        match self.resolve(atom, node)? {
-            Some(binding) => self.load_local(binding, atom, self.ast.range(node).start),
-            None => {
+        match self.resolve_name(atom, node)? {
+            Resolved::Local(binding) => self.load_local(binding, atom, self.ast.range(node).start),
+            Resolved::Global => {
                 let name = self.name(atom)?;
                 self.emit(Op::LdaGlobal, &[name])
+            }
+            Resolved::Dynamic(dynamic) => {
+                let constant = self.constant(Constant::Dynamic(dynamic))?;
+                let register = self.allocate()?;
+                self.emit(Op::ResolveDynamic, &[constant, i64::from(register)])?;
+                self.emit(Op::LdaDynamic, &[constant, i64::from(register)])?;
+                self.release(register);
+                Ok(())
             }
         }
     }
@@ -4941,13 +5497,21 @@ impl<'a> Compiler<'a> {
         match *self.ast.node(self.without_parens(target)) {
             // ResolveBinding auch für die Namen in `var`.
             Node::Identifier(atom) | Node::BindingIdentifier(atom) => {
-                if let Some(binding) = self.resolve(atom, target)? {
-                    return Ok(Reference::Local(binding, atom));
+                match self.resolve_name(atom, target)? {
+                    Resolved::Local(binding) => Ok(Reference::Local(binding, atom)),
+                    Resolved::Global => {
+                        let name = self.name(atom)?;
+                        let register = self.allocate()?;
+                        self.emit(Op::ResolveGlobal, &[name, i64::from(register)])?;
+                        Ok(Reference::Global { name, register })
+                    }
+                    Resolved::Dynamic(dynamic) => {
+                        let constant = self.constant(Constant::Dynamic(dynamic))?;
+                        let register = self.allocate()?;
+                        self.emit(Op::ResolveDynamic, &[constant, i64::from(register)])?;
+                        Ok(Reference::Dynamic { constant, register })
+                    }
                 }
-                let name = self.name(atom)?;
-                let register = self.allocate()?;
-                self.emit(Op::ResolveGlobal, &[name, i64::from(register)])?;
-                Ok(Reference::Global { name, register })
             }
             Node::Member {
                 object,
@@ -5017,6 +5581,9 @@ impl<'a> Compiler<'a> {
                 self.emit(Op::Ldar, &[i64::from(base)])?;
                 self.emit(Op::LdaPrivate, &[i64::from(name)])
             }
+            Reference::Dynamic { constant, register } => {
+                self.emit(Op::LdaDynamic, &[constant, i64::from(register)])
+            }
         }
     }
 
@@ -5037,6 +5604,9 @@ impl<'a> Compiler<'a> {
             Reference::Private { base, name } => {
                 self.emit(Op::StaPrivate, &[i64::from(base), i64::from(name)])
             }
+            Reference::Dynamic { constant, register } => {
+                self.emit(Op::StaDynamic, &[constant, i64::from(register)])
+            }
         }
     }
 
@@ -5048,7 +5618,8 @@ impl<'a> Compiler<'a> {
             | Reference::Keyed { base: register, .. }
             | Reference::SuperNamed { base: register, .. }
             | Reference::SuperKeyed { base: register }
-            | Reference::Private { base: register, .. } => self.release(register),
+            | Reference::Private { base: register, .. }
+            | Reference::Dynamic { register, .. } => self.release(register),
         }
     }
 
@@ -5183,13 +5754,17 @@ impl<'a> Compiler<'a> {
                 if let Some(atom) = self.identifier_reference(argument) {
                     // Ein unbekannter Name ergibt "undefined" statt eines
                     // ReferenceError, die TDZ gilt aber.
-                    match self.resolve(atom, argument)? {
-                        Some(binding) => {
+                    match self.resolve_name(atom, argument)? {
+                        Resolved::Local(binding) => {
                             self.load_local(binding, atom, self.ast.range(argument).start)?;
                         }
-                        None => {
+                        Resolved::Global => {
                             let name = self.name(atom)?;
                             return self.emit(Op::TypeofGlobal, &[name]);
+                        }
+                        Resolved::Dynamic(dynamic) => {
+                            let constant = self.constant(Constant::Dynamic(dynamic))?;
+                            return self.emit(Op::TypeofDynamic, &[constant]);
                         }
                     }
                 } else {
@@ -5227,11 +5802,17 @@ impl<'a> Compiler<'a> {
     /// nur ausgewertet.
     fn delete(&mut self, argument: NodeId) -> Result<()> {
         if let Some(atom) = self.identifier_reference(argument) {
-            if self.resolve(atom, argument)?.is_some() {
-                return self.emit(Op::LdaFalse, &[]);
-            }
-            let name = self.name(atom)?;
-            return self.emit(Op::DeleteGlobal, &[name]);
+            return match self.resolve_name(atom, argument)? {
+                Resolved::Local(_) => self.emit(Op::LdaFalse, &[]),
+                Resolved::Global => {
+                    let name = self.name(atom)?;
+                    self.emit(Op::DeleteGlobal, &[name])
+                }
+                Resolved::Dynamic(dynamic) => {
+                    let constant = self.constant(Constant::Dynamic(dynamic))?;
+                    self.emit(Op::DeleteDynamic, &[constant])
+                }
+            };
         }
         let inner = self.without_parens(argument);
         let target = match *self.ast.node(inner) {

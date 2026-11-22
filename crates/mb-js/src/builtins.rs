@@ -73,7 +73,7 @@ use crate::descriptor::PropertyDescriptor;
 use crate::heap::{Local, Scope};
 use crate::key::{PropertyKey, WellKnownSymbol};
 use crate::operations::define_property_or_throw;
-use crate::realm::RealmId;
+use crate::realm::{Intrinsic, RealmId};
 use crate::value::Value;
 
 pub(crate) use function::HAS_INSTANCE as FUNCTION_PROTOTYPE_HAS_INSTANCE;
@@ -143,6 +143,32 @@ fn link_constructor(
     let key = agent.key_from_units(scope, &units("constructor"))?;
     let descriptor = PropertyDescriptor::data(constructor, true, false, true);
     define_property_or_throw(agent, scope, prototype, key, &descriptor)
+}
+
+/// Ein Konstruktor wie %GeneratorFunction%, dessen Aufruf
+/// CreateDynamicFunction (Abschnitt 20.2.1.1.1) ist: Sein Prototyp ist
+/// %Function%, und `prototype` und `constructor` zwischen ihm und
+/// `prototype` sind nicht beschreibbar, nur `constructor` ist
+/// konfigurierbar (etwa Abschnitte 27.6.2.2 und 27.6.3.1).
+fn create_dynamic_constructor(
+    agent: &mut Agent,
+    scope: &Scope,
+    realm: RealmId,
+    builtin: &'static Builtin,
+    prototype: Local<'_>,
+    intrinsic: Intrinsic,
+) -> Completion<()> {
+    let constructor = create_builtin_function(agent, scope, realm, builtin)?;
+    let function = agent.intrinsic(scope, realm, Intrinsic::Function);
+    crate::object::set_prototype_of(agent, constructor, Some(function))?;
+    let key = agent.key_from_units(scope, &units("prototype"))?;
+    let descriptor = PropertyDescriptor::data(prototype, false, false, false);
+    define_property_or_throw(agent, scope, constructor, key, &descriptor)?;
+    let key = agent.key_from_units(scope, &units("constructor"))?;
+    let descriptor = PropertyDescriptor::data(constructor, false, false, true);
+    define_property_or_throw(agent, scope, prototype, key, &descriptor)?;
+    agent.set_intrinsic(realm, intrinsic, constructor);
+    Ok(())
 }
 
 /// Eine eingebaute Funktion als Eigenschaft von `object` mit einem bekannten

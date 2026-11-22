@@ -79,12 +79,15 @@ use crate::async_generator::{async_generator_create, async_generator_yield, susp
 use crate::bound_function::{is_bound_function, unwrap_call, unwrap_construct};
 use crate::builtin::{builtin_parts, call_builtin};
 use crate::builtins::create_regexp;
-use crate::bytecode::{Code, Constant, HandlerKind, Instruction, Op};
-use crate::compare::{is_less_than, is_loosely_equal, is_strictly_equal};
+use crate::bytecode::{
+    BindingKind, Code, Constant, DynamicName, Fallback, HandlerKind, Instruction, Op,
+};
+use crate::compare::{is_less_than, is_loosely_equal, is_strictly_equal, same_value};
 use crate::compiler::{CompileError, compile_default_constructor, compile_function};
 use crate::conversion::{to_boolean, to_number, to_object, to_property_key, to_string};
 use crate::descriptor::PropertyDescriptor;
 use crate::enumerate::{for_in_next, for_in_prepare};
+use crate::eval::{DirectEval, perform_eval};
 use crate::function::{
     Compiled, Construction, Origin, add_field, construction, create_private_methods, field_entry,
     function_environment, function_parts, home_object, instantiate_class_constructor,
@@ -107,8 +110,9 @@ use crate::object::{
     private_element_write, private_elements, proxy_call, proxy_construct, set_prototype_of,
 };
 use crate::operations::{
-    call, create_data_property_or_throw, define_property_or_throw, get, get_method, has_property,
-    is_callable, private_field_add, private_get, private_method_or_accessor_add, private_set, set,
+    call, create_data_property_or_throw, define_property_or_throw, get, get_method,
+    has_own_property, has_property, is_callable, private_field_add, private_get,
+    private_method_or_accessor_add, private_set, set,
 };
 use crate::operators::{
     BinaryOp, UnaryOp, apply_string_or_numeric_binary_operator, apply_unary_operator, type_of,
@@ -257,12 +261,40 @@ fn start<'s>(
 ) -> Completion<Local<'s>> {
     agent.with_default_execution_budget(|agent| {
         agent.enter_interpreter()?;
-        let result = start_frame(agent, scope, realm, code, unit, this, flags);
+        let result = start_frame(agent, scope, realm, code, unit, this, None, flags);
         agent.leave_interpreter();
         result
     })
 }
 
+/// Führt den Code eines `eval` aus dem Syntaxbaum `unit` als Rahmen aus,
+/// mit `this` und dem Kontext `context` als äußerem. Der Aufrufer hat den
+/// Lauf schon betreten ([`Agent::enter_interpreter`]).
+pub(crate) fn execute_eval<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    realm: RealmId,
+    code: &Code,
+    unit: &Rc<Ast>,
+    this: Local<'_>,
+    context: Local<'_>,
+) -> Completion<Local<'s>> {
+    start_frame(
+        agent,
+        scope,
+        realm,
+        code,
+        Some(unit),
+        this,
+        Some(context),
+        &[],
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "die Teile eines Rahmens, der nicht zu einer Funktion gehört"
+)]
 fn start_frame<'s>(
     agent: &mut Agent,
     scope: &'s Scope,
@@ -270,6 +302,7 @@ fn start_frame<'s>(
     code: &Code,
     unit: Option<&Rc<Ast>>,
     this: Local<'_>,
+    context: Option<Local<'_>>,
     flags: &[u32],
 ) -> Completion<Local<'s>> {
     let pool = constant_pool(agent, scope, code, unit)?;
@@ -280,6 +313,9 @@ fn start_frame<'s>(
     let base = place(header, HEADER);
     let heap = agent.heap();
     heap.set_register(header, heap.get(pool));
+    if let Some(context) = context {
+        heap.set_register(place(header, POOL - CONTEXT), heap.get(context));
+    }
     heap.set_register(base, heap.get(this));
     for &flag in flags {
         if let Ok(flag) = usize::try_from(flag) {
@@ -1094,6 +1130,10 @@ fn compiled<'s>(
     };
     let code = match result {
         Ok(code) => Rc::new(code),
+        // Code aus `eval` oder `Function` hat keine Lage im Script.
+        Err(CompileError::Unsupported(_)) if unit.is_dynamic() => {
+            return Err(Abrupt::Unsupported(0));
+        }
         Err(CompileError::Unsupported(position)) => return Err(Abrupt::Unsupported(position)),
         Err(CompileError::TooLarge) => return Err(agent.throw_error(ErrorKind::RangeError)),
     };
@@ -1142,6 +1182,12 @@ fn constant_pool<'s>(
                     let shared =
                         agent.add_default_constructor(Rc::clone(unit), *derived, *class)?;
                     agent.heap().local(inner, Value::int32(shared))
+                }
+                Constant::Dynamic(dynamic) => agent.atom(inner, &dynamic.name)?,
+                Constant::EvalBinding(binding) => agent.atom(inner, &binding.name)?,
+                // Die Befehle lesen sie aus dem Code.
+                Constant::EvalSite(_) | Constant::EvalInstantiation(_) => {
+                    agent.heap().local(inner, Value::UNDEFINED)
                 }
             };
             let heap = agent.heap();
@@ -2308,6 +2354,412 @@ impl<'c> Frame<'c, '_> {
         })
     }
 
+    /// EvaluateCall (Abschnitt 13.3.6.2) mit der Funktion im Register
+    /// `first`, `this` dahinter und `count` Argumenten, mit `spread`
+    /// stattdessen einem Array mit ihnen: IsCallable erst nach den
+    /// Argumenten, PrepareForTailCall mit `tail` danach.
+    fn call(
+        &self,
+        agent: &mut Agent,
+        scope: &Scope,
+        first: i64,
+        count: usize,
+        spread: bool,
+        tail: bool,
+    ) -> Completion<Flow> {
+        let callee = self.register(agent, scope, first);
+        if !is_callable(agent.heap(), agent.heap().get(callee)) {
+            return Err(agent.throw_error(ErrorKind::TypeError));
+        }
+        if runs_in_instruction(agent.heap(), agent.heap().get(callee)) {
+            // Eine eingebaute oder gebundene Funktion läuft im Befehl, auch
+            // in Endposition; den Rahmen baut erst das folgende Return ab.
+            let (this, arguments) = if spread {
+                let this = self.register(agent, scope, first.saturating_add(1));
+                let array = self.register(agent, scope, first.saturating_add(2));
+                (this, spread_list(agent, scope, array)?)
+            } else {
+                self.call_operands(agent, scope, first, count)
+            };
+            let result = call_in_instruction(agent, scope, callee, this, &arguments)?;
+            self.set_accumulator(agent, result);
+            return Ok(Flow::Next);
+        }
+        let callee = self.slot(first);
+        Ok(if tail {
+            Flow::TailCall {
+                callee,
+                count,
+                spread,
+            }
+        } else {
+            Flow::Call {
+                callee,
+                count,
+                new_target: None,
+                spread,
+            }
+        })
+    }
+
+    /// Ein Aufruf, der ein direktes `eval` sein kann (Abschnitt 13.3.6.1,
+    /// Schritt 6): Ist die Funktion %eval% des aktuellen Realms, führt ihn
+    /// PerformEval mit dem ersten Argument im Befehl aus, sonst ist er ein
+    /// gewöhnlicher Aufruf, nie in Endposition.
+    fn call_eval(
+        &self,
+        agent: &mut Agent,
+        scope: &Scope,
+        instruction: &Instruction,
+    ) -> Completion<Flow> {
+        let first = instruction.operand(0);
+        let Some(Constant::EvalSite(site)) = self.code.constant(instruction.operand(1)) else {
+            return Err(agent.throw_error(ErrorKind::RangeError));
+        };
+        let count = usize::try_from(site.arguments).unwrap_or(0);
+        let callee = self.register(agent, scope, first);
+        let eval = agent.intrinsic(scope, self.realm, Intrinsic::Eval);
+        let heap = agent.heap();
+        if !same_value(heap, heap.get(callee), heap.get(eval)) {
+            return self.call(agent, scope, first, count, site.spread, false);
+        }
+        let argument = if site.spread {
+            let array = self.register(agent, scope, first.saturating_add(2));
+            spread_list(agent, scope, array)?.first().copied()
+        } else {
+            (count > 0).then(|| self.register(agent, scope, first.saturating_add(2)))
+        };
+        let Some(argument) = argument else {
+            self.set_accumulator_value(agent, Value::UNDEFINED);
+            return Ok(Flow::Next);
+        };
+        let context = {
+            let heap = agent.heap();
+            heap.local(scope, heap.register(self.context_slot()))
+        };
+        let direct = DirectEval { site, context };
+        let result = perform_eval(agent, scope, self.realm, argument, Some(direct))?;
+        self.set_accumulator(agent, result);
+        Ok(Flow::Next)
+    }
+
+    /// Der Wert im Platz `slot` des Kontexts `depth` Stufen außerhalb des
+    /// aktuellen.
+    fn context_value<'s>(
+        &self,
+        agent: &Agent,
+        scope: &'s Scope,
+        depth: u32,
+        slot: u32,
+    ) -> Local<'s> {
+        let heap = agent.heap();
+        let value = usize::try_from(slot)
+            .ok()
+            .and_then(|slot| heap.slot(self.context(heap, i64::from(depth))?, slot))
+            .unwrap_or(Value::UNDEFINED);
+        heap.local(scope, value)
+    }
+
+    fn set_context_value(&self, agent: &Agent, depth: u32, slot: u32, value: Local<'_>) {
+        let heap = agent.heap();
+        if let (Some(cell), Ok(slot)) =
+            (self.context(heap, i64::from(depth)), usize::try_from(slot))
+        {
+            heap.set_slot(cell, slot, heap.get(value));
+        }
+    }
+
+    /// Die Konstante `operand` als Name, den der Übersetzer nicht auflösen
+    /// konnte, und der Schlüssel dazu, das Atom.
+    fn dynamic_name<'t>(
+        &self,
+        agent: &mut Agent,
+        scope: &'t Scope,
+        operand: i64,
+    ) -> Completion<(&'c DynamicName, PropertyKey<'t>)> {
+        match self.code.constant(operand) {
+            Some(Constant::Dynamic(dynamic)) => Ok((
+                dynamic,
+                PropertyKey::String(self.constant(agent, scope, operand)),
+            )),
+            _ => Err(agent.throw_error(ErrorKind::RangeError)),
+        }
+    }
+
+    /// ResolveBinding (Abschnitt 9.4.2) für einen Namen, der Erweiterungen
+    /// überquert: das Objekt der innersten, die ihn hat, sonst bei der
+    /// globalen Umgebung als Rückfall die Nummer der Referenz dort, beim
+    /// Platz in einem Kontext *undefined*.
+    fn resolve_dynamic<'s>(
+        &self,
+        agent: &mut Agent,
+        scope: &'s Scope,
+        dynamic: &DynamicName,
+        key: PropertyKey<'_>,
+    ) -> Completion<Local<'s>> {
+        for &(depth, slot) in &dynamic.extensions {
+            let value = self.context_value(agent, scope, depth, slot);
+            if matches!(agent.heap().get(value).kind(), Kind::Object(_))
+                && has_property(agent, value, key)?
+            {
+                return Ok(value);
+            }
+        }
+        let value = match dynamic.fallback {
+            Fallback::Global => {
+                let reference = agent.resolve_global(scope, self.realm, &dynamic.name, key)?;
+                Value::int32(reference.number())
+            }
+            Fallback::Context { .. } => Value::UNDEFINED,
+        };
+        Ok(agent.heap().local(scope, value))
+    }
+
+    /// Die Befehle für Namen, die der Übersetzer nicht auflösen konnte.
+    fn dynamic_operation(
+        &self,
+        agent: &mut Agent,
+        scope: &Scope,
+        instruction: &Instruction,
+        strict: bool,
+    ) -> Completion<()> {
+        let first = instruction.operand(0);
+        let second = instruction.operand(1);
+        let (dynamic, key) = self.dynamic_name(agent, scope, first)?;
+        let resolved = match instruction.op {
+            Op::ResolveDynamic | Op::TypeofDynamic | Op::DeleteDynamic => {
+                self.resolve_dynamic(agent, scope, dynamic, key)?
+            }
+            _ => self.register(agent, scope, second),
+        };
+        let target = match (agent.heap().get(resolved).kind(), dynamic.fallback) {
+            (Kind::Object(_), _) => Resolution::Object(resolved),
+            (_, Fallback::Global) => {
+                let number = agent.heap().get(resolved).as_number().unwrap_or(0.0);
+                Resolution::Global(GlobalReference::from_number(number))
+            }
+            (
+                _,
+                Fallback::Context {
+                    depth,
+                    slot,
+                    kind,
+                    lexical,
+                },
+            ) => Resolution::Context {
+                depth,
+                slot,
+                kind,
+                lexical,
+            },
+        };
+        match instruction.op {
+            Op::ResolveDynamic => self.set_register(agent, second, resolved),
+            Op::LdaDynamic => {
+                let value = self.get_binding_value(agent, scope, dynamic, key, target, strict)?;
+                self.set_accumulator(agent, value);
+            }
+            Op::TypeofDynamic => {
+                let unresolvable =
+                    matches!(target, Resolution::Global(GlobalReference::Unresolvable));
+                let text = if unresolvable {
+                    "undefined"
+                } else {
+                    let value =
+                        self.get_binding_value(agent, scope, dynamic, key, target, false)?;
+                    type_of(agent.heap(), agent.heap().get(value))
+                };
+                let result = string(agent, scope, text)?;
+                self.set_accumulator(agent, result);
+            }
+            Op::StaDynamic => match target {
+                // SetMutableBinding eines Object Environment Record
+                // (Abschnitt 9.1.1.2.5).
+                Resolution::Object(object) => {
+                    if !has_property(agent, object, key)? && strict {
+                        return Err(agent.throw_error(ErrorKind::ReferenceError));
+                    }
+                    set(agent, scope, object, key, self.accumulator, strict)?;
+                }
+                Resolution::Global(reference) => agent.put_global(
+                    scope,
+                    self.realm,
+                    reference,
+                    &dynamic.name,
+                    key,
+                    self.accumulator,
+                    strict,
+                )?,
+                Resolution::Context {
+                    depth,
+                    slot,
+                    kind,
+                    lexical,
+                } => {
+                    if kind == BindingKind::FunctionName {
+                        if strict {
+                            return Err(agent.throw_error(ErrorKind::TypeError));
+                        }
+                        return Ok(());
+                    }
+                    let value = self.context_value(agent, scope, depth, slot);
+                    if lexical && agent.heap().get(value).is_hole() {
+                        return Err(agent.throw_error(ErrorKind::ReferenceError));
+                    }
+                    if kind == BindingKind::Const {
+                        return Err(agent.throw_error(ErrorKind::TypeError));
+                    }
+                    self.set_context_value(agent, depth, slot, self.accumulator);
+                }
+            },
+            Op::DeleteDynamic => {
+                let deleted = match target {
+                    Resolution::Object(object) => {
+                        let base = to_object_base(agent, scope, self.realm, object)?;
+                        delete_property(agent, scope, base, object, key, false)?
+                    }
+                    Resolution::Global(GlobalReference::Unresolvable) => true,
+                    Resolution::Global(_) => {
+                        agent.delete_global(scope, self.realm, &dynamic.name, key)?
+                    }
+                    Resolution::Context { .. } => false,
+                };
+                self.set_accumulator_value(agent, Value::boolean(deleted));
+            }
+            // Die übrigen Befehle führt `step` aus.
+            _ => return Err(agent.throw_error(ErrorKind::RangeError)),
+        }
+        Ok(())
+    }
+
+    /// GetBindingValue (Abschnitte 9.1.1.1.6, 9.1.1.2.6 und 9.1.1.4.6) für
+    /// einen aufgelösten Namen.
+    fn get_binding_value<'s>(
+        &self,
+        agent: &mut Agent,
+        scope: &'s Scope,
+        dynamic: &DynamicName,
+        key: PropertyKey<'_>,
+        target: Resolution<'_>,
+        strict: bool,
+    ) -> Completion<Local<'s>> {
+        match target {
+            Resolution::Object(object) => {
+                if !has_property(agent, object, key)? {
+                    if strict {
+                        return Err(agent.throw_error(ErrorKind::ReferenceError));
+                    }
+                    return Ok(agent.heap().local(scope, Value::UNDEFINED));
+                }
+                get(agent, scope, object, key)
+            }
+            Resolution::Global(reference) => {
+                agent.get_global(scope, self.realm, reference, &dynamic.name, key, strict)
+            }
+            Resolution::Context {
+                depth,
+                slot,
+                lexical,
+                ..
+            } => {
+                let value = self.context_value(agent, scope, depth, slot);
+                if lexical && agent.heap().get(value).is_hole() {
+                    return Err(agent.throw_error(ErrorKind::ReferenceError));
+                }
+                Ok(value)
+            }
+        }
+    }
+
+    /// Die Befehle aus EvalDeclarationInstantiation (Abschnitt 19.2.1.3)
+    /// für Bindungen aus `var` und Funktionen außerhalb des Codes eines
+    /// `eval`.
+    fn eval_declaration(
+        &self,
+        agent: &mut Agent,
+        scope: &Scope,
+        instruction: &Instruction,
+    ) -> Completion<()> {
+        let first = instruction.operand(0);
+        let realm = self.realm;
+        match (instruction.op, self.code.constant(first)) {
+            (Op::EvalInstantiate, Some(Constant::EvalInstantiation(names))) => {
+                // Schritte 3.a, 8 und 10 und Anhang B.3.2.3 für die
+                // globale Umgebung.
+                for name in names.functions.iter().chain(&names.vars) {
+                    if agent.has_lexical_declaration(realm, name) {
+                        return Err(agent.throw_error(ErrorKind::SyntaxError));
+                    }
+                }
+                for name in names.functions.iter().rev() {
+                    let key = agent.key_from_units(scope, name)?;
+                    if !agent.can_declare_global_function(scope, realm, key)? {
+                        return Err(agent.throw_error(ErrorKind::TypeError));
+                    }
+                }
+                for name in &names.vars {
+                    let key = agent.key_from_units(scope, name)?;
+                    if !agent.can_declare_global_var(scope, realm, key)? {
+                        return Err(agent.throw_error(ErrorKind::TypeError));
+                    }
+                }
+                let mut declared: Vec<&[u16]> = names
+                    .functions
+                    .iter()
+                    .chain(&names.vars)
+                    .map(Vec::as_slice)
+                    .collect();
+                for (name, flag) in &names.hoisted {
+                    if agent.has_lexical_declaration(realm, name) {
+                        continue;
+                    }
+                    let key = agent.key_from_units(scope, name)?;
+                    if !agent.can_declare_global_var(scope, realm, key)? {
+                        continue;
+                    }
+                    if !declared.contains(&name.as_slice()) {
+                        agent.create_global_var_binding(scope, realm, key, true)?;
+                        declared.push(name);
+                    }
+                    agent
+                        .heap()
+                        .set_register(self.slot(i64::from(*flag)), Value::TRUE);
+                }
+            }
+            (op @ (Op::DeclareFunction | Op::DeclareVar), Some(Constant::EvalBinding(binding))) => {
+                let key = PropertyKey::String(self.constant(agent, scope, first));
+                let function = op == Op::DeclareFunction;
+                let Some((depth, slot)) = binding.extension else {
+                    if function {
+                        agent.create_global_function_binding(
+                            scope,
+                            realm,
+                            key,
+                            self.accumulator,
+                            true,
+                        )?;
+                    } else {
+                        agent.create_global_var_binding(scope, realm, key, true)?;
+                    }
+                    return Ok(());
+                };
+                let mut extension = self.context_value(agent, scope, depth, slot);
+                if !matches!(agent.heap().get(extension).kind(), Kind::Object(_)) {
+                    extension = ordinary_object_create(agent, scope, None)?;
+                    self.set_context_value(agent, depth, slot, extension);
+                }
+                if function {
+                    create_data_property_or_throw(agent, scope, extension, key, self.accumulator)?;
+                } else if !has_own_property(agent, scope, extension, key)? {
+                    let undefined = agent.heap().local(scope, Value::UNDEFINED);
+                    create_data_property_or_throw(agent, scope, extension, key, undefined)?;
+                }
+            }
+            _ => return Err(agent.throw_error(ErrorKind::RangeError)),
+        }
+        Ok(())
+    }
+
     fn global_reference(&self, agent: &Agent, operand: i64) -> GlobalReference {
         let value = agent.heap().register(self.slot(operand));
         GlobalReference::from_number(value.as_number().unwrap_or(0.0))
@@ -2422,6 +2874,15 @@ impl<'c> Frame<'c, '_> {
                     || agent.delete_global(scope, self.realm, name, key)?;
                 self.set_accumulator_value(agent, Value::boolean(deleted));
             }
+            Op::ResolveDynamic
+            | Op::LdaDynamic
+            | Op::StaDynamic
+            | Op::TypeofDynamic
+            | Op::DeleteDynamic => self.dynamic_operation(agent, scope, instruction, strict)?,
+            Op::EvalInstantiate | Op::DeclareFunction | Op::DeclareVar => {
+                self.eval_declaration(agent, scope, instruction)?;
+            }
+            Op::CallEval => return self.call_eval(agent, scope, instruction),
             Op::Add
             | Op::Sub
             | Op::Mul
@@ -2620,66 +3081,13 @@ impl<'c> Frame<'c, '_> {
                 self.set_accumulator(agent, function);
             }
             Op::Call | Op::TailCall => {
-                // EvaluateCall (Abschnitt 13.3.6.2): IsCallable erst nach
-                // den Argumenten, PrepareForTailCall danach.
-                let callee = self.register(agent, scope, first);
-                if !is_callable(agent.heap(), agent.heap().get(callee)) {
-                    return Err(agent.throw_error(ErrorKind::TypeError));
-                }
                 let count = usize::try_from(second).unwrap_or(0);
-                if runs_in_instruction(agent.heap(), agent.heap().get(callee)) {
-                    // Eine eingebaute oder gebundene Funktion läuft im
-                    // Befehl, auch in Endposition; den Rahmen baut erst das
-                    // folgende Return ab.
-                    let (this, arguments) = self.call_operands(agent, scope, first, count);
-                    let result = call_in_instruction(agent, scope, callee, this, &arguments)?;
-                    self.set_accumulator(agent, result);
-                    return Ok(Flow::Next);
-                }
-                let callee = self.slot(first);
-                return Ok(if instruction.op == Op::Call {
-                    Flow::Call {
-                        callee,
-                        count,
-                        new_target: None,
-                        spread: false,
-                    }
-                } else {
-                    Flow::TailCall {
-                        callee,
-                        count,
-                        spread: false,
-                    }
-                });
+                let tail = instruction.op == Op::TailCall;
+                return self.call(agent, scope, first, count, false, tail);
             }
             Op::CallSpread | Op::TailCallSpread => {
-                let callee = self.register(agent, scope, first);
-                if !is_callable(agent.heap(), agent.heap().get(callee)) {
-                    return Err(agent.throw_error(ErrorKind::TypeError));
-                }
-                if runs_in_instruction(agent.heap(), agent.heap().get(callee)) {
-                    let this = self.register(agent, scope, first.saturating_add(1));
-                    let array = self.register(agent, scope, first.saturating_add(2));
-                    let arguments = spread_list(agent, scope, array)?;
-                    let result = call_in_instruction(agent, scope, callee, this, &arguments)?;
-                    self.set_accumulator(agent, result);
-                    return Ok(Flow::Next);
-                }
-                let callee = self.slot(first);
-                return Ok(if instruction.op == Op::CallSpread {
-                    Flow::Call {
-                        callee,
-                        count: 0,
-                        new_target: None,
-                        spread: true,
-                    }
-                } else {
-                    Flow::TailCall {
-                        callee,
-                        count: 0,
-                        spread: true,
-                    }
-                });
+                let tail = instruction.op == Op::TailCallSpread;
+                return self.call(agent, scope, first, 0, true, tail);
             }
             Op::Construct | Op::ConstructSpread | Op::SuperCall | Op::SuperCallSpread => {
                 return self.construct(agent, scope, instruction);
@@ -2894,6 +3302,21 @@ impl<'c> Frame<'c, '_> {
 /// %Function.prototype%, mit *null* `None` und %Function.prototype%, sonst
 /// ihr `prototype` und sie selbst. Ist sie kein Konstruktor oder ihr
 /// `prototype` weder ein Objekt noch *null*, ist das ein TypeError.
+/// Wohin ein Name führt, den der Übersetzer nicht auflösen konnte.
+#[derive(Clone, Copy, Debug)]
+enum Resolution<'l> {
+    /// Eine Erweiterung, die ihn als Eigenschaft hat.
+    Object(Local<'l>),
+    Global(GlobalReference),
+    /// Der Platz aus [`Fallback::Context`].
+    Context {
+        depth: u32,
+        slot: u32,
+        kind: BindingKind,
+        lexical: bool,
+    },
+}
+
 fn class_parents<'s>(
     agent: &mut Agent,
     scope: &'s Scope,

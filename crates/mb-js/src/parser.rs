@@ -21,8 +21,10 @@
 //! - Die Verschachtelung ist begrenzt (RS-8, [`MAX_DEPTH`]); tiefer
 //!   verschachtelter Quelltext ergibt [`ErrorKind::TooDeep`].
 //! - Die Muster regulärer Ausdrücke prüft [`crate::regexp`].
-//! - Was noch fehlt: Quelltext für `eval` und den Konstruktor `Function`
-//!   und das bloße Vorprüfen von Funktionsrümpfen ohne Baum.
+//! - Quelltext für `eval` liest [`parse_eval`] als Script mit dem, was der
+//!   Code um ein direktes `eval` erlaubt ([`EvalOptions`]); den für den
+//!   Konstruktor `Function` und seine Verwandten [`parse_dynamic_function`].
+//! - Was noch fehlt: das bloße Vorprüfen von Funktionsrümpfen ohne Baum.
 
 #![forbid(unsafe_code)]
 
@@ -179,6 +181,143 @@ pub fn parse_script(source: &[u16]) -> Result<Ast> {
 /// Liest ein Modul (Abschnitt 16.2).
 pub fn parse_module(source: &[u16]) -> Result<Ast> {
     Parser::new(source, true)?.program()
+}
+
+/// Was der Code um ein direktes `eval` seinem Quelltext erlaubt
+/// (PerformEval, Abschnitt 19.2.1.1, Schritte 4 bis 11). Für ein indirektes
+/// `eval` gilt nichts davon.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EvalOptions {
+    /// Ob der Aufrufer strikt ist (*strictCaller*).
+    pub strict: bool,
+    /// `new.target`, in einer Funktion (*inFunction*).
+    pub new_target: bool,
+    /// `super.x` und `super[x]`, in einer Methode (*inMethod*).
+    pub super_property: bool,
+    /// `super(…)`, im Konstruktor einer abgeleiteten Klasse
+    /// (*inDerivedConstructor*).
+    pub super_call: bool,
+    /// Ob `arguments` verboten ist, in der Initialisierung eines Feldes
+    /// (*inClassFieldInitializer*).
+    pub no_arguments: bool,
+    /// Die privaten Namen der Klassen um die Stelle
+    /// (EvalDeclarationInstantiation, Abschnitt 19.2.1.3, Schritt 5).
+    pub private_names: Vec<Vec<u16>>,
+    /// Die Namen der Bindungen, die die Stelle sieht. Enthält der Code
+    /// selbst ein direktes `eval`, braucht dessen Stelle sie alle, auch die,
+    /// die der Code nicht nennt.
+    pub visible_names: Vec<Vec<u16>>,
+}
+
+/// Liest den Quelltext eines `eval` als Script (PerformEval, Abschnitt
+/// 19.2.1.1, Schritte 11.a bis 11.h, und AllPrivateIdentifiersValid aus
+/// EvalDeclarationInstantiation).
+pub fn parse_eval(source: &[u16], options: &EvalOptions) -> Result<Ast> {
+    let mut parser = Parser::new(source, false)?;
+    let context = &mut parser.function.context;
+    context.strict = options.strict;
+    context.new_target = options.new_target;
+    context.super_property = options.super_property;
+    context.super_call = options.super_call;
+    context.no_arguments = options.no_arguments;
+    if !options.private_names.is_empty() {
+        let mut outer = PrivateScope::default();
+        for name in &options.private_names {
+            let atom = parser.intern(name);
+            outer.declared.insert(atom, PrivateDeclaration::Other);
+        }
+        parser.classes.push(outer);
+    }
+    let mut ast = parser.program()?;
+    ast.mark_dynamic();
+    // Ohne Atom fiele ein Name beim Übersetzen aus der Kette um die Stelle,
+    // und ein `eval` im `eval` fände dann eine äußere Bindung desselben
+    // Namens oder keine.
+    if !options.visible_names.is_empty() && ast.captures().script().all {
+        for name in &options.visible_names {
+            ast.intern(name);
+        }
+    }
+    Ok(ast)
+}
+
+/// Die Art der Funktion, die `Function` oder einer seiner Verwandten
+/// anlegt (*kind* in CreateDynamicFunction, Abschnitt 20.2.1.1.1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DynamicFunctionKind {
+    Normal,
+    Generator,
+    Async,
+    AsyncGenerator,
+}
+
+impl DynamicFunctionKind {
+    /// Was vor ` anonymous(` steht (*prefix*).
+    pub fn prefix(self) -> &'static str {
+        match self {
+            DynamicFunctionKind::Normal => "function",
+            DynamicFunctionKind::Generator => "function*",
+            DynamicFunctionKind::Async => "async function",
+            DynamicFunctionKind::AsyncGenerator => "async function*",
+        }
+    }
+
+    fn signature(self) -> function::Signature {
+        function::Signature {
+            kind: crate::ast::FunctionKind::Normal,
+            generator: matches!(
+                self,
+                DynamicFunctionKind::Generator | DynamicFunctionKind::AsyncGenerator
+            ),
+            is_async: matches!(
+                self,
+                DynamicFunctionKind::Async | DynamicFunctionKind::AsyncGenerator
+            ),
+        }
+    }
+}
+
+/// Liest den Quelltext für CreateDynamicFunction (Abschnitt 20.2.1.1.1,
+/// Schritte 17 bis 24): erst `parameters` allein als *FormalParameters* und
+/// `body` allein als *FunctionBody* mit *[Yield]* und *[Await]* nach
+/// `kind`, damit keiner der beiden in den anderen hineinreicht, dann
+/// `source`, den ganzen Quelltext. Den liest es als Script; er muss genau
+/// eine Funktionsdeklaration sein. Gibt deren Baum zurück, die Funktion hat
+/// die Nummer 0.
+pub fn parse_dynamic_function(
+    kind: DynamicFunctionKind,
+    parameters: &[u16],
+    body: &[u16],
+    source: &[u16],
+) -> Result<Ast> {
+    let signature = kind.signature();
+    let mut parser = Parser::new(parameters, false)?;
+    parser.function = FunctionState::new(parser.function_context(signature));
+    parser.push_scope(scope::ScopeKind::Function);
+    parser.parameters_until_end()?;
+    let mut parser = Parser::new(body, false)?;
+    parser.function = FunctionState::new(parser.function_context(signature));
+    parser.push_scope(scope::ScopeKind::Function);
+    parser.directives()?;
+    while !parser.at_end()? {
+        parser.statement_list_item()?;
+    }
+    let mut ast = Parser::new(source, false)?.program()?;
+    ast.mark_dynamic();
+    let whole = match ast.body() {
+        &[item] => {
+            matches!(ast.node(item), Node::FunctionDeclaration(_))
+                && ast.range(item) == (0..source.len())
+        }
+        _ => false,
+    };
+    if !whole {
+        return Err(SyntaxError {
+            kind: ErrorKind::UnexpectedToken,
+            position: 0,
+        });
+    }
+    Ok(ast)
 }
 
 /// Was für den Code einer Funktion gilt, die Parameter der Grammatik
@@ -375,6 +514,14 @@ impl<'a> Parser<'a> {
             }
         }
         let body = self.finish_list(mark);
+        // Die privaten Namen um ein `eval` (siehe [`parse_eval`]).
+        if let Some(outer) = self.classes.pop() {
+            self.resolve_private_names(outer)?;
+        }
+        // Ein direktes `eval` in einer Funktion kann `arguments` lesen, auch
+        // wenn ihr Quelltext den Namen nicht nennt; die Bindung braucht ein
+        // Atom.
+        self.ast.intern_str("arguments");
         let strict = self.function.context.strict;
         self.ast.finish(body, self.module, strict, self.source);
         if self.ast.overflowed() {

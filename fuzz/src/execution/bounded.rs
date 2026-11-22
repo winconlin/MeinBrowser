@@ -156,6 +156,12 @@ mod tests {
             "var o={set x(v){for(;;){}}};o.x=1",
             "var o={valueOf(){for(;;){}}};+o",
             "function spin(){for(;;){}}function f(a=spin()){return a;}f()",
+            "eval('for(;;){}')",
+            "for(;;)eval('1')",
+            "Function('for(;;){}')()",
+            "function f(){eval('var g=f');return g();}f()",
+            "var s='0;'.repeat(9999);for(;;)eval(s)",
+            "eval('x'.repeat(99999))",
         ] {
             assert_eq!(
                 both(source),

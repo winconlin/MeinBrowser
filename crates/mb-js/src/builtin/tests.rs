@@ -918,10 +918,15 @@ fn generator_prototypes_link_functions_and_iterators() {
         ));
         assert_eq!(
             keys(agent, scope, generator_function),
-            ["prototype", "Symbol"]
+            ["prototype", "constructor", "Symbol"]
         );
         let (value, attributes) = data(agent, scope, generator_function, "prototype");
         assert!(same(agent, value, generator));
+        assert_eq!(attributes, FIXED);
+        // GeneratorFunction.prototype.constructor (Abschnitt 27.6.3.1).
+        let constructor = agent.intrinsic(scope, realm, Intrinsic::GeneratorFunction);
+        let (value, attributes) = data(agent, scope, generator_function, "constructor");
+        assert!(same(agent, value, constructor));
         assert_eq!(attributes, FIXED);
         let (value, attributes) = symbol_data(
             agent,
@@ -992,7 +997,15 @@ fn the_async_function_prototype_tags_async_functions() {
         let parent = prototype_of(agent, scope, async_function);
         assert!(same(agent, parent, function));
         assert!(!is_callable(agent.heap(), agent.heap().get(async_function)));
-        assert_eq!(keys(agent, scope, async_function), ["Symbol"]);
+        assert_eq!(
+            keys(agent, scope, async_function),
+            ["constructor", "Symbol"]
+        );
+        // AsyncFunction.prototype.constructor (Abschnitt 27.10.3.1).
+        let constructor = agent.intrinsic(scope, realm, Intrinsic::AsyncFunction);
+        let (value, attributes) = data(agent, scope, async_function, "constructor");
+        assert!(same(agent, value, constructor));
+        assert_eq!(attributes, FIXED);
         let (value, attributes) =
             symbol_data(agent, scope, async_function, WellKnownSymbol::ToStringTag);
         assert_eq!(describe(agent, value), "\"AsyncFunction\"");
@@ -1032,10 +1045,15 @@ fn async_generator_prototypes_link_functions_and_iterators() {
         ));
         assert_eq!(
             keys(agent, scope, generator_function),
-            ["prototype", "Symbol"]
+            ["prototype", "constructor", "Symbol"]
         );
         let (value, attributes) = data(agent, scope, generator_function, "prototype");
         assert!(same(agent, value, generator));
+        assert_eq!(attributes, FIXED);
+        // AsyncGeneratorFunction.prototype.constructor (Abschnitt 27.7.3.1).
+        let constructor = agent.intrinsic(scope, realm, Intrinsic::AsyncGeneratorFunction);
+        let (value, attributes) = data(agent, scope, generator_function, "constructor");
+        assert!(same(agent, value, constructor));
         assert_eq!(attributes, FIXED);
         let (value, attributes) = symbol_data(
             agent,
@@ -2082,8 +2100,8 @@ fn function_prototype_methods_and_bound_functions_follow_the_spec() {
             "Function.prototype === Object.getPrototypeOf(function () {})",
             "true",
         ),
-        ("Function('return 1')", "Unsupported(0)"),
-        ("new Function()", "Unsupported(0)"),
+        ("Function('return 1')()", "1"),
+        ("typeof new Function()", "\"function\""),
         // Eine lange Kette gebundener Funktionen ohne Rekursion, auch mit
         // @@hasInstance aus %Function.prototype%.
         (

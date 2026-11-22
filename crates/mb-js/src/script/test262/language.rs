@@ -51,8 +51,6 @@ const LANGUAGE: Suite = Suite {
 };
 
 /// Die eingebauten Objekte, die es schon mit allen Eigenschaften gibt.
-/// `Function/` ist dabei, weil %Function.prototype% vollständig ist; die
-/// Tests des Konstruktors scheitern erwartet, bis `eval` kommt.
 const BUILT_INS: Suite = Suite {
     directory: "test/built-ins",
     parts: &[
@@ -60,6 +58,8 @@ const BUILT_INS: Suite = Suite {
         "Array",
         "ArrayBuffer",
         "ArrayIteratorPrototype",
+        "AsyncFunction",
+        "AsyncGeneratorFunction",
         "Atomics",
         "BigInt",
         "Boolean",
@@ -68,6 +68,7 @@ const BUILT_INS: Suite = Suite {
         "Error",
         "FinalizationRegistry",
         "Function",
+        "GeneratorFunction",
         "Iterator",
         "JSON",
         "Map",
@@ -93,6 +94,7 @@ const BUILT_INS: Suite = Suite {
         "WeakMap",
         "WeakRef",
         "WeakSet",
+        "eval",
         "isFinite",
         "isNaN",
         "parseFloat",
@@ -106,10 +108,11 @@ const BUILT_INS: Suite = Suite {
 /// Dasselbe für Anhang B: `Object.prototype.__proto__` und die
 /// Altmethoden von `Object.prototype`, dazu die zusätzlichen Eigenschaften
 /// von `String.prototype` (Anhang B.2.2) und `Date.prototype` (Anhang
-/// B.2.3).
+/// B.2.3) und die Kommentare im Stil von HTML in `Function` (Anhang
+/// B.1.1).
 const ANNEX_B_BUILT_INS: Suite = Suite {
     directory: "test/annexB/built-ins",
-    parts: &["Date", "Object", "RegExp", "String"],
+    parts: &["Date", "Function", "Object", "RegExp", "String"],
     selection: false,
     file: "erwartete-fehlschlaege-annexb-built-ins.txt",
     expected: include_str!("erwartete-fehlschlaege-annexb-built-ins.txt"),

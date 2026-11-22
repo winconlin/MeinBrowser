@@ -1,20 +1,27 @@
 //! %GeneratorFunction.prototype% (Abschnitt 27.6.3), der Prototyp der
 //! Generatorfunktionen, und %GeneratorPrototype% (Abschnitt 27.8.1), der
 //! Prototyp ihrer `prototype`-Objekte, mit `next`, `return` und `throw`.
-//!
-//! Den Konstruktor %GeneratorFunction% (Abschnitt 27.6.1) gibt es noch
-//! nicht, denn er braucht CreateDynamicFunction (Abschnitt 20.2.1.1.1) wie
-//! `Function`; darum fehlt auch `constructor` an %GeneratorFunction.prototype%.
+//! Dazu der Konstruktor %GeneratorFunction% (Abschnitt 27.6.1) mit
+//! CreateDynamicFunction (Abschnitt 20.2.1.1.1) wie `Function`.
 
-use super::{define_functions, define_to_string_tag, units};
+use super::{create_dynamic_constructor, define_functions, define_to_string_tag, units};
 use crate::agent::{Agent, Completion};
 use crate::builtin::{Builtin, BuiltinCall};
 use crate::descriptor::PropertyDescriptor;
+use crate::eval::create_dynamic_function;
 use crate::generator::{Resumption, resume_generator};
 use crate::heap::{Local, Scope};
 use crate::object::ordinary_object_create;
 use crate::operations::define_property_or_throw;
+use crate::parser::DynamicFunctionKind;
 use crate::realm::{Intrinsic, RealmId};
+
+static CONSTRUCTOR: Builtin = Builtin {
+    name: "GeneratorFunction",
+    length: 1,
+    constructor: true,
+    behaviour: generator_function,
+};
 
 static GENERATOR_FUNCTIONS: [Builtin; 3] = [
     Builtin {
@@ -60,7 +67,23 @@ pub(super) fn create(agent: &mut Agent, scope: &Scope, realm: RealmId) -> Comple
         generator_function,
     );
     agent.set_intrinsic(realm, Intrinsic::GeneratorPrototype, generator);
-    Ok(())
+    create_dynamic_constructor(
+        agent,
+        scope,
+        realm,
+        &CONSTRUCTOR,
+        generator_function,
+        Intrinsic::GeneratorFunction,
+    )
+}
+
+/// GeneratorFunction ( ...parameterArgs, bodyArg ) (Abschnitt 27.6.1.1).
+fn generator_function<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    arguments: &BuiltinCall<'_, '_>,
+) -> Completion<Local<'s>> {
+    create_dynamic_function(agent, scope, arguments, DynamicFunctionKind::Generator)
 }
 
 /// %GeneratorPrototype%.next ( value ) (Abschnitt 27.8.1.2).

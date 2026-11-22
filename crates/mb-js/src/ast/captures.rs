@@ -5,6 +5,14 @@
 //! Außerdem steht für jede Funktion, ob ihr Code oder der ihrer
 //! Pfeilfunktionen den Namen `arguments`, `new.target` oder `super` enthält.
 //!
+//! Ein direktes `eval` (ein Aufruf des Bezeichners `eval`, auch in
+//! Klammern, nicht optional) kann jeden Namen nennen: Die Funktionen um es
+//! herum und das Script legen dann alle ihre Bindungen in Kontexte. Sein
+//! Code liest `this`, `new.target`, `super` und `arguments` wie eine
+//! Pfeilfunktion an seiner Stelle. Die Funktion, deren eigener Code es
+//! enthält, merkt es sich für ihren var-Bereich (siehe
+//! [`FunctionCaptures::eval`]).
+//!
 //! Gezählt wird nach Namen, nicht nach Bindungen: Greift eine innere
 //! Funktion auf `x` zu, liegen alle Bindungen namens `x` der umgebenden
 //! Funktionen in Kontexten, auch solche, die sie gar nicht erreicht. Das
@@ -23,7 +31,7 @@
 use std::cmp::Reverse;
 use std::collections::BTreeSet;
 
-use super::{Ast, Atom, FunctionId, FunctionKind, Node, to_usize};
+use super::{Ast, Atom, FunctionId, FunctionKind, Node, NodeId, to_usize};
 
 /// Was innere Funktionen sehen, für alle Funktionen eines Baums.
 #[derive(Clone, Debug, Default)]
@@ -56,6 +64,21 @@ pub(crate) struct FunctionCaptures {
     /// Ob Pfeilfunktionen darin, auch ineinander, `super` nennen; dann
     /// lesen sie das Funktionsobjekt aus einem Platz im Kontext.
     pub(crate) arrow_super: bool,
+    /// Ob der Code der Funktion oder des Scripts selbst, ohne innere
+    /// Funktionen, ein direktes `eval` enthält. Außerhalb des strikten Modus
+    /// kann es Bindungen mit `var` in ihrem var-Bereich anlegen.
+    pub(crate) eval: bool,
+    /// Ob der Code oder der einer inneren Funktion ein direktes `eval`
+    /// enthält: Dann sieht eine innere Funktion jede Bindung.
+    pub(crate) all: bool,
+}
+
+impl FunctionCaptures {
+    /// Ob eine innere Funktion oder ein `eval` die Bindungen namens `atom`
+    /// sehen kann; dann liegen sie in Kontexten.
+    pub(crate) fn captured(&self, atom: Atom) -> bool {
+        self.all || self.names.contains(&atom)
+    }
 }
 
 impl Captures {
@@ -78,6 +101,8 @@ enum Use {
     SuperProperty,
     /// `super(...)`.
     SuperCall,
+    /// Ein direktes `eval`.
+    Eval,
 }
 
 /// Eine Funktion auf dem Stapel um die aktuelle Stelle.
@@ -103,6 +128,11 @@ impl Ast {
                     uses.push((to_usize(start), Use::SuperProperty));
                 }
                 Node::SuperCall(_) => uses.push((to_usize(start), Use::SuperCall)),
+                Node::Call {
+                    callee,
+                    optional: false,
+                    ..
+                } if self.is_eval_reference(callee) => uses.push((to_usize(start), Use::Eval)),
                 _ => {}
             }
         }
@@ -163,9 +193,27 @@ impl Ast {
                 Use::NewTarget => captures.add_new_target(&stack),
                 Use::SuperProperty => captures.add_super(&stack, false),
                 Use::SuperCall => captures.add_super(&stack, true),
+                Use::Eval => captures.add_eval(&stack),
             }
         }
         captures
+    }
+
+    /// Ob `callee` der Bezeichner `eval` ist, auch in Klammern: Dann ist ein
+    /// Aufruf ohne `?.` ein direktes `eval`, wenn der Wert %eval% ist
+    /// (Abschnitt 13.3.6.1, Schritt 6).
+    pub(crate) fn is_eval_reference(&self, callee: NodeId) -> bool {
+        let mut node = callee;
+        // Klammern begrenzt der Parser mit seiner Tiefe.
+        loop {
+            match self.nodes.get(node.index()) {
+                Some(&Node::Paren(inner)) => node = inner,
+                Some(&Node::Identifier(atom)) => {
+                    return self.atom(atom).iter().copied().eq("eval".encode_utf16());
+                }
+                _ => return false,
+            }
+        }
     }
 }
 
@@ -233,6 +281,44 @@ impl Captures {
         {
             captures.new_target = true;
             captures.arrow_new_target |= arrow;
+        }
+    }
+
+    /// Ein direktes `eval` in der innersten Funktion auf `stack`: Es kann
+    /// jeden Namen der Funktionen um sie herum und des Scripts nennen und
+    /// liest `this`, `new.target`, `super` und `arguments` wie eine
+    /// Pfeilfunktion an seiner Stelle aus dem Kontext der nächsten Funktion
+    /// außen, die keine Pfeilfunktion ist, oder des Scripts.
+    fn add_eval(&mut self, stack: &[Open]) {
+        match stack.last() {
+            Some(open) => {
+                if let Some(captures) = self.functions.get_mut(open.index) {
+                    captures.eval = true;
+                }
+            }
+            None => self.script.eval = true,
+        }
+        for open in stack {
+            if let Some(captures) = self.functions.get_mut(open.index) {
+                captures.all = true;
+            }
+        }
+        self.script.all = true;
+        let owner = stack
+            .iter()
+            .rev()
+            .find(|open| !open.arrow)
+            .and_then(|open| self.functions.get_mut(open.index));
+        match owner {
+            Some(captures) => {
+                captures.this = true;
+                captures.arguments = true;
+                captures.new_target = true;
+                captures.arrow_new_target = true;
+                captures.super_property = true;
+                captures.arrow_super = true;
+            }
+            None => self.script.this = true,
         }
     }
 

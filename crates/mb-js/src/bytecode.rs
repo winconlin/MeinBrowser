@@ -102,6 +102,7 @@ use std::rc::Rc;
 
 use crate::ast::{Atom, ClassId, FunctionId};
 use crate::bigint::BigInt;
+use crate::parser::EvalOptions;
 
 /// Die Art eines Operanden.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -209,6 +210,42 @@ ops! {
     TypeofGlobal [Constant],
     /// `delete` für einen Namen der globalen Umgebung.
     DeleteGlobal [Constant],
+
+    /// GetIdentifierReference für einen Namen auf einem Weg mit
+    /// Erweiterungen ([`DynamicName`]): Das Register nimmt die Erweiterung
+    /// auf, die ihn als eigene Eigenschaft hat, sonst beim Rückfall auf die
+    /// globale Umgebung, was [`Op::ResolveGlobal`] ablegt, sonst
+    /// *undefined* für die Bindung im Kontext.
+    ResolveDynamic [Constant, Register],
+    /// GetValue für einen Namen, den [`Op::ResolveDynamic`] aufgelöst hat.
+    LdaDynamic [Constant, Register],
+    /// PutValue mit dem Akkumulator dafür.
+    StaDynamic [Constant, Register],
+    /// `typeof` für einen solchen Namen, auch einen unbekannten.
+    TypeofDynamic [Constant],
+    /// `delete` für einen solchen Namen.
+    DeleteDynamic [Constant],
+    /// Ein direktes `eval` oder ein gewöhnlicher Aufruf (Abschnitt 13.3.6.1):
+    /// Funktion, `this` und Argumente liegen wie bei [`Op::Call`] ab dem
+    /// Register, mit Ausbreitung wie bei [`Op::CallSpread`]; wie viele es
+    /// sind und was der Code für `eval` an der Stelle sieht, sagt die
+    /// Konstante ([`EvalSite`]). Ist die Funktion %eval% des aktuellen
+    /// Realms, läuft PerformEval mit dem aktuellen Kontext, sonst der
+    /// Aufruf.
+    CallEval [Register, Constant],
+    /// Die Prüfungen aus EvalDeclarationInstantiation (Abschnitt 19.2.1.3)
+    /// für Code eines `eval`, dessen var-Bereich die globale Umgebung ist,
+    /// mit den Namen aus der Konstante ([`EvalInstantiation`]); legt die
+    /// globalen Bindungen der Funktionen in Blöcken nach Anhang B.3.2.3 an.
+    EvalInstantiate [Constant],
+    /// Bindet die Funktion im Akkumulator an ihren Namen im var-Bereich
+    /// eines `eval` ([`EvalBinding`]): CreateGlobalFunctionBinding mit
+    /// *true* für die globale Umgebung, sonst in einer Erweiterung.
+    DeclareFunction [Constant],
+    /// Dasselbe für eine Bindung aus `var`: CreateGlobalVarBinding mit
+    /// *true* oder eine neue Bindung mit *undefined* in der Erweiterung,
+    /// wenn sie dort fehlt.
+    DeclareVar [Constant],
 
     /// Ein neues gewöhnliches Objekt mit %Object.prototype%.
     CreateObject [],
@@ -659,6 +696,150 @@ pub enum Constant {
         derived: bool,
         class: ClassId,
     },
+    /// Ein Name mit Erweiterungen auf dem Weg, für [`Op::ResolveDynamic`]
+    /// und die Befehle danach. Er wird zum Atom.
+    Dynamic(DynamicName),
+    /// Eine Stelle mit direktem `eval` für [`Op::CallEval`].
+    EvalSite(Rc<EvalSite>),
+    /// Die Namen für [`Op::EvalInstantiate`].
+    EvalInstantiation(Rc<EvalInstantiation>),
+    /// Ein Name im var-Bereich eines `eval` für [`Op::DeclareFunction`] und
+    /// [`Op::DeclareVar`]. Er wird zum Atom.
+    EvalBinding(EvalBinding),
+}
+
+/// Ein Name, den der Übersetzer nicht fest einer Bindung zuordnen kann:
+/// Auf dem Weg zu ihr liegen var-Bereiche, in denen ein nicht striktes
+/// direktes `eval` Bindungen anlegen kann. Jeder hat dafür einen Platz in
+/// seinem Kontext, der *undefined* oder eine Erweiterung hält: ein Objekt
+/// ohne Prototyp, das Code der Sprache nie sieht, mit einer eigenen
+/// Eigenschaft je Bindung, konfigurierbar wie die Bindungen aus
+/// CreateMutableBinding mit *true*.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DynamicName {
+    pub(crate) name: Vec<u16>,
+    /// Die Plätze der Erweiterungen auf dem Weg, vom innersten an: Tiefe
+    /// ab dem aktuellen Kontext und Platz.
+    pub(crate) extensions: Vec<(u32, u32)>,
+    /// Was gilt, wenn keine den Namen hat.
+    pub(crate) fallback: Fallback,
+}
+
+/// Die Bindung hinter allen Erweiterungen eines [`DynamicName`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Fallback {
+    /// Die globale Umgebung.
+    Global,
+    /// Ein Platz im Kontext so viele Stufen außerhalb des aktuellen, wie
+    /// `depth` sagt; mit `lexical` prüft jeder Zugriff die TDZ.
+    Context {
+        depth: u32,
+        slot: u32,
+        kind: BindingKind,
+        lexical: bool,
+    },
+}
+
+/// Was für ein `eval` im Code einer Funktion gilt, die seine this-Umgebung
+/// ist (PerformEval, Abschnitt 19.2.1.1, Schritt 6).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct FunctionScope {
+    /// Ob sie [[HomeObject]] hat (HasSuperBinding).
+    pub(crate) method: bool,
+    /// Ob sie der Konstruktor einer abgeleiteten Klasse ist.
+    pub(crate) derived: bool,
+    /// Ob sie die Initialisierung eines Feldes ist
+    /// ([[ClassFieldInitializerName]]).
+    pub(crate) field_initializer: bool,
+}
+
+/// Eine Stelle mit direktem `eval` (Abschnitt 13.3.6.1, Schritt 6).
+#[derive(Clone, Debug, PartialEq)]
+pub struct EvalSite {
+    /// Die Zahl der Argumente in Registern.
+    pub(crate) arguments: u32,
+    /// Ob statt der Argumente ein Array mit ihnen hinter `this` liegt.
+    pub(crate) spread: bool,
+    /// Ob die Stelle strikt ist (*strictCaller*).
+    pub(crate) strict: bool,
+    /// Die Funktion, deren this-Umgebung gilt; ohne ist es ein Script.
+    pub(crate) function: Option<FunctionScope>,
+    /// Was Code an der Stelle sieht, mit den Atomen des Syntaxbaums, aus
+    /// dem er stammt.
+    pub(crate) outer: Rc<Enclosing>,
+    /// Die Namen dieser Atome, damit der Übersetzer des `eval` sie in die
+    /// Atome seines eigenen Baums umsetzen kann.
+    pub(crate) names: BTreeMap<Atom, Vec<u16>>,
+}
+
+impl EvalSite {
+    /// Die Zahl der Argumente in Registern hinter `this`.
+    pub fn arguments(&self) -> u32 {
+        self.arguments
+    }
+
+    /// Ob statt der Argumente ein Array mit ihnen hinter `this` liegt.
+    pub fn is_spread(&self) -> bool {
+        self.spread
+    }
+
+    /// Was der Code eines `eval` an dieser Stelle enthalten darf
+    /// (PerformEval, Abschnitt 19.2.1.1, Schritte 4 bis 6), mit den privaten
+    /// Namen der Klassen um die Stelle und den Namen, die sie sieht.
+    pub fn options(&self) -> EvalOptions {
+        let function = self.function;
+        let mut private_names = Vec::new();
+        let mut current = Some(&self.outer);
+        while let Some(level) = current {
+            for layout in &level.contexts {
+                for atom in layout.privates.keys() {
+                    if let Some(name) = self.names.get(atom) {
+                        private_names.push(name.clone());
+                    }
+                }
+            }
+            current = level.parent.as_ref();
+        }
+        EvalOptions {
+            strict: self.strict,
+            new_target: function.is_some(),
+            super_property: function.is_some_and(|function| function.method),
+            super_call: function.is_some_and(|function| function.derived),
+            no_arguments: function.is_some_and(|function| function.field_initializer),
+            private_names,
+            visible_names: self.names.values().cloned().collect(),
+        }
+    }
+}
+
+/// Die Namen eines `eval`, dessen var-Bereich die globale Umgebung ist,
+/// für [`Op::EvalInstantiate`].
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct EvalInstantiation {
+    /// declaredFunctionNames in der Reihenfolge des Quelltexts.
+    pub(crate) functions: Vec<Vec<u16>>,
+    /// declaredVarNames ohne die Namen der Funktionen.
+    pub(crate) vars: Vec<Vec<u16>>,
+    /// Die Funktionen in Blöcken nach Anhang B.3.2.3 und das Register, das
+    /// danach *true* hält, wenn sie die globale Bindung setzen.
+    pub(crate) hoisted: Vec<(Vec<u16>, u32)>,
+}
+
+impl EvalInstantiation {
+    /// Die Register, die [`Op::EvalInstantiate`] für Funktionen in Blöcken
+    /// auf *true* setzen kann.
+    pub fn hoisted_registers(&self) -> impl Iterator<Item = u32> + '_ {
+        self.hoisted.iter().map(|&(_, register)| register)
+    }
+}
+
+/// Ein Name im var-Bereich eines `eval`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EvalBinding {
+    pub(crate) name: Vec<u16>,
+    /// Der Platz der Erweiterung, Tiefe ab dem aktuellen Kontext; ohne ist
+    /// es die globale Umgebung.
+    pub(crate) extension: Option<(u32, u32)>,
 }
 
 /// Eine Stelle im Quelltext, an der Funktionsobjekte entstehen. Übersetzt
@@ -708,6 +889,15 @@ pub(crate) struct ContextLayout {
     /// Die Plätze der privaten Namen einer Klasse (PrivateEnvironment
     /// Record, Abschnitt 9.2).
     pub(crate) privates: BTreeMap<Atom, u32>,
+    /// Der Platz für die Erweiterung eines var-Bereichs ([`DynamicName`]).
+    pub(crate) extension: Option<u32>,
+    /// Ob der Kontext der var-Bereich einer Funktion ist, in dem ein nicht
+    /// striktes `eval` Bindungen anlegt (VariableEnvironment).
+    pub(crate) var_scope: bool,
+    /// Ob er der Bereich des Parameters von `catch` ist (Anhang B.3.4).
+    pub(crate) catch: bool,
+    /// Bei dem Kontext mit `this` einer Funktion, was für `eval` gilt.
+    pub(crate) function_scope: Option<FunctionScope>,
 }
 
 /// Eine Bindung in einem Kontext.
@@ -1238,6 +1428,15 @@ impl fmt::Display for Code {
                         }
                         Some(Constant::DefaultConstructor { derived: true, .. }) => {
                             formatter.write_str(" default-derived")?;
+                        }
+                        Some(Constant::Dynamic(DynamicName { name, .. }))
+                        | Some(Constant::EvalBinding(EvalBinding { name, .. })) => {
+                            formatter.write_str(" ")?;
+                            display_units(formatter, name)?;
+                        }
+                        Some(Constant::EvalSite(_)) => formatter.write_str(" eval")?,
+                        Some(Constant::EvalInstantiation(_)) => {
+                            formatter.write_str(" declarations")?;
                         }
                         None => write!(formatter, " c{value}?")?,
                     },

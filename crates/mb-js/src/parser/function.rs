@@ -231,6 +231,28 @@ impl Parser<'_> {
     /// *FormalParameters* in Klammern.
     fn formal_parameters(&mut self, names: &mut Names) -> Result<Parameters> {
         self.expect(Punctuator::LeftParenthesis, Goal::Div)?;
+        let parameters = self.parameter_list(names, false)?;
+        self.expect(Punctuator::RightParenthesis, Goal::Div)?;
+        Ok(parameters)
+    }
+
+    /// *FormalParameters* ohne Klammern bis zum Ende des Quelltexts, für
+    /// den Konstruktor `Function` ([`super::parse_dynamic_function`]).
+    pub(super) fn parameters_until_end(&mut self) -> Result<()> {
+        let start = self.start(Goal::Div)?;
+        let mut names: Names = Vec::new();
+        self.parameter_list(&mut names, true)?;
+        if !self.at_end()? {
+            return Err(self.unexpected(Goal::Div));
+        }
+        if self.function.yield_await > 0 {
+            return Err(self.error_at(ErrorKind::InvalidYieldOrAwait, start));
+        }
+        Ok(())
+    }
+
+    /// Die Parameter bis vor `)`, mit `at_end` bis zum Ende des Quelltexts.
+    fn parameter_list(&mut self, names: &mut Names, at_end: bool) -> Result<Parameters> {
         let mark = self.scratch.len();
         let mut parameters = Parameters {
             list: List::default(),
@@ -239,7 +261,12 @@ impl Parser<'_> {
             trailing_comma: false,
         };
         loop {
-            if self.at(Punctuator::RightParenthesis, Goal::Div)? {
+            let closed = if at_end {
+                self.at_end()?
+            } else {
+                self.at(Punctuator::RightParenthesis, Goal::Div)?
+            };
+            if closed {
                 break;
             }
             if self.at(Punctuator::Ellipsis, Goal::Div)? {
@@ -260,12 +287,16 @@ impl Parser<'_> {
             if !self.eat(Punctuator::Comma, Goal::Div)? {
                 break;
             }
-            if self.at(Punctuator::RightParenthesis, Goal::Div)? {
+            let closed = if at_end {
+                self.at_end()?
+            } else {
+                self.at(Punctuator::RightParenthesis, Goal::Div)?
+            };
+            if closed {
                 parameters.trailing_comma = true;
                 break;
             }
         }
-        self.expect(Punctuator::RightParenthesis, Goal::Div)?;
         parameters.list = self.finish_list(mark);
         Ok(parameters)
     }

@@ -1,0 +1,1 @@
+'use strict'; var s='var x=1; x';eval(s); eval?.(s); new Function('a','return a')(1);

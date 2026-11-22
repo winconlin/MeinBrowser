@@ -232,6 +232,14 @@ def execution_seeds():
     write("js-execute", "source-closures-parameters", "function make(p=1){"
           "return (q,...rest)=>{p+=q;return arguments[0]+p+rest.length;};}"
           "var f=make(2); f(3,4); f(5);")
+    write("js-execute", "source-eval-direct", "var g=1; function f(a){ eval('var v=a+g');"
+          "{ let b=2; eval('b'); } return v; } f(3); eval('function h(){} {function k(){}}');")
+    write("js-execute", "source-eval-conflict", "function f(){ let x; { eval('var x'); } }"
+          "try { f(); } catch (e) {} (0,eval)('var y=1'); delete y;")
+    write("js-execute", "source-eval-strict", "'use strict'; var s='var x=1; x';"
+          "eval(s); eval?.(s); new Function('a','return a')(1);")
+    write("js-execute", "source-eval-parameters", "function f(a=eval('var z=2'), b=z)"
+          "{ eval('var w'); return typeof w + b; } f();")
 
 
 def main():

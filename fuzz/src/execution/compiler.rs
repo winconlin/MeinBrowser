@@ -8,11 +8,16 @@ use std::collections::BTreeSet;
 use std::rc::Rc;
 
 use mb_js::ast::{Ast, Node};
-use mb_js::bytecode::{Code, Constant, FunctionTemplate, Op, Operand};
+use mb_js::bytecode::{Code, Constant, EvalSite, FunctionTemplate, Op, Operand};
 use mb_js::compiler::{
-    CompileError, compile_default_constructor, compile_function, compile_script,
+    CompileError, EvalError, compile_default_constructor, compile_eval, compile_function,
+    compile_script,
 };
-use mb_js::parser::parse_script;
+use mb_js::parser::{parse_eval, parse_script};
+
+/// The source is also compiled as the code of a direct `eval` at this many
+/// of its call sites, besides once as indirect `eval` code.
+const EVAL_SITES: usize = 4;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Stats {
@@ -35,6 +40,12 @@ struct Stats {
     classes: usize,
     super_references: usize,
     strict_ranges: usize,
+    direct_eval_calls: usize,
+    dynamic_names: usize,
+    eval_declarations: usize,
+    evals: usize,
+    eval_conflicts: usize,
+    unsupported_evals: usize,
 }
 
 impl Stats {
@@ -55,6 +66,9 @@ impl Stats {
         self.classes += other.classes;
         self.super_references += other.super_references;
         self.strict_ranges += other.strict_ranges;
+        self.direct_eval_calls += other.direct_eval_calls;
+        self.dynamic_names += other.dynamic_names;
+        self.eval_declarations += other.eval_declarations;
     }
 }
 
@@ -437,6 +451,74 @@ fn check_code(code: &Code, source_length: usize) -> Stats {
             Op::Yield | Op::YieldResult | Op::AsyncYield => stats.yields += 1,
             Op::BeginAsync => stats.async_functions += 1,
             Op::Await => stats.awaits += 1,
+            Op::CallEval => {
+                // The callee, `this`, then the arguments or their array.
+                let callee = usize::try_from(instruction.operand(0)).expect("callee register");
+                let Some(Constant::EvalSite(site)) = code.constant(instruction.operand(1)) else {
+                    panic!("a possible direct eval names its site");
+                };
+                let arguments = if site.is_spread() {
+                    1
+                } else {
+                    usize::try_from(site.arguments()).expect("argument count")
+                };
+                assert!(
+                    callee
+                        .checked_add(2)
+                        .and_then(|first| first.checked_add(arguments))
+                        .is_some_and(|end| end <= code.register_count()),
+                    "the eval call fits its frame"
+                );
+                assert_eq!(
+                    site.options().strict,
+                    code.is_strict_at(instruction.start),
+                    "the site is as strict as its call"
+                );
+                stats.direct_eval_calls += 1;
+            }
+            Op::ResolveDynamic | Op::LdaDynamic | Op::StaDynamic => {
+                assert!(matches!(
+                    code.constant(instruction.operand(0)),
+                    Some(Constant::Dynamic(_))
+                ));
+                let register =
+                    usize::try_from(instruction.operand(1)).expect("resolution register");
+                assert!(
+                    register < code.register_count(),
+                    "the resolution is in frame"
+                );
+                stats.dynamic_names += 1;
+            }
+            Op::TypeofDynamic | Op::DeleteDynamic => {
+                assert!(matches!(
+                    code.constant(instruction.operand(0)),
+                    Some(Constant::Dynamic(_))
+                ));
+                stats.dynamic_names += 1;
+            }
+            Op::EvalInstantiate => {
+                let Some(Constant::EvalInstantiation(names)) =
+                    code.constant(instruction.operand(0))
+                else {
+                    panic!("eval instantiation names its declarations");
+                };
+                for register in names.hoisted_registers() {
+                    assert!(
+                        usize::try_from(register)
+                            .is_ok_and(|register| register < code.register_count()),
+                        "the flags of hoisted functions are in frame"
+                    );
+                }
+                assert_eq!(instruction.start, 0, "eval instantiation comes first");
+                stats.eval_declarations += 1;
+            }
+            Op::DeclareFunction | Op::DeclareVar => {
+                assert!(matches!(
+                    code.constant(instruction.operand(0)),
+                    Some(Constant::EvalBinding(_))
+                ));
+                stats.eval_declarations += 1;
+            }
             Op::CreateClosure | Op::CreateClosureKeyed => {
                 assert!(matches!(
                     code.constant(instruction.operand(0)),
@@ -535,6 +617,7 @@ fn check_functions(
     source_length: usize,
     mut pending: Vec<FunctionTemplate>,
     stats: &mut Stats,
+    sites: &mut Vec<Rc<EvalSite>>,
 ) {
     let mut seen = Vec::new();
     while let Some(template) = pending.pop() {
@@ -556,6 +639,7 @@ fn check_functions(
                 assert_eq!(code.parameter_count(), positional);
                 stats.include(check_code(&code, source_length));
                 stats.functions += 1;
+                eval_sites(&code, sites);
                 pending.extend(
                     code.constants()
                         .iter()
@@ -611,7 +695,10 @@ fn check_source(source: &[u16]) -> Outcome {
                         _ => None,
                     }),
             );
-            check_functions(&ast, source.len(), pending, &mut stats);
+            let mut sites = Vec::new();
+            eval_sites(&script.code, &mut sites);
+            check_functions(&ast, source.len(), pending, &mut stats, &mut sites);
+            check_evals(source, &sites, &mut stats);
             Outcome::Compiled(stats)
         }
         Err(error) => {
@@ -619,6 +706,73 @@ fn check_source(source: &[u16]) -> Outcome {
                 Outcome::Unsupported
             } else {
                 Outcome::TooLarge
+            }
+        }
+    }
+}
+
+/// Collects the sites of possible direct `eval` calls in `code`.
+fn eval_sites(code: &Code, sites: &mut Vec<Rc<EvalSite>>) {
+    sites.extend(
+        code.constants()
+            .iter()
+            .filter_map(|constant| match constant {
+                Constant::EvalSite(site) => Some(Rc::clone(site)),
+                _ => None,
+            }),
+    );
+}
+
+/// Compiles `source` as `eval` code: once indirectly, with the global
+/// environment, and directly at the first [`EVAL_SITES`] of `sites`, where
+/// names resolve through the enclosing contexts of the call. A conflict
+/// with a lexical binding is a SyntaxError of the call, not a failure.
+/// Nested functions are compiled, but sites inside `eval` code are not
+/// followed, so the work stays bounded.
+fn check_evals(source: &[u16], sites: &[Rc<EvalSite>], stats: &mut Stats) {
+    let direct = sites.iter().take(EVAL_SITES).map(|site| Some(&**site));
+    for site in std::iter::once(None).chain(direct) {
+        let options = site.map(EvalSite::options).unwrap_or_default();
+        let ast = match parse_eval(source, &options) {
+            Ok(ast) => ast,
+            Err(error) => {
+                assert!(error.position <= source.len(), "eval syntax error position");
+                continue;
+            }
+        };
+        assert!(ast.is_dynamic(), "eval code has no position in the script");
+        assert!(
+            !options.strict || ast.is_strict(),
+            "eval code in strict code is strict"
+        );
+        match compile_eval(&ast, site) {
+            Ok(code) => {
+                assert_eq!(code.parameter_count(), 0, "eval code has no parameters");
+                let mut inner = check_code(&code, source.len());
+                let pending = code
+                    .constants()
+                    .iter()
+                    .filter_map(|constant| match constant {
+                        Constant::Function(template) => Some(template.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                check_functions(&ast, source.len(), pending, &mut inner, &mut Vec::new());
+                stats.evals += 1;
+                stats.dynamic_names += inner.dynamic_names;
+                stats.eval_declarations += inner.eval_declarations;
+            }
+            Err(EvalError::Conflict) => {
+                assert!(
+                    site.is_some() && !ast.is_strict(),
+                    "only sloppy direct eval code meets the bindings at its call"
+                );
+                stats.eval_conflicts += 1;
+            }
+            Err(EvalError::Compile(error)) => {
+                if check_error(error, source.len()) {
+                    stats.unsupported_evals += 1;
+                }
             }
         }
     }
@@ -646,6 +800,37 @@ mod tests {
             Outcome::Compiled(stats) => stats,
             outcome => panic!("expected supported source, got {outcome:?}"),
         }
+    }
+
+    #[test]
+    fn eval_sites_compile_the_source_as_eval_code() {
+        let stats = checked("var x = 1; eval('x');");
+        assert_eq!(stats.direct_eval_calls, 1);
+        assert_eq!(stats.evals, 2, "indirect and at the one site");
+        assert!(
+            stats.eval_declarations >= 2,
+            "the global var of the eval code"
+        );
+        let stats = checked("function f(a) { eval(a); return b; } f('var b');");
+        assert_eq!(stats.direct_eval_calls, 1);
+        assert!(
+            stats.dynamic_names > 0,
+            "names past the var scope are dynamic"
+        );
+        // At the call, the eval code's `var f` meets the `let f` of the
+        // block around it.
+        let stats = checked("{ let f; eval(''); } var f;");
+        assert_eq!(stats.eval_conflicts, 1);
+        assert_eq!(stats.evals, 1, "only the indirect eval compiles");
+        let stats = checked("'use strict'; var y; eval(y); let z;");
+        assert_eq!(
+            stats.eval_conflicts, 0,
+            "strict eval keeps its declarations"
+        );
+        assert_eq!(stats.evals, 2);
+        let stats = checked("class C { #p; m() { return eval('this.#p'); } }");
+        assert_eq!(stats.direct_eval_calls, 1);
+        assert_eq!(stats.evals, 2, "the site passes the private name");
     }
 
     #[test]
