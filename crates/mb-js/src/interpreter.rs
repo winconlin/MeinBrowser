@@ -80,7 +80,7 @@ use crate::bound_function::{is_bound_function, unwrap_call, unwrap_construct};
 use crate::builtin::{builtin_parts, call_builtin};
 use crate::builtins::create_regexp;
 use crate::bytecode::{
-    BindingKind, Code, Constant, DynamicName, Fallback, HandlerKind, Instruction, Op,
+    BindingKind, Code, Constant, DynamicName, Extension, Fallback, HandlerKind, Instruction, Op,
 };
 use crate::compare::{is_less_than, is_loosely_equal, is_strictly_equal, same_value};
 use crate::compiler::{CompileError, compile_default_constructor, compile_function};
@@ -102,7 +102,7 @@ use crate::iterator::{
     create_iterator_result_object, get_async_iterator, get_iterator, iterator_close,
     iterator_close_on_throw, iterator_complete, iterator_step, iterator_step_value, iterator_value,
 };
-use crate::key::{PropertyKey, array_index, is_private_name};
+use crate::key::{PropertyKey, WellKnownSymbol, array_index, is_private_name};
 use crate::object::{
     PrivateElement, Step, array_create, create_mapped_arguments_object,
     create_unmapped_arguments_object, define_arguments_iterator, get_prototype_of, is_proxy,
@@ -205,6 +205,15 @@ enum Arguments<'a, 'l> {
     },
     Locals(&'a [Local<'l>]),
 }
+
+/// Was ResolveDynamic für jede Erweiterung auf dem Weg eines Namens
+/// zahlt, die ein Objekt hält: HasProperty auf dem Objekt, bei `with` und
+/// Erfolg auch @@unscopables. Gemessen am 22.11.2026 (Release, ein Kern
+/// eines Xeon mit 2,1 GHz): Mit einem Schritt dauerte bei 100 bis 250
+/// verschachtelten `with ({})` ein bezahlter Schritt 155 bis 183 ns, ohne
+/// Zahlung je Erweiterung waren es bei 100 schon 9,4 µs. Ein Schritt des
+/// Interpreters mit einer Addition dauert dort 60 bis 108 ns.
+const EXTENSION_STEPS: u64 = 2;
 
 /// Der oberste Rahmen, während er einen Befehl ausführt.
 struct Frame<'c, 's> {
@@ -2421,7 +2430,7 @@ impl<'c> Frame<'c, '_> {
         let eval = agent.intrinsic(scope, self.realm, Intrinsic::Eval);
         let heap = agent.heap();
         if !same_value(heap, heap.get(callee), heap.get(eval)) {
-            return self.call(agent, scope, first, count, site.spread, false);
+            return self.call(agent, scope, first, count, site.spread, site.tail);
         }
         let argument = if site.spread {
             let array = self.register(agent, scope, first.saturating_add(2));
@@ -2486,10 +2495,44 @@ impl<'c> Frame<'c, '_> {
         }
     }
 
+    /// Der Wert im Platz der Erweiterung `extension`. `walk` hält den
+    /// Kontext, bis zu dem die Kette schon entlanggegangen ist, und seine
+    /// Tiefe; der Übersetzer ordnet die Erweiterungen von innen nach außen,
+    /// so geht die Kette jede Stufe nur einmal entlang.
+    fn extension_value<'s>(
+        &self,
+        agent: &Agent,
+        scope: &'s Scope,
+        walk: &mut Option<(Local<'s>, u32)>,
+        extension: &Extension,
+    ) -> Local<'s> {
+        let heap = agent.heap();
+        let (mut context, mut at) = match *walk {
+            Some((context, at)) => (heap.get(context), at),
+            None => (heap.register(self.context_slot()), 0),
+        };
+        while at < extension.depth {
+            context = match context.kind() {
+                Kind::Internal(cell) => heap.slot(cell, 0).unwrap_or(Value::UNDEFINED),
+                _ => Value::UNDEFINED,
+            };
+            at = at.saturating_add(1);
+        }
+        let value = match (context.kind(), usize::try_from(extension.slot)) {
+            (Kind::Internal(cell), Ok(slot)) => heap.slot(cell, slot),
+            _ => None,
+        };
+        *walk = Some((heap.local(scope, context), at));
+        heap.local(scope, value.unwrap_or(Value::UNDEFINED))
+    }
+
     /// ResolveBinding (Abschnitt 9.4.2) für einen Namen, der Erweiterungen
     /// überquert: das Objekt der innersten, die ihn hat, sonst bei der
     /// globalen Umgebung als Rückfall die Nummer der Referenz dort, beim
-    /// Platz in einem Kontext *undefined*.
+    /// Platz in einem Kontext *undefined*. Jede Erweiterung, die ein Objekt
+    /// hält, kostet [`EXTENSION_STEPS`] Arbeitsschritte: Verschachtelte
+    /// `with`-Anweisungen und Funktionen mit `eval` machen den Weg sonst
+    /// ohne Grenze teurer als einen Schritt.
     fn resolve_dynamic<'s>(
         &self,
         agent: &mut Agent,
@@ -2497,13 +2540,30 @@ impl<'c> Frame<'c, '_> {
         dynamic: &DynamicName,
         key: PropertyKey<'_>,
     ) -> Completion<Local<'s>> {
-        for &(depth, slot) in &dynamic.extensions {
-            let value = self.context_value(agent, scope, depth, slot);
-            if matches!(agent.heap().get(value).kind(), Kind::Object(_))
-                && has_property(agent, value, key)?
-            {
-                return Ok(value);
+        let mut walk = None;
+        for extension in &dynamic.extensions {
+            let value = self.extension_value(agent, scope, &mut walk, extension);
+            if !matches!(agent.heap().get(value).kind(), Kind::Object(_)) {
+                continue;
             }
+            agent.spend_execution_steps(EXTENSION_STEPS)?;
+            if !has_property(agent, value, key)? {
+                continue;
+            }
+            // HasBinding eines Object Environment Record (Abschnitt
+            // 9.1.1.2.1), Schritte 3 bis 6: Bei `with` nimmt ein Objekt in
+            // @@unscopables den Namen aus, wenn sein Wert dort wahr ist.
+            if extension.with {
+                let symbol = agent.well_known_symbol(scope, WellKnownSymbol::Unscopables);
+                let unscopables = get(agent, scope, value, PropertyKey::Symbol(symbol))?;
+                if matches!(agent.heap().get(unscopables).kind(), Kind::Object(_)) {
+                    let blocked = get(agent, scope, unscopables, key)?;
+                    if to_boolean(agent.heap(), agent.heap().get(blocked)) {
+                        continue;
+                    }
+                }
+            }
+            return Ok(value);
         }
         let value = match dynamic.fallback {
             Fallback::Global => {
@@ -2555,6 +2615,28 @@ impl<'c> Frame<'c, '_> {
         };
         match instruction.op {
             Op::ResolveDynamic => self.set_register(agent, second, resolved),
+            // Ein Objekt, das ein Platz einer `with`-Anweisung hält; die
+            // Erweiterungen für `eval` sieht Code der Sprache nie.
+            // Das Objekt kommt aus der innersten Erweiterung, die es hält;
+            // bis dorthin hat ResolveDynamic den Weg schon bezahlt.
+            Op::WithBaseObject => {
+                let mut with = false;
+                if let Resolution::Object(object) = target {
+                    let bits = agent.heap().get(object).bits();
+                    let mut walk = None;
+                    for extension in &dynamic.extensions {
+                        let value = self.extension_value(agent, scope, &mut walk, extension);
+                        if agent.heap().get(value).bits() == bits {
+                            with = extension.with;
+                            break;
+                        }
+                    }
+                }
+                match target {
+                    Resolution::Object(object) if with => self.set_accumulator(agent, object),
+                    _ => self.set_accumulator_value(agent, Value::UNDEFINED),
+                }
+            }
             Op::LdaDynamic => {
                 let value = self.get_binding_value(agent, scope, dynamic, key, target, strict)?;
                 self.set_accumulator(agent, value);
@@ -2878,7 +2960,12 @@ impl<'c> Frame<'c, '_> {
             | Op::LdaDynamic
             | Op::StaDynamic
             | Op::TypeofDynamic
-            | Op::DeleteDynamic => self.dynamic_operation(agent, scope, instruction, strict)?,
+            | Op::DeleteDynamic
+            | Op::WithBaseObject => self.dynamic_operation(agent, scope, instruction, strict)?,
+            Op::ToObject => {
+                let object = to_object(agent, scope, self.realm, self.accumulator)?;
+                self.set_accumulator(agent, object);
+            }
             Op::EvalInstantiate | Op::DeclareFunction | Op::DeclareVar => {
                 self.eval_declaration(agent, scope, instruction)?;
             }

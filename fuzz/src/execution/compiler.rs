@@ -476,7 +476,7 @@ fn check_code(code: &Code, source_length: usize) -> Stats {
                 );
                 stats.direct_eval_calls += 1;
             }
-            Op::ResolveDynamic | Op::LdaDynamic | Op::StaDynamic => {
+            Op::ResolveDynamic | Op::LdaDynamic | Op::StaDynamic | Op::WithBaseObject => {
                 assert!(matches!(
                     code.constant(instruction.operand(0)),
                     Some(Constant::Dynamic(_))
@@ -867,7 +867,7 @@ mod tests {
 
     #[test]
     fn syntax_and_unsupported_paths_preserve_positions() {
-        for source in ["class A{[f`x`](){}}", "with({}){}", "f`x`;"] {
+        for source in ["class A{[f`x`](){}}", "x={a:f`x`};", "f`x`;"] {
             let source: Vec<u16> = source.encode_utf16().collect();
             assert_eq!(check_source(&source), Outcome::Unsupported);
         }
@@ -900,7 +900,7 @@ mod tests {
 
     #[test]
     fn unsupported_deferred_bodies_preserve_positions() {
-        for source in ["function f(){with ({}) {}}", "function f(){f`x`;}"] {
+        for source in ["function f(){x=[f`x`];}", "function f(){f`x`;}"] {
             let stats = checked(source);
             assert_eq!(stats.functions, 0);
             assert_eq!(stats.unsupported_functions, 1);
@@ -908,6 +908,20 @@ mod tests {
         assert!(
             checked("f();").calls > 0,
             "unknown callees can still compile"
+        );
+    }
+
+    #[test]
+    fn with_bodies_resolve_names_dynamically() {
+        let stats = checked(
+            "var o={x:1,f(){}};with(o){x++;f();typeof y;delete x;var v=x;} \
+             function g(a){with(o){return function(){return a+x;};}}",
+        );
+        assert_eq!(stats.functions, 3);
+        assert_eq!(stats.unsupported_functions, 0);
+        assert!(
+            stats.dynamic_names >= 8,
+            "names in the body resolve dynamically"
         );
     }
 

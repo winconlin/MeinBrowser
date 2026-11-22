@@ -401,7 +401,6 @@ fn unsupported_constructs_name_their_place() {
         ("let {[f`x`]: a} = b;", 6),
         ("[a = class { [f`x`]() {} }] = b;", 14),
         ("f`x`;", 0),
-        ("with (a) {}", 0),
         ("l: function g() {}", 3),
     ];
     for (source, position) in cases {
@@ -414,6 +413,8 @@ fn unsupported_constructs_name_their_place() {
     // Literale regulärer Ausdrücke übersetzt der Übersetzer seit Welle 8g,
     // BigInt-Literale auch als Eigenschaftsnamen seit Welle 8h.
     assert!(compile("(/a/g);").is_ok());
+    // `with` seit Schritt 9b.
+    assert!(compile("with (a) {}").is_ok());
     for source in [
         "a = 1n;",
         "class A { [1n]() {} }",

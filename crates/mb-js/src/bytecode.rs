@@ -225,6 +225,16 @@ ops! {
     TypeofDynamic [Constant],
     /// `delete` für einen solchen Namen.
     DeleteDynamic [Constant],
+    /// Akkumulator := WithBaseObject (Abschnitt 9.1.1.2.10) der Referenz,
+    /// die [`Op::ResolveDynamic`] mit der Konstante im Register abgelegt
+    /// hat: das Objekt einer `with`-Anweisung, das den Namen hat, sonst
+    /// *undefined*. Für `this` beim Aufruf eines Bezeichners
+    /// (EvaluateCall, Abschnitt 13.3.6.2, Schritt 1.b.ii).
+    WithBaseObject [Constant, Register],
+    /// Akkumulator := ToObject(Akkumulator) (Abschnitt 7.1.18), für das
+    /// Objekt einer `with`-Anweisung: *undefined* und *null* werfen einen
+    /// TypeError.
+    ToObject [],
     /// Ein direktes `eval` oder ein gewöhnlicher Aufruf (Abschnitt 13.3.6.1):
     /// Funktion, `this` und Argumente liegen wie bei [`Op::Call`] ab dem
     /// Register, mit Ausbreitung wie bei [`Op::CallSpread`]; wie viele es
@@ -709,20 +719,39 @@ pub enum Constant {
 }
 
 /// Ein Name, den der Übersetzer nicht fest einer Bindung zuordnen kann:
-/// Auf dem Weg zu ihr liegen var-Bereiche, in denen ein nicht striktes
-/// direktes `eval` Bindungen anlegen kann. Jeder hat dafür einen Platz in
-/// seinem Kontext, der *undefined* oder eine Erweiterung hält: ein Objekt
-/// ohne Prototyp, das Code der Sprache nie sieht, mit einer eigenen
-/// Eigenschaft je Bindung, konfigurierbar wie die Bindungen aus
-/// CreateMutableBinding mit *true*.
+/// Auf dem Weg zu ihr liegen Erweiterungen, Objekte, deren Eigenschaften
+/// Bindungen sind.
+///
+/// Das sind zum einen var-Bereiche, in denen ein nicht striktes direktes
+/// `eval` Bindungen anlegen kann. Jeder hat dafür einen Platz in seinem
+/// Kontext, der *undefined* oder eine Erweiterung hält: ein Objekt ohne
+/// Prototyp, das Code der Sprache nie sieht, mit einer eigenen Eigenschaft
+/// je Bindung, konfigurierbar wie die Bindungen aus CreateMutableBinding
+/// mit *true*.
+///
+/// Zum anderen sind es `with`-Anweisungen (Object Environment Record mit
+/// *withEnvironment* *true*, Abschnitt 9.1.1.2): Ihr Kontext hat einen
+/// Platz mit dem Objekt, und dessen Eigenschaften gelten als Bindungen,
+/// außer denen, die @@unscopables ausnimmt.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DynamicName {
     pub(crate) name: Vec<u16>,
-    /// Die Plätze der Erweiterungen auf dem Weg, vom innersten an: Tiefe
-    /// ab dem aktuellen Kontext und Platz.
-    pub(crate) extensions: Vec<(u32, u32)>,
+    /// Die Erweiterungen auf dem Weg, von der innersten an.
+    pub(crate) extensions: Vec<Extension>,
     /// Was gilt, wenn keine den Namen hat.
     pub(crate) fallback: Fallback,
+}
+
+/// Eine Erweiterung auf dem Weg eines [`DynamicName`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Extension {
+    /// Wie viele Stufen außerhalb des aktuellen Kontexts sie liegt.
+    pub(crate) depth: u32,
+    /// Ihr Platz im Kontext.
+    pub(crate) slot: u32,
+    /// Ob sie das Objekt einer `with`-Anweisung ist; dann prüft HasBinding
+    /// @@unscopables, und WithBaseObject ist das Objekt.
+    pub(crate) with: bool,
 }
 
 /// Die Bindung hinter allen Erweiterungen eines [`DynamicName`].
@@ -762,6 +791,10 @@ pub struct EvalSite {
     pub(crate) spread: bool,
     /// Ob die Stelle strikt ist (*strictCaller*).
     pub(crate) strict: bool,
+    /// Ob der Aufruf in Endposition steht: Ist die Funktion nicht %eval%,
+    /// ist er dann ein Endaufruf wie [`Op::TailCall`] (EvaluateCall,
+    /// Abschnitt 13.3.6.2, Schritt 6).
+    pub(crate) tail: bool,
     /// Die Funktion, deren this-Umgebung gilt; ohne ist es ein Script.
     pub(crate) function: Option<FunctionScope>,
     /// Was Code an der Stelle sieht, mit den Atomen des Syntaxbaums, aus
@@ -889,8 +922,11 @@ pub(crate) struct ContextLayout {
     /// Die Plätze der privaten Namen einer Klasse (PrivateEnvironment
     /// Record, Abschnitt 9.2).
     pub(crate) privates: BTreeMap<Atom, u32>,
-    /// Der Platz für die Erweiterung eines var-Bereichs ([`DynamicName`]).
+    /// Der Platz für die Erweiterung eines var-Bereichs oder das Objekt
+    /// einer `with`-Anweisung ([`DynamicName`]).
     pub(crate) extension: Option<u32>,
+    /// Ob der Kontext der einer `with`-Anweisung ist.
+    pub(crate) with: bool,
     /// Ob der Kontext der var-Bereich einer Funktion ist, in dem ein nicht
     /// striktes `eval` Bindungen anlegt (VariableEnvironment).
     pub(crate) var_scope: bool,

@@ -1,0 +1,1 @@
+var o={x:1,f(){return this}};with(o){x++;var v=x;f();typeof y;delete x;z=2}with([])typeof values;with('ab')length;

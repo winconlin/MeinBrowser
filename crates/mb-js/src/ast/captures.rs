@@ -13,6 +13,12 @@
 //! enthält, merkt es sich für ihren var-Bereich (siehe
 //! [`FunctionCaptures::eval`]).
 //!
+//! Im Rumpf einer `with`-Anweisung kann jeder Name eine Eigenschaft des
+//! Objekts sein; nur wenn es sie nicht hat, gilt die Bindung dahinter, und
+//! die liest der Code zur Laufzeit aus ihrem Kontext. Ein Name im Rumpf,
+//! auch in `var`, zählt darum auch für die Funktion, deren eigener Code ihn
+//! enthält, und für das Script.
+//!
 //! Gezählt wird nach Namen, nicht nach Bindungen: Greift eine innere
 //! Funktion auf `x` zu, liegen alle Bindungen namens `x` der umgebenden
 //! Funktionen in Kontexten, auch solche, die sie gar nicht erreicht. Das
@@ -103,6 +109,9 @@ enum Use {
     SuperCall,
     /// Ein direktes `eval`.
     Eval,
+    /// Ein Name, den eine Deklaration bindet; zählt nur im Rumpf einer
+    /// `with`-Anweisung.
+    Binding(Atom),
 }
 
 /// Eine Funktion auf dem Stapel um die aktuelle Stelle.
@@ -119,9 +128,23 @@ impl Ast {
             functions: vec![FunctionCaptures::default(); self.functions.len()],
         };
         let mut uses: Vec<(usize, Use)> = Vec::new();
+        // Die Rümpfe der `with`-Anweisungen, nach Anfang geordnet.
+        let mut withs: Vec<(usize, Reverse<usize>)> = self
+            .nodes
+            .iter()
+            .filter_map(|node| match *node {
+                Node::With { body, .. } => self.ranges.get(body.index()),
+                _ => None,
+            })
+            .map(|&(start, end)| (to_usize(start), Reverse(to_usize(end))))
+            .collect();
+        withs.sort_unstable();
         for (node, &(start, _)) in self.nodes.iter().zip(&self.ranges) {
             match *node {
                 Node::Identifier(atom) => uses.push((to_usize(start), Use::Name(atom))),
+                Node::BindingIdentifier(atom) if !withs.is_empty() => {
+                    uses.push((to_usize(start), Use::Binding(atom)));
+                }
                 Node::This => uses.push((to_usize(start), Use::This)),
                 Node::NewTarget => uses.push((to_usize(start), Use::NewTarget)),
                 Node::SuperMember(_) | Node::SuperComputedMember(_) => {
@@ -165,7 +188,23 @@ impl Ast {
         order.sort_unstable();
         let mut next = order.into_iter().peekable();
         let mut stack: Vec<Open> = Vec::new();
+        let mut next_with = withs.into_iter().peekable();
+        // Die Enden der Rümpfe um die aktuelle Stelle.
+        let mut open_withs: Vec<usize> = Vec::new();
         for (position, found) in uses {
+            while let Some(&(start, Reverse(end))) = next_with.peek()
+                && start <= position
+            {
+                next_with.next();
+                while open_withs.last().is_some_and(|&open| open <= start) {
+                    open_withs.pop();
+                }
+                open_withs.push(end);
+            }
+            while open_withs.last().is_some_and(|&open| open <= position) {
+                open_withs.pop();
+            }
+            let in_with = !open_withs.is_empty();
             while let Some(&(start, Reverse(end), index)) = next.peek()
                 && start <= position
             {
@@ -187,7 +226,16 @@ impl Ast {
                     if Some(atom) == arguments {
                         captures.add_arguments(&stack);
                     }
-                    captures.add_name(&stack, atom);
+                    if in_with {
+                        captures.add_with_name(&stack, atom);
+                    } else {
+                        captures.add_name(&stack, atom);
+                    }
+                }
+                Use::Binding(atom) => {
+                    if in_with {
+                        captures.add_with_name(&stack, atom);
+                    }
                 }
                 Use::This => captures.add_this(&stack),
                 Use::NewTarget => captures.add_new_target(&stack),
@@ -230,6 +278,18 @@ impl Captures {
                 && !captures.names.insert(atom)
             {
                 return;
+            }
+        }
+        self.script.names.insert(atom);
+    }
+
+    /// Ein Name im Rumpf einer `with`-Anweisung in der innersten Funktion
+    /// auf `stack`: Sie selbst, alle Funktionen um sie herum und das Script
+    /// legen Bindungen mit dem Namen in Kontexte.
+    fn add_with_name(&mut self, stack: &[Open], atom: Atom) {
+        for open in stack {
+            if let Some(captures) = self.functions.get_mut(open.index) {
+                captures.names.insert(atom);
             }
         }
         self.script.names.insert(atom);

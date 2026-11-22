@@ -3,7 +3,7 @@
 # nur der genannte. Erzeugt von script/test262/language.rs; bei einer
 # Abweichung schreibt der Test die neue Fassung nach
 # target/test262/erwartete-fehlschlaege-built-ins.txt.
-# 18560 Dateien, 203 Vorschläge übersprungen; bestanden 17530 von 18357 Dateien und 34811 von 36431 Varianten
+# 18560 Dateien, 203 Vorschläge übersprungen; bestanden 17542 von 18357 Dateien und 34823 von 36431 Varianten
 Array/prototype/concat/Array.prototype.concat_large-typed-array.js
 Array/prototype/concat/Array.prototype.concat_small-typed-array.js
 Array/prototype/concat/Array.prototype.concat_spreadable-sparse-object.js
@@ -184,15 +184,6 @@ Object/getOwnPropertyDescriptor/15.2.3.3-4-10.js
 Object/getOwnPropertyDescriptor/15.2.3.3-4-11.js
 Object/getOwnPropertyDescriptor/15.2.3.3-4-9.js
 Object/getOwnPropertyNames/15.2.3.4-4-1.js
-Proxy/has/call-with.js
-Proxy/has/null-handler-using-with.js
-Proxy/has/return-false-target-not-extensible-using-with.js
-Proxy/has/return-false-target-prop-exists-using-with.js
-Proxy/has/return-false-targetdesc-not-configurable-using-with.js
-Proxy/has/return-is-abrupt-with.js
-Proxy/has/return-true-target-prop-exists-using-with.js
-Proxy/has/trap-is-not-callable-using-with.js
-Proxy/has/trap-is-undefined-using-with.js
 Proxy/preventExtensions/trap-is-undefined-target-is-proxy.js
 RegExp/CharacterClassEscapes/character-class-digit-class-escape-negative-cases.js
 RegExp/CharacterClassEscapes/character-class-non-digit-class-escape-positive-cases.js
@@ -719,7 +710,6 @@ RegExp/unicodeSets/generated/string-literal-intersection-character-property-esca
 RegExp/unicodeSets/generated/string-literal-intersection-property-of-strings-escape.js
 RegExp/unicodeSets/generated/string-literal-union-character-property-escape.js
 RegExp/unicodeSets/generated/string-literal-union-property-of-strings-escape.js
-String/S15.5.5.1_A4_T1.js
 String/prototype/match/regexp-prototype-match-v-u-flag.js
 String/prototype/matchAll/regexp-prototype-matchAll-v-u-flag.js
 String/prototype/repeat/repeat-string-n-times.js
@@ -824,8 +814,6 @@ TypedArrayConstructors/ctors/buffer-arg/typedarray-backed-by-sharedarraybuffer.j
 TypedArrayConstructors/ctors/typedarray-arg/src-typedarray-big-throws.js
 TypedArrayConstructors/ctors/typedarray-arg/src-typedarray-resizable-buffer.js
 TypedArrayConstructors/ctors-bigint/typedarray-arg/src-typedarray-not-big-throws.js
-TypedArrayConstructors/internals/HasProperty/BigInt/infinity-with-detached-buffer.js
-TypedArrayConstructors/internals/HasProperty/infinity-with-detached-buffer.js
 TypedArrayConstructors/internals/OwnPropertyKeys/integer-indexes.js
 parseFloat/S15.1.2.3_A6.js
 parseInt/S15.1.2.2_A7.2_T1.js
