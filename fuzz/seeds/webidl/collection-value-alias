@@ -1,0 +1,1 @@
+typedef [Tag] long Value; interface I { readonly attribute unsigned long length; getter Value item(unsigned long index); iterable<long>; };

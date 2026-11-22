@@ -284,9 +284,9 @@ Mixins pro Host, die Instanz-`length`-Bedingung und die normativen Grenzen der
 Stringifier-Typen prüfen. Laufzeit-Dispatch und Prose-Algorithmen bleiben dabei
 ausdrücklich getrennte Aufgaben.
 
-Als nächste WebIDL-Pakete bleiben Collection-Deklarationen einschließlich
-Vererbungs-/Namensregeln, `toJSON`-/JSON-Typen, die restlichen Array-Verwendungs-
-regeln, allgemeine Extended Attributes und effektive Overload-Sets. Danach
+Die nachfolgenden [Collection-Deklarationen einschließlich Vererbungs-/Namensregeln](m2-webidl-collections.md)
+sind inzwischen implementiert. Offen bleiben `toJSON`-/JSON-Typen, die restlichen
+Array-Verwendungsregeln, allgemeine Extended Attributes und effektive Overload-Sets. Danach
 benötigt der Binding-Generator Argumentauswahl, Konvertierung, Ausnahmen,
 Prototypen und die GC-/Host-Anbindung. DOM-Bindings, Ereignisschleife, Skripte
 im Dokument und WPT/testharness.js bleiben weitere M2-Aufgaben. Claudes

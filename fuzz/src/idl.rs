@@ -4,6 +4,7 @@ use mb_webidl::lexer::{Kind, Lexer};
 use mb_webidl::parser::{self, Budget, Document, ErrorKind, Kind as NodeKind, Limits};
 use mb_webidl::{index, members, types};
 
+mod collections;
 mod special;
 mod values;
 
@@ -22,6 +23,7 @@ pub fn webidl(data: &[u8]) {
     union_model(data);
     values::model(data);
     special::model(data);
+    collections::model(data);
 }
 
 fn tokens(source: &str) {
@@ -160,6 +162,7 @@ fn names(sources: &[&str]) {
                             dictionary_edges: 4096,
                             union_visits: 8192,
                             union_interfaces: 1024,
+                            collection_pairs: 4096,
                         },
                         &budget,
                     ) {
@@ -741,6 +744,7 @@ fn type_model(data: &[u8]) {
             dictionary_edges: 4096,
             union_visits: 8192,
             union_interfaces: 1024,
+            collection_pairs: 4096,
         },
         &budget,
     );
@@ -860,6 +864,7 @@ fn dictionary_model(data: &[u8]) {
             dictionary_edges: 512,
             union_visits: 8192,
             union_interfaces: 1024,
+            collection_pairs: 4096,
         },
         &budget,
     );
@@ -1011,6 +1016,7 @@ fn union_model(data: &[u8]) {
             dictionary_edges: 512,
             union_visits: 8192,
             union_interfaces: 16,
+            collection_pairs: 4096,
         },
         &budget,
     );

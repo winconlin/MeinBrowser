@@ -187,7 +187,7 @@ fn named_definitions_and_typedefs_resolve_forward_across_sources_without_copying
 
 #[test]
 fn every_member_argument_callback_and_typedef_type_node_is_mapped() {
-    let source = "interface X { const long n = 1; readonly attribute Promise<long> ready; constructor(optional long n = 0); undefined run(long n, DOMString... rest); iterable<DOMString,long>; async_iterable<long>(optional long n); readonly maplike<DOMString,long>; setlike<long>; }; dictionary D { required DOMString n; long m = 0; }; callback F = undefined (long n); typedef record<DOMString, long> R;";
+    let source = "interface X { const long n = 1; readonly attribute Promise<long> ready; constructor(optional long n = 0); undefined run(long n, DOMString... rest); iterable<DOMString,long>; }; interface Async { async_iterable<long>(optional long n); }; interface Map { readonly maplike<DOMString,long>; }; interface Set { setlike<long>; }; dictionary D { required DOMString n; long m = 0; }; callback F = undefined (long n); typedef record<DOMString, long> R;";
     let (index, members, types) = model(source);
     for (id, _) in index.definitions() {
         for member in members.members(id).unwrap() {

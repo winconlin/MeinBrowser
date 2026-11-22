@@ -1,0 +1,1 @@
+interface I { async_iterable<long>(long count); };

@@ -1,0 +1,1 @@
+interface I { maplike<DOMString,long>; static undefined get(); };

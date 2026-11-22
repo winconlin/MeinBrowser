@@ -197,6 +197,7 @@ fn check(sources: &[&str], expected: Option<types::ErrorKind>) {
             dictionary_edges: 512,
             union_visits: 8192,
             union_interfaces: 16,
+            collection_pairs: 4096,
         },
         &budget,
     );

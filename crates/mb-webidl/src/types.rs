@@ -12,6 +12,7 @@ use crate::parser::{Document, Kind as NodeKind, NodeId};
 pub use mb_base::{Budget, Cancel, Exhausted};
 
 mod check;
+mod collections;
 mod dictionary;
 mod lower;
 mod special;
@@ -31,6 +32,8 @@ pub struct Limits {
     pub dictionary_edges: usize,
     pub union_visits: usize,
     pub union_interfaces: usize,
+    /// Verschiedene vorgemerkte oder gespeicherte Typvergleichspaare.
+    pub collection_pairs: usize,
 }
 impl Default for Limits {
     fn default() -> Self {
@@ -42,6 +45,7 @@ impl Default for Limits {
             dictionary_edges: 1_000_000,
             union_visits: 1_000_000,
             union_interfaces: 200_000,
+            collection_pairs: 200_000,
         }
     }
 }
@@ -54,6 +58,7 @@ pub enum Limit {
     DictionaryEdges,
     UnionVisits,
     UnionInterfaces,
+    CollectionPairs,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ErrorKind {
@@ -80,6 +85,12 @@ pub enum ErrorKind {
     IndexedLength,
     StringifierType,
     DuplicateStringifier,
+    CollectionConflict,
+    CollectionMemberName,
+    AsyncIteratorArgument,
+    CollectionIndexedGetter,
+    ValueIteratorGetter,
+    ValueIteratorType,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Error {
