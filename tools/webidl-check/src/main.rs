@@ -27,7 +27,7 @@ fn run(args: impl Iterator<Item = OsString>) -> Result<(), String> {
     for arg in args {
         if arg == "--help" || arg == "-h" {
             println!(
-                "Aufruf: cargo run -p webidl-check -- DATEI.idl [WEITERE.idl ...]\nPrüft Syntax, Namen, Verweise, Vererbung, Dictionary-Typzyklen, Union-Unterscheidbarkeit und erste Member-/Typregeln.\nAlle benötigten Definitionen gemeinsam angeben.\nKein vollständiger WebIDL-Validator; erzeugt keine Bindings."
+                "Aufruf: cargo run -p webidl-check -- DATEI.idl [WEITERE.idl ...]\nPrüft Syntax, Namen, Verweise, Vererbung, Dictionary-Typzyklen, Union-Unterscheidbarkeit, Konstanten-/Defaultwerte und erste Member-/Typregeln.\nAlle benötigten Definitionen gemeinsam angeben.\nKein vollständiger WebIDL-Validator; erzeugt keine Bindings."
             );
             return Ok(());
         }
@@ -239,5 +239,32 @@ mod tests {
             positioned_error(&paths, &sources, &error.kind, error.location.as_ref(), None),
             "api.idl:1:9: IndistinguishableUnion"
         );
+    }
+    #[test]
+    fn literal_diagnostics_keep_cross_file_locations_and_unicode_columns() {
+        let paths = ["types.idl".into(), "api.idl".into()];
+        for (declaration, expected) in [
+            (
+                "interface I { const Count n = 18446744073709551616; };",
+                "api.idl:2:31: ConstantValue",
+            ),
+            (
+                "dictionary D { State value = \"off\"; };",
+                "api.idl:2:30: DefaultValue",
+            ),
+        ] {
+            let sources = [
+                "typedef unsigned long long Count; enum State {\"on\"};".to_owned(),
+                format!("/*😀*/\n{declaration}"),
+            ];
+            let index =
+                index::build(&sources.iter().map(String::as_str).collect::<Vec<_>>()).unwrap();
+            let members = members::build(&index).unwrap();
+            let error = types::build(&index, &members).unwrap_err();
+            assert_eq!(
+                positioned_error(&paths, &sources, &error.kind, error.location.as_ref(), None),
+                expected
+            );
+        }
     }
 }

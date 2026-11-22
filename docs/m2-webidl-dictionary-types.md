@@ -158,7 +158,8 @@ und Fuzzing-Funde bleiben gemäß [SECURITY.md](../SECURITY.md) privat.
 2. Globale Farben, Typedef-Verweise, tatsächliche Feldpositionen und die beiden
    zusätzlichen Grenzen prüfen. Weiterhin keine geteilten Untergraphen expandieren.
 3. Die inzwischen ergänzte [Union-Unterscheidbarkeit](m2-webidl-unions.md)
-   prüfen. Werte/Defaults, weitere Member-Typregeln, Extended Attributes und
-   effektive Overload-Sets bleiben offen.
+   und [Wert-/Dictionary-Argumentprüfung](m2-webidl-values.md) prüfen. Weitere
+   Member-Typregeln, allgemeine Extended Attributes und effektive Overload-Sets
+   bleiben offen.
 4. Erst nach den übrigen semantischen Prüfungen Bindings erzeugen und gegen
    DOM-/WebIDL-WPT prüfen. M2 ist weiterhin nicht abgeschlossen.

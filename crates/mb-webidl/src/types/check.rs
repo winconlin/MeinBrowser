@@ -85,7 +85,8 @@ pub(super) fn check(
         }
     }
     super::union::check(index, types, work)?;
-    super::dictionary::check(index, members, types, work)
+    super::dictionary::check(index, members, types, work)?;
+    super::values::check(index, members, types, work)
 }
 
 fn arguments(

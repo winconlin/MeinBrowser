@@ -1,0 +1,1 @@
+dictionary D {}; interface I { undefined f(D options); };

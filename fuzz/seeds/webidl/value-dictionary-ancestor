@@ -1,0 +1,1 @@
+dictionary Base { required long x; }; dictionary Child : Base {}; interface I { undefined f(Child options); };
