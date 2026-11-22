@@ -40,8 +40,14 @@
 //! in Scripts entscheidet GlobalDeclarationInstantiation, ob es die
 //! globale Bindung gibt, und setzt dafür ein Register.
 //!
-//! Noch nicht unterstützt sind `import()`, Templates mit Tag und
-//! Funktionsdeklarationen mit Marke (Anhang B.3.1).
+//! Module ([`compile_module`]) legen alle Bindungen auf oberster Ebene in
+//! einen Kontext, mit dem ihr Code beginnt; die Umgebung des Moduls legt
+//! das Modul selbst an (Modul `module`). Eine Import-Bindung hält dort eine
+//! interne Zelle, die auf den Platz im Kontext des anderen Moduls zeigt,
+//! oder ein Namensraum-Objekt und wird mit [`Op::LdaImport`] gelesen.
+//!
+//! Noch nicht unterstützt sind `import()`, Top-Level-`await`, Templates mit
+//! Tag und Funktionsdeklarationen mit Marke (Anhang B.3.1).
 //!
 //! Klassen: Eine Klasse hat einen eigenen Bereich mit ihrem Namen als
 //! Konstante, die bis zum Ende der Klasse in der TDZ bleibt (classEnv). Darin
@@ -449,6 +455,7 @@ enum ConstantKey {
     BigInt(BigInt),
     String(Vec<u16>),
     Name(Vec<u16>),
+    Module,
 }
 
 /// Eine Referenz (Abschnitt 6.2.5) zwischen Auswerten und Schreiben.
@@ -694,6 +701,144 @@ pub fn compile_script(ast: &Ast) -> Result<Script> {
         lexical_names,
         functions,
         hoisted_functions,
+    })
+}
+
+/// Ein übersetztes Modul mit dem, was InitializeEnvironment (Abschnitt
+/// 16.2.1.7.3.1) braucht. Alle Bindungen auf oberster Ebene liegen in
+/// Plätzen des Kontexts des Moduls (Module Environment Record), denn Import-
+/// Bindungen anderer Module verweisen auf sie. Der Code beginnt mit diesem
+/// Kontext als aktuellem und `this` als *undefined*.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Module {
+    pub code: Code,
+    /// Die Plätze im Kontext des Moduls, ohne den für den äußeren.
+    pub slots: u32,
+    /// Die Bindungen auf oberster Ebene mit ihren Plätzen, in der
+    /// Reihenfolge des Quelltexts.
+    pub bindings: Vec<ModuleBinding>,
+}
+
+/// Eine Bindung auf oberster Ebene eines Moduls.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModuleBinding {
+    /// Der Name; `*default*` für den Wert von `export default` ohne eigenen
+    /// Namen. Kein Bezeichner kann so heißen.
+    pub name: Vec<u16>,
+    pub slot: u32,
+    pub init: ModuleInit,
+}
+
+/// Womit InitializeEnvironment eine Bindung eines Moduls anlegt.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ModuleInit {
+    /// Eine Import-Bindung; sie verweist auf die Bindung, die
+    /// ResolveExport findet, oder hält ein Namensraum-Objekt.
+    Import,
+    /// Aus `var`: *undefined*.
+    Var,
+    /// Lexikalisch, auch `*default*`: die Lücke bis zu ihrer Auswertung.
+    Lexical,
+    /// Eine Funktionsdeklaration: ein neues Funktionsobjekt mit dem Kontext
+    /// des Moduls als [[Environment]], das wie die Funktion heißt, ohne
+    /// Namen `default`.
+    Function(FunctionTemplate),
+}
+
+/// Der Name der Bindung für `export default` ohne eigenen Namen.
+pub const DEFAULT_BINDING: &str = "*default*";
+
+/// Eine Bindung auf oberster Ebene eines Moduls beim Übersetzen; `None` als
+/// Name ist `*default*`.
+enum TopLevel {
+    Import,
+    Var,
+    Lexical { constant: bool, end: usize },
+    Function(FunctionId),
+}
+
+/// Übersetzt ein Modul (Abschnitt 16.2). Top-Level-`await` kann der
+/// Übersetzer noch nicht.
+pub fn compile_module(ast: &Ast) -> Result<Module> {
+    if !ast.is_module() {
+        return Err(CompileError::Unsupported(0));
+    }
+    let captures = ast.captures().script();
+    let mut compiler = Compiler::new(ast, true, Rc::default(), captures);
+    // `this`, stets *undefined*, und ein zweites Register wie bei Scripts.
+    compiler.allocate()?;
+    compiler.allocate()?;
+    let body = ast.body();
+    let mut found: Vec<(Option<Atom>, TopLevel)> = Vec::new();
+    for &item in body {
+        compiler.module_bindings(item, &mut found)?;
+    }
+    let mut scope = BlockScope::default();
+    let mut slots = Vec::with_capacity(found.len());
+    for (name, kind) in &found {
+        let slot = scope.add_slot()?;
+        slots.push(slot);
+        let Some(atom) = *name else {
+            continue;
+        };
+        let location = Location::Context { depth: 0, slot };
+        let binding = match *kind {
+            TopLevel::Import => LocalBinding::initialized(location, BindingKind::Import),
+            TopLevel::Var | TopLevel::Function(_) => {
+                LocalBinding::initialized(location, BindingKind::Mutable)
+            }
+            TopLevel::Lexical { constant, end } => LocalBinding {
+                location,
+                kind: if constant {
+                    BindingKind::Const
+                } else {
+                    BindingKind::Mutable
+                },
+                initialized_from: end,
+                in_switch: false,
+            },
+        };
+        scope.bindings.insert(atom, binding);
+    }
+    // Pfeilfunktionen und `eval` lesen `this` aus dem Kontext; der Platz
+    // bleibt *undefined*.
+    scope.this = Some(scope.add_slot()?);
+    compiler.scopes.push(scope);
+    let enclosing = compiler.enclosing();
+    let mut default_slot = None;
+    let mut bindings = Vec::with_capacity(found.len());
+    for ((name, kind), slot) in found.into_iter().zip(slots) {
+        let init = match kind {
+            TopLevel::Import => ModuleInit::Import,
+            TopLevel::Var => ModuleInit::Var,
+            TopLevel::Lexical { .. } => ModuleInit::Lexical,
+            TopLevel::Function(function) => ModuleInit::Function(FunctionTemplate {
+                function,
+                binds_name: false,
+                outer: Rc::clone(&enclosing),
+            }),
+        };
+        let name = match name {
+            Some(atom) => ast.atom(atom).to_vec(),
+            None => {
+                if !matches!(init, ModuleInit::Function(_)) {
+                    default_slot = Some(slot);
+                }
+                units(DEFAULT_BINDING)
+            }
+        };
+        bindings.push(ModuleBinding { name, slot, init });
+    }
+    for &item in body {
+        compiler.module_item(item, default_slot)?;
+    }
+    compiler.emit(Op::LdaUndefined, &[])?;
+    compiler.emit(Op::Return, &[])?;
+    let slots = compiler.scopes.first().map_or(0, |scope| scope.slots);
+    Ok(Module {
+        code: compiler.finish(),
+        slots,
+        bindings,
     })
 }
 
@@ -1599,6 +1744,7 @@ impl<'a> Compiler<'a> {
             | Constant::EvalSite(_)
             | Constant::EvalInstantiation(_)
             | Constant::EvalBinding(_) => None,
+            Constant::Module => Some(ConstantKey::Module),
         };
         if let Some(&index) = key.as_ref().and_then(|key| self.constant_index.get(key)) {
             return Ok(index);
@@ -1671,6 +1817,117 @@ impl<'a> Compiler<'a> {
         }
         functions.reverse();
         Ok(functions)
+    }
+
+    /// Die Bindungen, die ein *ModuleItem* auf oberster Ebene anlegt
+    /// (InitializeEnvironment, Abschnitt 16.2.1.7.3.1): Import-Bindungen,
+    /// `var` ohne Wiederholungen, Funktionen und lexikalische
+    /// Deklarationen, auch hinter `export`. Doppelte Namen sind frühe
+    /// Fehler, außer bei `var`.
+    fn module_bindings(
+        &self,
+        item: NodeId,
+        found: &mut Vec<(Option<Atom>, TopLevel)>,
+    ) -> Result<()> {
+        let declaration = match *self.ast.node(item) {
+            Node::Import { specifiers, .. } => {
+                for &specifier in self.ast.list(specifiers) {
+                    let local = match *self.ast.node(specifier) {
+                        Node::ImportDefault(local) | Node::ImportNamespace(local) => local,
+                        Node::ImportSpecifier { local, .. } => local,
+                        _ => return Err(self.unsupported(specifier)),
+                    };
+                    found.push((Some(local), TopLevel::Import));
+                }
+                return Ok(());
+            }
+            Node::ExportNamed { .. } | Node::ExportAll { .. } => return Ok(()),
+            Node::ExportDeclaration(declaration) => declaration,
+            Node::ExportDefault(declaration) => {
+                match *self.ast.node(declaration) {
+                    Node::FunctionDeclaration(id) => {
+                        let name = self.ast.function(id).and_then(|function| function.name);
+                        found.push((name, TopLevel::Function(id)));
+                    }
+                    Node::ClassDeclaration(id) => {
+                        let name = self.ast.class(id).and_then(|class| class.name);
+                        let end = self.ast.range(declaration).end;
+                        let constant = false;
+                        found.push((name, TopLevel::Lexical { constant, end }));
+                    }
+                    // `export default` mit einem Ausdruck bindet
+                    // `*default*` veränderlich (IsConstantDeclaration).
+                    _ => {
+                        let end = self.ast.range(item).end;
+                        let constant = false;
+                        found.push((None, TopLevel::Lexical { constant, end }));
+                    }
+                }
+                return Ok(());
+            }
+            _ => item,
+        };
+        if let Node::FunctionDeclaration(id) = *self.ast.node(declaration) {
+            let name = self
+                .ast
+                .function(id)
+                .and_then(|function| function.name)
+                .ok_or_else(|| self.unsupported(declaration))?;
+            found.push((Some(name), TopLevel::Function(id)));
+            return Ok(());
+        }
+        let mut vars = Vec::new();
+        self.var_declared_names(declaration, &mut vars)?;
+        for atom in vars {
+            let known = found
+                .iter()
+                .any(|(name, kind)| *name == Some(atom) && matches!(kind, TopLevel::Var));
+            if !known {
+                found.push((Some(atom), TopLevel::Var));
+            }
+        }
+        for (atom, constant, end) in self.lexical_declarations(declaration)? {
+            found.push((Some(atom), TopLevel::Lexical { constant, end }));
+        }
+        Ok(())
+    }
+
+    /// Ein *ModuleItem* (Abschnitt 16.2): `import` und `export` ohne
+    /// Deklaration tun hier nichts, Funktionsdeklarationen sind schon
+    /// angelegt. `export default` ohne eigenen Namen legt seinen Wert in den
+    /// Platz von `*default*`, eine anonyme Funktion oder Klasse mit dem
+    /// Namen `default`.
+    fn module_item(&mut self, item: NodeId, default_slot: Option<u32>) -> Result<()> {
+        match *self.ast.node(item) {
+            Node::Import { .. } | Node::ExportNamed { .. } | Node::ExportAll { .. } => Ok(()),
+            Node::ExportDeclaration(declaration) => self.top_level_item(declaration),
+            Node::ExportDefault(declaration) => {
+                let class = match *self.ast.node(declaration) {
+                    Node::FunctionDeclaration(_) => return Ok(()),
+                    Node::ClassDeclaration(id) => {
+                        if self.ast.class(id).is_some_and(|class| class.name.is_some()) {
+                            return self.class_declaration(declaration, id);
+                        }
+                        Some(id)
+                    }
+                    _ => None,
+                };
+                let Some(slot) = default_slot else {
+                    return Err(self.unsupported(item));
+                };
+                self.position(declaration)?;
+                let name = units("default");
+                match class {
+                    Some(id) => {
+                        self.class_definition(declaration, id, ClosureName::Static(&name))?;
+                    }
+                    None => self.named_expression(declaration, &name)?,
+                }
+                self.position(item)?;
+                self.emit(Op::StaContext, &[0, i64::from(slot)])
+            }
+            _ => self.top_level_item(item),
+        }
     }
 
     /// Eine Anweisung auf oberster Ebene eines Scripts oder Funktionsrumpfs.
@@ -3914,6 +4171,11 @@ impl<'a> Compiler<'a> {
             Node::SuperCall(arguments) => self.super_call(node, arguments),
             Node::Yield { argument, delegate } => self.yield_expression(node, argument, delegate),
             Node::Await(argument) => self.await_expression(node, argument),
+            // Der Parser lässt `import.meta` nur in Modulen zu.
+            Node::ImportMeta => {
+                let module = self.constant(Constant::Module)?;
+                self.emit(Op::ImportMeta, &[module])
+            }
             _ => Err(self.unsupported(node)),
         }
     }
@@ -5273,6 +5535,10 @@ impl<'a> Compiler<'a> {
             }
             Location::Context { .. } => {
                 self.load_location(binding.location)?;
+                if binding.kind == BindingKind::Import {
+                    let name = self.name(atom)?;
+                    return self.emit(Op::LdaImport, &[name]);
+                }
                 if check {
                     let name = self.name(atom)?;
                     self.emit(Op::ThrowIfHole, &[name])?;
@@ -5286,6 +5552,12 @@ impl<'a> Compiler<'a> {
     /// (SetMutableBinding, Abschnitt 9.1.1.1.5): erst die TDZ, dann die
     /// Konstante.
     fn store_local(&mut self, binding: LocalBinding, atom: Atom, position: usize) -> Result<()> {
+        // SetMutableBinding einer Import-Bindung: Sie ist unveränderlich und
+        // gilt als initialisiert, Modulcode ist strikt.
+        if binding.kind == BindingKind::Import {
+            let name = self.name(atom)?;
+            return self.emit(Op::ThrowConstAssignment, &[name]);
+        }
         if binding.kind == BindingKind::FunctionName {
             if self.is_strict() {
                 let name = self.name(atom)?;

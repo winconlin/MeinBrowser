@@ -197,6 +197,12 @@ pub struct Agent {
     pub(crate) regexps: crate::regexp::cache::Programs,
     /// [[CanBlock]] und die Warter von `Atomics.waitAsync`.
     pub(crate) waiting: crate::waiting::Waiting,
+    /// Die Module Records nach ihrer Nummer (siehe `crate::module`).
+    pub(crate) modules: Vec<crate::module::ModuleRecord>,
+    /// Die GraphLoadingState Records, die gerade laden, nach ihrer Nummer.
+    pub(crate) module_loads: BTreeMap<u64, crate::module::loading::LoadingState>,
+    /// Die Nummer des nächsten GraphLoadingState Record.
+    pub(crate) next_module_load: u64,
 }
 
 impl Agent {
@@ -230,6 +236,9 @@ impl Agent {
             collection_hasher: RandomState::new(),
             regexps: crate::regexp::cache::Programs::default(),
             waiting: crate::waiting::Waiting::default(),
+            modules: Vec::new(),
+            module_loads: BTreeMap::new(),
+            next_module_load: 0,
         };
         agent.scope(|agent, scope| -> Result<(), OutOfMemory> {
             for symbol in WellKnownSymbol::ALL {
@@ -542,7 +551,7 @@ impl Agent {
 
     /// Wirft einen Fehler der Art `kind` (ThrowCompletion, Abschnitt
     /// 6.2.4.2) und gibt [`Abrupt::Throw`] für `Err` zurück.
-    pub(crate) fn throw_error(&mut self, kind: ErrorKind) -> Abrupt {
+    pub fn throw_error(&mut self, kind: ErrorKind) -> Abrupt {
         self.set_exception(Pending::Error(kind, None));
         Abrupt::Throw
     }

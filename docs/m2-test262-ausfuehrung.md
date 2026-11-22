@@ -19,9 +19,12 @@ cargo run --locked -p testdata
 cargo test --locked -p mb-js script::test262 -- --nocapture
 ```
 
-Die Auswahl steht in `crates/mb-js/src/script/test262/runtime.txt`: 188 Dateien,
-davon 173 positive und 15 mit erwartetem Laufzeitfehler. Sie ergeben 347
-Sprachvarianten und mit zwei GC-Modi 694 Ausführungen. Geprüft werden unter
+Die Auswahl steht in `crates/mb-js/src/script/test262/runtime.txt`: 202 Dateien,
+davon 184 positive und 18 mit erwartetem Fehler beim Ausführen oder beim
+Laden eines Moduls. Sie ergeben 361 Sprachvarianten und mit zwei GC-Modi 722
+Ausführungen. Seit Schritt 9c-1 sind 14 Module darunter, mit Live-Bindungen,
+Namensräumen, Zyklen, `import.meta`, JSON-Modulen und Fehlern beim Laden,
+Linken und Auswerten. Geprüft werden unter
 anderem Exponentiation, `??`, logische Zuweisungen, Pfeilfunktionen, Closures,
 Vorgabewerte, `arguments`, Methoden, Schleifenbindungen, TDZ-Fehler, `try`
 mit `catch` und `finally`, `new` mit [[Construct]] und `new.target`,
@@ -40,7 +43,9 @@ es eine nicht strikte und eine strikt ausgeführte Variante; `onlyStrict`,
 `noStrict` und `raw` folgen den Testmetadaten. `raw` bleibt unverändert und
 lädt keinen Harness. Harness-Scripts bleiben nicht strikt; der strikten
 Testquelle wird ausschließlich `"use strict";` mit Zeilenumbruch vorangestellt.
-`includes` werden in ihrer Reihenfolge vor dem Test ausgewertet.
+`includes` werden in ihrer Reihenfolge vor dem Test ausgewertet. Ein Test mit
+dem Flag `module` läuft genau einmal als Modul, ohne Zusatz am Anfang (siehe
+[unten](#module)).
 
 ## Harness und heutige Grenzen
 
@@ -75,9 +80,10 @@ Worker, also Agents in eigenen Fäden; bis dahin scheitern die Tests unter
 Die Flags `CanBlockIsFalse` und `CanBlockIsTrue` setzen [[CanBlock]] des
 Agents mit `Agent::set_can_block`; ohne eines davon darf der Agent
 blockieren, wie in einer Shell. Beide zusammen sind ein Fehler der
-Metadaten. Module, `locale` und weitere Flags werden als nicht unterstützt
+Metadaten. `locale` und weitere Flags werden als nicht unterstützt
 abgelehnt, ebenso `async` zusammen mit `raw`, denn ohne Harness gäbe es kein
-`$DONE`, das das Ergebnis meldet. Vorschlags-Features
+`$DONE`, das das Ergebnis meldet, und `module` zusammen mit `noStrict` oder
+`onlyStrict`. Vorschlags-Features
 aus `features.txt` sind nicht zugelassen. Der Metadatenleser unterstützt nur
 den hier benötigten Teil des Test262-Formats, keinen allgemeinen YAML-Parser;
 nicht unterstützte Formen der ausgewerteten Felder werden abgelehnt.
@@ -89,6 +95,36 @@ Sprachumfang, auch im Belastungsmodus. Die Bestehensquoten für
 übrige `built-ins/` und `annexB/` gibt es noch keine, und keine der Zahlen
 ist ein vollständiger ECMAScript-Konformitätsnachweis. Die Syntaxzahlen werden getrennt geführt;
 Syntax-Negativtests dürfen nicht in diese Auswahl.
+
+## Module
+
+Seit Schritt 9c-1 laufen Tests mit dem Flag `module`. Der Läufer wertet
+zuerst die Harness als Scripts aus, dann ruft er ParseModule,
+LoadRequestedModules, Link und Evaluate für den Test auf, alles mit
+derselben Quote, und leert danach wie bei einem Script die Warteschlange der
+Jobs. Ein früher Fehler im Test ist das Ergebnis `Syntax`. Ein Fehler beim
+Laden, also ein früher Fehler in einer Hilfsdatei, eine fehlende Datei oder
+ein nicht unterstütztes Attribut, und ein Fehler beim Linken, etwa ein
+Import, den ResolveExport nicht oder nicht eindeutig auflöst, gehören zur
+Phase `resolution` (`negative: phase: resolution`). Ein Fehler beim Auswerten
+lehnt das Promise von Evaluate ab und zählt wie ein Laufzeitfehler eines
+Scripts.
+
+Der Host lädt Hilfsdateien so, wie es `INTERPRETING.md` unter „Modules“
+beschreibt: Ein Bezeichner beginnt mit `./`, der Rest ist der Name einer
+Datei im Verzeichnis des Tests. Andere Bezeichner beenden das Laden mit
+einem TypeError, ebenso eine fehlende Datei; ein früher Fehler in einer
+Hilfsdatei ist ein SyntaxError. Ohne Attribut wird die Datei ein Modul aus
+Quelltext, mit `type: "json"` ein JSON-Modul (ParseJSONModule); einen
+anderen Typ lehnt der Host mit einem TypeError ab, einen anderen Schlüssel
+als `type` schon die Engine mit einem SyntaxError, weil der Host nur diesen
+unterstützt (HostGetSupportedImportAttributes). Jede Datei gibt je Typ einmal
+ein Modul, auch die des Tests selbst, sodass ein Test sich selbst importieren
+kann. Kann der Übersetzer eine Hilfsdatei nicht, zählt der Test als
+`Unsupported`. `import.meta` hat vom Host keine Eigenschaften.
+
+Top-Level-`await` und `import()` kommen mit Teil 9c-2; bis dahin meldet der
+Übersetzer sie als nicht unterstützt.
 
 ## Jobs und asynchrone Tests
 
@@ -130,6 +166,7 @@ anbietet. Auf vier Kernen dauert der Lauf im Debug-Build knapp vier Minuten.
 Die Datei `crates/mb-js/src/script/test262/erwartete-fehlschlaege.txt` nennt
 jede Variante, die noch nicht besteht: eine Zeile je Datei, wenn alle ihre
 Varianten scheitern, sonst eine Zeile je Variante mit `sloppy` oder `strict`.
+Ein Modul hat nur die Variante `module`, also immer eine Zeile ohne Modus.
 Ihre Kopfzeile nennt die Zahlen. Der Test vergleicht den ganzen Text, also
 lassen ein Rückschritt, ein unerwarteter Erfolg und geänderte Zahlen ihn
 scheitern. Er nennt dann jede abweichende Variante und schreibt die neue
@@ -137,12 +174,12 @@ Fassung nach `target/test262/erwartete-fehlschlaege.txt`. Die Datei wird
 nicht von Hand gepflegt: Wer die Abweichungen geprüft hat, übernimmt die neue
 Fassung in den PR. So zeigt jeder PR, welche Tests er besteht oder verliert.
 
-Dateien, deren Metadaten der Leser ablehnt, scheitern als Ganzes, bisher die
-mit `module`. Eine Panik der Engine lässt den Test immer scheitern,
+Dateien, deren Metadaten der Leser ablehnt, scheitern als Ganzes; bis
+Schritt 9c-1 waren das die mit `module`, jetzt keine mehr. Eine Panik der Engine lässt den Test immer scheitern,
 sie kann nicht erwartet werden. Jede Datei der festen Auswahl muss auch hier
 bestehen.
 
-Mit diesem Stand bestehen 22.012 von 23.296 ausgeführten Dateien und 41.993
+Mit diesem Stand bestehen 22.414 von 23.296 ausgeführten Dateien und 42.395
 von 43.794 Varianten. Seit Schritt 7 gibt es async-Funktionen, `for await`
 und async-Generatoren, seit Schritt 8a `Object` mit allen Funktionen,
 `Object.prototype` und `Function.prototype` vollständig und gebundene
@@ -160,7 +197,8 @@ typisierten Arrays, seit Schritt 8k `WeakMap`, `WeakSet`, `WeakRef` und
 und `statements/class/`. Seit Schritt 9a gibt es `eval`, direkt und
 indirekt, und die Konstruktoren `Function`, `GeneratorFunction`,
 `AsyncFunction` und `AsyncGeneratorFunction`, seit Schritt 9b `with` mit
-@@unscopables. Seit
+@@unscopables und seit Schritt 9c-1 Module mit `import.meta` und
+JSON-Modulen. Seit
 Schritt 8c endet keine Datei
 der Harness mehr an `Math.pow`. Bis Schritt 9a fehlte den meisten Dateien,
 die scheiterten, `eval`: Der Name stand im Quelltext aller 520 Dateien, die
@@ -178,6 +216,13 @@ Mit `with` bestehen 282 Dateien mehr: 182 unter `statements/`, davon alle
 davon 44 unter `compound-assignment/`, fünf unter `identifier-resolution/`,
 drei unter `eval-code/` und je eine unter `destructuring/` und `comments/`.
 Keine Datei scheitert neu.
+Mit den Modulen bestehen 402 Dateien mehr, alle mit dem Flag `module`: 351
+unter `module-code/`, 22 unter `expressions/` (davon 17 unter
+`import.meta/`), 15 unter `import/` (darunter elf JSON-Module), fünf unter
+`statements/`, vier unter `eval-code/`, drei unter `export/` und je eine
+unter `reserved-words/` und `comments/`. Davon erwarten 194 einen frühen
+Fehler, 33 einen beim Laden oder Linken und vier einen beim Auswerten; 171
+müssen normal enden. Keine Datei scheitert neu.
 Vor Schritt 8g scheiterten weitere 130 Dateien mit `Test262Error`, in denen
 String-Objekte oder Methoden von `String` stehen: Ohne
 `String.prototype.valueOf` und `toString` wurde ein String-Objekt mit
@@ -218,11 +263,13 @@ Unterklassen: `subclass-WeakMap.js`, `subclass-WeakRef.js` und
 `statements/class/subclass-builtins/` und je `regular-subclassing.js` und
 `super-must-be-called.js` unter
 `statements/class/subclass/builtin-objects/WeakMap/` und `WeakSet/`.
-Es scheitern noch 1.284 Dateien. In 544 davon kann der Übersetzer ein
-Konstrukt noch nicht (`Unsupported`); nach einer Suche in den Quelltexten
-nennen 392 `import()` (elf davon auch `with`), 108 `using` oder
-`await using`, und die übrigen 44 nutzen Templates mit Tag. 698 Dateien
-haben das Flag `module`, darunter alle mit `async` und `module`. 40 Dateien
+Es scheitern noch 882 Dateien. In 840 davon kann der Übersetzer ein
+Konstrukt noch nicht (`Unsupported`). 544 sind Scripts: Nach einer Suche in
+den Quelltexten nennen 392 `import()` (elf davon auch `with`), 108 `using`
+oder `await using`, und die übrigen 44 nutzen Templates mit Tag. 296 sind
+Module: 254 haben das Feature `top-level-await`, 35 weitere `dynamic-import`
+und sieben `explicit-resource-management`; die beiden ersten kommen mit Teil
+9c-2. 40 Dateien
 erschöpfen die Arbeitsschritte: 32 `tco-*.js`, die sich im strikten Modus
 100.000-mal als Endaufruf aufrufen (siehe [unten](#anschluss-für-claude)),
 `comments/S7.4_A5.js` und `S7.4_A6.js` und vier unter `literals/regexp/`
@@ -240,8 +287,7 @@ Fehlschläge gibt der Test mit `--nocapture` aus:
 
 | Varianten | Grund |
 | ---: | --- |
-| 1.053 | Der Übersetzer kann ein Konstrukt noch nicht (`Unsupported`) |
-| 698 | Flag `module` |
+| 1.349 | Der Übersetzer kann ein Konstrukt noch nicht (`Unsupported`), davon 296 in Modulen |
 | 48 | Die Arbeitsschritte sind erschöpft |
 | 2 | TypeError im Test: die beiden Dateien mit dem Feature `caller` |
 
@@ -274,7 +320,7 @@ Von 18.560 Dateien laufen 18.357. Übersprungen werden 203 mit Vorschlägen aus
 `ArrayBuffer/`, elf unter `DataView/`, neun unter `Atomics/`, acht unter `TypedArray/` und je zwei
 unter `TypedArrayConstructors/` und `Uint8Array/`, 35 unter `Error/` mit
 `error-stack-accessor` und 18 unter `Iterator/prototype/join/` mit
-`Iterator.prototype.join`. Es bestehen 17.542 Dateien und 34.823 von 36.431
+`Iterator.prototype.join`. Es bestehen 17.543 Dateien und 34.824 von 36.431
 Varianten:
 
 | Teil | Dateien | Varianten |
@@ -303,7 +349,7 @@ Varianten:
 | `Number/` | 340 von 340 | 680 von 680 |
 | `Object/` | 3.405 von 3.411 | 6.790 von 6.802 |
 | `Promise/` | 643 von 643 | 1.280 von 1.280 |
-| `Proxy/` | 310 von 311 | 606 von 607 |
+| `Proxy/` | 311 von 311 | 607 von 607 |
 | `Reflect/` | 153 von 153 | 306 von 306 |
 | `RegExp/` | 1.354 von 1.879 | 2.706 von 3.756 |
 | `RegExpStringIteratorPrototype/` | 17 von 17 | 34 von 34 |
@@ -362,7 +408,9 @@ scheitert neu. Mit Schritt 9b bestehen die zwölf Dateien, die `with`
 brauchten und nur ohne strikten Modus laufen: neun unter `Proxy/has/`,
 `String/S15.5.5.1_A4_T1.js` und die beiden `infinity-with-detached-buffer.js`
 unter `TypedArrayConstructors/internals/HasProperty/`. Auch dabei scheitert
-keine Datei neu. Jede der 815 Dateien, die noch scheitern, ist einem Grund
+keine Datei neu. Mit Schritt 9c-1 besteht auch die einzige Datei mit dem
+Flag `module`, `Proxy/preventExtensions/trap-is-undefined-target-is-proxy.js`.
+Jede der 814 Dateien, die noch scheitern, ist einem Grund
 zugeordnet, nach dem Grund, den der Läufer meldet, und den Namen in der
 Datei:
 
@@ -376,7 +424,6 @@ Datei:
 | 4 | Templates mit Tag unter `String/raw/` (`Unsupported`) |
 | 4 | Die globalen Funktionen für URIs fehlen: `15.2.3.3-4-9.js`, `-10.js` und `-11.js` unter `Object/getOwnPropertyDescriptor/` lesen `decodeURI`, `decodeURIComponent` und `encodeURIComponent`, `Object/getOwnPropertyNames/15.2.3.4-4-1.js` erwartet ihre Namen am globalen Objekt |
 | 1 | `Function/prototype/toString/line-terminator-normalisation-CR.js`: ein ReferenceError, obwohl die Datei keinen fehlenden Namen nennt |
-| 1 | Flag `module`: `Proxy/preventExtensions/trap-is-undefined-target-is-proxy.js` |
 
 Vor Schritt 9a nannten von den 35 Dateien mit einem ReferenceError im Test
 außerhalb von Kommentaren 34 `eval`. Vor dem letzten Teil von Schritt 8 waren es
@@ -569,7 +616,8 @@ Dateien, ebenso einzeln zugeordnet:
 | 1 | `new Function()` in `Reflect/apply/arguments-list-is-not-array-like-but-still-valid.js` |
 
 Seit Schritt 9a bestehen die acht mit `eval` und `Function`, seit Schritt 9b
-die neun mit `with`; es scheitert nur noch die eine mit `module`.
+die neun mit `with` und seit Schritt 9c-1 die mit `module`; damit bestehen
+die Teile aus Welle 8f ganz.
 
 Unter `String/` aus Welle 8g scheiterten vor Schritt 9a 28 Dateien, der
 Teil `StringIteratorPrototype/` besteht ganz. Vor Teil 2 der Welle waren es 204,
@@ -685,7 +733,6 @@ Die Gründe aller Varianten:
 | 33 | TypeError im Test: das Feature `caller`, Temporal und die fehlenden Funktionen für URIs |
 | 12 | `Test262Error`: Eine Assertion schlug fehl |
 | 2 | ReferenceError im Test |
-| 1 | Flag `module` |
 
 ## Fehler und Ressourcen
 
@@ -731,8 +778,10 @@ aufzurufenden Gettern.
 ## Anschluss für Claude
 
 1. Die übrigen Teile der Host-API aus `INTERPRETING.md` mit den Teilen der
-   Engine ergänzen, die sie brauchen, später Module. Neue Anforderungen im
-   Metadatenleser ausdrücklich ergänzen.
+   Engine ergänzen, die sie brauchen. Module laufen seit Schritt 9c-1; mit
+   `import()` (Teil 9c-2) lädt der Host Module auch aus Scripts, dann mit
+   dem Script als *referrer*. Neue Anforderungen im Metadatenleser
+   ausdrücklich ergänzen.
 2. Neue Fälle mit Pfad in die feste Liste aufnehmen, wenn sie auch im
    Belastungsmodus laufen sollen. Für die feste Liste gibt es keine
    Ausnahmeliste; die erwarteten Fehlschläge gelten nur für den Lauf über

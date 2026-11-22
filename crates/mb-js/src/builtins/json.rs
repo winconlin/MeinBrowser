@@ -110,6 +110,21 @@ fn parse_json(agent: &mut Agent, text: &[u16]) -> Completion<Tree> {
     }
 }
 
+/// Der Wert des JSON-Texts `source` mit den Prototypen aus `realm`, wie
+/// Call(%JSON.parse%, *undefined*, « source ») ohne Reviver; für
+/// ParseJSONModule (Abschnitt 16.2.1.8.2). Ungültiger Text wirft einen
+/// SyntaxError.
+pub(crate) fn parse_text<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    realm: RealmId,
+    source: &[u16],
+) -> Completion<Local<'s>> {
+    let parsed = parse_json(agent, source)?;
+    let (value, _) = materialize(agent, scope, realm, &parsed, false)?;
+    Ok(value)
+}
+
 /// JSON.isRawJSON ( O ) (Abschnitt 25.5.1).
 fn is_raw_json<'s>(
     agent: &mut Agent,

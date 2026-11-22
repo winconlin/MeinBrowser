@@ -2,11 +2,13 @@
 //! der Browser, in den Tests der Läufer für Test262.
 //!
 //! Die Hooks aus Anhang D.1 werden Methoden des Traits [`Host`], sobald die
-//! Engine die Teile hat, die sie aufrufen: HostLoadImportedModule mit den
-//! Modulen, HostEnsureCanCompileStrings mit `eval`. Bisher gibt es den
-//! Schritt aus InitializeHostDefinedRealm (Abschnitt 9.3.1), in dem der
-//! Host dem globalen Objekt eigene Eigenschaften gibt, und
-//! HostPromiseRejectionTracker (Abschnitt 27.5.1.9). Dazu kommt, was die
+//! Engine die Teile hat, die sie aufrufen. Bisher gibt es den Schritt aus
+//! InitializeHostDefinedRealm (Abschnitt 9.3.1), in dem der Host dem
+//! globalen Objekt eigene Eigenschaften gibt, HostPromiseRejectionTracker
+//! (Abschnitt 27.5.1.9) und für Module HostLoadImportedModule und
+//! HostGetSupportedImportAttributes (Abschnitte 16.2.1.10 und 16.2.1.12.1)
+//! sowie HostGetImportMetaProperties und HostFinalizeImportMeta (Abschnitte
+//! 13.3.12.1.1 und 13.3.12.1.2). Dazu kommt, was die
 //! Spezifikation für `Date` der Umgebung überlässt: die aktuelle Zeit und
 //! die Zeitzone (SystemTimeZoneIdentifier, Abschnitt 21.4.1.24). Ohne Host
 //! gelten dieselben Vorgaben wie für einen Host, der sie nicht ändert.
@@ -28,9 +30,11 @@
 
 use std::any::Any;
 
-use crate::agent::{Agent, Completion};
+use crate::agent::{Agent, Completion, ErrorKind};
 use crate::date::{self, TimeZone};
 use crate::heap::{Local, Scope};
+use crate::key::PropertyKey;
+use crate::module::{LoadPayload, ModuleId, ModuleRequest, Referrer};
 use crate::realm::RealmId;
 
 /// Wann HostPromiseRejectionTracker gerufen wird (Abschnitt 27.5.1.9).
@@ -91,6 +95,58 @@ pub trait Host: Any {
     /// Abstand wie *"+01:00"*.
     fn time_zone(&self) -> TimeZone {
         TimeZone::Utc
+    }
+    /// HostLoadImportedModule (Abschnitt 16.2.1.10): Der Host findet das
+    /// Modul zu `request` für `referrer`, legt es bei Bedarf mit
+    /// [`Agent::parse_module`] oder [`Agent::parse_json_module`] an und ruft
+    /// dann, sofort oder später, [`Agent::finish_loading_imported_module`]
+    /// mit `payload` und dem Modul oder einer Ausnahme. Für dieselbe Anfrage
+    /// desselben `referrer` muss er stets dasselbe Modul liefern. Die
+    /// Vorgabe kennt kein Modul und beendet das Laden mit einem TypeError.
+    fn load_imported_module(
+        &self,
+        agent: &mut Agent,
+        scope: &Scope,
+        referrer: Referrer,
+        request: &ModuleRequest,
+        payload: LoadPayload,
+    ) -> Completion<()> {
+        let error = agent.throw_error(ErrorKind::TypeError);
+        agent.finish_loading_imported_module(scope, referrer, request, payload, Err(error))
+    }
+
+    /// Ob `key` in HostGetSupportedImportAttributes (Abschnitt 16.2.1.12.1)
+    /// steht. Die Vorgabe kennt keinen Schlüssel; dann scheitert jedes
+    /// `import` mit `with { … }` beim Laden mit einem SyntaxError.
+    fn supports_import_attribute(&self, key: &[u16]) -> bool {
+        let _ = key;
+        false
+    }
+
+    /// HostGetImportMetaProperties (Abschnitt 13.3.12.1.1): die
+    /// Eigenschaften, mit denen `import.meta` des Moduls beginnt. Die
+    /// Vorgabe hat keine.
+    fn import_meta_properties<'s>(
+        &self,
+        agent: &mut Agent,
+        scope: &'s Scope,
+        module: ModuleId,
+    ) -> Completion<Vec<(PropertyKey<'s>, Local<'s>)>> {
+        let _ = (agent, scope, module);
+        Ok(Vec::new())
+    }
+
+    /// HostFinalizeImportMeta (Abschnitt 13.3.12.1.2) für das neue Objekt
+    /// `meta` des Moduls. Die Vorgabe tut nichts.
+    fn finalize_import_meta(
+        &self,
+        agent: &mut Agent,
+        scope: &Scope,
+        meta: Local<'_>,
+        module: ModuleId,
+    ) -> Completion<()> {
+        let _ = (agent, scope, meta, module);
+        Ok(())
     }
 }
 

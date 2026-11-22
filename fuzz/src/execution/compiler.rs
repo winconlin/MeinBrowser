@@ -2,7 +2,9 @@
 //!
 //! The checks do not depend on the interpreter accepting malformed code:
 //! instruction coverage, operand encoding, bounds and branch targets are
-//! checked directly against the compiler's output.
+//! checked directly against the compiler's output. Each source is compiled
+//! as a script and, separately, as a module; modules are neither loaded
+//! nor linked.
 
 use std::collections::BTreeSet;
 use std::rc::Rc;
@@ -10,10 +12,10 @@ use std::rc::Rc;
 use mb_js::ast::{Ast, Node};
 use mb_js::bytecode::{Code, Constant, EvalSite, FunctionTemplate, Op, Operand};
 use mb_js::compiler::{
-    CompileError, EvalError, compile_default_constructor, compile_eval, compile_function,
-    compile_script,
+    CompileError, EvalError, ModuleInit, compile_default_constructor, compile_eval,
+    compile_function, compile_module, compile_script,
 };
-use mb_js::parser::{parse_eval, parse_script};
+use mb_js::parser::{parse_eval, parse_module, parse_script};
 
 /// The source is also compiled as the code of a direct `eval` at this many
 /// of its call sites, besides once as indirect `eval` code.
@@ -46,6 +48,8 @@ struct Stats {
     evals: usize,
     eval_conflicts: usize,
     unsupported_evals: usize,
+    import_loads: usize,
+    import_metas: usize,
 }
 
 impl Stats {
@@ -69,15 +73,28 @@ impl Stats {
         self.direct_eval_calls += other.direct_eval_calls;
         self.dynamic_names += other.dynamic_names;
         self.eval_declarations += other.eval_declarations;
+        self.import_loads += other.import_loads;
+        self.import_metas += other.import_metas;
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// What compiling the source as a module gave.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct ModuleStats {
+    compiled: bool,
+    bindings: usize,
+    imports: usize,
+    functions: usize,
+    import_loads: usize,
+    import_metas: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum Outcome {
     Syntax,
     Unsupported,
     TooLarge,
-    Compiled(Stats),
+    Compiled(Box<Stats>),
 }
 
 fn check_code(code: &Code, source_length: usize) -> Stats {
@@ -519,6 +536,28 @@ fn check_code(code: &Code, source_length: usize) -> Stats {
                 ));
                 stats.eval_declarations += 1;
             }
+            Op::LdaImport => {
+                assert!(
+                    matches!(
+                        code.constant(instruction.operand(0)),
+                        Some(Constant::Name(_))
+                    ),
+                    "an import binding names itself for its ReferenceError"
+                );
+                assert!(code.is_strict(), "import bindings only in module code");
+                stats.import_loads += 1;
+            }
+            Op::ImportMeta => {
+                assert!(
+                    matches!(
+                        code.constant(instruction.operand(0)),
+                        Some(Constant::Module)
+                    ),
+                    "import.meta asks for the module of its code"
+                );
+                assert!(code.is_strict(), "import.meta only in module code");
+                stats.import_metas += 1;
+            }
             Op::CreateClosure | Op::CreateClosureKeyed => {
                 assert!(matches!(
                     code.constant(instruction.operand(0)),
@@ -699,7 +738,7 @@ fn check_source(source: &[u16]) -> Outcome {
             eval_sites(&script.code, &mut sites);
             check_functions(&ast, source.len(), pending, &mut stats, &mut sites);
             check_evals(source, &sites, &mut stats);
-            Outcome::Compiled(stats)
+            Outcome::Compiled(Box::new(stats))
         }
         Err(error) => {
             if check_error(error, source.len()) {
@@ -709,6 +748,74 @@ fn check_source(source: &[u16]) -> Outcome {
             }
         }
     }
+}
+
+/// Compiles `source` as a module: its code is strict, each top-level
+/// binding has its own slot in the module context, and the declared
+/// functions compile with that context around them. Direct `eval` sites
+/// in modules are not followed.
+fn check_module(source: &[u16]) -> Option<ModuleStats> {
+    let ast = match parse_module(source) {
+        Ok(ast) => ast,
+        Err(error) => {
+            assert!(
+                error.position <= source.len(),
+                "module syntax error position"
+            );
+            return None;
+        }
+    };
+    assert!(ast.is_module() && ast.is_strict(), "module code is strict");
+    let module = match compile_module(&ast) {
+        Ok(module) => module,
+        Err(error) => {
+            check_error(error, source.len());
+            return Some(ModuleStats::default());
+        }
+    };
+    assert_eq!(
+        module.code.parameter_count(),
+        0,
+        "modules have no parameters"
+    );
+    assert!(module.code.is_strict(), "module code is strict");
+    let mut slots = BTreeSet::new();
+    let mut result = ModuleStats {
+        compiled: true,
+        bindings: module.bindings.len(),
+        ..ModuleStats::default()
+    };
+    let mut pending = Vec::new();
+    for binding in &module.bindings {
+        // Slot 0 links to the outer context, the last one holds `this`.
+        assert!(
+            binding.slot >= 1 && binding.slot < module.slots,
+            "a binding has a slot of the module context"
+        );
+        assert!(slots.insert(binding.slot), "each binding has its own slot");
+        assert!(!binding.name.is_empty(), "a binding has a name");
+        match &binding.init {
+            ModuleInit::Import => result.imports += 1,
+            ModuleInit::Function(template) => pending.push(template.clone()),
+            ModuleInit::Var | ModuleInit::Lexical => {}
+        }
+    }
+    let mut stats = check_code(&module.code, source.len());
+    pending.extend(
+        module
+            .code
+            .constants()
+            .iter()
+            .filter_map(|constant| match constant {
+                Constant::Function(template) => Some(template.clone()),
+                _ => None,
+            }),
+    );
+    check_functions(&ast, source.len(), pending, &mut stats, &mut Vec::new());
+    result.functions = stats.functions;
+    result.import_loads = stats.import_loads;
+    result.import_metas = stats.import_metas;
+    Some(result)
 }
 
 /// Collects the sites of possible direct `eval` calls in `code`.
@@ -781,6 +888,7 @@ fn check_evals(source: &[u16], sites: &[Rc<EvalSite>], stats: &mut Stats) {
 pub(super) fn exercise(data: &[u8]) {
     let utf8: Vec<u16> = String::from_utf8_lossy(data).encode_utf16().collect();
     check_source(&utf8);
+    check_module(&utf8);
     let utf16: Vec<u16> = data
         .as_chunks::<2>()
         .0
@@ -797,7 +905,7 @@ mod tests {
     fn checked(source: &str) -> Stats {
         let source: Vec<u16> = source.encode_utf16().collect();
         match check_source(&source) {
-            Outcome::Compiled(stats) => stats,
+            Outcome::Compiled(stats) => *stats,
             outcome => panic!("expected supported source, got {outcome:?}"),
         }
     }
@@ -846,6 +954,57 @@ mod tests {
         }
         assert!(checked("if(true){1;}else{2;}").forward_jumps > 0);
         assert_eq!(checked("").instructions, 2);
+    }
+
+    fn checked_module(source: &str) -> ModuleStats {
+        let source: Vec<u16> = source.encode_utf16().collect();
+        check_module(&source).expect("module parses")
+    }
+
+    #[test]
+    fn modules_compile_with_their_bindings_in_context_slots() {
+        let stats = checked_module(
+            "import d, { a as b } from './m.js'; import * as ns from './n.js' with { type: 'json' }; \
+             export var v = b; export let l = ns; export function f() { return d + import.meta.x; } \
+             export default class { m() { return b; } } export * from './o.js'; \
+             export { b as c }; d; (() => b)();",
+        );
+        assert!(stats.compiled);
+        assert_eq!(stats.imports, 3);
+        assert_eq!(stats.bindings, 7, "three imports, v, l, f and the default");
+        assert!(stats.functions >= 3, "f, the method and the arrow");
+        assert!(stats.import_loads >= 4, "b, ns, d and the captured b");
+        assert_eq!(stats.import_metas, 1);
+        let stats = checked_module("export default 1 + 2; import.meta;");
+        assert!(stats.compiled);
+        assert_eq!(stats.bindings, 1, "the default value");
+        assert_eq!(stats.import_metas, 1);
+        let stats = checked_module("export default function () {}");
+        assert_eq!(
+            (stats.bindings, stats.functions),
+            (1, 1),
+            "the default function"
+        );
+        // Top-level await waits for the next part of this step.
+        assert!(!checked_module("await 1;").compiled);
+        let source: Vec<u16> = "export default 1; export default 2;"
+            .encode_utf16()
+            .collect();
+        assert_eq!(
+            check_module(&source),
+            None,
+            "a duplicate export is an early error"
+        );
+        // Assigning an import throws when it runs.
+        let stats = checked_module("import x from 'm'; x = 1;");
+        assert!(stats.compiled);
+        assert_eq!((stats.imports, stats.import_loads), (1, 0));
+        let source: Vec<u16> = "import.meta;".encode_utf16().collect();
+        assert_eq!(
+            check_source(&source),
+            Outcome::Syntax,
+            "scripts have no import.meta"
+        );
     }
 
     #[test]

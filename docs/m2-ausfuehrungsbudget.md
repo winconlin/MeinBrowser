@@ -4,7 +4,7 @@ Dieses Paket setzt einen weiteren Teil der begrenzten Arbeit aus [Architektur, A
 
 ## API und Kosten
 
-`Agent::evaluate_script` erhält ohne aktive Hostquote ein endliches Standardbudget von `DEFAULT_EXECUTION_STEPS`, derzeit 1.000.000 Schritten. Auch ein aus Rust gestarteter Funktionsaufruf erhält eine Standardquote, wenn noch keine aktiv ist.
+`Agent::evaluate_script` erhält ohne aktive Hostquote ein endliches Standardbudget von `DEFAULT_EXECUTION_STEPS`, derzeit 1.000.000 Schritten. Auch ein aus Rust gestarteter Funktionsaufruf erhält eine Standardquote, wenn noch keine aktiv ist. Dasselbe gilt seit Schritt 9c-1 für `Agent::evaluate_module` und `Agent::parse_json_module`; jedes Modul läuft dabei als eigener Interpreterlauf. Laden, Linken, GetExportedNames und ResolveExport bezahlen keine Schritte: Ihre Arbeit wächst mit dem Graphen, den der Host liefert, und läuft in Schleifen ohne Rekursion.
 
 Eine eigene Quote lässt sich über `evaluate_script_within` oder `with_execution_budget` setzen. Die Typen `Budget`, `Cancel` und `Exhausted` werden aus dem vorhandenen eigenen Crate `mb-base` über `mb_js::agent` verfügbar gemacht. Es kommt keine fremde Abhängigkeit hinzu.
 

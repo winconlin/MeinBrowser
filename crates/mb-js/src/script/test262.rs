@@ -2,10 +2,12 @@
 //! Die Harness läuft unverändert, mit dem Host aus `host`. Nach jedem Script
 //! leert der Läufer die Warteschlange der Jobs wie ein Browser; ein Test mit
 //! dem Flag `async` besteht, wenn er danach mit `print` sein Ende gemeldet
-//! hat ([`async_outcome`]). Grenzen stehen in
+//! hat ([`async_outcome`]). Ein Test mit dem Flag `module` läuft als Modul
+//! ([`evaluate_module`]). Grenzen stehen in
 //! `docs/m2-test262-ausfuehrung.md`.
 
 use std::collections::BTreeSet;
+use std::path::Path;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -15,6 +17,7 @@ use crate::compiler::{CompileError, compile_script};
 use crate::heap::{Local, ObjectClass, Options, Scope};
 use crate::object::{get_own_property, get_prototype_of};
 use crate::parser::parse_script;
+use crate::promise::PromiseState;
 use crate::realm::{Intrinsic, RealmId};
 use crate::script::ScriptError;
 use crate::value::Kind;
@@ -43,6 +46,8 @@ enum Outcome {
     Normal,
     Syntax,
     Error(ErrorKind),
+    /// Ein Fehler beim Laden oder Linken eines Moduls.
+    Resolution(ErrorKind),
     Test262Error,
     ThrownValue,
     /// Ein Test mit `async` meldete einen Fehlschlag.
@@ -156,6 +161,108 @@ fn evaluate(agent: &mut Agent, realm: RealmId, source: &str, budget: &Rc<Budget>
     outcome
 }
 
+/// Ein Test mit dem Flag `module` aus der Datei `file`: ParseModule,
+/// LoadRequestedModules, Link und Evaluate mit der Quote, danach die Jobs
+/// und Zeitgeber wie bei einem Script. Ein Fehler beim Laden oder Linken
+/// gehört zur Phase `resolution` ([`Outcome::Resolution`]), einer beim
+/// Auswerten zur Phase `runtime`.
+fn evaluate_module(
+    agent: &mut Agent,
+    host: &Test262Host,
+    realm: RealmId,
+    file: Option<&Path>,
+    source: &str,
+    budget: &Rc<Budget>,
+) -> Outcome {
+    let source: Vec<u16> = source.encode_utf16().collect();
+    let outcome = agent.scope(|agent, scope| {
+        agent.with_execution_budget(Rc::clone(budget), |agent| {
+            module_steps(agent, scope, host, realm, file, &source, budget)
+        })
+    });
+    assert_eq!(agent.heap_mut().push_registers(0), Some(0), "Register frei");
+    agent.scope(|agent, scope| {
+        assert!(agent.take_exception(scope).is_none(), "keine alte Ausnahme");
+    });
+    agent.heap().verify().expect("gültiger Heap nach Modul");
+    outcome
+}
+
+fn module_steps(
+    agent: &mut Agent,
+    scope: &Scope,
+    host: &Test262Host,
+    realm: RealmId,
+    file: Option<&Path>,
+    source: &[u16],
+    budget: &Rc<Budget>,
+) -> Outcome {
+    let module = match agent.parse_module(scope, realm, source) {
+        Ok(module) => module,
+        Err(ScriptError::Syntax(_)) => return Outcome::Syntax,
+        Err(ScriptError::Unsupported(_)) => return Outcome::Unsupported,
+        // Der einzige Wurf aus ParseModule: das Größenlimit des Übersetzers.
+        Err(ScriptError::Abrupt(Abrupt::Throw)) => {
+            agent.take_exception(scope);
+            return Outcome::CompileLimit;
+        }
+        Err(ScriptError::Abrupt(abrupt)) => return Outcome::Host(abrupt),
+    };
+    if let Some(file) = file {
+        host.set_test_module(file, module);
+    }
+    let resolution = |outcome| match outcome {
+        Outcome::Error(kind) => Outcome::Resolution(kind),
+        outcome => outcome,
+    };
+    let loaded = match agent.load_requested_modules(scope, module) {
+        Ok(promise) => promise,
+        Err(abrupt) => return resolution(abrupt_outcome(agent, scope, abrupt)),
+    };
+    if host.module_unsupported() {
+        return Outcome::Unsupported;
+    }
+    if let Err(outcome) = settled(agent, scope, loaded) {
+        return resolution(outcome);
+    }
+    if let Err(abrupt) = agent.link_module(module) {
+        return resolution(abrupt_outcome(agent, scope, abrupt));
+    }
+    let evaluated = match agent.evaluate_module(scope, module) {
+        Ok(promise) => promise,
+        Err(abrupt) => return abrupt_outcome(agent, scope, abrupt),
+    };
+    if let Err(abrupt) = run_jobs_and_timers(agent, budget) {
+        return abrupt_outcome(agent, scope, abrupt);
+    }
+    match settled(agent, scope, evaluated) {
+        Ok(()) => Outcome::Normal,
+        Err(outcome) => outcome,
+    }
+}
+
+/// Das Ergebnis einer abrupten Beendigung.
+fn abrupt_outcome(agent: &mut Agent, scope: &Scope, abrupt: Abrupt) -> Outcome {
+    match abrupt {
+        Abrupt::Throw => thrown(agent, scope),
+        Abrupt::Unsupported(_) => Outcome::Unsupported,
+        abrupt => Outcome::Host(abrupt),
+    }
+}
+
+/// Ob das Promise erfüllt ist, sonst der Grund der Ablehnung eingeordnet;
+/// ein noch offenes Promise ist nicht fertig geworden.
+fn settled(agent: &mut Agent, scope: &Scope, promise: Local<'_>) -> Result<(), Outcome> {
+    match agent.promise_state(promise) {
+        Some(PromiseState::Fulfilled) => Ok(()),
+        Some(PromiseState::Rejected) => match agent.promise_result(scope, promise) {
+            Some(reason) => Err(classify(agent, scope, reason)),
+            None => Err(Outcome::ThrownValue),
+        },
+        Some(PromiseState::Pending) | None => Err(Outcome::AsyncIncomplete),
+    }
+}
+
 /// Lässt die Jobs laufen und wartet danach auf den nächsten Zeitgeber, bis
 /// keiner mehr wartet oder der nächste erst nach [`TIMER_WAIT`] abliefe.
 fn run_jobs_and_timers(agent: &mut Agent, budget: &Rc<Budget>) -> Result<(), Abrupt> {
@@ -196,6 +303,7 @@ fn expected(negative: Option<Negative>) -> Outcome {
         Some(Negative::Parse) => Outcome::Syntax,
         Some(Negative::Runtime(kind)) => Outcome::Error(kind),
         Some(Negative::Test262Error) => Outcome::Test262Error,
+        Some(Negative::Resolution(kind)) => Outcome::Resolution(kind),
     }
 }
 
@@ -203,6 +311,19 @@ fn expected(negative: Option<Negative>) -> Outcome {
 /// Test teilen eine Quote. Setupfehler können niemals einen negativen Test
 /// erfüllen.
 fn run(
+    source: &str,
+    metadata: &Metadata,
+    mode: Mode,
+    harness: &[(String, String)],
+    stress: bool,
+) -> Result<Outcome, String> {
+    run_file(None, source, metadata, mode, harness, stress)
+}
+
+/// Wie [`run`] für den Test in der Datei `file`: Ein Modul lädt seine
+/// Hilfsdateien aus ihrem Verzeichnis.
+fn run_file(
+    file: Option<&Path>,
     source: &str,
     metadata: &Metadata,
     mode: Mode,
@@ -233,6 +354,10 @@ fn run(
     let text = match mode {
         Mode::Sloppy => source.to_owned(),
         Mode::Strict => format!("\"use strict\";\n{source}"),
+        Mode::Module => {
+            let result = evaluate_module(&mut agent, &host, realm, file, source, &budget);
+            return Ok(finish(&mut agent, &host, metadata, result));
+        }
     };
     // evaluate_script meldet ein Größenlimit des äußeren Compilers als
     // RangeError. Es darf keinen erwarteten *Laufzeit*-RangeError erfüllen.
@@ -253,12 +378,18 @@ fn run(
         }
     }
     let result = evaluate(&mut agent, realm, &text, &budget);
+    Ok(finish(&mut agent, &host, metadata, result))
+}
+
+/// Sammelt den Heap und ordnet einen Test mit `async` nach seinen Ausgaben
+/// ein.
+fn finish(agent: &mut Agent, host: &Test262Host, metadata: &Metadata, result: Outcome) -> Outcome {
     agent.heap_mut().collect();
     agent.heap().verify().expect("gültiger Heap nach Sammeln");
     if metadata.is_async() && result == Outcome::Normal {
-        return Ok(async_outcome(&host.printed()));
+        return async_outcome(&host.printed());
     }
-    Ok(result)
+    result
 }
 
 fn harness(metadata: &Metadata) -> Vec<(String, String)> {
@@ -350,7 +481,8 @@ fn test262_execution() {
         for mode in metadata.modes() {
             for stress in [false, true] {
                 runs += 1;
-                let result = run(&source, &metadata, mode, &harness, stress);
+                let path = testdata::root().join("test262").join(file);
+                let result = run_file(Some(&path), &source, &metadata, mode, &harness, stress);
                 if result != Ok(expected(metadata.negative)) {
                     failures.push(format!("{file} ({mode:?}, stress={stress}): {result:?}"));
                 }

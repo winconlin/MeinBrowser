@@ -50,6 +50,7 @@ use crate::descriptor::PropertyDescriptor;
 use crate::function::get_function_realm;
 use crate::heap::{Heap, Local, ObjectClass, OutOfMemory, Scope};
 use crate::key::{PropertyKey, is_private_name};
+use crate::module::namespace;
 use crate::operations::{call, create_data_property};
 use crate::realm::{Intrinsic, RealmId};
 use crate::value::{Kind, Ref, Value};
@@ -242,7 +243,8 @@ pub fn get_prototype_of<'s>(
             | ObjectClass::ArrayBuffer
             | ObjectClass::SharedArrayBuffer
             | ObjectClass::DataView
-            | ObjectClass::TypedArray => {
+            | ObjectClass::TypedArray
+            | ObjectClass::Namespace => {
                 let heap = agent.heap();
                 let prototype =
                     object_of(heap, cursor).and_then(|object| heap.object_prototype(object));
@@ -285,7 +287,8 @@ pub fn set_prototype_of(
         | ObjectClass::ArrayBuffer
         | ObjectClass::SharedArrayBuffer
         | ObjectClass::DataView
-        | ObjectClass::TypedArray => ordinary_set_prototype_of(agent, object, prototype),
+        | ObjectClass::TypedArray
+        | ObjectClass::Namespace => ordinary_set_prototype_of(agent, object, prototype),
         ObjectClass::Proxy => agent.scope(|agent, scope| {
             let heap = agent.heap();
             let cursor = heap.local(scope, heap.get(object));
@@ -369,7 +372,8 @@ pub fn is_extensible(agent: &mut Agent, object: Local<'_>) -> Completion<bool> {
         | ObjectClass::ArrayBuffer
         | ObjectClass::SharedArrayBuffer
         | ObjectClass::DataView
-        | ObjectClass::TypedArray => Ok(ordinary_is_extensible(agent.heap(), object)),
+        | ObjectClass::TypedArray
+        | ObjectClass::Namespace => Ok(ordinary_is_extensible(agent.heap(), object)),
         ObjectClass::Proxy => agent.scope(|agent, scope| {
             let heap = agent.heap();
             let cursor = heap.local(scope, heap.get(object));
@@ -413,7 +417,8 @@ pub fn prevent_extensions(agent: &mut Agent, object: Local<'_>) -> Completion<bo
         | ObjectClass::FinalizationRegistry
         | ObjectClass::ArrayBuffer
         | ObjectClass::SharedArrayBuffer
-        | ObjectClass::DataView => Ok(ordinary_prevent_extensions(agent.heap(), object)),
+        | ObjectClass::DataView
+        | ObjectClass::Namespace => Ok(ordinary_prevent_extensions(agent.heap(), object)),
         ObjectClass::TypedArray => Ok(typed_array::prevent_extensions(agent.heap(), object)),
         ObjectClass::Proxy => agent.scope(|agent, scope| {
             let heap = agent.heap();
@@ -478,6 +483,17 @@ pub fn get_own_property<'s>(
         | ObjectClass::SharedArrayBuffer
         | ObjectClass::DataView => Ok(ordinary_get_own_property(agent.heap(), scope, object, key)),
         ObjectClass::TypedArray => typed_array::get_own_property(agent, scope, object, key),
+        // [[GetOwnProperty]] eines Namensraums (Abschnitt 10.4.6.5).
+        ObjectClass::Namespace => {
+            if matches!(key, PropertyKey::Symbol(_)) {
+                return Ok(ordinary_get_own_property(agent.heap(), scope, object, key));
+            }
+            if !namespace::has_export(agent, object, key) {
+                return Ok(None);
+            }
+            let value = namespace::get(agent, scope, object, key)?;
+            Ok(Some(PropertyDescriptor::data(value, true, true, false)))
+        }
         ObjectClass::Proxy => {
             let heap = agent.heap();
             let cursor = heap.local(scope, heap.get(object));
@@ -560,6 +576,9 @@ pub fn define_own_property(
         ObjectClass::Arguments => {
             arguments::define_own_property(agent, scope, object, key, descriptor)
         }
+        ObjectClass::Namespace => {
+            namespace_define_own_property(agent, scope, object, key, descriptor)
+        }
         ObjectClass::Proxy => {
             let heap = agent.heap();
             let cursor = heap.local(scope, heap.get(object));
@@ -575,6 +594,37 @@ pub fn define_own_property(
             }
         }
     }
+}
+
+/// [[DefineOwnProperty]] eines Namensraums (Abschnitt 10.4.6.6): Nur was
+/// schon gilt, ist erlaubt.
+fn namespace_define_own_property(
+    agent: &mut Agent,
+    scope: &Scope,
+    object: Local<'_>,
+    key: PropertyKey<'_>,
+    descriptor: &PropertyDescriptor<'_>,
+) -> Completion<bool> {
+    if matches!(key, PropertyKey::Symbol(_)) {
+        return ordinary_define_own_property(agent, scope, object, key, descriptor);
+    }
+    let Some(current) = get_own_property(agent, scope, object, key)? else {
+        return Ok(false);
+    };
+    if descriptor.configurable == Some(true)
+        || descriptor.enumerable == Some(false)
+        || descriptor.is_accessor()
+        || descriptor.writable == Some(false)
+    {
+        return Ok(false);
+    }
+    Ok(match (descriptor.value, current.value) {
+        (Some(value), Some(current)) => {
+            let heap = agent.heap();
+            same_value(heap, heap.get(value), heap.get(current))
+        }
+        _ => true,
+    })
 }
 
 /// OrdinaryDefineOwnProperty (Abschnitt 10.1.6.1).
@@ -853,11 +903,18 @@ pub fn has_property(
         let heap = agent.heap();
         let cursor = heap.local(scope, heap.get(object));
         loop {
-            if class(agent, cursor)? == ObjectClass::Proxy {
-                if let Step::Done(found) = proxy::has_property(agent, cursor, key)? {
-                    return Ok(found);
+            match class(agent, cursor)? {
+                ObjectClass::Proxy => {
+                    if let Step::Done(found) = proxy::has_property(agent, cursor, key)? {
+                        return Ok(found);
+                    }
+                    continue;
                 }
-                continue;
+                // [[HasProperty]] eines Namensraums (Abschnitt 10.4.6.7).
+                ObjectClass::Namespace if !matches!(key, PropertyKey::Symbol(_)) => {
+                    return Ok(namespace::has_export(agent, cursor, key));
+                }
+                _ => {}
             }
             if let Found::Done(found) =
                 ordinary_has_property(agent.heap(), cursor, key, Some(cursor))
@@ -871,12 +928,13 @@ pub fn has_property(
 /// Was OrdinaryHasProperty auf der Prototypkette findet.
 enum Found {
     Done(bool),
-    /// Ein Proxy in der Kette; er steht in `cursor`, wenn es einen gibt.
+    /// Ein Proxy oder für einen Schlüssel, der kein Symbol ist, ein
+    /// Namensraum in der Kette; er steht in `cursor`, wenn es einen gibt.
     Proxy,
 }
 
-/// OrdinaryHasProperty (Abschnitt 10.1.7.1) bis zum ersten Proxy in der
-/// Prototypkette.
+/// OrdinaryHasProperty (Abschnitt 10.1.7.1) bis zum ersten Proxy oder
+/// Namensraum in der Prototypkette.
 fn ordinary_has_property(
     heap: &Heap,
     object: Local<'_>,
@@ -894,6 +952,14 @@ fn ordinary_has_property(
             && let Some(index) = typed_array::numeric_key(heap, property)
         {
             return Found::Done(typed_array::is_valid_integer_index(heap, current, index));
+        }
+        if heap.object_class(current) == Some(ObjectClass::Namespace)
+            && !matches!(property, PropertyKey::Symbol(_))
+        {
+            if let Some(cursor) = cursor {
+                heap.set(cursor, Value::object(current));
+            }
+            return Found::Proxy;
         }
         if find_own(heap, current, key).is_some() {
             return Found::Done(true);
@@ -938,6 +1004,7 @@ pub fn get<'s>(
             Walk::Element(typed_array, index) => {
                 return typed_array::get_element(agent, scope, typed_array, index);
             }
+            Walk::Namespace(object) => return namespace::get(agent, scope, object, key),
             Walk::Proxy(proxy) => match proxy::get(agent, scope, proxy, key, receiver)? {
                 Step::Done(value) => return Ok(value),
                 Step::Forward if class(agent, proxy)? == ObjectClass::Proxy => {}
@@ -956,6 +1023,9 @@ enum Walk<'s> {
     Element(Local<'s>, f64),
     /// Ein Proxy, an den [[Get]] weitergeht.
     Proxy(Local<'s>),
+    /// Ein Namensraum und ein Schlüssel, der kein Symbol ist (Abschnitt
+    /// 10.4.6.8).
+    Namespace(Local<'s>),
 }
 
 /// OrdinaryGet (Abschnitt 10.1.8.1) bis zum ersten Proxy in der
@@ -976,6 +1046,11 @@ fn ordinary_get_walk<'s>(
             && let Some(index) = typed_array::numeric_key(heap, property)
         {
             return Walk::Element(heap.local(scope, Value::object(current)), index);
+        }
+        if heap.object_class(current) == Some(ObjectClass::Namespace)
+            && !matches!(property, PropertyKey::Symbol(_))
+        {
+            return Walk::Namespace(heap.local(scope, Value::object(current)));
         }
         match find_own(heap, current, key) {
             Some(Own::Data { value, .. }) => return Walk::Value(heap.local(scope, value)),
@@ -1021,6 +1096,10 @@ fn ordinary_set_walk<'s>(
             && let Some(index) = typed_array::numeric_key(heap, property)
         {
             return Holder::Element(heap.local(scope, Value::object(current)), index);
+        }
+        // [[Set]] eines Namensraums (Abschnitt 10.4.6.9) gelingt nie.
+        if heap.object_class(current) == Some(ObjectClass::Namespace) {
+            return Holder::ReadOnly;
         }
         match find_own(heap, current, key) {
             Some(Own::Data { attributes, .. }) if attributes & WRITABLE == 0 => {
@@ -1135,6 +1214,10 @@ pub fn delete(
     {
         return Ok(result);
     }
+    // [[Delete]] eines Namensraums (Abschnitt 10.4.6.10).
+    if object_class == ObjectClass::Namespace && !matches!(key, PropertyKey::Symbol(_)) {
+        return Ok(!namespace::has_export(agent, object, key));
+    }
     if object_class == ObjectClass::Proxy {
         let heap = agent.heap();
         let cursor = heap.local(scope, heap.get(object));
@@ -1234,6 +1317,9 @@ pub fn own_property_keys<'s>(
         | ObjectClass::SharedArrayBuffer
         | ObjectClass::DataView => {}
         ObjectClass::TypedArray => typed_array::index_keys(agent, scope, object, &mut keys)?,
+        // [[OwnPropertyKeys]] eines Namensraums (Abschnitt 10.4.6.11):
+        // [[Exports]], dann die Symbole.
+        ObjectClass::Namespace => namespace::export_keys(agent, scope, object, &mut keys)?,
         ObjectClass::Proxy => {
             let heap = agent.heap();
             let cursor = heap.local(scope, heap.get(object));

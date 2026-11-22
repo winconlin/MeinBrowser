@@ -294,6 +294,65 @@ fn is_handled(heap: &Heap, promise: Value<'_>) -> bool {
     matches!(field(heap, promise, HANDLED).kind(), Kind::Boolean(true))
 }
 
+/// [[PromiseState]] eines Promise für den Host.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PromiseState {
+    Pending,
+    Fulfilled,
+    Rejected,
+}
+
+impl crate::agent::Agent {
+    /// [[PromiseState]] des Werts, `None`, wenn er kein Promise ist.
+    pub fn promise_state(&self, promise: Local<'_>) -> Option<PromiseState> {
+        let heap = self.heap();
+        let value = heap.get(promise);
+        if !is_promise(heap, value) {
+            return None;
+        }
+        Some(match state(heap, value)? {
+            State::Pending => PromiseState::Pending,
+            State::Fulfilled => PromiseState::Fulfilled,
+            State::Rejected => PromiseState::Rejected,
+        })
+    }
+
+    /// [[PromiseResult]] eines erfüllten oder abgelehnten Promise.
+    pub fn promise_result<'s>(&self, scope: &'s Scope, promise: Local<'_>) -> Option<Local<'s>> {
+        let heap = self.heap();
+        let value = heap.get(promise);
+        match self.promise_state(promise)? {
+            PromiseState::Pending => None,
+            PromiseState::Fulfilled | PromiseState::Rejected => {
+                Some(heap.local(scope, field(heap, value, RESULT)))
+            }
+        }
+    }
+}
+
+/// Erfüllt (`fulfill`) oder lehnt ein Promise ab, das die Engine selbst
+/// angelegt hat und noch aussteht, wie Call seiner Funktionen aus
+/// CreateResolvingFunctions mit einem Wert, der kein Thenable ist. Für ein
+/// Promise, das nicht mehr aussteht, geschieht nichts.
+pub(crate) fn settle_pending(
+    agent: &mut Agent,
+    scope: &Scope,
+    realm: RealmId,
+    promise: Local<'_>,
+    value: Local<'_>,
+    fulfill: bool,
+) -> Completion<()> {
+    let heap = agent.heap();
+    if state(heap, heap.get(promise)) != Some(State::Pending) {
+        return Ok(());
+    }
+    if fulfill {
+        fulfill_promise(agent, scope, realm, promise, value)
+    } else {
+        reject_promise(agent, scope, realm, promise, value)
+    }
+}
+
 /// Promise ( executor ) (Abschnitt 27.5.3.1), Schritte 3 bis 8 ohne
 /// GetPrototypeFromConstructor: ein neues Promise mit dem Prototyp
 /// `prototype`, ~pending~, ohne Reaktionen und nicht behandelt.
