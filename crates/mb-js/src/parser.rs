@@ -366,6 +366,9 @@ struct FunctionState {
     /// Wie oft `await` bisher als Bezeichner vorkam, für die Parameter von
     /// async-Pfeilfunktionen.
     await_identifiers: u32,
+    /// Ob `await` als Operator vorkam: ein Ausdruck, `for await` oder
+    /// `await using`. Auf oberster Ebene eines Moduls ist das [[HasTLA]].
+    contains_await: bool,
 }
 
 impl FunctionState {
@@ -524,6 +527,9 @@ impl<'a> Parser<'a> {
         self.ast.intern_str("arguments");
         let strict = self.function.context.strict;
         self.ast.finish(body, self.module, strict, self.source);
+        if self.module && self.function.contains_await {
+            self.ast.mark_top_level_await();
+        }
         if self.ast.overflowed() {
             return Err(SyntaxError {
                 kind: ErrorKind::TooLong,

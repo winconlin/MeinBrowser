@@ -4,7 +4,8 @@
 //!
 //! Ein GraphLoadingState Record liegt im Agenten unter seiner Nummer; die
 //! Nummer ist das *payload*, das der Host mit HostLoadImportedModule bekommt
-//! und an FinishLoadingImportedModule zurückgibt. InnerModuleLoading läuft
+//! und an FinishLoadingImportedModule zurückgibt. Ein Aufruf von `import()`
+//! hat statt dessen die Nummer seiner PromiseCapability (Modul `dynamic`). InnerModuleLoading läuft
 //! als Schleife über einen Stapel von Aufgaben statt als Rekursion durch
 //! den Host: Beendet der Host das Laden sofort, kommt das geladene Modul
 //! oben auf den Stapel und wird bearbeitet, bevor die nächste Anfrage des
@@ -20,10 +21,23 @@ use crate::value::Value;
 
 use super::{ModuleId, ModuleRequest, ModuleStatus, Referrer};
 
-/// Das *payload* für HostLoadImportedModule: die Nummer des
-/// GraphLoadingState Record.
+/// Das *payload* für HostLoadImportedModule: die Nummer eines
+/// GraphLoadingState Record oder der PromiseCapability eines Aufrufs von
+/// `import()`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct LoadPayload(u64);
+pub struct LoadPayload(Payload);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum Payload {
+    Graph(u64),
+    Dynamic(u64),
+}
+
+impl LoadPayload {
+    pub(super) fn dynamic(id: u64) -> LoadPayload {
+        LoadPayload(Payload::Dynamic(id))
+    }
+}
 
 /// Ein Schritt von InnerModuleLoading.
 #[derive(Clone, Copy, Debug)]
@@ -87,7 +101,8 @@ impl Agent {
     /// Ausnahme im Agenten. Für ein `payload`, dessen Laden schon zu Ende
     /// ist, merkt sich der Agent nur das Modul. Eine andere abrupte
     /// Beendigung als eine Ausnahme beendet das Laden ohne Ergebnis und
-    /// kehrt zurück.
+    /// kehrt zurück. Nur ein Modul als `referrer` hat [[LoadedModules]];
+    /// ein Realm braucht sie nicht, denn `import()` fragt stets den Host.
     pub fn finish_loading_imported_module(
         &mut self,
         scope: &Scope,
@@ -96,35 +111,44 @@ impl Agent {
         payload: LoadPayload,
         result: Completion<ModuleId>,
     ) -> Completion<()> {
-        let Referrer::Module(referrer) = referrer;
-        match result {
+        let result = match result {
             Ok(module) => {
                 if self.module_record(module).is_none() {
                     return Err(self.throw_error(ErrorKind::TypeError));
                 }
-                if let Some(record) = self.module_record_mut(referrer)
+                if let Referrer::Module(referrer) = referrer
+                    && let Some(record) = self.module_record_mut(referrer)
                     && !record.loaded.iter().any(|(loaded, _)| loaded == request)
                 {
                     record.loaded.push((request.clone(), module));
                 }
-                self.continue_loading(scope, payload.0, Ok(module))
+                Ok(module)
             }
             Err(Abrupt::Throw) => {
-                let realm = self
-                    .module_loads
-                    .get(&payload.0)
-                    .map(|state| state.realm)
-                    .or_else(|| self.module_realm(referrer));
+                let realm = match payload.0 {
+                    Payload::Graph(id) => self.module_loads.get(&id).map(|state| state.realm),
+                    Payload::Dynamic(id) => self.dynamic_import_realm(id),
+                };
+                let realm = realm.or(match referrer {
+                    Referrer::Module(referrer) => self.module_realm(referrer),
+                    Referrer::Realm(realm) => Some(realm),
+                });
                 let Some(realm) = realm else {
                     return Err(self.throw_error(ErrorKind::TypeError));
                 };
-                let error = self.take_thrown_value(scope, realm)?;
-                self.continue_loading(scope, payload.0, Err(error))
+                Err(self.take_thrown_value(scope, realm)?)
             }
             Err(abrupt) => {
-                self.module_loads.remove(&payload.0);
-                Err(abrupt)
+                match payload.0 {
+                    Payload::Graph(id) => self.drop_loading(id),
+                    Payload::Dynamic(id) => self.drop_dynamic_import(id),
+                }
+                return Err(abrupt);
             }
+        };
+        match payload.0 {
+            Payload::Graph(id) => self.continue_loading(scope, id, result),
+            Payload::Dynamic(id) => self.continue_dynamic_import(scope, id, result),
         }
     }
 
@@ -287,7 +311,7 @@ impl Agent {
 
     /// AllImportAttributesSupported (Abschnitt 16.2.1.12) mit
     /// HostGetSupportedImportAttributes; ohne Host gibt es keine.
-    fn import_attributes_supported(&self, request: &ModuleRequest) -> bool {
+    pub(super) fn import_attributes_supported(&self, request: &ModuleRequest) -> bool {
         let host = self.host();
         request.attributes.iter().all(|(key, _)| {
             host.as_ref()
@@ -313,7 +337,7 @@ impl Agent {
         id: u64,
     ) -> Completion<()> {
         let referrer = Referrer::Module(referrer);
-        let payload = LoadPayload(id);
+        let payload = LoadPayload(Payload::Graph(id));
         match self.host() {
             Some(host) => host.load_imported_module(self, scope, referrer, request, payload),
             None => {

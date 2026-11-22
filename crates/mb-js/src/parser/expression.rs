@@ -548,6 +548,7 @@ impl Parser<'_> {
         }
         self.advance();
         self.function.yield_await = self.function.yield_await.saturating_add(1);
+        self.function.contains_await = true;
         let mut inner = Cover::default();
         let argument = self.unary(&mut inner)?;
         inner.check()?;

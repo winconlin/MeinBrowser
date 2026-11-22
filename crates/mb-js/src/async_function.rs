@@ -4,7 +4,8 @@
 //!
 //! Der Zustand ist eine interne Zelle mit sieben Plätzen, die nur der Code
 //! der Funktion in einem Register und die beiden Funktionen eines `await`
-//! sehen: das Funktionsobjekt, aus dem Code und Realm des Rahmens kommen;
+//! sehen: das Funktionsobjekt, aus dem Code und Realm des Rahmens kommen,
+//! für ein Modul mit Top-Level-`await` statt dessen seine Nummer;
 //! der angehaltene Rahmen als interne Zelle mit dem Kopf und den Registern,
 //! *undefined* bis zum ersten `await` und wieder, sobald die Funktion fertig
 //! ist; der Befehl, bei dem der Rahmen weitergeht, [`RUNNING`], solange er
@@ -23,11 +24,12 @@
 
 #![forbid(unsafe_code)]
 
-use crate::agent::{Agent, Completion};
+use crate::agent::{Abrupt, Agent, Completion};
 use crate::builtin::{Builtin, BuiltinCall, create_builtin_closure};
 use crate::generator::Resumption;
 use crate::heap::{Heap, Local, Scope};
 use crate::interpreter::resume_async;
+use crate::module::ModuleId;
 use crate::operations::call;
 use crate::promise::{
     create_resolving_functions, perform_promise_then, promise_create, promise_resolve,
@@ -281,7 +283,9 @@ fn await_rejected<'s>(
 
 /// RunSuspendedContext mit dem ersten Argument als Wert oder Grund (Await,
 /// Schritte 3.a und 5.a). Was der Rahmen danach tut, kommt nicht zurück; das
-/// Ergebnis ist *undefined*.
+/// Ergebnis ist *undefined*. Bricht der Rahmen eines Moduls mit
+/// Top-Level-`await` ohne Ausnahme ab, gilt der Abbruch für das Modul und
+/// die Module, die auf es warten.
 fn resume<'s>(
     agent: &mut Agent,
     scope: &'s Scope,
@@ -290,7 +294,16 @@ fn resume<'s>(
 ) -> Completion<Local<'s>> {
     let state = arguments.captures(agent, scope);
     let value = arguments.argument(agent, scope, 0);
-    resume_async(agent, scope, state, resumption, value)?;
+    if let Err(abrupt) = resume_async(agent, scope, state, resumption, value) {
+        let heap = agent.heap();
+        let module = slot(heap, heap.get(state), FUNCTION).as_int32();
+        if abrupt != Abrupt::Throw
+            && let Some(index) = module.and_then(|index| usize::try_from(index).ok())
+        {
+            agent.abort_async_module(ModuleId::from_index(index), abrupt);
+        }
+        return Err(abrupt);
+    }
     Ok(agent.heap().local(scope, Value::UNDEFINED))
 }
 

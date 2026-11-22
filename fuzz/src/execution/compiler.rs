@@ -50,6 +50,7 @@ struct Stats {
     unsupported_evals: usize,
     import_loads: usize,
     import_metas: usize,
+    import_calls: usize,
 }
 
 impl Stats {
@@ -75,6 +76,7 @@ impl Stats {
         self.eval_declarations += other.eval_declarations;
         self.import_loads += other.import_loads;
         self.import_metas += other.import_metas;
+        self.import_calls += other.import_calls;
     }
 }
 
@@ -87,6 +89,9 @@ struct ModuleStats {
     functions: usize,
     import_loads: usize,
     import_metas: usize,
+    import_calls: usize,
+    top_level_await: bool,
+    awaits: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -97,7 +102,11 @@ enum Outcome {
     Compiled(Box<Stats>),
 }
 
-fn check_code(code: &Code, source_length: usize) -> Stats {
+/// Checks one compiled code. `top_level_await` marks the code of a module
+/// with top-level `await`: it keeps an async state like an async function,
+/// but ExecuteAsyncModule creates it, so the code does not begin with
+/// `BeginAsync`.
+fn check_code(code: &Code, source_length: usize, top_level_await: bool) -> Stats {
     let bytes = code.bytes();
     assert!(!bytes.is_empty(), "compiled scripts contain a return");
     assert!(
@@ -134,11 +143,15 @@ fn check_code(code: &Code, source_length: usize) -> Stats {
             "async state register is in frame"
         );
         assert_eq!(
-            code.decode(0).map(|instruction| instruction.op),
-            Some(Op::BeginAsync),
-            "async code begins with its capability"
+            code.decode(0).map(|instruction| instruction.op) == Some(Op::BeginAsync),
+            !top_level_await,
+            "async functions begin with their capability, module code gets its state from outside"
         );
     }
+    assert!(
+        !top_level_await || code.async_state_register().is_some(),
+        "a module with top-level await keeps its async state in a register"
+    );
     if code.is_async_generator() {
         assert!(
             code.generator_register().is_some(),
@@ -429,7 +442,7 @@ fn check_code(code: &Code, source_length: usize) -> Stats {
                             .expect("the default constructor compiles");
                         assert_eq!(default.is_derived_constructor(), *derived);
                         assert!(default.is_strict(), "class code is strict");
-                        stats.include(check_code(&default, source_length));
+                        stats.include(check_code(&default, source_length, false));
                     }
                     constant => panic!("a class needs a constructor, got {constant:?}"),
                 }
@@ -558,6 +571,21 @@ fn check_code(code: &Code, source_length: usize) -> Stats {
                 assert!(code.is_strict(), "import.meta only in module code");
                 stats.import_metas += 1;
             }
+            Op::ImportCall => {
+                assert!(
+                    matches!(
+                        code.constant(instruction.operand(0)),
+                        Some(Constant::Module)
+                    ),
+                    "import() names the module of its code, or none, as referrer"
+                );
+                assert!(
+                    usize::try_from(instruction.operand(1))
+                        .is_ok_and(|register| register < code.register_count()),
+                    "the specifier waits in a register of the frame"
+                );
+                stats.import_calls += 1;
+            }
             Op::CreateClosure | Op::CreateClosureKeyed => {
                 assert!(matches!(
                     code.constant(instruction.operand(0)),
@@ -676,7 +704,7 @@ fn check_functions(
                     .filter(|&&parameter| !matches!(ast.node(parameter), Node::Rest(_)))
                     .count();
                 assert_eq!(code.parameter_count(), positional);
-                stats.include(check_code(&code, source_length));
+                stats.include(check_code(&code, source_length, false));
                 stats.functions += 1;
                 eval_sites(&code, sites);
                 pending.extend(
@@ -714,7 +742,7 @@ fn check_source(source: &[u16]) -> Outcome {
                 0,
                 "scripts have no parameters"
             );
-            let mut stats = check_code(&script.code, source.len());
+            let mut stats = check_code(&script.code, source.len(), false);
             let mut pending: Vec<_> = script
                 .functions
                 .iter()
@@ -752,8 +780,9 @@ fn check_source(source: &[u16]) -> Outcome {
 
 /// Compiles `source` as a module: its code is strict, each top-level
 /// binding has its own slot in the module context, and the declared
-/// functions compile with that context around them. Direct `eval` sites
-/// in modules are not followed.
+/// functions compile with that context around them. With top-level
+/// `await`, the module code keeps an async state without `BeginAsync`.
+/// Direct `eval` sites in modules are not followed.
 fn check_module(source: &[u16]) -> Option<ModuleStats> {
     let ast = match parse_module(source) {
         Ok(ast) => ast,
@@ -800,7 +829,7 @@ fn check_module(source: &[u16]) -> Option<ModuleStats> {
             ModuleInit::Var | ModuleInit::Lexical => {}
         }
     }
-    let mut stats = check_code(&module.code, source.len());
+    let mut stats = check_code(&module.code, source.len(), ast.has_top_level_await());
     pending.extend(
         module
             .code
@@ -815,6 +844,9 @@ fn check_module(source: &[u16]) -> Option<ModuleStats> {
     result.functions = stats.functions;
     result.import_loads = stats.import_loads;
     result.import_metas = stats.import_metas;
+    result.import_calls = stats.import_calls;
+    result.top_level_await = ast.has_top_level_await();
+    result.awaits = stats.awaits;
     Some(result)
 }
 
@@ -855,7 +887,7 @@ fn check_evals(source: &[u16], sites: &[Rc<EvalSite>], stats: &mut Stats) {
         match compile_eval(&ast, site) {
             Ok(code) => {
                 assert_eq!(code.parameter_count(), 0, "eval code has no parameters");
-                let mut inner = check_code(&code, source.len());
+                let mut inner = check_code(&code, source.len(), false);
                 let pending = code
                     .constants()
                     .iter()
@@ -985,8 +1017,15 @@ mod tests {
             (1, 1),
             "the default function"
         );
-        // Top-level await waits for the next part of this step.
-        assert!(!checked_module("await 1;").compiled);
+        let stats = checked_module("await 1; for await (const x of []); import('./m.js');");
+        assert!(stats.compiled && stats.top_level_await);
+        assert!(stats.awaits >= 2, "await and the steps of for await");
+        assert_eq!(stats.import_calls, 1);
+        let stats = checked_module("async function f() { await 1; } import.meta;");
+        assert!(
+            stats.compiled && !stats.top_level_await,
+            "await inside a function"
+        );
         let source: Vec<u16> = "export default 1; export default 2;"
             .encode_utf16()
             .collect();
@@ -1005,6 +1044,8 @@ mod tests {
             Outcome::Syntax,
             "scripts have no import.meta"
         );
+        let stats = checked("import('./m.js', { with: {} }); function f() { return import(f); }");
+        assert_eq!(stats.import_calls, 2, "import() in scripts and functions");
     }
 
     #[test]

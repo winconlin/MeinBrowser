@@ -1,0 +1,1 @@
+import('./m.js', { with: { type: 'json' } }).then(n => n.default); async function f(s) { return await import(s); } f(import.meta);

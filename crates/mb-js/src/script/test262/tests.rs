@@ -549,6 +549,8 @@ fn modules_run_once_and_load_their_files_from_the_test_directory() {
         ("bad_FIXTURE.js", "0++;"),
         ("value_FIXTURE.json", "{\"a\": [1, 2]}"),
         ("broken_FIXTURE.json", "{a: 1}"),
+        // Templates mit Tag kann der Übersetzer noch nicht.
+        ("tag_FIXTURE.js", "String.raw`x`;"),
     ] {
         std::fs::write(directory.join(name), text).expect("Hilfsdatei");
     }
@@ -602,10 +604,39 @@ fn modules_run_once_and_load_their_files_from_the_test_directory() {
                 "import { count } from './dep_FIXTURE.js'; count = 1;",
                 Outcome::Error(ErrorKind::TypeError),
             ),
-            ("export {}; await 1;", Outcome::Unsupported),
+            ("export {}; await 1;", Outcome::Normal),
+            (
+                "await Promise.reject(new RangeError());",
+                Outcome::Error(ErrorKind::RangeError),
+            ),
+            ("await import('./tag_FIXTURE.js');", Outcome::Unsupported),
             ("export {", Outcome::Syntax),
         ] {
             assert_eq!(run_module(source, stress), wanted, "{source}");
+        }
+    }
+    // `import()` aus einem Script lädt ebenso aus dem Verzeichnis des Tests;
+    // eine Hilfsdatei, die der Übersetzer nicht kann, macht den Test nicht
+    // unterstützt, auch wenn er sonst bestünde.
+    let script = metadata("flags: [async]");
+    let files = harness(&script);
+    for stress in [false, true] {
+        for (source, wanted) in [
+            (
+                "import('./dep_FIXTURE.js').then(ns => { ns.bump(); assert.sameValue(ns.count, 1); }).then($DONE, $DONE);",
+                Outcome::Normal,
+            ),
+            (
+                "import('./missing_FIXTURE.js').then(() => $DONE('erfüllt'), e => { assert.sameValue(e.constructor, TypeError); }).then($DONE, $DONE);",
+                Outcome::Normal,
+            ),
+            (
+                "import('./tag_FIXTURE.js').then($DONE, () => $DONE());",
+                Outcome::Unsupported,
+            ),
+        ] {
+            let result = run_file(Some(&file), source, &script, Mode::Sloppy, &files, stress);
+            assert_eq!(result, Ok(wanted), "{source}");
         }
     }
     // Ohne Datei findet ein Modul keine anderen.

@@ -44,10 +44,14 @@
 //! einen Kontext, mit dem ihr Code beginnt; die Umgebung des Moduls legt
 //! das Modul selbst an (Modul `module`). Eine Import-Bindung hält dort eine
 //! interne Zelle, die auf den Platz im Kontext des anderen Moduls zeigt,
-//! oder ein Namensraum-Objekt und wird mit [`Op::LdaImport`] gelesen.
+//! oder ein Namensraum-Objekt und wird mit [`Op::LdaImport`] gelesen. Ein
+//! Modul mit `await` auf oberster Ebene ist Code wie der einer
+//! async-Funktion ohne [`Op::BeginAsync`]: Den Zustand legt Evaluate an,
+//! bevor der Code läuft (ExecuteAsyncModule, Abschnitt 16.2.1.6.1.3.2).
+//! `import()` ist [`Op::ImportCall`].
 //!
-//! Noch nicht unterstützt sind `import()`, Top-Level-`await`, Templates mit
-//! Tag und Funktionsdeklarationen mit Marke (Anhang B.3.1).
+//! Noch nicht unterstützt sind Templates mit Tag und Funktionsdeklarationen
+//! mit Marke (Anhang B.3.1).
 //!
 //! Klassen: Eine Klasse hat einen eigenen Bereich mit ihrem Namen als
 //! Konstante, die bis zum Ende der Klasse in der TDZ bleibt (classEnv). Darin
@@ -757,8 +761,11 @@ enum TopLevel {
     Function(FunctionId),
 }
 
-/// Übersetzt ein Modul (Abschnitt 16.2). Top-Level-`await` kann der
-/// Übersetzer noch nicht.
+/// Übersetzt ein Modul (Abschnitt 16.2). Mit `await` auf oberster Ebene
+/// ([[HasTLA]]) hat der Code ein Register für den Zustand wie eine
+/// async-Funktion ([`Code::async_state_register`]), das Evaluate vor dem
+/// Start füllt, und ein Handler um alles lehnt dessen Promise mit jeder
+/// Ausnahme ab (AsyncBlockStart, Abschnitt 27.10.5.2).
 pub fn compile_module(ast: &Ast) -> Result<Module> {
     if !ast.is_module() {
         return Err(CompileError::Unsupported(0));
@@ -768,6 +775,9 @@ pub fn compile_module(ast: &Ast) -> Result<Module> {
     // `this`, stets *undefined*, und ein zweites Register wie bei Scripts.
     compiler.allocate()?;
     compiler.allocate()?;
+    if ast.has_top_level_await() {
+        compiler.async_state = Some(compiler.allocate()?);
+    }
     let body = ast.body();
     let mut found: Vec<(Option<Atom>, TopLevel)> = Vec::new();
     for &item in body {
@@ -829,14 +839,25 @@ pub fn compile_module(ast: &Ast) -> Result<Module> {
         };
         bindings.push(ModuleBinding { name, slot, init });
     }
+    let start = compiler.emitter.offset();
     for &item in body {
         compiler.module_item(item, default_slot)?;
     }
     compiler.emit(Op::LdaUndefined, &[])?;
+    let async_state = compiler.async_state;
+    if async_state.is_some() {
+        compiler.emit(Op::ResolveAsync, &[])?;
+        compiler.emit(Op::Return, &[])?;
+        let end = compiler.emitter.offset();
+        compiler.emitter.handler(start, end, HandlerKind::Catch);
+        compiler.emit(Op::RejectAsync, &[])?;
+    }
     compiler.emit(Op::Return, &[])?;
     let slots = compiler.scopes.first().map_or(0, |scope| scope.slots);
+    let mut code = compiler.finish();
+    code.async_state = async_state;
     Ok(Module {
-        code: compiler.finish(),
+        code,
         slots,
         bindings,
     })
@@ -4176,8 +4197,33 @@ impl<'a> Compiler<'a> {
                 let module = self.constant(Constant::Module)?;
                 self.emit(Op::ImportMeta, &[module])
             }
+            Node::ImportCall { specifier, options } => self.import_call(node, specifier, options),
             _ => Err(self.unsupported(node)),
         }
+    }
+
+    /// `import(…)` (EvaluateImportCall, Abschnitt 13.3.10.2, Schritte 3 bis
+    /// 7): erst der Bezeichner in ein Register, dann die Optionen oder
+    /// *undefined* in den Akkumulator; alles danach tut [`Op::ImportCall`].
+    fn import_call(
+        &mut self,
+        node: NodeId,
+        specifier: NodeId,
+        options: Option<NodeId>,
+    ) -> Result<()> {
+        let mark = self.next_register;
+        self.expression(specifier)?;
+        let register = self.allocate()?;
+        self.emit(Op::Star, &[i64::from(register)])?;
+        match options {
+            Some(options) => self.expression(options)?,
+            None => self.emit(Op::LdaUndefined, &[])?,
+        }
+        let module = self.constant(Constant::Module)?;
+        self.position(node)?;
+        self.emit(Op::ImportCall, &[module, i64::from(register)])?;
+        self.release(mark);
+        Ok(())
     }
 
     /// `yield` und `yield*` (Abschnitt 15.5.5). Der Parser lässt sie nur im
@@ -4274,16 +4320,16 @@ impl<'a> Compiler<'a> {
         self.resumption()
     }
 
-    /// Ob der Code `await` enthalten kann: der einer async-Funktion oder
-    /// eines async-Generators.
+    /// Ob der Code `await` enthalten kann: der einer async-Funktion, eines
+    /// async-Generators oder eines Moduls mit `await` auf oberster Ebene.
     fn is_async(&self) -> bool {
         self.async_state.is_some() || self.async_generator
     }
 
     /// `await` (Abschnitt 15.8.5). Der Parser lässt es nur im Rumpf einer
-    /// async-Funktion oder eines async-Generators zu, nicht in den
-    /// Parametern und nicht in inneren Funktionen; auf oberster Ebene eines
-    /// Moduls kommt es mit den Modulen.
+    /// async-Funktion oder eines async-Generators und auf oberster Ebene
+    /// eines Moduls zu, nicht in den Parametern und nicht in inneren
+    /// Funktionen.
     fn await_expression(&mut self, node: NodeId, argument: NodeId) -> Result<()> {
         if !self.is_async() {
             return Err(self.unsupported(node));

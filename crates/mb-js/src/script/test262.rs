@@ -342,6 +342,9 @@ fn run_file(
     let realm = agent
         .create_realm()
         .map_err(|error| format!("Realm: {error:?}"))?;
+    if let Some(file) = file {
+        host.set_test_file(file);
+    }
     let budget = Rc::new(Budget::new(STEPS));
     if !metadata.raw() {
         for (name, text) in harness {
@@ -382,10 +385,14 @@ fn run_file(
 }
 
 /// Sammelt den Heap und ordnet einen Test mit `async` nach seinen Ausgaben
-/// ein.
+/// ein. Konnte der Übersetzer eine Hilfsdatei nicht, die erst `import()`
+/// lud, ist der Test nicht unterstützt.
 fn finish(agent: &mut Agent, host: &Test262Host, metadata: &Metadata, result: Outcome) -> Outcome {
     agent.heap_mut().collect();
     agent.heap().verify().expect("gültiger Heap nach Sammeln");
+    if host.module_unsupported() {
+        return Outcome::Unsupported;
+    }
     if metadata.is_async() && result == Outcome::Normal {
         return async_outcome(&host.printed());
     }
