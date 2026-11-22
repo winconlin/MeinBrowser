@@ -6,7 +6,8 @@ zusammen und löst benannte Typen, Vererbung und Includes auf. Die vollständige
 Syntaxbäume bleiben erhalten. Darauf baut inzwischen die strukturierte
 [Memberbeschreibung mit ersten Prüfungen](m2-webidl-members.md) auf. Eine
 [Typbeschreibung mit ersten Typregeln](m2-webidl-types.md) ist ebenfalls
-vorhanden, einschließlich [Konstanten-/Defaultwertprüfung](m2-webidl-values.md).
+vorhanden, einschließlich [Konstanten-/Defaultwertprüfung](m2-webidl-values.md)
+und [Spezialoperationen/Stringifiern](m2-webidl-special-operations.md).
 Vollständige semantische Validierung und Binding-Generierung
 stehen noch aus.
 

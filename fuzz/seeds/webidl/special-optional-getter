@@ -1,0 +1,1 @@
+interface I { getter long get(optional DOMString key); };

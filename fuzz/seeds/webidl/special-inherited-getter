@@ -1,0 +1,1 @@
+interface Base { getter long get(DOMString key); }; interface I : Base { setter undefined put(DOMString key, long value); };

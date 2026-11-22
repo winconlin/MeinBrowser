@@ -1,0 +1,1 @@
+typedef [Tag] DOMString Key; interface I { getter long get(Key key); };

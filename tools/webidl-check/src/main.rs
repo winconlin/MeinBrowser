@@ -27,7 +27,7 @@ fn run(args: impl Iterator<Item = OsString>) -> Result<(), String> {
     for arg in args {
         if arg == "--help" || arg == "-h" {
             println!(
-                "Aufruf: cargo run -p webidl-check -- DATEI.idl [WEITERE.idl ...]\nPrüft Syntax, Namen, Verweise, Vererbung, Dictionary-Typzyklen, Union-Unterscheidbarkeit, Konstanten-/Defaultwerte und erste Member-/Typregeln.\nAlle benötigten Definitionen gemeinsam angeben.\nKein vollständiger WebIDL-Validator; erzeugt keine Bindings."
+                "Aufruf: cargo run -p webidl-check -- DATEI.idl [WEITERE.idl ...]\nPrüft Syntax, Namen, Verweise, Vererbung, Dictionary-Typzyklen, Union-Unterscheidbarkeit, Konstanten-/Defaultwerte, Spezialoperationen/Stringifier und erste Member-/Typregeln.\nAlle benötigten Definitionen gemeinsam angeben.\nKein vollständiger WebIDL-Validator; erzeugt keine Bindings."
             );
             return Ok(());
         }
@@ -257,6 +257,30 @@ mod tests {
                 "typedef unsigned long long Count; enum State {\"on\"};".to_owned(),
                 format!("/*😀*/\n{declaration}"),
             ];
+            let index =
+                index::build(&sources.iter().map(String::as_str).collect::<Vec<_>>()).unwrap();
+            let members = members::build(&index).unwrap();
+            let error = types::build(&index, &members).unwrap_err();
+            assert_eq!(
+                positioned_error(&paths, &sources, &error.kind, error.location.as_ref(), None),
+                expected
+            );
+        }
+    }
+    #[test]
+    fn special_member_diagnostics_keep_actual_cross_file_type_locations() {
+        let paths = ["api.idl".into(), "types.idl".into()];
+        for (source, expected) in [
+            (
+                "interface I { getter long get(Key key); };",
+                "api.idl:1:31: SpecialOperationKey",
+            ),
+            (
+                "interface I { stringifier attribute Key text; };",
+                "api.idl:1:37: StringifierType",
+            ),
+        ] {
+            let sources = [source.to_owned(), "typedef ByteString Key;".to_owned()];
             let index =
                 index::build(&sources.iter().map(String::as_str).collect::<Vec<_>>()).unwrap();
             let members = members::build(&index).unwrap();

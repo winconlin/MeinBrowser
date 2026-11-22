@@ -14,6 +14,7 @@ pub use mb_base::{Budget, Cancel, Exhausted};
 mod check;
 mod dictionary;
 mod lower;
+mod special;
 mod union;
 mod values;
 
@@ -72,6 +73,13 @@ pub enum ErrorKind {
     DefaultValue,
     UndefinedType,
     DictionaryArgumentDefault,
+    SpecialOperationSignature,
+    SpecialOperationKey,
+    DuplicateSpecialOperation,
+    MissingSpecialGetter,
+    IndexedLength,
+    StringifierType,
+    DuplicateStringifier,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Error {

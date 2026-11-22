@@ -6,7 +6,8 @@ Typdarstellung. Typedefs bleiben Verweise auf einen Graphen. Zusätzlich werden
 erste Form- und Verwendungsvorschriften sowie inzwischen
 [Dictionary-Typzyklen](m2-webidl-dictionary-types.md) und
 [Union-Unterscheidbarkeit](m2-webidl-unions.md) sowie
-[Konstanten und Defaultwerte](m2-webidl-values.md) geprüft. Es wird keine fremde
+[Konstanten und Defaultwerte](m2-webidl-values.md) und
+[Spezialoperationen/Stringifier](m2-webidl-special-operations.md) geprüft. Es wird keine fremde
 Browserimplementierung oder zusätzliche externe Crate verwendet.
 
 ## Standard und geprüfte Regeln
@@ -41,8 +42,8 @@ Die abgeflachten Unionglieder werden inzwischen zusätzlich nach der
 [normativen Unterscheidbarkeitstabelle](m2-webidl-unions.md) geprüft. Hinzu
 kommen [Literalwerte, Enum-/ByteString-Defaults und Dictionary-Argumentregeln](m2-webidl-values.md).
 Das ist noch keine vollständige semantische Validierung. Insbesondere fehlen
-weitere Regeln für ObservableArrays, Collection-/Getter-/Setter-/Stringifier-
-und `toJSON`-Typen, allgemeine Typattribut-Auswertung sowie
+weitere Regeln für ObservableArrays, Collection-Deklarationen und `toJSON`-Typen,
+allgemeine Typattribut-Auswertung sowie
 effektive Overload-Sets. Auch ein erfolgreicher Aufbau erlaubt noch keine
 ungeprüfte Binding-Generierung.
 
@@ -195,8 +196,10 @@ behauptet. Rohprotokolle, Funde und mutierte Korpora bleiben gemäß
    [Union-Unterscheidbarkeit](m2-webidl-unions.md) mit Interface-Intervallen und
    gemeinsamem Besuchslimit prüfen.
 3. Die inzwischen implementierte [Wertprüfung](m2-webidl-values.md) prüfen.
-   Verbleibende Member-Typregeln und allgemeine Extended Attributes einschließlich
-   ihrer Anwendbarkeit und Assoziation implementieren.
+   Die [Spezialoperations-/Stringifier-Prüfung](m2-webidl-special-operations.md)
+   gegen den Standard abgleichen. Verbleibende Collection-/Array-/`toJSON`-Regeln
+   und allgemeine Extended Attributes einschließlich ihrer Anwendbarkeit und
+   Assoziation implementieren.
 4. Effektive Overload-Sets und Binding-Reihenfolgen ergänzen. Erst danach
    Bindings mit der dann aktuellen JavaScript-API erzeugen und gegen DOM-/
    WebIDL-WPT prüfen. M2 bleibt offen; die RegExp-Engine wird hier nicht geändert.

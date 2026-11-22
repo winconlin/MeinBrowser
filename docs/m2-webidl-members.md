@@ -44,14 +44,15 @@ Overloading, Dictionaries und Enumerations. Implementiert sind:
   Kleinschreibung oder Unicode-Normalformen vereinheitlicht.
 
 Diese Prüfungen ersetzen noch keinen vollständigen WebIDL-Validator. Insbesondere
-bleiben `toJSON`-Sonderregeln, weitere Getter-/Setter-/Stringifier- und
-Collection-Regeln, weitere typabhängige Memberregeln, allgemeine Extended
+bleiben `toJSON`-Sonderregeln, Collection-Regeln, weitere typabhängige
+Memberregeln und allgemeine Extended
 Attributes, effektive Overload-Sets und Sprachbindungen
 offen. Erste Typ-/Nullable-Regeln und Typedef-Auswertung sind inzwischen in der
 [Typstufe](m2-webidl-types.md) vorhanden; dazu kommen
 [Dictionary-Typzyklen](m2-webidl-dictionary-types.md) und
 [Union-Unterscheidbarkeit](m2-webidl-unions.md) sowie
-[Konstanten, Defaults und Dictionary-Argumentregeln](m2-webidl-values.md). Ein Erfolg ist
+[Konstanten, Defaults und Dictionary-Argumentregeln](m2-webidl-values.md) sowie
+[Spezialoperationen und Stringifier](m2-webidl-special-operations.md). Ein Erfolg ist
 keine Freigabe zur ungeprüften Codegenerierung.
 
 ## Flache Memberbeschreibung
@@ -192,8 +193,9 @@ und [fuzzing.md](fuzzing.md) privat.
    mit ersten Form- und Kontextregeln samt
    [Dictionary-Typzyklen](m2-webidl-dictionary-types.md) und
    [Union-Unterscheidbarkeit](m2-webidl-unions.md) sowie die inzwischen ergänzte
-   [Wertprüfung](m2-webidl-values.md) prüfen und die
-   verbleibenden typabhängigen Memberregeln validieren.
+   [Wertprüfung](m2-webidl-values.md) sowie
+   [Spezialoperationen/Stringifier](m2-webidl-special-operations.md) prüfen.
+   Verbleibende Collection-, Array- und `toJSON`-Regeln validieren.
 3. Extended Attributes gezielt auswerten und validieren; ihre ungeprüften
    Syntaxknoten dürfen keine Erlaubnis für die Codegenerierung sein.
 4. Effektive Overload-Sets, Unterscheidbarkeit und Binding-Reihenfolgen umsetzen.
