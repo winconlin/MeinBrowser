@@ -51,6 +51,11 @@ test/language/expressions/delete/S11.4.1_A3.3_T4.js
 test/language/expressions/delete/S11.4.1_A3.3_T5.js
 test/language/expressions/delete/S11.4.1_A3.3_T6.js
 test/language/expressions/delete/S8.12.7_A2_T2.js
+test/language/expressions/dynamic-import/always-create-new-promise.js
+test/language/expressions/dynamic-import/await-import-evaluation.js
+test/language/expressions/dynamic-import/eval-self-once-script.js
+test/language/expressions/dynamic-import/for-await-resolution-and-error.js
+test/language/expressions/dynamic-import/import-errored-module.js
 test/language/expressions/exponentiation/applying-the-exp-operator_A1.js
 test/language/expressions/exponentiation/applying-the-exp-operator_A15.js
 test/language/expressions/exponentiation/applying-the-exp-operator_A19.js
@@ -142,6 +147,14 @@ test/language/module-code/instn-iee-star-cycle.js
 test/language/module-code/instn-star-props-nrml.js
 test/language/module-code/namespace/internals/define-own-property.js
 test/language/module-code/namespace/internals/get-str-found-uninit.js
+test/language/module-code/top-level-await/async-module-does-not-block-sibling-modules.js
+test/language/module-code/top-level-await/dfs-invariant.js
+test/language/module-code/top-level-await/dynamic-import-of-waiting-module.js
+test/language/module-code/top-level-await/fulfillment-order.js
+test/language/module-code/top-level-await/module-graphs-does-not-hang.js
+test/language/module-code/top-level-await/module-self-import-async-resolution-ticks.js
+test/language/module-code/top-level-await/pending-async-dep-from-cycle.js
+test/language/module-code/top-level-await/rejection-order.js
 test/language/statements/const/global-use-before-initialization-in-declaration-statement.js
 test/language/statements/const/global-use-before-initialization-in-prior-statement.js
 test/language/statements/for/12.6.3_2-3-a-ii-11.js

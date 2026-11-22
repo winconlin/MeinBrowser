@@ -539,6 +539,8 @@ pub struct Ast {
     atom_index: BTreeMap<Rc<[u16]>, Atom>,
     body: List,
     module: bool,
+    /// Ob das Modul `await` auf oberster Ebene enthält ([[HasTLA]]).
+    top_level_await: bool,
     strict: bool,
     overflow: bool,
     /// Ob der Quelltext aus `eval` oder `Function` stammt, also keine Lage
@@ -604,6 +606,13 @@ impl Ast {
 
     pub fn is_module(&self) -> bool {
         self.module
+    }
+
+    /// Ob das Modul `await` auf oberster Ebene enthält, als Ausdruck, in
+    /// `for await` oder in `await using` ([[HasTLA]], ParseModule,
+    /// Abschnitt 16.2.1.7.1).
+    pub fn has_top_level_await(&self) -> bool {
+        self.top_level_await
     }
 
     /// Ob der Code auf oberster Ebene strikt ist.
@@ -727,6 +736,10 @@ impl Ast {
     pub(crate) fn intern_str(&mut self, text: &str) -> Atom {
         let units: Vec<u16> = text.encode_utf16().collect();
         self.intern(&units)
+    }
+
+    pub(crate) fn mark_top_level_await(&mut self) {
+        self.top_level_await = true;
     }
 
     pub(crate) fn finish(&mut self, body: List, module: bool, strict: bool, source: &[u16]) {

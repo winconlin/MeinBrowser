@@ -386,6 +386,7 @@ impl Parser<'_> {
         }
         self.advance();
         if kind == DeclarationKind::AwaitUsing {
+            self.function.contains_await = true;
             self.expect_keyword("using", Goal::Div)?;
         }
         let node = self.declarations(kind, Declarations::Statement, start)?.0;
@@ -532,6 +533,7 @@ impl Parser<'_> {
                 return Err(self.error(ErrorKind::InvalidYieldOrAwait));
             }
             self.advance();
+            self.function.contains_await = true;
         }
         self.expect(Punctuator::LeftParenthesis, Goal::Div)?;
         self.push_scope(ScopeKind::For);
@@ -564,6 +566,7 @@ impl Parser<'_> {
         if let Some(kind) = kind {
             self.advance();
             if kind == DeclarationKind::AwaitUsing {
+                self.function.contains_await = true;
                 self.expect_keyword("using", Goal::Div)?;
             }
             let (declaration, missing) =

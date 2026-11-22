@@ -19,12 +19,16 @@ cargo run --locked -p testdata
 cargo test --locked -p mb-js script::test262 -- --nocapture
 ```
 
-Die Auswahl steht in `crates/mb-js/src/script/test262/runtime.txt`: 202 Dateien,
-davon 184 positive und 18 mit erwartetem Fehler beim Ausführen oder beim
-Laden eines Moduls. Sie ergeben 361 Sprachvarianten und mit zwei GC-Modi 722
+Die Auswahl steht in `crates/mb-js/src/script/test262/runtime.txt`: 215 Dateien,
+davon 197 positive und 18 mit erwartetem Fehler beim Ausführen oder beim
+Laden eines Moduls. Sie ergeben 380 Sprachvarianten und mit zwei GC-Modi 760
 Ausführungen. Seit Schritt 9c-1 sind 14 Module darunter, mit Live-Bindungen,
 Namensräumen, Zyklen, `import.meta`, JSON-Modulen und Fehlern beim Laden,
-Linken und Auswerten. Geprüft werden unter
+Linken und Auswerten. Seit Teil 9c-2 kommen sieben Module mit `await` auf
+oberster Ebene dazu (Reihenfolge des Erfüllens und Ablehnens, Zyklen,
+Geschwister, die nicht warten, ein Modul, das sich selbst importiert) und
+sechs Scripts mit `import()`, auch eines, das ein noch wartendes Modul
+importiert. Geprüft werden unter
 anderem Exponentiation, `??`, logische Zuweisungen, Pfeilfunktionen, Closures,
 Vorgabewerte, `arguments`, Methoden, Schleifenbindungen, TDZ-Fehler, `try`
 mit `catch` und `finally`, `new` mit [[Construct]] und `new.target`,
@@ -123,8 +127,14 @@ ein Modul, auch die des Tests selbst, sodass ein Test sich selbst importieren
 kann. Kann der Übersetzer eine Hilfsdatei nicht, zählt der Test als
 `Unsupported`. `import.meta` hat vom Host keine Eigenschaften.
 
-Top-Level-`await` und `import()` kommen mit Teil 9c-2; bis dahin meldet der
-Übersetzer sie als nicht unterstützt.
+Seit Teil 9c-2 laufen auch `await` auf oberster Ebene und `import()`, in
+Modulen wie in Scripts. Ein Script hat noch keinen Script Record (Abschnitt
+16.1.4); `import()` darin, auch im Code aus `eval` oder `Function`, fragt
+den Host wie GetActiveScriptOrModule ohne Ergebnis mit dem aktuellen Realm
+als *referrer* (Abschnitt 13.3.10.2). Der Host lädt dann ebenso aus dem
+Verzeichnis des Tests. Kann der Übersetzer eine Hilfsdatei nicht, die erst
+`import()` lädt, zählt der Test auch dann als `Unsupported`, wenn er sonst
+bestanden hätte.
 
 ## Jobs und asynchrone Tests
 
@@ -179,7 +189,7 @@ Schritt 9c-1 waren das die mit `module`, jetzt keine mehr. Eine Panik der Engine
 sie kann nicht erwartet werden. Jede Datei der festen Auswahl muss auch hier
 bestehen.
 
-Mit diesem Stand bestehen 22.414 von 23.296 ausgeführten Dateien und 42.395
+Mit diesem Stand bestehen 23.089 von 23.296 ausgeführten Dateien und 43.431
 von 43.794 Varianten. Seit Schritt 7 gibt es async-Funktionen, `for await`
 und async-Generatoren, seit Schritt 8a `Object` mit allen Funktionen,
 `Object.prototype` und `Function.prototype` vollständig und gebundene
@@ -197,8 +207,9 @@ typisierten Arrays, seit Schritt 8k `WeakMap`, `WeakSet`, `WeakRef` und
 und `statements/class/`. Seit Schritt 9a gibt es `eval`, direkt und
 indirekt, und die Konstruktoren `Function`, `GeneratorFunction`,
 `AsyncFunction` und `AsyncGeneratorFunction`, seit Schritt 9b `with` mit
-@@unscopables und seit Schritt 9c-1 Module mit `import.meta` und
-JSON-Modulen. Seit
+@@unscopables, seit Schritt 9c-1 Module mit `import.meta` und
+JSON-Modulen und seit Teil 9c-2 `import()` und `await` auf oberster Ebene.
+Seit
 Schritt 8c endet keine Datei
 der Harness mehr an `Math.pow`. Bis Schritt 9a fehlte den meisten Dateien,
 die scheiterten, `eval`: Der Name stand im Quelltext aller 520 Dateien, die
@@ -223,6 +234,16 @@ unter `module-code/`, 22 unter `expressions/` (davon 17 unter
 unter `reserved-words/` und `comments/`. Davon erwarten 194 einen frühen
 Fehler, 33 einen beim Laden oder Linken und vier einen beim Auswerten; 171
 müssen normal enden. Keine Datei scheitert neu.
+Mit `import()` und `await` auf oberster Ebene bestehen 675 Dateien mehr:
+422 unter `expressions/dynamic-import/`, 242 unter
+`module-code/top-level-await/`, je vier unter `expressions/class/` und
+`statements/class/` und je eine unter `expressions/object/`, `import/`
+(`import-attributes/json-idempotency.js`) und `module-code/`
+(`verify-dfs.js`). 390 davon sind Scripts mit `import()`, 285 sind Module.
+Die neun unter `class/` und `object/` bilden einen berechneten Namen mit
+`await` auf oberster Ebene. Vier Module erwarten einen Fehler beim
+Auswerten, alle übrigen Dateien müssen normal enden. Keine Datei scheitert
+neu.
 Vor Schritt 8g scheiterten weitere 130 Dateien mit `Test262Error`, in denen
 String-Objekte oder Methoden von `String` stehen: Ohne
 `String.prototype.valueOf` und `toString` wurde ein String-Objekt mit
@@ -263,13 +284,12 @@ Unterklassen: `subclass-WeakMap.js`, `subclass-WeakRef.js` und
 `statements/class/subclass-builtins/` und je `regular-subclassing.js` und
 `super-must-be-called.js` unter
 `statements/class/subclass/builtin-objects/WeakMap/` und `WeakSet/`.
-Es scheitern noch 882 Dateien. In 840 davon kann der Übersetzer ein
-Konstrukt noch nicht (`Unsupported`). 544 sind Scripts: Nach einer Suche in
-den Quelltexten nennen 392 `import()` (elf davon auch `with`), 108 `using`
-oder `await using`, und die übrigen 44 nutzen Templates mit Tag. 296 sind
-Module: 254 haben das Feature `top-level-await`, 35 weitere `dynamic-import`
-und sieben `explicit-resource-management`; die beiden ersten kommen mit Teil
-9c-2. 40 Dateien
+Es scheitern noch 207 Dateien. In 165 davon kann der Übersetzer ein
+Konstrukt noch nicht (`Unsupported`). 154 sind Scripts: Nach einer Suche in
+den Quelltexten nennen 108 `using` oder `await using`, und die übrigen 46
+nutzen Templates mit Tag, zwei davon in einem Aufruf von `import()`. Die
+elf Module haben alle das Feature `explicit-resource-management`, vier davon
+auch `top-level-await`. 40 Dateien
 erschöpfen die Arbeitsschritte: 32 `tco-*.js`, die sich im strikten Modus
 100.000-mal als Endaufruf aufrufen (siehe [unten](#anschluss-für-claude)),
 `comments/S7.4_A5.js` und `S7.4_A6.js` und vier unter `literals/regexp/`
@@ -287,7 +307,7 @@ Fehlschläge gibt der Test mit `--nocapture` aus:
 
 | Varianten | Grund |
 | ---: | --- |
-| 1.349 | Der Übersetzer kann ein Konstrukt noch nicht (`Unsupported`), davon 296 in Modulen |
+| 313 | Der Übersetzer kann ein Konstrukt noch nicht (`Unsupported`), davon elf in Modulen |
 | 48 | Die Arbeitsschritte sind erschöpft |
 | 2 | TypeError im Test: die beiden Dateien mit dem Feature `caller` |
 
@@ -778,10 +798,10 @@ aufzurufenden Gettern.
 ## Anschluss für Claude
 
 1. Die übrigen Teile der Host-API aus `INTERPRETING.md` mit den Teilen der
-   Engine ergänzen, die sie brauchen. Module laufen seit Schritt 9c-1; mit
-   `import()` (Teil 9c-2) lädt der Host Module auch aus Scripts, dann mit
-   dem Script als *referrer*. Neue Anforderungen im Metadatenleser
-   ausdrücklich ergänzen.
+   Engine ergänzen, die sie brauchen. Module laufen seit Teil 9c-1, `import()`
+   und `await` auf oberster Ebene seit Teil 9c-2; mit Script Records wird
+   bei `import()` aus einem Script das Script der *referrer* statt des
+   Realms. Neue Anforderungen im Metadatenleser ausdrücklich ergänzen.
 2. Neue Fälle mit Pfad in die feste Liste aufnehmen, wenn sie auch im
    Belastungsmodus laufen sollen. Für die feste Liste gibt es keine
    Ausnahmeliste; die erwarteten Fehlschläge gelten nur für den Lauf über

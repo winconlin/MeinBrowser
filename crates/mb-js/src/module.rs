@@ -24,10 +24,11 @@
 //! aus vielen Modulen hintereinander belegt keinen Rust-Stapel. Auch
 //! ResolveExport und GetExportedNames laufen so.
 //!
-//! Top-Level-`await` und `import()` kommen mit Teil 9c-2; ein Modul mit
-//! `await` auf oberster Ebene übersetzt der Übersetzer noch nicht, darum
-//! gibt es noch keine Module mit [[HasTLA]] und keinen Zustand
-//! ~evaluating-async~.
+//! Ein Modul mit `await` auf oberster Ebene ([[HasTLA]]) läuft wie der
+//! Rumpf einer async-Funktion; Evaluate führt es und die Module, die auf
+//! es warten, mit den Schritten aus `asynchronous` aus. `import()` beginnt
+//! in `dynamic` und lädt über denselben Hook des Hosts wie die statischen
+//! Importe.
 
 #![forbid(unsafe_code)]
 
@@ -49,9 +50,13 @@ use crate::realm::{Intrinsic, RealmId};
 use crate::script::ScriptError;
 use crate::value::{Kind, Value};
 
+mod asynchronous;
+pub(crate) mod dynamic;
 mod entries;
 pub(crate) mod loading;
 pub(crate) mod namespace;
+
+pub(crate) use dynamic::evaluate_import_call;
 
 pub use loading::LoadPayload;
 
@@ -89,11 +94,15 @@ impl ModuleRequest {
     }
 }
 
-/// Wer ein Modul anfordert (*referrer* in HostLoadImportedModule). Mit
-/// `import()` kommen Scripts und Realms dazu.
+/// Wer ein Modul anfordert (*referrer* in HostLoadImportedModule): ein
+/// Modul mit seinen Importen oder seinem `import()`, sonst der Realm. Ein
+/// Script hat noch keinen Script Record; `import()` aus einem Script oder
+/// aus Code von `eval` und `Function` nennt darum den aktuellen Realm, wie
+/// EvaluateImportCall es für einen fehlenden ScriptOrModule tut.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Referrer {
     Module(ModuleId),
+    Realm(RealmId),
 }
 
 /// [[Status]] eines Cyclic Module Record (Abschnitt 16.2.1.6). Ein
@@ -161,6 +170,17 @@ pub(crate) enum Resolution {
     Found(ResolvedBinding),
 }
 
+/// [[AsyncEvaluationOrder]] eines Cyclic Module Record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AsyncOrder {
+    /// ~unset~
+    Unset,
+    /// Eine Zahl aus IncrementModuleAsyncEvaluationCount.
+    Order(u64),
+    /// ~done~
+    Done,
+}
+
 /// [[EvaluationError]]: ein geworfener Wert oder, wenn die Auswertung
 /// anders abrupt endete (Quote, Speicher, nicht Übersetzbares), diese
 /// Beendigung. Sie kehrt bei jedem weiteren Evaluate wieder.
@@ -212,6 +232,14 @@ pub(crate) struct ModuleRecord {
     /// [[LoadedModules]]
     loaded: Vec<(ModuleRequest, ModuleId)>,
     cycle_root: Option<ModuleId>,
+    /// [[HasTLA]]
+    has_tla: bool,
+    /// [[AsyncEvaluationOrder]]
+    async_evaluation_order: AsyncOrder,
+    /// [[PendingAsyncDependencies]]
+    pending_async_dependencies: usize,
+    /// [[AsyncParentModules]]
+    async_parent_modules: Vec<ModuleId>,
     /// Das Promise aus [[TopLevelCapability]].
     top_level_capability: Option<Persistent>,
     /// Das Objekt für `import.meta` ([[ImportMeta]]).
@@ -291,6 +319,16 @@ impl Agent {
         self.modules.get(module.0).map(|record| record.status)
     }
 
+    /// Der Code eines Source Text Module Record und sein Realm, um den
+    /// Rahmen nach `await` auf oberster Ebene fortzusetzen.
+    pub(crate) fn module_code(&self, module: ModuleId) -> Option<(Rc<Code>, RealmId)> {
+        let record = self.modules.get(module.0)?;
+        match &record.body {
+            Body::SourceText { code, .. } => Some((Rc::clone(code), record.realm)),
+            Body::Synthetic { .. } => None,
+        }
+    }
+
     /// [[RequestedModules]] des Moduls.
     pub fn module_requests(&self, module: ModuleId) -> &[ModuleRequest] {
         self.modules
@@ -341,6 +379,7 @@ impl Agent {
                 functions.push(shared);
             }
             let environment = agent.heap_mut().persist(environment);
+            let has_tla = compiled.code.async_state.is_some();
             let record = ModuleRecord {
                 realm,
                 body: Body::SourceText {
@@ -363,6 +402,10 @@ impl Agent {
                 requested: entries.requested,
                 loaded: Vec::new(),
                 cycle_root: None,
+                has_tla,
+                async_evaluation_order: AsyncOrder::Unset,
+                pending_async_dependencies: 0,
+                async_parent_modules: Vec::new(),
                 top_level_capability: None,
                 import_meta: None,
             };
@@ -420,6 +463,10 @@ impl Agent {
             requested: Vec::new(),
             loaded: Vec::new(),
             cycle_root: None,
+            has_tla: false,
+            async_evaluation_order: AsyncOrder::Unset,
+            pending_async_dependencies: 0,
+            async_parent_modules: Vec::new(),
             top_level_capability: None,
             import_meta: None,
         };
@@ -922,11 +969,12 @@ impl Agent {
 
     /// Evaluate (Abschnitt 16.2.1.6.1.3) des gelinkten Moduls: führt es und
     /// die Module, die es braucht, aus und gibt das Promise aus
-    /// [[TopLevelCapability]] zurück. Ohne Top-Level-`await` ist es danach
-    /// erfüllt oder mit dem Fehler abgelehnt. Endet die Ausführung anders
-    /// abrupt als mit einer Ausnahme, kehrt das als Fehler zurück, und die
-    /// betroffenen Module bleiben so beendet. Ohne bestehende Hostquote gilt
-    /// [`crate::agent::DEFAULT_EXECUTION_STEPS`].
+    /// [[TopLevelCapability]] zurück. Ohne Top-Level-`await` im Graphen ist
+    /// es danach erfüllt oder mit dem Fehler abgelehnt; sonst erst, wenn
+    /// die Jobs die wartenden Module zu Ende geführt haben. Endet die
+    /// Ausführung anders abrupt als mit einer Ausnahme, kehrt das als Fehler
+    /// zurück, und die betroffenen Module bleiben so beendet. Ohne
+    /// bestehende Hostquote gilt [`crate::agent::DEFAULT_EXECUTION_STEPS`].
     pub fn evaluate_module<'s>(
         &mut self,
         scope: &'s Scope,
@@ -985,6 +1033,9 @@ impl Agent {
         }
         let mut stack = Vec::new();
         match self.inner_module_evaluation(module, &mut stack) {
+            // Ein Modul, das noch ~evaluating-async~ ist, erfüllt oder lehnt
+            // das Promise mit AsyncModuleExecutionFulfilled oder
+            // AsyncModuleExecutionRejected.
             Ok(()) => {
                 if self.module_status(module) == Some(ModuleStatus::Evaluated) {
                     let undefined = self.heap().local(scope, Value::UNDEFINED);
@@ -1075,9 +1126,11 @@ impl Agent {
     }
 
     /// InnerModuleEvaluation (Abschnitt 16.2.1.6.1.3.1) als Schleife mit
-    /// einem Stapel offener Module. Ohne Top-Level-`await` läuft jedes
-    /// Modul mit ExecuteModule, sobald die Module, die es braucht, gelaufen
-    /// sind.
+    /// einem Stapel offener Module. Ein Modul läuft mit ExecuteModule,
+    /// sobald die Module, die es braucht, gelaufen sind. Hat es
+    /// Top-Level-`await` oder wartet es auf ein Modul, das noch läuft,
+    /// bekommt es [[AsyncEvaluationOrder]]; ohne offene Abhängigkeiten
+    /// startet es dann mit ExecuteAsyncModule.
     fn inner_module_evaluation(
         &mut self,
         root: ModuleId,
@@ -1124,6 +1177,7 @@ impl Agent {
                         record.status = ModuleStatus::Evaluating;
                         record.dfs_index = index;
                         record.dfs_ancestor_index = index;
+                        record.pending_async_dependencies = 0;
                     }
                     index = index.saturating_add(1);
                     stack.push(module);
@@ -1145,14 +1199,33 @@ impl Agent {
                 continue;
             }
             frames.pop();
-            self.execute_module(module)?;
+            let (has_tla, pending) = self.module_record(module).map_or((false, 0), |record| {
+                (record.has_tla, record.pending_async_dependencies)
+            });
+            if has_tla || pending > 0 {
+                // IncrementModuleAsyncEvaluationCount (Abschnitt 9.6.3).
+                let order = self.module_async_evaluation_count;
+                self.module_async_evaluation_count = order.saturating_add(1);
+                if let Some(record) = self.module_record_mut(module) {
+                    record.async_evaluation_order = AsyncOrder::Order(order);
+                }
+                if pending == 0 {
+                    self.execute_async_module(module)?;
+                }
+            } else {
+                self.execute_module(module, None)?;
+            }
             let (dfs_index, ancestor) = self.module_record(module).map_or((0, 0), |record| {
                 (record.dfs_index, record.dfs_ancestor_index)
             });
             if ancestor == dfs_index {
                 while let Some(required) = stack.pop() {
                     if let Some(record) = self.module_record_mut(required) {
-                        record.status = ModuleStatus::Evaluated;
+                        record.status = if record.async_evaluation_order == AsyncOrder::Unset {
+                            ModuleStatus::Evaluated
+                        } else {
+                            ModuleStatus::EvaluatingAsync
+                        };
                         record.cycle_root = Some(module);
                     }
                     if required == module {
@@ -1168,7 +1241,8 @@ impl Agent {
     }
 
     /// Schritt 16.d von InnerModuleEvaluation für ein angefordertes Modul,
-    /// das fertig ist oder noch auf dem Stapel liegt.
+    /// das fertig ist oder noch auf dem Stapel liegt. Läuft es oder die
+    /// Wurzel seines Zyklus noch asynchron, wartet `module` darauf.
     fn after_evaluation(&mut self, module: ModuleId, required: ModuleId) -> Completion<()> {
         let Some(record) = self.module_record(required) else {
             return Ok(());
@@ -1176,23 +1250,39 @@ impl Agent {
         if !record.is_cyclic() {
             return Ok(());
         }
-        if record.status == ModuleStatus::Evaluating {
+        let required = if record.status == ModuleStatus::Evaluating {
             self.lower_ancestor(module, required, ModuleStatus::Evaluating);
-            return Ok(());
-        }
-        let root = record.cycle_root.unwrap_or(required);
-        if self
-            .module_record(root)
-            .is_some_and(|record| record.evaluation_error.is_some())
-        {
-            return Err(self.rethrow_evaluation_error(root));
+            required
+        } else {
+            let root = record.cycle_root.unwrap_or(required);
+            if self
+                .module_record(root)
+                .is_some_and(|record| record.evaluation_error.is_some())
+            {
+                return Err(self.rethrow_evaluation_error(root));
+            }
+            root
+        };
+        let waiting = self
+            .module_record(required)
+            .is_some_and(|record| matches!(record.async_evaluation_order, AsyncOrder::Order(_)));
+        if waiting {
+            if let Some(record) = self.module_record_mut(module) {
+                record.pending_async_dependencies =
+                    record.pending_async_dependencies.saturating_add(1);
+            }
+            if let Some(record) = self.module_record_mut(required) {
+                record.async_parent_modules.push(module);
+            }
         }
         Ok(())
     }
 
-    /// ExecuteModule (Abschnitt 16.2.1.7.3.2) ohne Top-Level-`await`: ein
-    /// Rahmen mit der Umgebung des Moduls als Kontext, `this` *undefined*.
-    fn execute_module(&mut self, module: ModuleId) -> Completion<()> {
+    /// ExecuteModule (Abschnitt 16.2.1.7.3.2): ein Rahmen mit der Umgebung
+    /// des Moduls als Kontext, `this` *undefined*. Mit Top-Level-`await`
+    /// bekommt er den Zustand `state` aus ExecuteAsyncModule und endet beim
+    /// ersten `await`.
+    fn execute_module(&mut self, module: ModuleId, state: Option<Local<'_>>) -> Completion<()> {
         let Some(record) = self.module_record(module) else {
             return Err(self.throw_error(ErrorKind::TypeError));
         };
@@ -1206,7 +1296,7 @@ impl Agent {
             let heap = agent.heap();
             let environment =
                 heap.local(inner, heap.get_persistent(agent.module_environment(module)));
-            execute_module(agent, inner, realm, &code, &unit, environment).map(|_| ())
+            execute_module(agent, inner, realm, &code, &unit, environment, state).map(|_| ())
         })
     }
 

@@ -201,8 +201,14 @@ pub struct Agent {
     pub(crate) modules: Vec<crate::module::ModuleRecord>,
     /// Die GraphLoadingState Records, die gerade laden, nach ihrer Nummer.
     pub(crate) module_loads: BTreeMap<u64, crate::module::loading::LoadingState>,
-    /// Die Nummer des nächsten GraphLoadingState Record.
+    /// Die PromiseCapability Records der Aufrufe von `import()`, deren
+    /// Modul der Host noch nicht geliefert hat, nach ihrer Nummer.
+    pub(crate) dynamic_imports: BTreeMap<u64, crate::module::dynamic::DynamicImport>,
+    /// Die Nummer des nächsten GraphLoadingState Record oder Aufrufs von
+    /// `import()`; beide teilen sich die Nummern.
     pub(crate) next_module_load: u64,
+    /// [[ModuleAsyncEvaluationCount]] (Abschnitt 9.6).
+    pub(crate) module_async_evaluation_count: u64,
 }
 
 impl Agent {
@@ -238,7 +244,9 @@ impl Agent {
             waiting: crate::waiting::Waiting::default(),
             modules: Vec::new(),
             module_loads: BTreeMap::new(),
+            dynamic_imports: BTreeMap::new(),
             next_module_load: 0,
+            module_async_evaluation_count: 0,
         };
         agent.scope(|agent, scope| -> Result<(), OutOfMemory> {
             for symbol in WellKnownSymbol::ALL {

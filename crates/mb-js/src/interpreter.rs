@@ -103,7 +103,7 @@ use crate::iterator::{
     iterator_close_on_throw, iterator_complete, iterator_step, iterator_step_value, iterator_value,
 };
 use crate::key::{PropertyKey, WellKnownSymbol, array_index, is_private_name};
-use crate::module::{ModuleId, binding_value};
+use crate::module::{ModuleId, Referrer, binding_value, evaluate_import_call};
 use crate::object::{
     PrivateElement, Step, array_create, create_mapped_arguments_object,
     create_unmapped_arguments_object, define_arguments_iterator, get_prototype_of, is_proxy,
@@ -271,7 +271,13 @@ fn start<'s>(
 ) -> Completion<Local<'s>> {
     agent.with_default_execution_budget(|agent| {
         agent.enter_interpreter()?;
-        let result = start_frame(agent, scope, realm, code, unit, this, None, flags);
+        let start = Start {
+            unit,
+            context: None,
+            flags,
+            async_state: None,
+        };
+        let result = start_frame(agent, scope, realm, code, this, start);
         agent.leave_interpreter();
         result
     })
@@ -279,7 +285,10 @@ fn start<'s>(
 
 /// Führt den Code eines Moduls aus dem Syntaxbaum `unit` als neuen Lauf
 /// aus, mit der Umgebung des Moduls als Kontext und `this` *undefined*
-/// (ExecuteModule, Abschnitt 16.2.1.7.3.2).
+/// (ExecuteModule, Abschnitt 16.2.1.7.3.2). Ein Modul mit `await` auf
+/// oberster Ebene bekommt seinen Zustand `state` (AsyncBlockStart,
+/// Abschnitt 27.10.5.2): Hält es bei `await` an, endet der Lauf, und das
+/// Ergebnis ist das Promise aus dem Zustand.
 pub(crate) fn execute_module<'s>(
     agent: &mut Agent,
     scope: &'s Scope,
@@ -287,20 +296,18 @@ pub(crate) fn execute_module<'s>(
     code: &Code,
     unit: &Rc<Ast>,
     environment: Local<'_>,
+    state: Option<Local<'_>>,
 ) -> Completion<Local<'s>> {
     let this = agent.heap().local(scope, Value::UNDEFINED);
     agent.with_default_execution_budget(|agent| {
         agent.enter_interpreter()?;
-        let result = start_frame(
-            agent,
-            scope,
-            realm,
-            code,
-            Some(unit),
-            this,
-            Some(environment),
-            &[],
-        );
+        let start = Start {
+            unit: Some(unit),
+            context: Some(environment),
+            flags: &[],
+            async_state: state,
+        };
+        let result = start_frame(agent, scope, realm, code, this, start);
         agent.leave_interpreter();
         result
     })
@@ -318,33 +325,35 @@ pub(crate) fn execute_eval<'s>(
     this: Local<'_>,
     context: Local<'_>,
 ) -> Completion<Local<'s>> {
-    start_frame(
-        agent,
-        scope,
-        realm,
-        code,
-        Some(unit),
-        this,
-        Some(context),
-        &[],
-    )
+    let start = Start {
+        unit: Some(unit),
+        context: Some(context),
+        flags: &[],
+        async_state: None,
+    };
+    start_frame(agent, scope, realm, code, this, start)
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "die Teile eines Rahmens, der nicht zu einer Funktion gehört"
-)]
+/// Was ein Rahmen, der nicht zu einer Funktion gehört, außer Code und
+/// `this` braucht: den Syntaxbaum für die Konstanten, den Kontext, die
+/// Register, die mit *true* beginnen, und im Code eines Moduls mit `await`
+/// auf oberster Ebene den Zustand.
+struct Start<'a, 'u, 'l> {
+    unit: Option<&'u Rc<Ast>>,
+    context: Option<Local<'l>>,
+    flags: &'a [u32],
+    async_state: Option<Local<'l>>,
+}
+
 fn start_frame<'s>(
     agent: &mut Agent,
     scope: &'s Scope,
     realm: RealmId,
     code: &Code,
-    unit: Option<&Rc<Ast>>,
     this: Local<'_>,
-    context: Option<Local<'_>>,
-    flags: &[u32],
+    start: Start<'_, '_, '_>,
 ) -> Completion<Local<'s>> {
-    let pool = constant_pool(agent, scope, code, unit)?;
+    let pool = constant_pool(agent, scope, code, start.unit)?;
     let count = HEADER.checked_add(code.register_count());
     let Some(header) = count.and_then(|count| agent.heap_mut().push_registers(count)) else {
         return Err(agent.throw_error(ErrorKind::RangeError));
@@ -352,14 +361,17 @@ fn start_frame<'s>(
     let base = place(header, HEADER);
     let heap = agent.heap();
     heap.set_register(header, heap.get(pool));
-    if let Some(context) = context {
+    if let Some(context) = start.context {
         heap.set_register(place(header, POOL - CONTEXT), heap.get(context));
     }
     heap.set_register(base, heap.get(this));
-    for &flag in flags {
+    for &flag in start.flags {
         if let Ok(flag) = usize::try_from(flag) {
             heap.set_register(place(base, flag), Value::TRUE);
         }
+    }
+    if let (Some(state), Some(register)) = (start.async_state, code.async_state_register()) {
+        heap.set_register(place(base, register), heap.get(state));
     }
     let accumulator = heap.local(scope, Value::UNDEFINED);
     let activation = Activation {
@@ -639,8 +651,8 @@ fn resume_suspended<'s>(
     resume_saved(agent, scope, function, frame, offset, value, started)
 }
 
-/// Setzt den bei `await` angehaltenen Rahmen der async-Funktion mit dem
-/// Zustand `state` fort (RunSuspendedContext in Await, Abschnitt
+/// Setzt den bei `await` angehaltenen Rahmen der async-Funktion oder des
+/// Moduls mit `await` auf oberster Ebene mit dem Zustand `state` fort (RunSuspendedContext in Await, Abschnitt
 /// 27.10.5.3, Schritte 3.a und 5.a): ein neuer Lauf mit dem Rahmen aus dem
 /// Zustand und `value` im Akkumulator; [`Op::ResumeAsync`] wirft ihn bei
 /// [`Resumption::Throw`]. Der Lauf endet, wenn der Rahmen wieder anhält
@@ -675,7 +687,20 @@ fn resume_awaiting(
         return Err(agent.throw_error(ErrorKind::TypeError));
     };
     let started = |heap: &Heap| start_running(heap, heap.get(state), resumption);
-    resume_saved(agent, scope, function, frame, offset, value, started)?;
+    // Der Zustand eines Moduls mit `await` auf oberster Ebene nennt statt
+    // einer Funktion die Nummer des Moduls.
+    let index = agent.heap().get(function).as_int32();
+    match index.and_then(|index| usize::try_from(index).ok()) {
+        Some(index) => {
+            let Some(parts) = agent.module_code(ModuleId::from_index(index)) else {
+                return Err(agent.throw_error(ErrorKind::TypeError));
+            };
+            resume_code(agent, scope, parts, frame, offset, value, started)?;
+        }
+        None => {
+            resume_saved(agent, scope, function, frame, offset, value, started)?;
+        }
+    }
     Ok(())
 }
 
@@ -737,6 +762,19 @@ fn resume_saved<'s>(
         return Err(agent.throw_error(ErrorKind::TypeError));
     };
     let (code, _) = compiled(agent, scope, shared)?;
+    resume_code(agent, scope, (code, realm), frame, offset, value, started)
+}
+
+/// Dasselbe für den Code `code` mit seinem Realm.
+fn resume_code<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    (code, realm): (Rc<Code>, RealmId),
+    frame: Local<'_>,
+    offset: usize,
+    value: Local<'_>,
+    started: impl FnOnce(&Heap),
+) -> Completion<(Ending, Local<'s>)> {
     let length = match agent.heap().get(frame).kind() {
         Kind::Internal(cell) => agent.heap().slot_count(cell),
         _ => 0,
@@ -1228,13 +1266,17 @@ fn constant_pool<'s>(
                 Constant::EvalSite(_) | Constant::EvalInstantiation(_) => {
                     agent.heap().local(inner, Value::UNDEFINED)
                 }
+                // Code, der zu keinem Modul gehört, kann nur `import()`
+                // enthalten, nicht `import.meta`.
                 Constant::Module => {
                     let module = unit.and_then(|unit| agent.module_of_unit(unit));
-                    let Some(index) = module.and_then(|module| i32::try_from(module.index()).ok())
-                    else {
-                        return Err(agent.throw_error(ErrorKind::TypeError));
+                    let value = match module {
+                        Some(module) => Value::int32(
+                            i32::try_from(module.index()).map_err(|_| Abrupt::OutOfMemory)?,
+                        ),
+                        None => Value::UNDEFINED,
                     };
-                    agent.heap().local(inner, Value::int32(index))
+                    agent.heap().local(inner, value)
                 }
             };
             let heap = agent.heap();
@@ -3034,6 +3076,21 @@ impl<'c> Frame<'c, '_> {
                 };
                 let meta = agent.import_meta(scope, ModuleId::from_index(module))?;
                 self.set_accumulator(agent, meta);
+            }
+            Op::ImportCall => {
+                let module = self.constant(agent, scope, first);
+                let index = agent.heap().get(module).as_int32();
+                // GetActiveScriptOrModule, Schritte 1 und 2 von
+                // EvaluateImportCall: Ohne Modul gilt der aktuelle Realm.
+                let referrer = match index.and_then(|index| usize::try_from(index).ok()) {
+                    Some(module) => Referrer::Module(ModuleId::from_index(module)),
+                    None => Referrer::Realm(self.realm),
+                };
+                let specifier = self.register(agent, scope, second);
+                let options = self.accumulator_copy(agent, scope);
+                let promise =
+                    evaluate_import_call(agent, scope, self.realm, referrer, specifier, options)?;
+                self.set_accumulator(agent, promise);
             }
             Op::Add
             | Op::Sub

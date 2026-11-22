@@ -76,6 +76,9 @@
 //! und kehrt mit dem Promise der Funktion zurück; ein Job setzt ihn fort, und
 //! der Befehl danach, [`Op::ResumeAsync`], wirft bei einer Ablehnung. Jedes
 //! [`Op::Return`] folgt auf [`Op::ResolveAsync`] oder [`Op::RejectAsync`].
+//! Der Code eines Moduls mit `await` auf oberster Ebene ist ebenso gebaut,
+//! nur ohne [`Op::BeginAsync`]: Den Zustand legt Evaluate vor dem Start in
+//! sein Register.
 //! `for await` hält seinen Iterator in zwei Registern
 //! ([`Op::GetAsyncIterator`]) und wartet mit [`Op::Await`] auf jedes
 //! Ergebnis von `next` und `return`.
@@ -267,6 +270,13 @@ ops! {
     /// der Konstante ([`Constant::Module`]). Das Objekt entsteht beim
     /// ersten Mal.
     ImportMeta [Constant],
+    /// `import(…)` (EvaluateImportCall, Abschnitt 13.3.10.2, ab Schritt 8)
+    /// mit dem Bezeichner im Register und den Optionen im Akkumulator:
+    /// Akkumulator := ein neues Promise, das der Host mit dem Namensraum
+    /// des Moduls erfüllt oder ablehnt. Die Konstante
+    /// ([`Constant::Module`]) nennt das Modul, aus dessen Code der Aufruf
+    /// stammt, als *referrer*.
+    ImportCall [Constant, Register],
 
     /// Ein neues gewöhnliches Objekt mit %Object.prototype%.
     CreateObject [],
@@ -728,7 +738,8 @@ pub enum Constant {
     /// [`Op::DeclareVar`]. Er wird zum Atom.
     EvalBinding(EvalBinding),
     /// Das Modul, zu dessen Syntaxbaum der Code gehört, für
-    /// [`Op::ImportMeta`]. Es wird zur Nummer des Moduls.
+    /// [`Op::ImportMeta`] und [`Op::ImportCall`]. Es wird zur Nummer des
+    /// Moduls, für Code, der zu keinem Modul gehört, zu *undefined*.
     Module,
 }
 
@@ -1050,7 +1061,8 @@ pub struct Code {
     /// [`Op::CreateGenerator`].
     pub(crate) generator: Option<u32>,
     /// Das Register mit dem Zustand im Code einer async-Funktion, ab
-    /// [`Op::BeginAsync`].
+    /// [`Op::BeginAsync`], und im Code eines Moduls mit `await` auf oberster
+    /// Ebene von Beginn an.
     pub(crate) async_state: Option<u32>,
     /// Ob der Code der einer async-Generatorfunktion ist: Er hat das
     /// Register aus `generator`, aber keins für einen Zustand.
@@ -1113,7 +1125,8 @@ impl Code {
             .and_then(|register| usize::try_from(register).ok())
     }
 
-    /// Das Register mit dem Zustand, im Code einer async-Funktion.
+    /// Das Register mit dem Zustand, im Code einer async-Funktion und eines
+    /// Moduls mit `await` auf oberster Ebene.
     pub fn async_state_register(&self) -> Option<usize> {
         self.async_state
             .and_then(|register| usize::try_from(register).ok())

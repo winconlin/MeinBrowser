@@ -21,8 +21,10 @@
 //! Modul aus Quelltext; jeder andere Typ, ein anderer Bezeichner oder eine
 //! fehlende Datei beenden das Laden mit einem TypeError, ein früher Fehler
 //! mit einem SyntaxError. Jede Datei gibt je Typ einmal ein Modul, auch die
-//! des Tests selbst. Kann der Übersetzer eine Hilfsdatei nicht, merkt sich
-//! der Host das, und der Läufer zählt den Test als nicht unterstützt.
+//! des Tests selbst, gleich ob ein Modul oder `import()` fragt; Code aus
+//! einem Script fragt mit dem Realm als *referrer*. Kann der Übersetzer eine
+//! Hilfsdatei nicht, merkt sich der Host das, und der Läufer zählt den Test
+//! als nicht unterstützt.
 
 use std::any::Any;
 use std::cell::RefCell;
@@ -69,14 +71,21 @@ impl Test262Host {
         self.printed.borrow().clone()
     }
 
-    /// Merkt sich das Modul des Tests in der Datei `file`; Bezeichner
-    /// beziehen sich auf ihr Verzeichnis.
+    /// Merkt sich die Datei `file` des Tests; Bezeichner beziehen sich auf
+    /// ihr Verzeichnis, auch für `import()` aus einem Script.
+    pub(super) fn set_test_file(&self, file: &Path) {
+        self.modules.borrow_mut().directory = file.parent().map(Path::to_path_buf);
+    }
+
+    /// Merkt sich das Modul des Tests in der Datei `file`.
     pub(super) fn set_test_module(&self, file: &Path, module: ModuleId) {
-        let mut modules = self.modules.borrow_mut();
-        modules.directory = file.parent().map(Path::to_path_buf);
+        self.set_test_file(file);
         if let Some(name) = file.file_name() {
             let name = units(&name.to_string_lossy());
-            modules.loaded.insert((name, false), module);
+            self.modules
+                .borrow_mut()
+                .loaded
+                .insert((name, false), module);
         }
     }
 
@@ -204,8 +213,11 @@ impl Host for Test262Host {
         request: &ModuleRequest,
         payload: LoadPayload,
     ) -> Completion<()> {
-        let Referrer::Module(module) = referrer;
-        let result = match agent.module_realm(module) {
+        let realm = match referrer {
+            Referrer::Module(module) => agent.module_realm(module),
+            Referrer::Realm(realm) => Some(realm),
+        };
+        let result = match realm {
             Some(realm) => self.module_for(agent, scope, realm, request),
             None => Err(agent.throw_error(ErrorKind::TypeError)),
         };

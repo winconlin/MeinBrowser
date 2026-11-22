@@ -1,5 +1,6 @@
-//! Tests für Module (Schritt 9c-1): Laden über einen Host, Link, Evaluate,
-//! Import-Bindungen, Namensräume, `import.meta` und JSON-Module.
+//! Tests für Module (Schritt 9c): Laden über einen Host, Link, Evaluate,
+//! Import-Bindungen, Namensräume, `import.meta`, JSON-Module,
+//! Top-Level-`await` und `import()`.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -37,8 +38,10 @@ impl Host for Sources {
     ) -> Completion<()> {
         let name = String::from_utf16_lossy(&request.specifier);
         self.loads.borrow_mut().push(name.clone());
-        let Referrer::Module(referrer_module) = referrer;
-        let realm = agent.module_realm(referrer_module).expect("Realm");
+        let realm = match referrer {
+            Referrer::Module(module) => agent.module_realm(module).expect("Realm"),
+            Referrer::Realm(realm) => realm,
+        };
         let known = self.loaded.borrow().get(&name).copied();
         let result = match (known, self.sources.get(&name)) {
             (Some(module), _) => Ok(module),
@@ -591,6 +594,250 @@ fn an_evaluation_cut_short_by_the_host_reports_it_again() {
         }
         let a = host.loaded.borrow().get("a").copied().expect("a");
         assert_eq!(agent.module_status(a), Some(ModuleStatus::Evaluated));
+        assert!(agent.take_exception(scope).is_none());
+    });
+    assert_eq!(agent.heap_mut().push_registers(0), Some(0));
+    agent.heap_mut().collect();
+    agent.heap().verify().expect("Heap");
+}
+
+#[test]
+fn top_level_await_suspends_the_module_and_its_importers() {
+    check(&[
+        (
+            &[("main", "globalThis.out = await Promise.resolve('ok');")],
+            "ok",
+        ),
+        // Ein Modul ohne Abhängigkeit vom wartenden läuft sofort.
+        (
+            &[
+                (
+                    "main",
+                    "import 'a'; import 'b'; globalThis.out = log + 'm';",
+                ),
+                ("a", "globalThis.log = 'a1'; await 0; log += 'a2';"),
+                ("b", "log += 'b';"),
+            ],
+            "a1ba2m",
+        ),
+        (
+            &[
+                ("main", "import 'b'; globalThis.out = log + 'm';"),
+                ("b", "import 'a'; log += 'b';"),
+                ("a", "globalThis.log = 'a1'; await null; log += 'a2';"),
+            ],
+            "a1a2bm",
+        ),
+        // Im Zyklus wartet die Wurzel auf das Modul mit `await`.
+        (
+            &[
+                ("main", "import 'a'; globalThis.out = log;"),
+                ("a", "import 'b'; log += 'a';"),
+                (
+                    "b",
+                    "import 'a'; globalThis.log = 'b1'; await 0; log += 'b2';",
+                ),
+            ],
+            "b1b2a",
+        ),
+        (
+            &[(
+                "main",
+                "let s = ''; for await (const x of [Promise.resolve(1), 2]) s += x; \
+                 globalThis.out = s;",
+            )],
+            "12",
+        ),
+        (
+            &[(
+                "main",
+                "if (false) await 0; globalThis.out = typeof await undefined;",
+            )],
+            "undefined",
+        ),
+        (
+            &[
+                ("main", "import 'a'; globalThis.out = 'nie';"),
+                ("a", "await 0; throw new TypeError();"),
+            ],
+            "Evaluate: TypeError",
+        ),
+        (
+            &[
+                ("main", "import 'a'; import 'b'; globalThis.out = 'nie';"),
+                ("a", "await Promise.reject(new RangeError());"),
+                ("b", "import 'a'; globalThis.out = 'nie';"),
+            ],
+            "Evaluate: RangeError",
+        ),
+        (
+            &[(
+                "main",
+                "try { await Promise.reject(1); } catch (e) { globalThis.out = 'gefangen' + e; }",
+            )],
+            "gefangen1",
+        ),
+    ]);
+}
+
+#[test]
+fn dynamic_import_resolves_to_the_namespace() {
+    check(&[
+        (
+            &[
+                (
+                    "main",
+                    "import('a').then(ns => { globalThis.out = ns.x; });",
+                ),
+                ("a", "export const x = 'dynamisch';"),
+            ],
+            "dynamisch",
+        ),
+        (
+            &[
+                (
+                    "main",
+                    "import * as eigen from 'a'; const ns = await import('a'); \
+                     globalThis.out = ns === eigen && ns.x;",
+                ),
+                ("a", "export let x = 'derselbe';"),
+            ],
+            "derselbe",
+        ),
+        (
+            &[
+                (
+                    "main",
+                    "const [a, b] = await Promise.all([import('a'), import('a')]); \
+                     globalThis.out = a === b;",
+                ),
+                ("a", "globalThis.count = (globalThis.count ?? 0) + 1;"),
+            ],
+            "true",
+        ),
+        (
+            &[
+                (
+                    "main",
+                    "const ns = await import('a.json', { with: { type: 'json' } }); \
+                     globalThis.out = ns.default.v;",
+                ),
+                ("a.json", "{\"v\": 7}"),
+            ],
+            "7",
+        ),
+        // Aus einem Script nennt `import()` den Realm.
+        (
+            &[
+                (
+                    "main",
+                    "(0, eval)(\"import('a')\").then(ns => { globalThis.out = ns.x; });",
+                ),
+                ("a", "export const x = 'aus dem Script';"),
+            ],
+            "aus dem Script",
+        ),
+        (
+            &[
+                ("main", "globalThis.out = await import('a');"),
+                ("a", "export function then(resolve) { resolve(42); }"),
+            ],
+            "42",
+        ),
+    ]);
+}
+
+#[test]
+fn dynamic_import_rejects_with_errors_from_options_loading_and_evaluation() {
+    let reject = |call: &str| {
+        format!(
+            "{call}.then(() => {{ globalThis.out = 'erfüllt'; }}, e => {{ globalThis.out = e.name ?? String(e); }});"
+        )
+    };
+    let cases = [
+        (reject("import('fehlt')"), "TypeError"),
+        (reject("import('a', 1)"), "TypeError"),
+        (reject("import('a', { with: 1 })"), "TypeError"),
+        (reject("import('a', { with: { type: 1 } })"), "TypeError"),
+        (
+            reject("import('a', { with: { unbekannt: 'x' } })"),
+            "TypeError",
+        ),
+        (
+            reject("import('a', { get with() { throw new URIError(); } })"),
+            "URIError",
+        ),
+        // Erst alle Werte lesen, dann ihre Art prüfen.
+        (
+            reject("import('a', { with: { a: 1, get b() { throw new URIError(); } } })"),
+            "URIError",
+        ),
+        (
+            reject("import({ toString() { throw new EvalError(); } })"),
+            "EvalError",
+        ),
+        (reject("import('wirft')"), "RangeError"),
+        (reject("import('link')"), "SyntaxError"),
+        (reject("import('syntax')"), "SyntaxError"),
+        (reject("import('a', undefined)"), "erfüllt"),
+        (reject("import('a', { with: undefined })"), "erfüllt"),
+    ];
+    let mut failures = Vec::new();
+    for (main, expected) in &cases {
+        let sources = [
+            ("main", main.as_str()),
+            ("a", "export {};"),
+            ("wirft", "throw new RangeError();"),
+            ("link", "import { fehlt } from 'a';"),
+            ("syntax", "export {"),
+        ];
+        let (actual, _) = run(&sources);
+        if actual != *expected {
+            failures.push(format!("{main}\n  erwartet {expected}, bekommen {actual}"));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn an_async_evaluation_cut_short_by_the_host_reports_it_again() {
+    use crate::agent::{Budget, Exhausted};
+    let host = Rc::new(Sources {
+        sources: [("a", "await 0; while (true) {}")]
+            .into_iter()
+            .map(|(name, source)| (name.to_owned(), source.to_owned()))
+            .collect(),
+        loaded: RefCell::new(BTreeMap::new()),
+        loads: RefCell::new(Vec::new()),
+    });
+    let mut agent = Agent::with_options(Options {
+        verify: true,
+        ..Options::default()
+    })
+    .expect("Speicher");
+    agent.set_host(host.clone());
+    let realm = agent.create_realm().expect("Speicher");
+    agent.scope(|agent, scope| {
+        let main = agent
+            .parse_module(scope, realm, &units("import 'a'; globalThis.out = 1;"))
+            .expect("Modul");
+        agent.load_requested_modules(scope, main).expect("Laden");
+        agent.link_module(main).expect("Link");
+        let steps = Err(Abrupt::Exhausted(Exhausted::Steps));
+        let result = agent.with_execution_budget(Rc::new(Budget::new(1_000)), |agent| {
+            let promise = agent.evaluate_module(scope, main)?;
+            assert_eq!(agent.promise_state(promise), Some(PromiseState::Pending));
+            agent.run_jobs()
+        });
+        assert_eq!(result, steps);
+        let a = host.loaded.borrow().get("a").copied().expect("a");
+        for module in [a, main] {
+            assert_eq!(agent.module_status(module), Some(ModuleStatus::Evaluated));
+            let again = agent.with_execution_budget(Rc::new(Budget::new(1_000)), |agent| {
+                agent.evaluate_module(scope, module).map(|_| ())
+            });
+            assert_eq!(again, steps);
+        }
         assert!(agent.take_exception(scope).is_none());
     });
     assert_eq!(agent.heap_mut().push_registers(0), Some(0));
