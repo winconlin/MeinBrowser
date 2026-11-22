@@ -40,7 +40,7 @@
 //! in Scripts entscheidet GlobalDeclarationInstantiation, ob es die
 //! globale Bindung gibt, und setzt dafür ein Register.
 //!
-//! Noch nicht unterstützt sind `with`, `import()`, Templates mit Tag und
+//! Noch nicht unterstützt sind `import()`, Templates mit Tag und
 //! Funktionsdeklarationen mit Marke (Anhang B.3.1).
 //!
 //! Klassen: Eine Klasse hat einen eigenen Bereich mit ihrem Namen als
@@ -179,7 +179,8 @@ use crate::ast::{
 use crate::bigint::BigInt;
 use crate::bytecode::{
     BindingKind, Code, Constant, ContextBinding, ContextLayout, DynamicName, Emitter, Enclosing,
-    EvalSite, Fallback, FunctionScope, FunctionTemplate, HandlerKind, Label, Op, TooLarge,
+    EvalSite, Extension, Fallback, FunctionScope, FunctionTemplate, HandlerKind, Label, Op,
+    TooLarge,
 };
 use crate::number;
 use crate::value::Value;
@@ -313,8 +314,11 @@ struct BlockScope {
     /// Die Plätze mit den privaten Namen einer Klasse.
     privates: BTreeMap<Atom, u32>,
     /// Der Platz für die Erweiterung, in die ein nicht striktes `eval`
-    /// Bindungen aus `var` legt ([`DynamicName`]).
+    /// Bindungen aus `var` legt, oder für das Objekt einer
+    /// `with`-Anweisung ([`DynamicName`]).
     extension: Option<u32>,
+    /// Ob der Bereich der einer `with`-Anweisung ist.
+    with: bool,
     /// Ob der Bereich der var-Bereich ist, in dem ein solches `eval` sie
     /// anlegt.
     var_scope: bool,
@@ -1752,7 +1756,7 @@ impl<'a> Compiler<'a> {
                     self.var_declared_names(alternate, names)?;
                 }
             }
-            Node::While { body, .. } | Node::DoWhile { body, .. } => {
+            Node::While { body, .. } | Node::DoWhile { body, .. } | Node::With { body, .. } => {
                 self.var_declared_names(body, names)?;
             }
             Node::For { init, body, .. } => {
@@ -1840,7 +1844,10 @@ impl<'a> Compiler<'a> {
                     }
                 }
             }
-            Node::While { body, .. } | Node::DoWhile { body, .. } | Node::Labeled { body, .. } => {
+            Node::While { body, .. }
+            | Node::DoWhile { body, .. }
+            | Node::Labeled { body, .. }
+            | Node::With { body, .. } => {
                 self.hoisting_walk(body, path, excluded, found);
             }
             Node::For { init, body, .. } => {
@@ -2179,7 +2186,7 @@ impl<'a> Compiler<'a> {
     /// ResolveBinding (Abschnitt 9.4.2) beim Übersetzen mit den
     /// Erweiterungen auf dem Weg: Liegt zwischen der Stelle und der Bindung
     /// ein var-Bereich, in dem ein nicht striktes `eval` Bindungen anlegen
-    /// kann, ist der Name dynamisch. Der Weg beginnt im Bereich mit der
+    /// kann, oder eine `with`-Anweisung, ist der Name dynamisch. Der Weg beginnt im Bereich mit der
     /// Stelle `from` in `scopes`, ohne für die innerste Stelle.
     fn resolve_from(&self, from: Option<usize>, atom: Atom, node: NodeId) -> Result<Resolved> {
         let mut depth: u32 = 0;
@@ -2193,7 +2200,11 @@ impl<'a> Compiler<'a> {
                 break;
             }
             if let Some(slot) = scope.extension {
-                extensions.push((depth, slot));
+                extensions.push(Extension {
+                    depth,
+                    slot,
+                    with: scope.with,
+                });
             }
             if scope.has_context() {
                 depth = depth.checked_add(1).ok_or(CompileError::TooLarge)?;
@@ -2217,7 +2228,11 @@ impl<'a> Compiler<'a> {
                         break 'outer;
                     }
                     if let Some(slot) = layout.extension {
-                        extensions.push((depth, slot));
+                        extensions.push(Extension {
+                            depth,
+                            slot,
+                            with: layout.with,
+                        });
                     }
                     depth = depth.checked_add(1).ok_or(CompileError::TooLarge)?;
                 }
@@ -2409,6 +2424,7 @@ impl<'a> Compiler<'a> {
                 derived: scope.derived,
                 privates: scope.privates.clone(),
                 extension: scope.extension,
+                with: scope.with,
                 var_scope: scope.var_scope,
                 catch: scope.catch,
                 function_scope: scope.function_scope,
@@ -2518,8 +2534,32 @@ impl<'a> Compiler<'a> {
                 handler,
                 finalizer,
             } => self.try_statement(block, handler, finalizer),
+            Node::With { object, body } => self.with_statement(node, object, body),
             _ => Err(self.unsupported(node)),
         }
+    }
+
+    /// `with` (Abschnitt 14.11.2): ToObject des Werts, dann ein Kontext mit
+    /// dem Objekt im einzigen Platz als Erweiterung für den Rumpf. Dessen
+    /// Namen löst [`Compiler::resolve_from`] zuerst über das Objekt auf.
+    /// Endet der Rumpf ohne Wert, ist der Wert *undefined*.
+    fn with_statement(&mut self, node: NodeId, object: NodeId, body: NodeId) -> Result<()> {
+        self.expression(object)?;
+        self.position(node)?;
+        self.emit(Op::ToObject, &[])?;
+        let mark = self.next_register;
+        let mut scope = BlockScope {
+            with: true,
+            ..BlockScope::default()
+        };
+        let slot = scope.add_slot()?;
+        scope.extension = Some(slot);
+        self.emit(Op::PushContext, &[i64::from(scope.slots)])?;
+        self.emit(Op::StaContext, &[0, i64::from(slot)])?;
+        self.scopes.push(scope);
+        self.reset_completion()?;
+        self.statement(body)?;
+        self.leave_block(mark)
     }
 
     fn reset_completion(&mut self) -> Result<()> {
@@ -4848,6 +4888,27 @@ impl<'a> Compiler<'a> {
                 self.release_reference(reference);
                 Ok(true)
             }
+            // Führt der Weg des Namens über eine `with`-Anweisung, ist
+            // `this` WithBaseObject der Referenz.
+            Node::Identifier(atom) => match self.resolve_name(atom, inner)? {
+                Resolved::Dynamic(dynamic)
+                    if dynamic.extensions.iter().any(|extension| extension.with) =>
+                {
+                    let constant = self.constant(Constant::Dynamic(dynamic))?;
+                    let register = self.allocate()?;
+                    let operands = [constant, i64::from(register)];
+                    self.emit(Op::ResolveDynamic, &operands)?;
+                    self.emit(Op::WithBaseObject, &operands)?;
+                    self.emit(Op::Star, &[i64::from(this)])?;
+                    self.emit(Op::LdaDynamic, &operands)?;
+                    self.release(register);
+                    Ok(true)
+                }
+                _ => {
+                    self.expression(head)?;
+                    Ok(false)
+                }
+            },
             _ => {
                 self.expression(head)?;
                 Ok(false)
@@ -4866,7 +4927,9 @@ impl<'a> Compiler<'a> {
             self.emit(Op::LdaUndefined, &[])?;
             self.emit(Op::Star, &[register + 1])?;
         }
-        let op = if !has_this && self.is_direct_eval(node) {
+        // Auch mit `this` aus einer `with`-Anweisung ist der Aufruf des
+        // Bezeichners `eval` direkt (Abschnitt 13.3.6.1, Schritt 6).
+        let op = if self.is_direct_eval(node) {
             Op::CallEval
         } else if self.tail_calls.contains(&node) {
             Op::TailCall
@@ -4930,6 +4993,7 @@ impl<'a> Compiler<'a> {
             arguments,
             spread,
             strict: self.is_strict(),
+            tail: self.tail_calls.contains(&node),
             function,
             outer,
             names,

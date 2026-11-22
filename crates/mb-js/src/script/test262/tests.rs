@@ -288,7 +288,7 @@ fn runtime_negative_requires_the_exact_error_and_phase() {
         "throw new Error('TypeError')",
         "assert.sameValue(1, 2)",
         "let = ;",
-        "with ({}) {}",
+        "String.raw`x`",
         "while (true) {}",
     ] {
         assert_ne!(run_negative(source), wanted, "{source}");
@@ -297,7 +297,8 @@ fn runtime_negative_requires_the_exact_error_and_phase() {
         ordinary("while (true) {}"),
         Outcome::Host(Abrupt::Exhausted(crate::agent::Exhausted::Steps))
     );
-    assert_eq!(ordinary("with ({}) {}"), Outcome::Unsupported);
+    // Templates mit Tag kann der Übersetzer noch nicht.
+    assert_eq!(ordinary("String.raw`x`"), Outcome::Unsupported);
 }
 
 #[test]

@@ -162,6 +162,10 @@ mod tests {
             "function f(){eval('var g=f');return g();}f()",
             "var s='0;'.repeat(9999);for(;;)eval(s)",
             "eval('x'.repeat(99999))",
+            "with({})for(;;){}",
+            "var o={get x(){for(;;){}}};with(o)x",
+            "var p=new Proxy({},{has(){for(;;){}}});with(p)y",
+            "with({get [Symbol.unscopables](){for(;;){}},x:1})x",
         ] {
             assert_eq!(
                 both(source),
@@ -199,7 +203,7 @@ mod tests {
         );
         assert_eq!(both("null.x"), Outcome::Error(ErrorKind::TypeError));
         assert!(matches!(both("let = ;"), Outcome::Syntax(_)));
-        assert!(matches!(both("with ({}) {}"), Outcome::Unsupported(_)));
+        assert!(matches!(both("f`x`"), Outcome::Unsupported(_)));
     }
 
     #[test]
