@@ -5,6 +5,7 @@ use mb_webidl::parser::{self, Budget, Document, ErrorKind, Kind as NodeKind, Lim
 use mb_webidl::{index, members, types};
 
 mod collections;
+mod json;
 mod special;
 mod values;
 
@@ -24,6 +25,7 @@ pub fn webidl(data: &[u8]) {
     values::model(data);
     special::model(data);
     collections::model(data);
+    json::model(data);
 }
 
 fn tokens(source: &str) {
@@ -628,6 +630,7 @@ fn check_types(index: &index::Index<'_>, model: &members::Members<'_>, types: &t
             );
         }
         assert!(types.category(id).is_some());
+        assert!(types.is_json(id).is_some());
     }
     for (id, definition) in index.definitions() {
         if definition.kind == index::DefinitionKind::Typedef {

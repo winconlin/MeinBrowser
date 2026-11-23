@@ -1,0 +1,1 @@
+dictionary D {}; partial dictionary D { any opaque; }; interface I { D toJSON(); };

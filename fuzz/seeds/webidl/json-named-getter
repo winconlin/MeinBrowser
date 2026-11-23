@@ -1,0 +1,1 @@
+interface I { getter long toJSON(DOMString key); };

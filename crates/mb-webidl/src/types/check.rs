@@ -88,7 +88,8 @@ pub(super) fn check(
     super::dictionary::check(index, members, types, work)?;
     super::special::check(index, members, types, work)?;
     super::collections::check(index, members, types, work)?;
-    super::values::check(index, members, types, work)
+    super::values::check(index, members, types, work)?;
+    super::json::check(index, members, types, work)
 }
 
 fn arguments(

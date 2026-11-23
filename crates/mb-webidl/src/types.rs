@@ -14,6 +14,7 @@ pub use mb_base::{Budget, Cancel, Exhausted};
 mod check;
 mod collections;
 mod dictionary;
+mod json;
 mod lower;
 mod special;
 mod union;
@@ -91,6 +92,8 @@ pub enum ErrorKind {
     CollectionIndexedGetter,
     ValueIteratorGetter,
     ValueIteratorType,
+    ToJSONArguments,
+    ToJSONType,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Error {
@@ -255,6 +258,11 @@ impl Types {
     pub fn typedef(&self, id: DefinitionId) -> Option<TypeId> {
         self.typedefs.get(&id).copied()
     }
+    /// JSON-Typ nach der WebIDL-Liste, keine Zusage über konkrete Laufzeitwerte
+    /// oder die spätere Binding-/Serialisierungsimplementierung.
+    pub fn is_json(&self, id: TypeId) -> Option<bool> {
+        Some(self.facts.get(id.index())?.json)
+    }
     /// Nach Auflösen von Typedefs und expliziten Annotationshüllen.
     pub fn category(&self, id: TypeId) -> Option<Category> {
         Some(self.facts.get(id.index())?.category)
@@ -312,6 +320,7 @@ struct Facts {
     union_attribute_forbidden: bool,
     any: bool,
     promise: bool,
+    json: bool,
 }
 impl Facts {
     fn new(category: Category) -> Self {
@@ -332,6 +341,7 @@ impl Facts {
             ),
             any: category == Category::Any,
             promise: category == Category::Promise,
+            json: false,
         }
     }
 }
