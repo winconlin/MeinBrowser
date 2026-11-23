@@ -111,7 +111,7 @@ fn all_primitive_string_and_buffer_types_have_exact_canonical_kinds() {
 
 #[test]
 fn generics_records_nullable_unions_and_annotations_retain_their_structure() {
-    let source = "interface Item {}; typedef [Outer=(Opaque,Name)] (sequence<[Element] Item?> or record<USVString, FrozenArray<long>>) Choice; typedef Promise<Choice?> Result; typedef ObservableArray<long> Values; typedef async_sequence<Item> Stream;";
+    let source = "interface Item {}; typedef [Outer=(Opaque,Name)] (sequence<[Element] Item?> or record<USVString, sequence<long>>) Choice; typedef Promise<Choice?> Result; typedef ObservableArray<long> Values; typedef async_sequence<Item> Stream;";
     let (index, _, types) = model(source);
     let choice = typedef(&types, &index, "Choice");
     assert!(matches!(

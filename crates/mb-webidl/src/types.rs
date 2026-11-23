@@ -11,6 +11,7 @@ use crate::members::Members;
 use crate::parser::{Document, Kind as NodeKind, NodeId};
 pub use mb_base::{Budget, Cancel, Exhausted};
 
+mod arrays;
 mod check;
 mod collections;
 mod dictionary;
@@ -94,6 +95,9 @@ pub enum ErrorKind {
     ValueIteratorType,
     ToJSONArguments,
     ToJSONType,
+    FrozenArrayUse,
+    ObservableArrayUse,
+    ObservableArrayElement,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Error {
@@ -321,6 +325,8 @@ struct Facts {
     any: bool,
     promise: bool,
     json: bool,
+    array_use: u8,
+    observable_element_forbidden: bool,
 }
 impl Facts {
     fn new(category: Category) -> Self {
@@ -342,6 +348,18 @@ impl Facts {
             any: category == Category::Any,
             promise: category == Category::Promise,
             json: false,
+            array_use: match category {
+                Category::FrozenArray => arrays::FROZEN,
+                Category::ObservableArray => arrays::OBSERVABLE,
+                _ => 0,
+            },
+            observable_element_forbidden: matches!(
+                category,
+                Category::Dictionary
+                    | Category::Sequence
+                    | Category::Record
+                    | Category::ObservableArray
+            ),
         }
     }
 }

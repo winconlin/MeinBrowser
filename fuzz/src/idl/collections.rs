@@ -174,7 +174,13 @@ fn iterator(left: u8, right: u8, depth: u8) {
     let late = "interface A {}; interface B : A {}; enum E {\"x\"}; enum F {\"x\"}; typedef [Opaque] long Signed; typedef [Opaque] unsigned long Count;";
     check(
         &[&early, late],
-        (lc != rc).then_some(types::ErrorKind::ValueIteratorType),
+        if lc != rc {
+            Some(types::ErrorKind::ValueIteratorType)
+        } else if lc == 12 {
+            Some(types::ErrorKind::FrozenArrayUse)
+        } else {
+            None
+        },
     );
 }
 fn asynchronous(count: u8, flags: u8) {

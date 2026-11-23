@@ -16,7 +16,12 @@ fn invalid(source: &str, kind: ErrorKind) {
     assert!(source.get(e.location.unwrap().span).is_some());
 }
 fn flag(prefix: &str, ty: &str) -> bool {
-    let source = format!("{prefix} interface JSONProbe {{ {ty} probe(); }};");
+    let probe = if ty.starts_with("FrozenArray<") || ty.starts_with("ObservableArray<") {
+        format!("readonly attribute {ty} probe;")
+    } else {
+        format!("{ty} probe();")
+    };
+    let source = format!("{prefix} interface JSONProbe {{ {probe} }};");
     let index = index::build(&[&source]).unwrap();
     let members = members::build(&index).unwrap();
     let types = super::super::build(&index, &members).unwrap();

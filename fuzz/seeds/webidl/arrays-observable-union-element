@@ -1,0 +1,1 @@
+dictionary D {}; interface I { attribute ObservableArray<(D or DOMString)> values; };

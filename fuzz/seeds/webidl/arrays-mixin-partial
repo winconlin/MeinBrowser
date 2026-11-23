@@ -1,0 +1,1 @@
+interface mixin M {}; partial interface mixin M { readonly attribute ObservableArray<long> values; }; interface I {}; I includes M;

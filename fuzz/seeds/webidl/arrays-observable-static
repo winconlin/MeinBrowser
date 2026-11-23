@@ -1,0 +1,1 @@
+typedef ObservableArray<long> Values; interface I { static attribute Values values; };

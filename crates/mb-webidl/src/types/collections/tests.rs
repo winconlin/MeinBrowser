@@ -186,6 +186,11 @@ fn async_arguments_are_optional_including_implicitly_optional_variadics() {
 
 #[test]
 fn type_identity_preserves_atoms_nominal_types_generics_and_nullability() {
+    // Equality succeeds first, then the later use-site rule rejects the getter/iterator.
+    invalid(
+        &value_source("FrozenArray<long>", "FrozenArray<long>"),
+        ErrorKind::FrozenArrayUse,
+    );
     for (left, right) in [
         ("long", "long"),
         ("Count", "unsigned long"),
@@ -197,7 +202,6 @@ fn type_identity_preserves_atoms_nominal_types_generics_and_nullability() {
         ("ArrayBuffer", "ArrayBuffer"),
         ("sequence<long?>", "sequence<long?>"),
         ("record<DOMString,long>", "record<DOMString,long>"),
-        ("FrozenArray<long>", "FrozenArray<long>"),
     ] {
         check(&[&value_source(left, right)]).unwrap();
     }
