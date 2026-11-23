@@ -286,8 +286,8 @@ ausdrücklich getrennte Aufgaben.
 
 Die nachfolgenden [Collection-Deklarationen einschließlich Vererbungs-/Namensregeln](m2-webidl-collections.md)
 sind inzwischen implementiert, ebenso [`toJSON`/JSON-Typen](m2-webidl-json-types.md).
-Offen bleiben die restlichen Array-Verwendungsregeln, allgemeine Extended
-Attributes und effektive Overload-Sets. Danach
+Die [Array-Verwendungsregeln](m2-webidl-arrays.md) sind ebenfalls implementiert.
+Offen bleiben allgemeine Extended Attributes und effektive Overload-Sets. Danach
 benötigt der Binding-Generator Argumentauswahl, Konvertierung, Ausnahmen,
 Prototypen und die GC-/Host-Anbindung. DOM-Bindings, Ereignisschleife, Skripte
 im Dokument und WPT/testharness.js bleiben weitere M2-Aufgaben. Claudes

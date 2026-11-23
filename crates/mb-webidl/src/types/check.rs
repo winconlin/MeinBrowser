@@ -89,7 +89,8 @@ pub(super) fn check(
     super::special::check(index, members, types, work)?;
     super::collections::check(index, members, types, work)?;
     super::values::check(index, members, types, work)?;
-    super::json::check(index, members, types, work)
+    super::json::check(index, members, types, work)?;
+    super::arrays::check(index, members, types, work)
 }
 
 fn arguments(
@@ -181,6 +182,7 @@ fn summarize(
                 result.dictionary |= f.dictionary;
                 result.attribute_forbidden |= f.union_attribute_forbidden;
                 result.union_attribute_forbidden |= f.union_attribute_forbidden;
+                result.array_use |= f.array_use;
                 result.any |= f.any;
                 result.promise |= f.promise;
             }

@@ -27,7 +27,7 @@ fn run(args: impl Iterator<Item = OsString>) -> Result<(), String> {
     for arg in args {
         if arg == "--help" || arg == "-h" {
             println!(
-                "Aufruf: cargo run -p webidl-check -- DATEI.idl [WEITERE.idl ...]\nPrüft Syntax, Namen, Verweise, Vererbung, Dictionary-Typzyklen, Union-Unterscheidbarkeit, Konstanten-/Defaultwerte, Spezialoperationen/Stringifier, Collection-Deklarationen, toJSON/JSON-Typen und erste Member-/Typregeln.\nAlle benötigten Definitionen gemeinsam angeben.\nKein vollständiger WebIDL-Validator; erzeugt keine Bindings."
+                "Aufruf: cargo run -p webidl-check -- DATEI.idl [WEITERE.idl ...]\nPrüft Syntax, Namen, Verweise, Vererbung, Dictionary-Typzyklen, Union-Unterscheidbarkeit, Konstanten-/Defaultwerte, Spezialoperationen/Stringifier, Collection-Deklarationen, toJSON/JSON-Typen, Array-Verwendungen und erste Member-/Typregeln.\nAlle benötigten Definitionen gemeinsam angeben.\nKein vollständiger WebIDL-Validator; erzeugt keine Bindings."
             );
             return Ok(());
         }
@@ -344,6 +344,37 @@ mod tests {
             let error = types::build(&index, &members).unwrap_err();
             assert_eq!(
                 positioned_error(&paths, &sources, &error.kind, error.location.as_ref(), None),
+                expected
+            );
+        }
+    }
+    #[test]
+    fn array_diagnostics_report_cross_file_use_and_element_positions() {
+        let paths = ["api.idl".into(), "base.idl".into()];
+        for (api, base, expected) in [
+            (
+                "interface I { Values run(); };",
+                "typedef FrozenArray<long> Values;",
+                "api.idl:1:15: FrozenArrayUse",
+            ),
+            (
+                "interface I { static attribute Values values; };",
+                "typedef ObservableArray<long> Values;",
+                "api.idl:1:32: ObservableArrayUse",
+            ),
+            (
+                "interface I { attribute ObservableArray<Item> values; };",
+                "typedef sequence<long> Item;",
+                "api.idl:1:41: ObservableArrayElement",
+            ),
+        ] {
+            let sources = [api.to_owned(), base.to_owned()];
+            let index =
+                index::build(&sources.iter().map(String::as_str).collect::<Vec<_>>()).unwrap();
+            let members = members::build(&index).unwrap();
+            let e = types::build(&index, &members).unwrap_err();
+            assert_eq!(
+                positioned_error(&paths, &sources, &e.kind, e.location.as_ref(), None),
                 expected
             );
         }

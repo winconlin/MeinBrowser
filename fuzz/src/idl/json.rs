@@ -127,9 +127,17 @@ fn shape(row: u8, wrapper: u8) {
         2 => format!("FrozenArray<{leaf}>"),
         _ => format!("record<DOMString,{leaf}>"),
     };
-    let early = format!("interface Probe {{ {ty} probe(); }};");
+    let probe =
+        if wrapper % 4 == 2 || (row as usize % ROWS.len() == 16 && wrapper.is_multiple_of(4)) {
+            format!("readonly attribute {ty} probe;")
+        } else {
+            format!("{ty} probe();")
+        };
+    let early = format!("interface Probe {{ {probe} }};");
     let late = "enum Mode {\"on\"}; interface Plain {}; interface Rich { object toJSON(); }; interface Derived : Rich {}; callback F = undefined (); callback interface C { object toJSON(); }; dictionary Empty {}; dictionary Bad { any opaque; }; typedef [Tag] long Count;";
-    build(&[&early, late], None, |index, members, types| {
+    let error = (row as usize % ROWS.len() == 16 && !wrapper.is_multiple_of(4))
+        .then_some(types::ErrorKind::ObservableArrayUse);
+    build(&[&early, late], error, |index, members, types| {
         assert_eq!(result(index, members, types, "Probe", 0), expected)
     });
 }
@@ -138,6 +146,7 @@ fn dictionaries(data: &[u8]) {
     let byte = |at| data.get(at).copied().unwrap_or(0);
     let count = usize::from(byte(0) % 8) + 1;
     let mut bad = [false; 8];
+    let mut frozen_use = false;
     let mut reach = [[false; 8]; 8];
     let mut early = String::new();
     let mut late = String::new();
@@ -159,6 +168,7 @@ fn dictionaries(data: &[u8]) {
         if n > 0 {
             let target = usize::from(byte(n + 2)) % n;
             let wrapper = byte(n + 1) % 7;
+            frozen_use |= wrapper == 2;
             let d = format!("D{target}");
             let ty = match wrapper {
                 0 => d,
@@ -195,11 +205,15 @@ fn dictionaries(data: &[u8]) {
     let expected: Vec<_> = (0..count)
         .map(|n| !bad[n] && !(0..count).any(|j| reach[n][j] && bad[j]))
         .collect();
-    build(&[&early, &late], None, |index, members, types| {
-        for (n, expected) in expected.into_iter().enumerate() {
-            assert_eq!(result(index, members, types, "Probe", n), expected);
-        }
-    });
+    build(
+        &[&early, &late],
+        frozen_use.then_some(types::ErrorKind::FrozenArrayUse),
+        |index, members, types| {
+            for (n, expected) in expected.into_iter().enumerate() {
+                assert_eq!(result(index, members, types, "Probe", n), expected);
+            }
+        },
+    );
 }
 
 fn interfaces(data: &[u8]) {

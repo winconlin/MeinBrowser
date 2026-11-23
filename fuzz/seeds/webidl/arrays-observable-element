@@ -1,0 +1,1 @@
+typedef sequence<long> Item; interface I { attribute ObservableArray<Item> values; };

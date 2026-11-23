@@ -281,8 +281,8 @@ Iteratorvergleich prüfen. Die späteren Map-/Set-Mutator-Bindings müssen weite
 ihre normativen Ein-/Ausgaben erfüllen; die Namensfreigabe allein belegt das nicht.
 
 Die nachfolgende [`toJSON`-/JSON-Typprüfung](m2-webidl-json-types.md) ist
-inzwischen implementiert. Als nächste eigenständige Typregeln bleiben die
-Array-Verwendungsregeln. Allgemeine Extended Attributes einschließlich
+inzwischen implementiert, ebenso die [Array-Verwendungsregeln](m2-webidl-arrays.md).
+Allgemeine Extended Attributes einschließlich
 Assoziation, effektive Overload-Sets und vollständige Binding-Konvertierungen
 bleiben ebenfalls offen. Erst danach folgen der Binding-Generator und die
 Verknüpfung mit DOM, Ereignisschleife, Skripten im Dokument und WPT/testharness.js.

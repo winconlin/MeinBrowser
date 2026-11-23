@@ -290,8 +290,8 @@ gewöhnliches Interface, Includes/Vorfahren und die unterschiedlichen Dictionary
 und JSON-Abhängigkeiten prüfen. Das neue API belegt Typzugehörigkeit, weder
 konkrete JSON-Daten noch sichere native oder JavaScript-Laufzeitalgorithmen.
 
-Als nächste eigenständige Typregeln bleiben Array-Verwendungen. Allgemeine
-Extended Attributes einschließlich Assoziation, effektive Overload-Sets und
+Die [Array-Verwendungsregeln](m2-webidl-arrays.md) sind inzwischen implementiert.
+Allgemeine Extended Attributes einschließlich Assoziation, effektive Overload-Sets und
 vollständige Binding-Konvertierungen bleiben ebenfalls offen. Der Binding-
 Generator benötigt danach Argumentauswahl, Konvertierung, Ausnahmen, Prototypen
 und GC-/Host-Verknüpfung. DOM-Bindings, Ereignisschleife, Skripte im Dokument und

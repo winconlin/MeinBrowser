@@ -44,8 +44,7 @@ Overloading, Dictionaries und Enumerations. Implementiert sind:
   Kleinschreibung oder Unicode-Normalformen vereinheitlicht.
 
 Diese Prüfungen ersetzen noch keinen vollständigen WebIDL-Validator. Insbesondere
-bleiben Array-Verwendungsregeln und allgemeine Extended
-Attributes, effektive Overload-Sets und Sprachbindungen
+bleiben allgemeine Extended Attributes, effektive Overload-Sets und Sprachbindungen
 offen. Erste Typ-/Nullable-Regeln und Typedef-Auswertung sind inzwischen in der
 [Typstufe](m2-webidl-types.md) vorhanden; dazu kommen
 [Dictionary-Typzyklen](m2-webidl-dictionary-types.md) und
@@ -198,7 +197,7 @@ und [fuzzing.md](fuzzing.md) privat.
    [Spezialoperationen/Stringifier](m2-webidl-special-operations.md) prüfen.
    Die [Collection-Regeln](m2-webidl-collections.md) abgleichen und verbleibende
    [`toJSON`/JSON-Typen](m2-webidl-json-types.md) prüfen. Verbleibende
-   Array-Verwendungsregeln validieren.
+   [Array-Verwendungen](m2-webidl-arrays.md) prüfen.
 3. Extended Attributes gezielt auswerten und validieren; ihre ungeprüften
    Syntaxknoten dürfen keine Erlaubnis für die Codegenerierung sein.
 4. Effektive Overload-Sets, Unterscheidbarkeit und Binding-Reihenfolgen umsetzen.

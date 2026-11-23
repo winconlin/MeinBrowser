@@ -172,8 +172,8 @@ zur Vermeidung von Überschneidungen nicht bearbeitet.
    Verwendungsorte bleiben; keine wiederholten Vorfahrenlisten kopieren.
 3. Die inzwischen ergänzten [Spezialoperationen/Stringifier](m2-webidl-special-operations.md)
    und [Collection-Deklarationen](m2-webidl-collections.md) prüfen. Allgemeine
-   Extended Attributes, übrige Array-Verwendungsregeln und effektive Overload-Sets
-   ergänzen. Die [`toJSON`-/JSON-Typprüfung](m2-webidl-json-types.md) ist
+   Extended Attributes und effektive Overload-Sets ergänzen. Die
+   [Array-Verwendungsregeln](m2-webidl-arrays.md) sind inzwischen implementiert. Die [`toJSON`-/JSON-Typprüfung](m2-webidl-json-types.md) ist
    inzwischen ebenfalls vorhanden. Der Binding-Generator benötigt anschließend
    Argumentauswahl, Konvertierung, Ausnahmen, Prototypen und GC-/Host-Verknüpfung.
 4. DOM-Bindings, Ereignisschleife, Skripte im Dokument und den WPT-Läufer für

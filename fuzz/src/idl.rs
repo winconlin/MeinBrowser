@@ -4,6 +4,7 @@ use mb_webidl::lexer::{Kind, Lexer};
 use mb_webidl::parser::{self, Budget, Document, ErrorKind, Kind as NodeKind, Limits};
 use mb_webidl::{index, members, types};
 
+mod arrays;
 mod collections;
 mod json;
 mod special;
@@ -26,6 +27,7 @@ pub fn webidl(data: &[u8]) {
     special::model(data);
     collections::model(data);
     json::model(data);
+    arrays::model(data);
 }
 
 fn tokens(source: &str) {
@@ -796,9 +798,11 @@ fn dictionary_model(data: &[u8]) {
     let mut reach = [[false; 8]; 8];
     let mut early = String::new();
     let mut late = String::new();
+    let mut frozen_use = false;
     for (n, row) in reach.iter_mut().enumerate().take(count) {
         let target = usize::from(byte(n + 2)) % count;
         let wrapper = byte(n + 1) % 8;
+        frozen_use |= wrapper == 2;
         let name = format!("D{target}");
         let ty = match wrapper {
             0 => name,
@@ -878,6 +882,8 @@ fn dictionary_model(data: &[u8]) {
         assert_eq!(at.source, 0, "all model fields occur in the partial source");
         let text = early.get(at.span).expect("valid field range");
         assert!(text.starts_with("field"));
+    } else if frozen_use {
+        assert_eq!(result.unwrap_err().kind, types::ErrorKind::FrozenArrayUse);
     } else {
         let types = result.expect("acyclic dictionary model");
         check_types(&index, &members, &types);
