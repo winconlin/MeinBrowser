@@ -27,7 +27,7 @@ fn run(args: impl Iterator<Item = OsString>) -> Result<(), String> {
     for arg in args {
         if arg == "--help" || arg == "-h" {
             println!(
-                "Aufruf: cargo run -p webidl-check -- DATEI.idl [WEITERE.idl ...]\nPrüft Syntax, Namen, Verweise, Vererbung, Dictionary-Typzyklen, Union-Unterscheidbarkeit, Konstanten-/Defaultwerte, Spezialoperationen/Stringifier, Collection-Deklarationen und erste Member-/Typregeln.\nAlle benötigten Definitionen gemeinsam angeben.\nKein vollständiger WebIDL-Validator; erzeugt keine Bindings."
+                "Aufruf: cargo run -p webidl-check -- DATEI.idl [WEITERE.idl ...]\nPrüft Syntax, Namen, Verweise, Vererbung, Dictionary-Typzyklen, Union-Unterscheidbarkeit, Konstanten-/Defaultwerte, Spezialoperationen/Stringifier, Collection-Deklarationen, toJSON/JSON-Typen und erste Member-/Typregeln.\nAlle benötigten Definitionen gemeinsam angeben.\nKein vollständiger WebIDL-Validator; erzeugt keine Bindings."
             );
             return Ok(());
         }
@@ -309,6 +309,32 @@ mod tests {
                 "interface I { async_iterable<long>(long count); };",
                 "interface Base {};",
                 "api.idl:1:41: AsyncIteratorArgument",
+            ),
+        ] {
+            let sources = [api.to_owned(), base.to_owned()];
+            let index =
+                index::build(&sources.iter().map(String::as_str).collect::<Vec<_>>()).unwrap();
+            let members = members::build(&index).unwrap();
+            let error = types::build(&index, &members).unwrap_err();
+            assert_eq!(
+                positioned_error(&paths, &sources, &error.kind, error.location.as_ref(), None),
+                expected
+            );
+        }
+    }
+    #[test]
+    fn json_diagnostics_point_to_return_use_and_argument_in_their_source() {
+        let paths = ["api.idl".into(), "base.idl".into()];
+        for (api, base, expected) in [
+            (
+                "interface I { Data toJSON(); };",
+                "dictionary Data { any value; };",
+                "api.idl:1:15: ToJSONType",
+            ),
+            (
+                "interface I {};",
+                "partial interface I { object toJSON(optional long value); };",
+                "base.idl:1:51: ToJSONArguments",
             ),
         ] {
             let sources = [api.to_owned(), base.to_owned()];

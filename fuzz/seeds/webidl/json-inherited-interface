@@ -1,0 +1,1 @@
+interface Base { object toJSON(); }; interface Child : Base {}; interface I { Child toJSON(); };

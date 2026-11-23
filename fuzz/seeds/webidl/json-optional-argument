@@ -1,0 +1,1 @@
+interface I { object toJSON(optional long value=0); };

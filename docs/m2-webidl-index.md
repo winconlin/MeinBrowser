@@ -8,7 +8,8 @@ Syntaxbäume bleiben erhalten. Darauf baut inzwischen die strukturierte
 [Typbeschreibung mit ersten Typregeln](m2-webidl-types.md) ist ebenfalls
 vorhanden, einschließlich [Konstanten-/Defaultwertprüfung](m2-webidl-values.md)
 [Spezialoperationen/Stringifiern](m2-webidl-special-operations.md) und
-[Collection-Deklarationen](m2-webidl-collections.md).
+[Collection-Deklarationen](m2-webidl-collections.md) sowie
+[`toJSON`/JSON-Typen](m2-webidl-json-types.md).
 Vollständige semantische Validierung und Binding-Generierung
 stehen noch aus.
 
