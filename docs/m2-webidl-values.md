@@ -171,8 +171,9 @@ zur Vermeidung von Überschneidungen nicht bearbeitet.
    Temporäre Zusammenfassungen müssen weiter unabhängig von der Zahl ihrer
    Verwendungsorte bleiben; keine wiederholten Vorfahrenlisten kopieren.
 3. Die inzwischen ergänzten [Spezialoperationen/Stringifier](m2-webidl-special-operations.md)
-   prüfen. Allgemeine Extended Attributes, übrige Collection-/Array-/`toJSON`-Regeln
-   und effektive Overload-Sets ergänzen. Der Binding-Generator benötigt anschließend
+   und [Collection-Deklarationen](m2-webidl-collections.md) prüfen. Allgemeine
+   Extended Attributes, übrige Array-/`toJSON`-Regeln und effektive Overload-Sets
+   ergänzen. Der Binding-Generator benötigt anschließend
    Argumentauswahl, Konvertierung, Ausnahmen, Prototypen und GC-/Host-Verknüpfung.
 4. DOM-Bindings, Ereignisschleife, Skripte im Dokument und den WPT-Läufer für
    `testharness.js` verbinden; tägliche DOM-Messung einrichten. Die JavaScript-

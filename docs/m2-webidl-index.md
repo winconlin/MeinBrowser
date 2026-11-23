@@ -7,7 +7,8 @@ Syntaxbäume bleiben erhalten. Darauf baut inzwischen die strukturierte
 [Memberbeschreibung mit ersten Prüfungen](m2-webidl-members.md) auf. Eine
 [Typbeschreibung mit ersten Typregeln](m2-webidl-types.md) ist ebenfalls
 vorhanden, einschließlich [Konstanten-/Defaultwertprüfung](m2-webidl-values.md)
-und [Spezialoperationen/Stringifiern](m2-webidl-special-operations.md).
+[Spezialoperationen/Stringifiern](m2-webidl-special-operations.md) und
+[Collection-Deklarationen](m2-webidl-collections.md).
 Vollständige semantische Validierung und Binding-Generierung
 stehen noch aus.
 

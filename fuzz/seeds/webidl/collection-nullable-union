@@ -1,0 +1,1 @@
+interface I { readonly attribute unsigned long length; getter (long or DOMString)? item(unsigned long index); iterable<(DOMString or long?)>; };

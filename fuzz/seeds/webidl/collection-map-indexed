@@ -1,0 +1,1 @@
+interface I { readonly attribute unsigned long length; getter long item(unsigned long index); maplike<DOMString,long>; };

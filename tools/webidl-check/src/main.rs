@@ -27,7 +27,7 @@ fn run(args: impl Iterator<Item = OsString>) -> Result<(), String> {
     for arg in args {
         if arg == "--help" || arg == "-h" {
             println!(
-                "Aufruf: cargo run -p webidl-check -- DATEI.idl [WEITERE.idl ...]\nPrüft Syntax, Namen, Verweise, Vererbung, Dictionary-Typzyklen, Union-Unterscheidbarkeit, Konstanten-/Defaultwerte, Spezialoperationen/Stringifier und erste Member-/Typregeln.\nAlle benötigten Definitionen gemeinsam angeben.\nKein vollständiger WebIDL-Validator; erzeugt keine Bindings."
+                "Aufruf: cargo run -p webidl-check -- DATEI.idl [WEITERE.idl ...]\nPrüft Syntax, Namen, Verweise, Vererbung, Dictionary-Typzyklen, Union-Unterscheidbarkeit, Konstanten-/Defaultwerte, Spezialoperationen/Stringifier, Collection-Deklarationen und erste Member-/Typregeln.\nAlle benötigten Definitionen gemeinsam angeben.\nKein vollständiger WebIDL-Validator; erzeugt keine Bindings."
             );
             return Ok(());
         }
@@ -281,6 +281,37 @@ mod tests {
             ),
         ] {
             let sources = [source.to_owned(), "typedef ByteString Key;".to_owned()];
+            let index =
+                index::build(&sources.iter().map(String::as_str).collect::<Vec<_>>()).unwrap();
+            let members = members::build(&index).unwrap();
+            let error = types::build(&index, &members).unwrap_err();
+            assert_eq!(
+                positioned_error(&paths, &sources, &error.kind, error.location.as_ref(), None),
+                expected
+            );
+        }
+    }
+    #[test]
+    fn collection_diagnostics_report_the_conflicting_member_or_type_in_its_source() {
+        let paths = ["api.idl".into(), "base.idl".into()];
+        for (api, base, expected) in [
+            (
+                "interface I : Base { maplike<DOMString,long>; };",
+                "interface Base { readonly attribute long keys; };",
+                "base.idl:1:42: CollectionMemberName",
+            ),
+            (
+                "interface I { readonly attribute unsigned long length; getter long item(unsigned long index); iterable<double>; };",
+                "interface Base {};",
+                "api.idl:1:104: ValueIteratorType",
+            ),
+            (
+                "interface I { async_iterable<long>(long count); };",
+                "interface Base {};",
+                "api.idl:1:41: AsyncIteratorArgument",
+            ),
+        ] {
+            let sources = [api.to_owned(), base.to_owned()];
             let index =
                 index::build(&sources.iter().map(String::as_str).collect::<Vec<_>>()).unwrap();
             let members = members::build(&index).unwrap();
