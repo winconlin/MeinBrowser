@@ -1,6 +1,11 @@
 use super::*;
 
-pub(super) fn lower(index: &Index<'_>, work: &Work<'_>) -> Result<Types, Error> {
+pub(super) struct Lowered {
+    pub types: Types,
+    pub attribute_lists: Vec<(usize, NodeId)>,
+}
+pub(super) fn lower(index: &Index<'_>, work: &Work<'_>) -> Result<Lowered, Error> {
+    let mut attribute_lists = Vec::new();
     let mut count = 0usize;
     for source in 0..index.sources() {
         work.spend(1, None)?;
@@ -39,6 +44,11 @@ pub(super) fn lower(index: &Index<'_>, work: &Work<'_>) -> Result<Types, Error> 
         builder.types.sources.push(vec![None; document.len()]);
         for (id, node) in document.nodes().rev() {
             work.spend(1, None)?;
+            if node.kind == NodeKind::Production("ExtendedAttributeList")
+                && child(document, id, "ExtendedAttribute").is_some()
+            {
+                attribute_lists.push((source, id));
+            }
             let result = match node.kind {
                 NodeKind::Production("PrimitiveType") => Some(builder.add(
                     source,
@@ -203,7 +213,10 @@ pub(super) fn lower(index: &Index<'_>, work: &Work<'_>) -> Result<Types, Error> 
         );
         builder.types.typedefs.insert(id, root);
     }
-    Ok(builder.types)
+    Ok(Lowered {
+        types: builder.types,
+        attribute_lists,
+    })
 }
 
 struct Builder<'w, 'b> {

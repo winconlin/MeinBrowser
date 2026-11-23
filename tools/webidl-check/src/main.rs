@@ -27,7 +27,7 @@ fn run(args: impl Iterator<Item = OsString>) -> Result<(), String> {
     for arg in args {
         if arg == "--help" || arg == "-h" {
             println!(
-                "Aufruf: cargo run -p webidl-check -- DATEI.idl [WEITERE.idl ...]\nPrüft Syntax, Namen, Verweise, Vererbung, Dictionary-Typzyklen, Union-Unterscheidbarkeit, Konstanten-/Defaultwerte, Spezialoperationen/Stringifier, Collection-Deklarationen, toJSON/JSON-Typen, Array-Verwendungen und erste Member-/Typregeln.\nAlle benötigten Definitionen gemeinsam angeben.\nKein vollständiger WebIDL-Validator; erzeugt keine Bindings."
+                "Aufruf: cargo run -p webidl-check -- DATEI.idl [WEITERE.idl ...]\nPrüft Syntax, Namen, Verweise, Vererbung, Dictionary-Typzyklen, Union-Unterscheidbarkeit, Konstanten-/Defaultwerte, Spezialoperationen/Stringifier, Collection-Deklarationen, toJSON/JSON-Typen, Array-Verwendungen, fünf standardisierte Typattribute und erste Member-/Typregeln.\nAlle benötigten Definitionen gemeinsam angeben.\nKein vollständiger WebIDL-Validator; erzeugt keine Bindings."
             );
             return Ok(());
         }
@@ -373,6 +373,42 @@ mod tests {
                 index::build(&sources.iter().map(String::as_str).collect::<Vec<_>>()).unwrap();
             let members = members::build(&index).unwrap();
             let e = types::build(&index, &members).unwrap_err();
+            assert_eq!(
+                positioned_error(&paths, &sources, &e.kind, e.location.as_ref(), None),
+                expected
+            );
+        }
+    }
+    #[test]
+    fn type_attribute_diagnostics_report_forms_and_cross_file_use_sites() {
+        let paths = ["api.idl".into(), "base.idl".into()];
+        for (api, base, token, kind) in [
+            (
+                "interface I { undefined run([Clamp] Value value); };",
+                "typedef DOMString Value;",
+                "Value",
+                types::ErrorKind::TypeAttributeTarget,
+            ),
+            (
+                "interface I { readonly attribute Value value; };",
+                "typedef [Clamp] long Value;",
+                "Value",
+                types::ErrorKind::TypeAttributeReadonly,
+            ),
+            (
+                "interface I { undefined run([Clamp=No] long value); };",
+                "interface Base {};",
+                "Clamp",
+                types::ErrorKind::TypeAttributeForm,
+            ),
+        ] {
+            let sources = [api.to_owned(), base.to_owned()];
+            let index =
+                index::build(&sources.iter().map(String::as_str).collect::<Vec<_>>()).unwrap();
+            let members = members::build(&index).unwrap();
+            let e = types::build(&index, &members).unwrap_err();
+            assert_eq!(e.kind, kind);
+            let expected = format!("api.idl:1:{}: {kind:?}", api.find(token).unwrap() + 1);
             assert_eq!(
                 positioned_error(&paths, &sources, &e.kind, e.location.as_ref(), None),
                 expected

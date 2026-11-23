@@ -4,6 +4,7 @@ pub(super) fn check(
     index: &Index<'_>,
     members: &Members<'_>,
     types: &mut Types,
+    attribute_lists: &[(usize, NodeId)],
     work: &Work<'_>,
 ) -> Result<(), Error> {
     work.spend(types.len() as u64, None)?;
@@ -90,7 +91,8 @@ pub(super) fn check(
     super::collections::check(index, members, types, work)?;
     super::values::check(index, members, types, work)?;
     super::json::check(index, members, types, work)?;
-    super::arrays::check(index, members, types, work)
+    super::arrays::check(index, members, types, work)?;
+    super::attributes::check(index, members, types, attribute_lists, work)
 }
 
 fn arguments(
@@ -125,7 +127,7 @@ fn summarize(
     let ty = types.get(id).expect("Typ");
     let children = types.children(id).expect("Kinder");
     let inner = || facts[children[0].index()].expect("Kinder bereits bekannt");
-    let result = match ty.kind {
+    let mut result = match ty.kind {
         Kind::Atom(atom) => Facts::new(match atom {
             Atom::Any => Category::Any,
             Atom::Primitive(_) => Category::Primitive,
@@ -161,6 +163,7 @@ fn summarize(
             {
                 return Err(error(ErrorKind::NullableType, Some(&ty.location)));
             }
+            f.attribute_targets &= !super::attributes::STRING;
             f.category = Category::Nullable;
             f.nullable = f.nullable.saturating_add(1).min(2);
             f
@@ -196,5 +199,31 @@ fn summarize(
             result
         }
     };
+    if let Kind::Atom(atom) = ty.kind {
+        result.attribute_targets = match atom {
+            Atom::Primitive(
+                Primitive::Byte
+                | Primitive::Octet
+                | Primitive::Short
+                | Primitive::UnsignedShort
+                | Primitive::Long
+                | Primitive::UnsignedLong
+                | Primitive::LongLong
+                | Primitive::UnsignedLongLong,
+            ) => super::attributes::INTEGER,
+            Atom::String(StringType::DOMString | StringType::USVString) => {
+                super::attributes::STRING
+            }
+            Atom::Buffer(buffer) => {
+                super::attributes::BUFFER
+                    | if matches!(buffer, Buffer::ArrayBuffer | Buffer::SharedArrayBuffer) {
+                        0
+                    } else {
+                        super::attributes::VIEW
+                    }
+            }
+            _ => 0,
+        };
+    }
     Ok(result)
 }

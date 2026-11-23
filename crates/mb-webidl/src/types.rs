@@ -12,6 +12,7 @@ use crate::parser::{Document, Kind as NodeKind, NodeId};
 pub use mb_base::{Budget, Cancel, Exhausted};
 
 mod arrays;
+mod attributes;
 mod check;
 mod collections;
 mod dictionary;
@@ -98,6 +99,11 @@ pub enum ErrorKind {
     FrozenArrayUse,
     ObservableArrayUse,
     ObservableArrayElement,
+    TypeAttributeForm,
+    TypeAttributePlacement,
+    TypeAttributeTarget,
+    TypeAttributeConflict,
+    TypeAttributeReadonly,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Error {
@@ -289,8 +295,11 @@ pub fn build_within(
 ) -> Result<Types, Error> {
     let work = Work { limits, budget };
     work.spend(0, None)?;
-    let mut types = lower::lower(index, &work)?;
-    check::check(index, members, &mut types, &work)?;
+    let lower::Lowered {
+        mut types,
+        attribute_lists,
+    } = lower::lower(index, &work)?;
+    check::check(index, members, &mut types, &attribute_lists, &work)?;
     Ok(types)
 }
 fn error(kind: ErrorKind, at: Option<&Location>) -> Error {
@@ -327,6 +336,7 @@ struct Facts {
     json: bool,
     array_use: u8,
     observable_element_forbidden: bool,
+    attribute_targets: u8,
 }
 impl Facts {
     fn new(category: Category) -> Self {
@@ -348,6 +358,7 @@ impl Facts {
             any: category == Category::Any,
             promise: category == Category::Promise,
             json: false,
+            attribute_targets: 0,
             array_use: match category {
                 Category::FrozenArray => arrays::FROZEN,
                 Category::ObservableArray => arrays::OBSERVABLE,
