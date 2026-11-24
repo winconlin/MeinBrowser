@@ -198,7 +198,8 @@ und [fuzzing.md](fuzzing.md) privat.
    Die [Collection-Regeln](m2-webidl-collections.md) abgleichen und verbleibende
    [`toJSON`/JSON-Typen](m2-webidl-json-types.md) prüfen. Verbleibende
    [Array-Verwendungen](m2-webidl-arrays.md) prüfen.
-3. Die [Assoziation der fünf Typattribute](m2-webidl-type-attributes.md) prüfen
+3. Die [Assoziation der fünf Typattribute](m2-webidl-type-attributes.md) und
+   die [vier Memberattribute](m2-webidl-member-attributes.md) prüfen
    und weitere Extended Attributes gezielt auswerten und validieren; ihre ungeprüften
    Syntaxknoten dürfen keine Erlaubnis für die Codegenerierung sein.
 4. Effektive Overload-Sets, Unterscheidbarkeit und Binding-Reihenfolgen umsetzen.

@@ -1,0 +1,1 @@
+interface Value {}; interface I { [NewObject] getter Value item(DOMString key); };

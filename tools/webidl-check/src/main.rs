@@ -27,7 +27,7 @@ fn run(args: impl Iterator<Item = OsString>) -> Result<(), String> {
     for arg in args {
         if arg == "--help" || arg == "-h" {
             println!(
-                "Aufruf: cargo run -p webidl-check -- DATEI.idl [WEITERE.idl ...]\nPrüft Syntax, Namen, Verweise, Vererbung, Dictionary-Typzyklen, Union-Unterscheidbarkeit, Konstanten-/Defaultwerte, Spezialoperationen/Stringifier, Collection-Deklarationen, toJSON/JSON-Typen, Array-Verwendungen, fünf standardisierte Typattribute und erste Member-/Typregeln.\nAlle benötigten Definitionen gemeinsam angeben.\nKein vollständiger WebIDL-Validator; erzeugt keine Bindings."
+                "Aufruf: cargo run -p webidl-check -- DATEI.idl [WEITERE.idl ...]\nPrüft Syntax, Namen, Verweise, Vererbung, Dictionary-Typzyklen, Union-Unterscheidbarkeit, Konstanten-/Defaultwerte, Spezialoperationen/Stringifier, Collection-Deklarationen, toJSON/JSON-Typen, Array-Verwendungen, fünf standardisierte Typattribute, vier Memberattribute und erste Member-/Typregeln.\nAlle benötigten Definitionen gemeinsam angeben.\nKein vollständiger WebIDL-Validator; erzeugt keine Bindings."
             );
             return Ok(());
         }
@@ -407,6 +407,41 @@ mod tests {
                 index::build(&sources.iter().map(String::as_str).collect::<Vec<_>>()).unwrap();
             let members = members::build(&index).unwrap();
             let e = types::build(&index, &members).unwrap_err();
+            assert_eq!(e.kind, kind);
+            let expected = format!("api.idl:1:{}: {kind:?}", api.find(token).unwrap() + 1);
+            assert_eq!(
+                positioned_error(&paths, &sources, &e.kind, e.location.as_ref(), None),
+                expected
+            );
+        }
+    }
+    #[test]
+    fn member_attribute_diagnostics_report_alias_use_member_name_and_form() {
+        let paths = ["api.idl".into(), "base.idl".into()];
+        for (api, base, token, kind) in [
+            (
+                "interface I { [SameObject] readonly attribute Value value; };",
+                "typedef object? Value;",
+                "Value",
+                types::ErrorKind::MemberAttributeType,
+            ),
+            (
+                "interface I { [Replaceable] attribute object value; };",
+                "interface Value {};",
+                "value",
+                types::ErrorKind::MemberAttributeReadonly,
+            ),
+            (
+                "interface I { [NewObject=No] Value run(); };",
+                "interface Value {};",
+                "NewObject",
+                types::ErrorKind::MemberAttributeForm,
+            ),
+        ] {
+            let sources = [api.to_owned(), base.to_owned()];
+            let i = index::build(&sources.iter().map(String::as_str).collect::<Vec<_>>()).unwrap();
+            let m = members::build(&i).unwrap();
+            let e = types::build(&i, &m).unwrap_err();
             assert_eq!(e.kind, kind);
             let expected = format!("api.idl:1:{}: {kind:?}", api.find(token).unwrap() + 1);
             assert_eq!(

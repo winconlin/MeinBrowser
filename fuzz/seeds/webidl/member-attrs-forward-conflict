@@ -1,0 +1,1 @@
+interface I { [PutForwards=text,Replaceable] readonly attribute object value; };

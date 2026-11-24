@@ -1,0 +1,1 @@
+interface I { [PutForwards=text] readonly attribute Promise<long> value; };

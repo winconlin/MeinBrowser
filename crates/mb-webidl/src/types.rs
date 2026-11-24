@@ -18,6 +18,7 @@ mod collections;
 mod dictionary;
 mod json;
 mod lower;
+mod member_attributes;
 mod special;
 mod union;
 mod values;
@@ -104,6 +105,12 @@ pub enum ErrorKind {
     TypeAttributeTarget,
     TypeAttributeConflict,
     TypeAttributeReadonly,
+    MemberAttributeForm,
+    MemberAttributePlacement,
+    MemberAttributeReadonly,
+    MemberAttributeType,
+    MemberAttributeConflict,
+    MemberAttributePromise,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Error {

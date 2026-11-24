@@ -47,7 +47,8 @@ Die [Verwendungsregeln für FrozenArray und ObservableArray](m2-webidl-arrays.md
 sind inzwischen ebenfalls implementiert. Das ist noch keine vollständige semantische Validierung. Insbesondere fehlen
 weitere Extended-Attribute-Regeln sowie effektive Overload-Sets.
 Die fünf standardisierten Typattribute werden inzwischen einschließlich ihrer
-[Assoziation und Zieltypen](m2-webidl-type-attributes.md) geprüft. Auch ein erfolgreicher Aufbau erlaubt noch keine
+[Assoziation und Zieltypen](m2-webidl-type-attributes.md) geprüft. Dazu kommen
+[vier Memberattribute und Promise-Ausschlüsse](m2-webidl-member-attributes.md). Auch ein erfolgreicher Aufbau erlaubt noch keine
 ungeprüfte Binding-Generierung.
 
 ## API und Darstellung

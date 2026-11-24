@@ -1,0 +1,1 @@
+interface I { [Custom=(SameObject,NewObject)] readonly attribute long value; };
