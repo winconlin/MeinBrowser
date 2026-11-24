@@ -1,0 +1,1 @@
+typedef [AllowShared,AllowResizable] DataView? View;

@@ -45,8 +45,9 @@ Die abgeflachten Unionglieder werden inzwischen zusätzlich nach der
 kommen [Literalwerte, Enum-/ByteString-Defaults und Dictionary-Argumentregeln](m2-webidl-values.md).
 Die [Verwendungsregeln für FrozenArray und ObservableArray](m2-webidl-arrays.md)
 sind inzwischen ebenfalls implementiert. Das ist noch keine vollständige semantische Validierung. Insbesondere fehlen
-allgemeine Typattribut-Auswertung sowie
-effektive Overload-Sets. Auch ein erfolgreicher Aufbau erlaubt noch keine
+weitere Extended-Attribute-Regeln sowie effektive Overload-Sets.
+Die fünf standardisierten Typattribute werden inzwischen einschließlich ihrer
+[Assoziation und Zieltypen](m2-webidl-type-attributes.md) geprüft. Auch ein erfolgreicher Aufbau erlaubt noch keine
 ungeprüfte Binding-Generierung.
 
 ## API und Darstellung
@@ -207,8 +208,9 @@ behauptet. Rohprotokolle, Funde und mutierte Korpora bleiben gemäß
    Die [Spezialoperations-/Stringifier-Prüfung](m2-webidl-special-operations.md)
    sowie [Collections](m2-webidl-collections.md) und
    [`toJSON`/JSON-Typen](m2-webidl-json-types.md) gegen den Standard abgleichen.
-   Die [Array-Verwendungsregeln](m2-webidl-arrays.md) prüfen und allgemeine Extended Attributes
-   einschließlich ihrer Anwendbarkeit und Assoziation implementieren.
+   Die [Array-Verwendungsregeln](m2-webidl-arrays.md) und die
+   [fünf Typattribute](m2-webidl-type-attributes.md) prüfen. Weitere Extended
+   Attributes einschließlich ihrer Anwendbarkeit und Assoziation implementieren.
 4. Effektive Overload-Sets und Binding-Reihenfolgen ergänzen. Erst danach
    Bindings mit der dann aktuellen JavaScript-API erzeugen und gegen DOM-/
    WebIDL-WPT prüfen. M2 bleibt offen; die RegExp-Engine wird hier nicht geändert.

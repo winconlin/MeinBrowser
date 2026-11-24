@@ -5,6 +5,7 @@ use mb_webidl::parser::{self, Budget, Document, ErrorKind, Kind as NodeKind, Lim
 use mb_webidl::{index, members, types};
 
 mod arrays;
+mod attributes;
 mod collections;
 mod json;
 mod special;
@@ -28,6 +29,7 @@ pub fn webidl(data: &[u8]) {
     collections::model(data);
     json::model(data);
     arrays::model(data);
+    attributes::model(data);
 }
 
 fn tokens(source: &str) {

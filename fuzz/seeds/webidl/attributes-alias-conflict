@@ -1,0 +1,1 @@
+typedef [Clamp] long Count; interface I { undefined run([EnforceRange] Count value); };

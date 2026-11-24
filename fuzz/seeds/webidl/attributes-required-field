@@ -1,0 +1,1 @@
+dictionary D { [Clamp] long count; required [EnforceRange] long requiredCount; };

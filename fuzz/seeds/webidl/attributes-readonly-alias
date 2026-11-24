@@ -1,0 +1,1 @@
+typedef [Clamp] long Count; interface I { readonly attribute Count value; };

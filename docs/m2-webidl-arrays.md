@@ -261,8 +261,9 @@ Parametertyp angewandt; zulässige Unions sind keine verbotene direkte
 Dictionary-/Sequence-Klasse. Allgemeine Extended Attributes werden hier nicht
 interpretiert und gewähren weiterhin keine Freigabe für Binding-Codegenerierung.
 
-Als nächste eigenständige Aufgaben bleiben allgemeine Extended Attributes samt
-Assoziation und gezielter Attributvalidierung sowie effektive Overload-Sets.
+Die [fünf standardisierten Typattribute](m2-webidl-type-attributes.md) werden
+inzwischen samt Assoziation geprüft. Weitere Extended Attributes und deren
+gezielte Attributvalidierung sowie effektive Overload-Sets bleiben offen.
 Der Binding-Generator benötigt danach Argumentauswahl, Konvertierungen, Ausnahmen,
 Prototypen und die GC-/Host-Verknüpfung. FrozenArray muss später echte unveränderliche
 Array-Referenzen erhalten; ObservableArray benötigt Backing Lists, exotische

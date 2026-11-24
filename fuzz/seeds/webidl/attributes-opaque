@@ -1,0 +1,1 @@
+typedef [Custom=(Clamp,EnforceRange)] long Count;
