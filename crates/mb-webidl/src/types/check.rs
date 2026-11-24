@@ -92,7 +92,8 @@ pub(super) fn check(
     super::values::check(index, members, types, work)?;
     super::json::check(index, members, types, work)?;
     super::arrays::check(index, members, types, work)?;
-    super::attributes::check(index, members, types, attribute_lists, work)
+    super::attributes::check(index, members, types, attribute_lists, work)?;
+    super::member_attributes::check(index, members, types, attribute_lists, work)
 }
 
 fn arguments(

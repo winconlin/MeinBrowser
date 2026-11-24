@@ -8,6 +8,7 @@ mod arrays;
 mod attributes;
 mod collections;
 mod json;
+mod member_attributes;
 mod special;
 mod values;
 
@@ -30,6 +31,7 @@ pub fn webidl(data: &[u8]) {
     json::model(data);
     arrays::model(data);
     attributes::model(data);
+    member_attributes::model(data);
 }
 
 fn tokens(source: &str) {

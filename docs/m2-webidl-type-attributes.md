@@ -268,8 +268,10 @@ Alias-Isolation und readonly-Kontexte prüfen. Unbekannte Attribute sind weiter
 ungeprüfte Syntax. Weitere Attributformen, Namensverweise und Anwendbarkeit
 müssen vor ihrer Verwendung im Binding-Generator gezielt validiert werden.
 
-Offen bleiben insbesondere Exposed/Global/SecureContext, PutForwards/SameObject,
-die übrigen Legacy-Attribute, ein vollständiges Metadatenmodell und effektive
+Die Deklarationsregeln für [SameObject, NewObject, Replaceable und
+LegacyLenientSetter](m2-webidl-member-attributes.md) sind inzwischen ergänzt.
+Offen bleiben insbesondere Exposed/Global/SecureContext, die vollständige
+PutForwards-Auflösung, weitere Legacy-Attribute, ein vollständiges Metadatenmodell und effektive
 Overload-Sets. Danach benötigt der Binding-Generator Argumentauswahl,
 Konvertierungen, Ausnahmen, Prototypen und GC-/Host-Verknüpfung. Clamp und
 EnforceRange müssen später die normativen Zahlenkonvertierungen ausführen;

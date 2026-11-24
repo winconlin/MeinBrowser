@@ -11,7 +11,8 @@ vorhanden, einschließlich [Konstanten-/Defaultwertprüfung](m2-webidl-values.md
 [Collection-Deklarationen](m2-webidl-collections.md) sowie
 [`toJSON`/JSON-Typen](m2-webidl-json-types.md) und
 [Array-Verwendungsregeln](m2-webidl-arrays.md) sowie
-[Assoziation und Regeln für fünf Typattribute](m2-webidl-type-attributes.md).
+[Assoziation und Regeln für fünf Typattribute](m2-webidl-type-attributes.md) sowie
+[vier Memberattributen](m2-webidl-member-attributes.md).
 Vollständige semantische Validierung und Binding-Generierung
 stehen noch aus.
 

@@ -1,0 +1,1 @@
+interface Value {}; interface I { [SameObject] readonly attribute Value value; };
