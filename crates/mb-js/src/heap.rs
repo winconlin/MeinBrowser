@@ -38,13 +38,29 @@
 //! Eintrag hält den Block. Das Sammeln gibt Einträge frei, deren Zelle es
 //! nicht erreicht hat. Die Bytes der Blöcke zählen zum Speicherbudget.
 //!
-//! Gesammelt wird in der ersten Ausbaustufe präzise und kopierend nach
-//! Cheney. Alle Seiten werden zum alten Raum, die erreichbaren Zellen wandern
-//! in neue Seiten, und ein Lesezeiger über die neuen Zellen führt deren
-//! Verweise nach. Das kommt ohne Rekursion und ohne Markierstapel aus (RS-8).
-//! Generationen folgen später. Darum läuft jedes Speichern eines Verweises in
-//! eine Zelle schon jetzt über eine einzige Funktion, an der dann die
-//! Schreibbarriere ansetzt.
+//! Gesammelt wird präzise und kopierend nach Cheney, in zwei Generationen.
+//! Neue Zellen liegen in jungen Seiten. Eine junge Sammlung
+//! ([`Heap::collect_young`]) verurteilt nur die jungen Seiten: Die
+//! erreichbaren jungen Zellen wandern in alte Seiten (jede Zelle, die eine
+//! Sammlung übersteht, ist danach alt), und ein Lesezeiger über die eben
+//! kopierten Zellen führt deren Verweise nach. Wurzeln sind dabei außer den
+//! Handles die alten Zellen der gemerkten Menge. Eine volle Sammlung
+//! ([`Heap::collect`]) verurteilt alle Seiten und kopiert alles Erreichbare
+//! in neue alte Seiten. Beides kommt ohne Rekursion und ohne Markierstapel
+//! aus (RS-8).
+//!
+//! Die Schreibbarriere sitzt in der einzigen Funktion, über die ein Wert in
+//! eine bestehende Zelle gespeichert wird: Zeigt er aus einer alten Zelle auf
+//! eine junge, kommt die alte Zelle in die gemerkte Menge. Eine Zelle, die
+//! gerade angelegt wird, ist jung und braucht keine Barriere. Nach jeder
+//! Sammlung gibt es keine jungen Zellen mehr, also ist die Menge danach
+//! leer. Der Prüfmodus kontrolliert, dass jeder Verweis aus einer alten in
+//! eine junge Zelle in der Menge steht.
+//!
+//! Gesammelt wird jung, sobald die jungen Zellen [`NURSERY`] Bytes
+//! überschreiten würden, und voll, sobald alle Zellen die Schwelle aus der
+//! letzten vollen Sammlung überschreiten würden. Der Belastungsmodus
+//! sammelt vor jeder Anforderung, abwechselnd jung und voll.
 //!
 //! Erreicht der Lesezeiger eine Ephemeron-Zelle, ist jeder ihrer Einträge
 //! bereit, wenn sein Schlüssel schon kopiert ist, sonst wartet er in einer
@@ -105,7 +121,7 @@
 #![forbid(unsafe_code)]
 
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -127,11 +143,14 @@ const MAX_PAGES: usize = 1 << 14;
 pub const MAX_LIMIT: usize = 1 << 30;
 /// Ab dieser Menge wird frühestens gesammelt.
 const MIN_TRIGGER: usize = 4 << 20;
+/// Ab so vielen Bytes in jungen Zellen wird jung gesammelt.
+const NURSERY: usize = 2 << 20;
 /// So viele frei gewordene kleine Seiten behält der Heap für die nächsten
-/// Anforderungen, statt sie neu anzulegen. Im Belastungsmodus wird vor jeder
+/// Anforderungen, statt sie neu anzulegen: so viele, wie junge Zellen
+/// füllen, bevor jung gesammelt wird. Im Belastungsmodus wird vor jeder
 /// Anforderung gesammelt; ohne Vorrat kostete jede Sammlung eine neue Seite
 /// zu 256 KiB samt Nullen.
-const SPARE_PAGES: usize = 4;
+const SPARE_PAGES: usize = NURSERY / (PAGE_WORDS * 8);
 /// Höchstens so viele Register hat der Registerstapel, zusammen 8 MiB.
 pub const MAX_REGISTERS: usize = 1 << 20;
 
@@ -401,9 +420,10 @@ fn to_usize(value: u32) -> usize {
 pub struct Options {
     /// Das Speicherbudget in Bytes, höchstens [`MAX_LIMIT`].
     pub limit: usize,
-    /// Sammeln vor jeder Anforderung (Belastungsmodus). Während ein Realm
-    /// entsteht, setzt er aus und eine Sammlung am Ende verschiebt den
-    /// fertigen Realm; siehe [`Heap::pause_stress`].
+    /// Sammeln vor jeder Anforderung, abwechselnd jung und voll
+    /// (Belastungsmodus). Während ein Realm entsteht, setzt er aus und eine
+    /// volle Sammlung am Ende verschiebt den fertigen Realm; siehe
+    /// [`Heap::pause_stress`].
     pub stress: bool,
     /// Nach jeder Sammlung alle Verweise und Kopfwörter prüfen
     /// (Prüfmodus, nur für Tests: ein Fehler löst eine Panic aus).
@@ -461,8 +481,20 @@ struct Page {
     words: Box<[Cell<u64>]>,
     /// Die belegten Wörter.
     used: usize,
-    /// Gehört während einer Sammlung zum alten Raum.
-    old: bool,
+    /// Gehört während einer Sammlung zum Raum, der gesammelt wird.
+    condemned: bool,
+    /// Gehört zur jungen Generation.
+    young: bool,
+}
+
+/// Die Seiten einer Generation, jede Liste in der Reihenfolge, in der die
+/// Seiten angelegt wurden.
+#[derive(Default)]
+struct Space {
+    /// Seiten zu 256 KiB; in die letzte wird angefordert.
+    small: Vec<usize>,
+    /// Seiten mit einer großen Zelle.
+    large: Vec<usize>,
 }
 
 /// Der Heap eines Agents.
@@ -474,11 +506,13 @@ pub struct Heap {
     /// Vorrat an Wortfeldern kleiner Seiten, bis zur früheren Belegung
     /// genullt; siehe [`SPARE_PAGES`].
     spare: Vec<Box<[Cell<u64>]>>,
-    /// Seiten zu 256 KiB in der Reihenfolge, in der sie angelegt wurden; in
-    /// die letzte wird angefordert.
-    small: Vec<usize>,
-    /// Seiten mit einer großen Zelle, ebenfalls in Reihenfolge.
-    large: Vec<usize>,
+    /// Die Seiten der jungen Zellen; hierhin fordert der Heap an.
+    young: Space,
+    /// Die Seiten der alten Zellen; hierhin kopiert das Sammeln.
+    old: Space,
+    /// Die alten Zellen, die seit der letzten Sammlung einen Verweis auf
+    /// eine junge bekommen haben, nach ihrem Ort geordnet.
+    remembered: RefCell<BTreeSet<u32>>,
     /// Die Handles der offenen Bereiche, eine Liste je Bereich, der innerste
     /// zuletzt.
     roots: RefCell<Vec<Vec<u64>>>,
@@ -489,12 +523,17 @@ pub struct Heap {
     registers: RefCell<Vec<u64>>,
     /// Bytes in Zellen.
     used: usize,
-    /// Ab hier wird vor der nächsten Anforderung gesammelt.
+    /// Davon Bytes in jungen Zellen.
+    young_used: usize,
+    /// Ab hier wird vor der nächsten Anforderung voll gesammelt.
     trigger: usize,
     options: Options,
     /// Solange größer als null, setzt der Belastungsmodus aus.
     paused: u32,
+    /// Ob der Belastungsmodus als Nächstes voll sammelt.
+    stress_full: bool,
     collections: u64,
+    young_collections: u64,
     /// Während einer Sammlung die schon kopierten schwachen Zellen.
     weak: Vec<u32>,
     /// Während einer Sammlung die schon kopierten Ephemeron-Zellen.
@@ -524,8 +563,8 @@ pub struct Heap {
     pinned_shared: Option<usize>,
 }
 
-/// Wo der Lesezeiger steht: die Nummer der kleinen Seite in der Liste, das
-/// Wort darin und die Nummer der großen Seite.
+/// Wo der Lesezeiger in den alten Seiten steht: die Nummer der kleinen
+/// Seite in der Liste, das Wort darin und die Nummer der großen Seite.
 #[derive(Default)]
 struct Position {
     small: usize,
@@ -554,17 +593,21 @@ impl Heap {
             pages: Vec::new(),
             free_pages: Vec::new(),
             spare: Vec::new(),
-            small: Vec::new(),
-            large: Vec::new(),
+            young: Space::default(),
+            old: Space::default(),
+            remembered: RefCell::new(BTreeSet::new()),
             roots: RefCell::new(Vec::new()),
             persistent: Vec::new(),
             free_persistent: Vec::new(),
             registers: RefCell::new(Vec::new()),
             used: 0,
+            young_used: 0,
             trigger: MIN_TRIGGER.min(options.limit),
             options,
             paused: 0,
+            stress_full: false,
             collections: 0,
+            young_collections: 0,
             weak: Vec::new(),
             ephemerons: Vec::new(),
             waiting: HashMap::new(),
@@ -579,9 +622,14 @@ impl Heap {
         }
     }
 
-    /// Bytes in Zellen, nach einer Sammlung nur noch erreichbare.
+    /// Bytes in Zellen, nach einer vollen Sammlung nur noch erreichbare.
     pub fn used_bytes(&self) -> usize {
         self.used
+    }
+
+    /// Bytes in jungen Zellen, nach jeder Sammlung 0.
+    pub fn young_bytes(&self) -> usize {
+        self.young_used
     }
 
     /// Das Speicherbudget in Bytes.
@@ -589,9 +637,14 @@ impl Heap {
         self.options.limit
     }
 
-    /// Wie oft bisher gesammelt wurde.
+    /// Wie oft bisher gesammelt wurde, jung oder voll.
     pub fn collections(&self) -> u64 {
         self.collections
+    }
+
+    /// Wie oft davon jung gesammelt wurde.
+    pub fn young_collections(&self) -> u64 {
+        self.young_collections
     }
 
     /// Ob der Heap im Belastungsmodus ist.
@@ -1097,15 +1150,51 @@ impl Heap {
         self.write(offset, index, bits);
     }
 
-    /// Speichert einen Wert in eine bestehende Zelle. Jedes solche Speichern
-    /// läuft hierüber; mit den Generationen kommt hier die Schreibbarriere
-    /// hinzu.
+    /// Speichert einen Wert in eine bestehende Zelle, mit der
+    /// Schreibbarriere. Jedes solche Speichern läuft hierüber oder über
+    /// [`Heap::store_packed`].
     fn store(&self, offset: u32, index: usize, bits: u64) -> bool {
-        self.write(offset, index, bits)
+        if !self.write(offset, index, bits) {
+            return false;
+        }
+        if let Some((_, target)) = Value::from_bits(bits).reference_parts() {
+            self.barrier(offset, target);
+        }
+        true
+    }
+
+    /// Speichert zwei gepackte Verweise in eine bestehende Zelle, mit der
+    /// Schreibbarriere für beide.
+    fn store_packed(&self, offset: u32, index: usize, low: u32, high: u32) -> bool {
+        if !self.write(offset, index, packed(low, high)) {
+            return false;
+        }
+        for target in [low, high] {
+            if target != NONE {
+                self.barrier(offset, target);
+            }
+        }
+        true
+    }
+
+    /// Die Schreibbarriere: Die Zelle bei `cell` hat eben einen Verweis auf
+    /// `target` bekommen. Ist sie alt und das Ziel jung, merkt sich der Heap
+    /// die Zelle bis zur nächsten Sammlung.
+    fn barrier(&self, cell: u32, target: u32) {
+        let young = |offset: u32| self.page(offset).is_some_and(|page| page.young);
+        if young(target) && !young(cell) {
+            self.remembered.borrow_mut().insert(cell);
+        }
     }
 
     // Anfordern
 
+    /// Nimmt `words` Wörter für eine neue, junge Zelle. Vorher wird jung
+    /// gesammelt, wenn die jungen Zellen sonst [`NURSERY`] überschritten,
+    /// und voll, wenn alle Zellen sonst die Schwelle überschritten; im
+    /// Belastungsmodus immer, abwechselnd jung und voll. Die Schwelle liegt
+    /// nie über dem Budget, also wird voll gesammelt, bevor eine
+    /// Anforderung am Budget scheitert.
     fn allocate(&mut self, words: usize) -> Result<u32, OutOfMemory> {
         let bytes = words.checked_mul(8).ok_or(OutOfMemory)?;
         let total = |heap: &Heap| {
@@ -1113,34 +1202,56 @@ impl Heap {
                 .saturating_add(heap.external)
                 .saturating_add(bytes)
         };
-        if (self.options.stress && self.paused == 0) || total(self) > self.trigger {
+        let mut full = false;
+        if self.options.stress && self.paused == 0 {
+            full = self.stress_full;
+            self.stress_full = !full;
+            if full {
+                self.collect();
+            } else {
+                self.collect_young();
+            }
+        } else if self.young_used.saturating_add(bytes) > NURSERY {
+            self.collect_young();
+        }
+        if !full && total(self) > self.trigger {
             self.collect();
         }
         if total(self) > self.options.limit {
             return Err(OutOfMemory);
         }
-        let offset = self.bump(words).ok_or(OutOfMemory)?;
+        let offset = self.bump(words, true).ok_or(OutOfMemory)?;
         self.used = self.used.saturating_add(bytes);
+        self.young_used = self.young_used.saturating_add(bytes);
         Ok(offset)
     }
 
-    /// Nimmt `words` Wörter aus der letzten Seite oder einer neuen.
-    fn bump(&mut self, words: usize) -> Option<u32> {
+    /// Nimmt `words` Wörter aus der letzten Seite der jungen oder alten
+    /// Generation oder aus einer neuen.
+    fn bump(&mut self, words: usize, young: bool) -> Option<u32> {
         if words > PAGE_WORDS {
-            let index = self.new_page(words)?;
-            self.large.push(index);
+            let index = self.new_page(words, young)?;
+            self.space(young).large.push(index);
             if let Some(Some(page)) = self.pages.get_mut(index) {
                 page.used = words;
             }
             return make_offset(index, 0);
         }
-        let last = self.small.last().copied();
+        let last = self.space(young).small.last().copied();
         if let Some(offset) = last.and_then(|index| self.bump_in(index, words)) {
             return Some(offset);
         }
-        let index = self.new_page(PAGE_WORDS)?;
-        self.small.push(index);
+        let index = self.new_page(PAGE_WORDS, young)?;
+        self.space(young).small.push(index);
         self.bump_in(index, words)
+    }
+
+    fn space(&mut self, young: bool) -> &mut Space {
+        if young {
+            &mut self.young
+        } else {
+            &mut self.old
+        }
     }
 
     fn bump_in(&mut self, index: usize, words: usize) -> Option<u32> {
@@ -1154,7 +1265,7 @@ impl Heap {
         make_offset(index, start)
     }
 
-    fn new_page(&mut self, words: usize) -> Option<usize> {
+    fn new_page(&mut self, words: usize, young: bool) -> Option<usize> {
         let index = match self.free_pages.pop() {
             Some(index) => index,
             None if self.pages.len() < MAX_PAGES => {
@@ -1172,13 +1283,14 @@ impl Heap {
         *slot = Some(Page {
             words: spare.unwrap_or_else(|| vec![Cell::new(0); words].into_boxed_slice()),
             used: 0,
-            old: false,
+            condemned: false,
+            young,
         });
         Some(index)
     }
 
-    /// Gibt eine Seite des alten Raums frei. Das Wortfeld einer kleinen
-    /// Seite kommt genullt in den Vorrat, solange dort Platz ist.
+    /// Gibt eine gesammelte Seite frei. Das Wortfeld einer kleinen Seite
+    /// kommt genullt in den Vorrat, solange dort Platz ist.
     fn release_page(&mut self, index: usize) {
         let Some(slot) = self.pages.get_mut(index) else {
             return;
@@ -1198,15 +1310,77 @@ impl Heap {
     // Sammeln
 
     /// Sammelt den ganzen Heap: Was von keinem Handle aus erreichbar ist,
-    /// wird frei, alles andere verschoben.
+    /// wird frei, alles andere verschoben und alt.
     pub fn collect(&mut self) {
         for page in self.pages.iter_mut().flatten() {
-            page.old = true;
+            page.condemned = true;
         }
-        let old_small = std::mem::take(&mut self.small);
-        let old_large = std::mem::take(&mut self.large);
+        let young = std::mem::take(&mut self.young);
+        let old = std::mem::take(&mut self.old);
         self.used = 0;
+        self.young_used = 0;
+        self.remembered.get_mut().clear();
 
+        self.evacuate_roots();
+        self.trace(Position::default());
+        self.sweep_shared(false);
+        for index in [young, old]
+            .into_iter()
+            .flat_map(|space| space.small.into_iter().chain(space.large))
+        {
+            self.release_page(index);
+        }
+        self.trigger = self
+            .used
+            .saturating_add(self.external)
+            .saturating_mul(2)
+            .max(MIN_TRIGGER)
+            .min(self.options.limit);
+        self.finish_collection();
+    }
+
+    /// Sammelt nur die jungen Zellen: Was weder von einem Handle noch von
+    /// einer alten Zelle der gemerkten Menge aus erreichbar ist, wird frei,
+    /// alles andere kommt in alte Seiten. Alte Zellen bleiben, wo sie sind,
+    /// auch wenn sie nicht mehr erreichbar sind; sie räumt erst die nächste
+    /// volle Sammlung ab.
+    pub fn collect_young(&mut self) {
+        let young = std::mem::take(&mut self.young);
+        for &index in young.small.iter().chain(&young.large) {
+            if let Some(Some(page)) = self.pages.get_mut(index) {
+                page.condemned = true;
+            }
+        }
+        self.used = self.used.saturating_sub(self.young_used);
+        self.young_used = 0;
+        // Der Lesezeiger beginnt hinter den alten Zellen, die es schon gibt.
+        let start = Position {
+            small: self.old.small.len().saturating_sub(1),
+            word: self.old.small.last().map_or(0, |&index| {
+                self.pages
+                    .get(index)
+                    .and_then(Option::as_ref)
+                    .map_or(0, |page| page.used)
+            }),
+            large: self.old.large.len(),
+        };
+
+        self.evacuate_roots();
+        for offset in std::mem::take(self.remembered.get_mut()) {
+            self.scan_offset(offset);
+        }
+        self.trace(start);
+        self.sweep_shared(true);
+        for index in young.small.into_iter().chain(young.large) {
+            self.release_page(index);
+        }
+        self.young_collections = self.young_collections.saturating_add(1);
+        self.finish_collection();
+    }
+
+    /// Kopiert, worauf die Handles und die übrigen Wurzeln zeigen, und
+    /// führt sie nach.
+    fn evacuate_roots(&mut self) {
         let mut roots = std::mem::take(self.roots.get_mut());
         for slot in roots.iter_mut().flatten() {
             *slot = self.evacuate(*slot);
@@ -1237,8 +1411,12 @@ impl Heap {
             *slot = self.evacuate(*slot);
         }
         self.cleanup = cleanup;
+    }
 
-        let mut position = Position::default();
+    /// Liest ab `position` alle kopierten Zellen, bis der Lesezeiger und die
+    /// bereiten Ephemeron-Einträge nichts mehr finden, und leert danach
+    /// die Einträge und schwachen Felder, deren Ziel nicht erreicht wurde.
+    fn trace(&mut self, mut position: Position) {
         loop {
             self.scan(&mut position);
             if self.ready.is_empty() {
@@ -1248,17 +1426,9 @@ impl Heap {
         }
         self.clear_ephemerons();
         self.clear_weak();
-        self.sweep_shared();
+    }
 
-        for index in old_small.into_iter().chain(old_large) {
-            self.release_page(index);
-        }
-        self.trigger = self
-            .used
-            .saturating_add(self.external)
-            .saturating_mul(2)
-            .max(MIN_TRIGGER)
-            .min(self.options.limit);
+    fn finish_collection(&mut self) {
         self.collections = self.collections.saturating_add(1);
         if self.options.verify
             && let Err(error) = self.verify()
@@ -1267,15 +1437,16 @@ impl Heap {
         }
     }
 
-    /// Der Lesezeiger nach Cheney. Kleine Seiten werden der Reihe nach
-    /// gelesen; neue Zellen landen immer in der letzten. Große Seiten haben
-    /// je eine Zelle und eine eigene Liste. Der Lesezeiger steht in
-    /// `position` und liest beim nächsten Aufruf dort weiter.
+    /// Der Lesezeiger nach Cheney über die alten Seiten. Kleine Seiten
+    /// werden der Reihe nach gelesen; kopierte Zellen landen immer in der
+    /// letzten. Große Seiten haben je eine Zelle und eine eigene Liste. Der
+    /// Lesezeiger steht in `position` und liest beim nächsten Aufruf dort
+    /// weiter.
     fn scan(&mut self, position: &mut Position) {
         let Position { small, word, large } = position;
         loop {
             let mut progress = false;
-            while let Some(&index) = self.small.get(*small) {
+            while let Some(&index) = self.old.small.get(*small) {
                 let used = self
                     .pages
                     .get(index)
@@ -1286,14 +1457,14 @@ impl Heap {
                         .scan_cell(index, *word)
                         .map_or(used, |words| word.saturating_add(words));
                     progress = true;
-                } else if *small + 1 < self.small.len() {
+                } else if *small + 1 < self.old.small.len() {
                     *small += 1;
                     *word = 0;
                 } else {
                     break;
                 }
             }
-            while let Some(&index) = self.large.get(*large) {
+            while let Some(&index) = self.old.large.get(*large) {
                 self.scan_cell(index, 0);
                 *large += 1;
                 progress = true;
@@ -1307,7 +1478,12 @@ impl Heap {
     /// Führt die Verweise der Zelle bei `word` in Seite `index` nach und
     /// gibt ihre Größe in Wörtern zurück.
     fn scan_cell(&mut self, index: usize, word: usize) -> Option<usize> {
-        let offset = make_offset(index, word)?;
+        self.scan_offset(make_offset(index, word)?)
+    }
+
+    /// Führt die Verweise der Zelle bei `offset` nach und gibt ihre Größe in
+    /// Wörtern zurück.
+    fn scan_offset(&mut self, offset: u32) -> Option<usize> {
         let head = self.word(offset, 0)?;
         let words = cell_words(head)?;
         match header_kind(head) {
@@ -1377,10 +1553,10 @@ impl Heap {
     }
 
     /// Der alte Ort eines Schlüssels, der noch nicht kopiert ist; `None`,
-    /// wenn er es ist oder nicht im alten Raum liegt.
+    /// wenn er es ist oder nicht im Raum liegt, der gesammelt wird.
     fn waiting_key(&self, bits: u64) -> Option<u32> {
         let (_, offset) = Value::from_bits(bits).reference_parts()?;
-        if !self.page(offset).is_some_and(|page| page.old) {
+        if !self.condemned(offset) {
             return None;
         }
         let head = self.word(offset, 0)?;
@@ -1416,7 +1592,7 @@ impl Heap {
                 let dead = self
                     .word(offset, base)
                     .and_then(|key| Value::from_bits(key).reference_parts())
-                    .is_some_and(|(_, key)| self.page(key).is_some_and(|page| page.old));
+                    .is_some_and(|(_, key)| self.condemned(key));
                 if !dead {
                     continue;
                 }
@@ -1436,8 +1612,8 @@ impl Heap {
     }
 
     /// Führt nach dem Lesezeiger die Felder der schwachen Zellen nach: Ein
-    /// Ziel, das verschoben wurde, bekommt seinen neuen Ort, eines im alten
-    /// Raum wird *undefined*. Leert das ein Feld hinter dem ersten einer
+    /// Ziel, das verschoben wurde, bekommt seinen neuen Ort, eines, das im
+    /// gesammelten Raum blieb, wird *undefined*. Leert das ein Feld hinter dem ersten einer
     /// Zelle mit [`FINALIZER_FLAG`], kommt die Registry im ersten Feld in die
     /// Liste der Aufräum-Jobs.
     fn clear_weak(&mut self) {
@@ -1454,7 +1630,7 @@ impl Heap {
                 let Some((kind, target)) = Value::from_bits(bits).reference_parts() else {
                     continue;
                 };
-                if !self.page(target).is_some_and(|page| page.old) {
+                if !self.condemned(target) {
                     continue;
                 }
                 let moved = match self.word(target, 0) {
@@ -1478,13 +1654,19 @@ impl Heap {
         }
     }
 
-    /// Kopiert die Zelle, auf die `bits` zeigt, in den neuen Raum, wenn das
-    /// noch nicht geschehen ist, und gibt den nachgeführten Wert zurück.
+    /// Ob die Zelle bei `offset` im Raum liegt, der gerade gesammelt wird.
+    fn condemned(&self, offset: u32) -> bool {
+        self.page(offset).is_some_and(|page| page.condemned)
+    }
+
+    /// Kopiert die Zelle, auf die `bits` zeigt, in eine alte Seite, wenn sie
+    /// im gesammelten Raum liegt und das noch nicht geschehen ist, und gibt
+    /// den nachgeführten Wert zurück.
     fn evacuate(&mut self, bits: u64) -> u64 {
         let Some((kind, offset)) = Value::from_bits(bits).reference_parts() else {
             return bits;
         };
-        if !self.page(offset).is_some_and(|page| page.old) {
+        if !self.condemned(offset) {
             return bits;
         }
         let Some(head) = self.word(offset, 0) else {
@@ -1496,9 +1678,9 @@ impl Heap {
         let Some(words) = cell_words(head) else {
             return bits;
         };
-        // Der neue Raum findet immer Platz: Das Budget ist höchstens ein
+        // Die alten Seiten finden immer Platz: Das Budget ist höchstens ein
         // Viertel dessen, was die Abstände fassen.
-        let Some(moved) = self.bump(words) else {
+        let Some(moved) = self.bump(words, false) else {
             return bits;
         };
         for index in 0..words {
@@ -1516,10 +1698,13 @@ impl Heap {
         Value::reference(kind, moved).bits()
     }
 
-    /// Prüft den Heap: Jede Seite besteht lückenlos aus gültigen Zellen, und
+    /// Prüft den Heap: Jede Seite gehört zu genau einer Generation und
+    /// besteht lückenlos aus gültigen Zellen, die Zähler der Bytes stimmen,
     /// jeder Verweis in Handles, Feldern und Objekten zeigt auf den Anfang
-    /// einer passenden Zelle.
+    /// einer passenden Zelle, und jede alte Zelle mit einem Verweis auf eine
+    /// junge steht in der gemerkten Menge.
     pub fn verify(&self) -> Result<(), String> {
+        self.verify_spaces()?;
         // Ein Bit je Wort jeder Seite: Beginnt dort eine Zelle? Abstände
         // nummerieren die Wörter einer Seite mit 15 Bit, auch in großen
         // Seiten, deren einzige Zelle bei Wort 0 liegt.
@@ -1530,8 +1715,8 @@ impl Heap {
             let Some(page) = page else {
                 continue;
             };
-            if page.old {
-                return Err(format!("Seite {index} gehört noch zum alten Raum"));
+            if page.condemned {
+                return Err(format!("Seite {index} gehört noch zum gesammelten Raum"));
             }
             let mut word = 0;
             while word < page.used {
@@ -1609,13 +1794,44 @@ impl Heap {
         for &bits in &self.cleanup {
             check(bits, "Aufräum-Job")?;
         }
+        let young = |offset: u32| self.page(offset).is_some_and(|page| page.young);
+        let remembered = self.remembered.borrow();
+        // Ein Verweis aus einer alten in eine junge Zelle braucht die Zelle
+        // in der gemerkten Menge.
+        let barrier = |cell: u32, target: Option<u32>, place: &str| -> Result<(), String> {
+            match target {
+                Some(target) if young(target) && !young(cell) && !remembered.contains(&cell) => {
+                    Err(format!(
+                        "{place}: alte Zelle {cell:#x} verweist auf junge {target:#x}, steht aber nicht in der gemerkten Menge"
+                    ))
+                }
+                _ => Ok(()),
+            }
+        };
+        let reference = |bits: u64| {
+            Value::from_bits(bits)
+                .reference_parts()
+                .map(|(_, offset)| offset)
+        };
+        let reference_packed = |offset: u32| (offset != NONE).then_some(offset);
+        for &cell in remembered.iter() {
+            if young(cell)
+                || !kind_at(cell).is_some_and(|kind| is_value_cell(kind) || is_object(kind))
+            {
+                return Err(format!(
+                    "gemerkte Menge: {cell:#x} ist keine alte Zelle mit Verweisen"
+                ));
+            }
+        }
         for &(offset, kind) in &cells {
             let count = self
                 .word(offset, 0)
                 .map_or(0, |head| to_usize(header_length(head)));
             if is_value_cell(kind) {
                 for slot in 1..=count {
-                    check(self.word(offset, slot).unwrap_or(0), "Feld")?;
+                    let bits = self.word(offset, slot).unwrap_or(0);
+                    check(bits, "Feld")?;
+                    barrier(offset, reference(bits), "Feld")?;
                 }
             } else if kind == KIND_SHARED {
                 if !self.shared_cell_is_valid(offset) {
@@ -1633,12 +1849,60 @@ impl Heap {
                 let more = self.word(offset, 2).unwrap_or(0);
                 check_packed(packed_low(more), &[KIND_SLOTS, KIND_SPARSE], "Elemente")?;
                 check_packed(packed_high(more), &[KIND_SLOTS], "Zusatzfeld")?;
+                for target in [refs, more]
+                    .into_iter()
+                    .flat_map(|word| [packed_low(word), packed_high(word)])
+                {
+                    barrier(offset, reference_packed(target), "gepackter Verweis")?;
+                }
                 // Interne Felder und eingebettete Plätze sind Werte.
                 for slot in 0..count.saturating_add(object_fields(kind)) {
                     let bits = self.word(offset, 1 + OBJECT_REFS + slot).unwrap_or(0);
                     check(bits, "Eigenschaft")?;
+                    barrier(offset, reference(bits), "Eigenschaft")?;
                 }
             }
+        }
+        Ok(())
+    }
+
+    /// Für [`Heap::verify`]: Jede Seite steht in genau einer Liste ihrer
+    /// Generation, und die Zähler der Bytes stimmen mit den Seiten überein.
+    fn verify_spaces(&self) -> Result<(), String> {
+        let mut listed = vec![false; self.pages.len()];
+        let mut bytes = [0_usize; 2];
+        for (young, space) in [(true, &self.young), (false, &self.old)] {
+            for (large, list) in [(false, &space.small), (true, &space.large)] {
+                for &index in list {
+                    let Some(Some(page)) = self.pages.get(index) else {
+                        return Err(format!(
+                            "Seite {index} steht in einer Liste, gibt es aber nicht"
+                        ));
+                    };
+                    if std::mem::replace(listed.get_mut(index).unwrap_or(&mut true), true) {
+                        return Err(format!("Seite {index} steht in mehr als einer Liste"));
+                    }
+                    if page.young != young || (page.words.len() > PAGE_WORDS) != large {
+                        return Err(format!("Seite {index} steht in der falschen Liste"));
+                    }
+                    let slot = usize::from(young);
+                    if let Some(sum) = bytes.get_mut(slot) {
+                        *sum = sum.saturating_add(page.used.saturating_mul(8));
+                    }
+                }
+            }
+        }
+        for (index, page) in self.pages.iter().enumerate() {
+            if page.is_some() && !listed.get(index).copied().unwrap_or(false) {
+                return Err(format!("Seite {index} steht in keiner Liste"));
+            }
+        }
+        let [old, young] = bytes;
+        if young != self.young_used || old.saturating_add(young) != self.used {
+            return Err(format!(
+                "Bytes: {young} jung und {old} alt in den Seiten, gezählt {} jung und {} insgesamt",
+                self.young_used, self.used
+            ));
         }
         Ok(())
     }
