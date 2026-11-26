@@ -520,9 +520,9 @@ fn large_cells_get_their_own_pages() {
         let cells = heap.alloc_slots(scope, 70_000).expect("Speicher");
         heap.set_slot(cell(heap.get(cells)), 69_999, heap.get(large));
         heap.set(large, Value::UNDEFINED);
-        assert_eq!(heap.large.len(), 2);
+        assert_eq!((heap.young.large.len(), heap.old.large.len()), (2, 0));
         heap.collect();
-        assert_eq!(heap.large.len(), 2);
+        assert_eq!((heap.young.large.len(), heap.old.large.len()), (0, 2));
         let cells = cell(heap.get(cells));
         let large = string(heap.slot(cells, 69_999).expect("Feld"));
         assert_eq!(heap.string_units(large), text);
@@ -581,6 +581,8 @@ fn stress_mode_collects_before_every_allocation() {
             heap.set_slot(cell(heap.get(list)), index, heap.get(text));
         }
         assert_eq!(heap.collections(), 101);
+        // Junge und volle Sammlungen wechseln sich ab, die erste ist jung.
+        assert_eq!(heap.young_collections(), 51);
         let list = cell(heap.get(list));
         for index in 0..100 {
             let text = string(heap.slot(list, index).expect("Feld"));
@@ -839,5 +841,304 @@ fn shared_blocks_count_against_the_limit() {
         assert!(heap.alloc_shared(scope, 0, Some(2 << 20)).is_err());
         heap.set(first, Value::UNDEFINED);
         assert!(heap.alloc_shared(scope, 2 << 20, None).is_ok());
+    });
+}
+
+/// Der Abstand der Zelle hinter einem Handle.
+fn offset_of(heap: &Heap, local: Local<'_>) -> u32 {
+    heap.get(local)
+        .reference_parts()
+        .map(|(_, offset)| offset)
+        .expect("Verweis")
+}
+
+#[test]
+fn young_collections_promote_survivors_and_leave_old_cells_in_place() {
+    let mut heap = checked();
+    heap.scope(|heap, scope| {
+        let old = heap.alloc_slots(scope, 2).expect("Speicher");
+        heap.collect();
+        let old_offset = offset_of(heap, old);
+        assert_eq!(heap.young_bytes(), 0);
+        let young = heap.alloc_string(scope, &units("jung")).expect("Speicher");
+        heap.scope(|heap, scope| {
+            for _ in 0..100 {
+                heap.alloc_slots(scope, 8).expect("Speicher");
+            }
+        });
+        let young_offset = offset_of(heap, young);
+        assert!(heap.young_bytes() > 16 * 100);
+        heap.collect_young();
+        assert_eq!((heap.collections(), heap.young_collections()), (2, 1));
+        // Die alte Zelle bleibt, wo sie war, die junge zieht in eine alte
+        // Seite um, der Müll ist fort.
+        assert_eq!(offset_of(heap, old), old_offset);
+        assert_ne!(offset_of(heap, young), young_offset);
+        assert_eq!(heap.young_bytes(), 0);
+        assert_eq!(heap.used_bytes(), 24 + 16);
+        assert_eq!(heap.string_units(string(heap.get(young))), units("jung"));
+        assert!(heap.young.small.is_empty() && heap.young.large.is_empty());
+    });
+}
+
+#[test]
+fn the_barrier_remembers_old_cells_that_name_young_ones() {
+    let mut heap = checked();
+    heap.scope(|heap, scope| {
+        let old = heap.alloc_slots(scope, 3).expect("Speicher");
+        let other = heap.alloc_slots(scope, 1).expect("Speicher");
+        heap.collect();
+        // Ein Verweis auf eine alte Zelle braucht keinen Eintrag.
+        heap.set_slot(cell(heap.get(old)), 2, heap.get(other));
+        assert!(heap.remembered.borrow().is_empty());
+        heap.scope(|heap, scope| {
+            let first = heap.alloc_string(scope, &units("eins")).expect("Speicher");
+            let second = heap.alloc_string(scope, &units("zwei")).expect("Speicher");
+            let target = cell(heap.get(old));
+            heap.set_slot(target, 0, heap.get(first));
+            heap.set_slot(target, 1, heap.get(second));
+            // Eine junge Zelle, die auf eine junge zeigt, merkt sich niemand.
+            let young = heap.alloc_slots(scope, 1).expect("Speicher");
+            heap.set_slot(cell(heap.get(young)), 0, heap.get(first));
+        });
+        // Jede alte Zelle steht höchstens einmal in der Menge.
+        assert_eq!(
+            heap.remembered.borrow().iter().copied().collect::<Vec<_>>(),
+            [offset_of(heap, old)]
+        );
+        heap.collect_young();
+        assert!(heap.remembered.borrow().is_empty());
+        let target = cell(heap.get(old));
+        let text = |index| heap.string_units(string(heap.slot(target, index).expect("Feld")));
+        assert_eq!(text(0), units("eins"));
+        assert_eq!(text(1), units("zwei"));
+        // Die alte Zelle, die andere und die beiden Zeichenketten.
+        assert_eq!(heap.used_bytes(), 32 + 16 + 16 + 16);
+    });
+}
+
+#[test]
+fn packed_references_pass_the_barrier() {
+    let mut heap = checked();
+    heap.scope(|heap, scope| {
+        let shape = heap
+            .alloc_cell(scope, CellKind::Shape, 1)
+            .expect("Speicher");
+        let object = heap
+            .alloc_object(scope, ObjectClass::Ordinary, 1, shape, None)
+            .expect("Speicher");
+        heap.collect();
+        heap.scope(|heap, scope| {
+            let shape = heap
+                .alloc_cell(scope, CellKind::Shape, 2)
+                .expect("Speicher");
+            let first = heap
+                .alloc_cell(scope, CellKind::Shape, 1)
+                .expect("Speicher");
+            let prototype = heap
+                .alloc_object(scope, ObjectClass::Ordinary, 0, first, None)
+                .expect("Speicher");
+            let elements = heap.alloc_slots(scope, 5).expect("Speicher");
+            let overflow = heap.alloc_slots(scope, 6).expect("Speicher");
+            let target = Ref::new(offset_of(heap, object));
+            assert!(heap.set_object_shape(target, cell(heap.get(shape))));
+            assert!(heap.set_object_prototype(target, Some(Ref::new(offset_of(heap, prototype)))));
+            assert!(heap.set_object_elements(target, Some(cell(heap.get(elements)))));
+            assert!(heap.set_object_overflow(target, Some(cell(heap.get(overflow)))));
+        });
+        assert_eq!(heap.remembered.borrow().len(), 1);
+        heap.collect_young();
+        let target = Ref::new(offset_of(heap, object));
+        let shape = heap.object_shape(target).expect("Gestalt");
+        assert_eq!(heap.field_count(shape), 2);
+        let prototype = heap.object_prototype(target).expect("Prototyp");
+        assert_eq!(heap.object_class(prototype), Some(ObjectClass::Ordinary));
+        let elements = heap.object_elements(target).expect("Elemente");
+        assert_eq!(heap.slot_count(elements), 5);
+        let overflow = heap.object_overflow(target).expect("Zusatzfeld");
+        assert_eq!(heap.slot_count(overflow), 6);
+    });
+}
+
+#[test]
+fn old_weak_cells_forget_young_cells_that_die() {
+    let mut heap = checked();
+    heap.scope(|heap, scope| {
+        let weak = heap.alloc_cell(scope, CellKind::Weak, 3).expect("Speicher");
+        let old = heap.alloc_slots(scope, 1).expect("Speicher");
+        heap.collect();
+        let kept = heap.alloc_slots(scope, 2).expect("Speicher");
+        heap.scope(|heap, scope| {
+            let lost = heap.alloc_slots(scope, 1).expect("Speicher");
+            let table = cell(heap.get(weak));
+            heap.set_field(table, 0, heap.get(kept));
+            heap.set_field(table, 1, heap.get(lost));
+            heap.set_field(table, 2, heap.get(old));
+        });
+        heap.collect_young();
+        let table = cell(heap.get(weak));
+        assert_eq!(
+            heap.field(table, 0).map(Value::kind),
+            Some(Kind::Internal(cell(heap.get(kept))))
+        );
+        assert!(heap.field(table, 1).is_some_and(Value::is_undefined));
+        assert_eq!(
+            heap.field(table, 2).map(Value::kind),
+            Some(Kind::Internal(cell(heap.get(old))))
+        );
+        assert_eq!(heap.used_bytes(), 32 + 16 + 24);
+    });
+}
+
+#[test]
+fn old_finalizer_cells_report_young_targets_that_die() {
+    let mut heap = checked();
+    heap.scope(|heap, scope| {
+        let registry = heap.alloc_slots(scope, 1).expect("Speicher");
+        let cells = heap.alloc_finalizer_cell(scope, 2).expect("Speicher");
+        heap.set_field(cell(heap.get(cells)), 0, heap.get(registry));
+        heap.collect();
+        heap.scope(|heap, scope| {
+            let target = heap.alloc_slots(scope, 1).expect("Speicher");
+            heap.set_field(cell(heap.get(cells)), 1, heap.get(target));
+            heap.collect_young();
+            assert!(heap.pop_cleanup(scope).is_none());
+        });
+        // Das Ziel ist jetzt alt; eine junge Sammlung sieht seinen Tod nicht.
+        heap.collect_young();
+        assert!(heap.pop_cleanup(scope).is_none());
+        heap.collect();
+        assert!(heap.pop_cleanup(scope).is_some());
+        heap.scope(|heap, scope| {
+            let target = heap.alloc_slots(scope, 1).expect("Speicher");
+            heap.set_field(cell(heap.get(cells)), 1, heap.get(target));
+        });
+        heap.collect_young();
+        assert!(
+            heap.field(cell(heap.get(cells)), 1)
+                .is_some_and(Value::is_undefined)
+        );
+        let pending = heap.pop_cleanup(scope).expect("Aufräum-Job");
+        assert_eq!(
+            heap.get(pending).kind(),
+            Kind::Internal(cell(heap.get(registry)))
+        );
+    });
+}
+
+#[test]
+fn old_ephemerons_follow_young_keys_and_values() {
+    let mut heap = checked();
+    heap.scope(|heap, scope| {
+        let table = heap.alloc_ephemerons(scope, 4, 2).expect("Speicher");
+        let old_key = heap.alloc_slots(scope, 1).expect("Speicher");
+        heap.collect();
+        let young_key = heap.alloc_slots(scope, 1).expect("Speicher");
+        heap.scope(|heap, scope| {
+            let lost_key = heap.alloc_slots(scope, 1).expect("Speicher");
+            let values: Vec<_> = (0..4)
+                .map(|_| heap.alloc_slots(scope, 2).expect("Speicher"))
+                .collect();
+            let chained = heap.alloc_slots(scope, 1).expect("Speicher");
+            let cells = cell(heap.get(table));
+            // Ein alter Schlüssel lebt in einer jungen Sammlung immer.
+            heap.set_field(cells, 0, heap.get(old_key));
+            heap.set_field(cells, 1, heap.get(values[0]));
+            heap.set_field(cells, 2, heap.get(young_key));
+            heap.set_field(cells, 3, heap.get(values[1]));
+            heap.set_field(cells, 4, heap.get(lost_key));
+            heap.set_field(cells, 5, heap.get(values[2]));
+            // Der Wert eines lebenden Eintrags hält den Schlüssel eines
+            // anderen, der weiter hinten steht.
+            heap.set_field(cells, 6, heap.get(chained));
+            heap.set_field(cells, 7, heap.get(values[3]));
+            heap.set_field(cell(heap.get(values[1])), 0, heap.get(chained));
+        });
+        heap.collect_young();
+        let cells = cell(heap.get(table));
+        let internal = |index| {
+            matches!(
+                heap.field(cells, index).map(Value::kind),
+                Some(Kind::Internal(_))
+            )
+        };
+        assert!((0..4).all(internal));
+        assert!(heap.field(cells, 4).is_some_and(Value::is_hole));
+        assert!(heap.field(cells, 5).is_some_and(Value::is_undefined));
+        assert!(internal(6) && internal(7));
+        // Tabelle, alter und junger Schlüssel, drei Werte, der verkettete
+        // Schlüssel.
+        assert_eq!(heap.used_bytes(), 72 + 16 + 16 + 3 * 24 + 16);
+    });
+}
+
+#[test]
+fn young_collections_free_only_young_shared_blocks() {
+    let mut heap = checked();
+    heap.scope(|heap, scope| {
+        let old = heap.alloc_shared(scope, 10, None).expect("Speicher");
+        heap.collect();
+        let kept = heap.alloc_shared(scope, 20, None).expect("Speicher");
+        heap.scope(|heap, scope| {
+            heap.alloc_shared(scope, 40, None).expect("Speicher");
+        });
+        assert_eq!(heap.external_bytes(), 70);
+        heap.collect_young();
+        assert_eq!(heap.external_bytes(), 30);
+        assert_eq!(
+            heap.shared_block(cell(heap.get(old)))
+                .map(|block| block.len()),
+            Some(10)
+        );
+        assert_eq!(
+            heap.shared_block(cell(heap.get(kept)))
+                .map(|block| block.len()),
+            Some(20)
+        );
+        // Der umgezogene Eintrag ist jetzt alt, eine junge Sammlung lässt
+        // ihn stehen, auch ohne Handle; erst die volle gibt ihn frei.
+        heap.set(kept, Value::UNDEFINED);
+        heap.collect_young();
+        assert_eq!(heap.external_bytes(), 30);
+        heap.collect();
+        assert_eq!(heap.external_bytes(), 10);
+    });
+}
+
+#[test]
+fn a_full_nursery_starts_a_young_collection() {
+    let mut heap = checked();
+    heap.scope(|heap, scope| {
+        let kept = heap
+            .alloc_string(scope, &units("bleibt"))
+            .expect("Speicher");
+        // Etwa 3 MiB Müll in Zellen zu 72 Bytes.
+        for _ in 0..45_000 {
+            heap.scope(|heap, scope| {
+                heap.alloc_slots(scope, 8).expect("Speicher");
+            });
+        }
+        assert_eq!((heap.collections(), heap.young_collections()), (1, 1));
+        assert!(heap.young_bytes() <= NURSERY);
+        heap.collect_young();
+        assert_eq!(heap.used_bytes(), 16);
+        assert_eq!(heap.string_units(string(heap.get(kept))), units("bleibt"));
+    });
+}
+
+#[test]
+fn verify_finds_a_store_past_the_barrier() {
+    let mut heap = checked();
+    heap.scope(|heap, scope| {
+        let old = heap.alloc_slots(scope, 1).expect("Speicher");
+        heap.collect();
+        let young = heap.alloc_slots(scope, 1).expect("Speicher");
+        let offset = offset_of(heap, old);
+        // Ein Schreiben ohne Barriere, wie es kein Aufrufer tun darf.
+        assert!(heap.write(offset, 1, heap.get(young).bits()));
+        let error = heap.verify().expect_err("Barriere fehlt");
+        assert!(error.contains("gemerkten Menge"), "{error}");
+        heap.set_slot(cell(heap.get(old)), 0, heap.get(young));
+        assert_eq!(heap.verify(), Ok(()));
     });
 }

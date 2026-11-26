@@ -410,12 +410,12 @@ impl Heap {
             return false;
         };
         let offset = target.map_or(NONE, Ref::offset);
-        let word = if high {
-            packed(packed_low(word), offset)
+        let (low, high) = if high {
+            (packed_low(word), offset)
         } else {
-            packed(offset, packed_high(word))
+            (offset, packed_high(word))
         };
-        self.store(object.offset(), index, word)
+        self.store_packed(object.offset(), index, low, high)
     }
 
     pub(crate) fn object_shape(&self, object: Ref<'_>) -> Option<Ref<'_>> {

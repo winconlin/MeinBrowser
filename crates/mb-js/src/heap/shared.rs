@@ -3,7 +3,9 @@
 //! [`SharedBlock`] hält. Die Zelle enthält keine Verweise. Beim Sammeln
 //! merkt sich der Lesezeiger die Nummern der Zellen, die er erreicht;
 //! Einträge ohne erreichte Zelle gibt der Heap danach frei, und der Block
-//! lebt nur weiter, solange ein anderer Agent ihn hält.
+//! lebt nur weiter, solange ein anderer Agent ihn hält. Eine junge Sammlung
+//! erreicht nur junge Zellen und gibt deshalb nur Einträge junger Zellen
+//! frei; ein Eintrag wird alt, sobald seine Zelle eine Sammlung übersteht.
 //!
 //! Die Bytes eines Blocks zählen zum Speicherbudget des Heaps, der ihn
 //! hält, mit [`SharedBlock::capacity`] Bytes.
@@ -14,11 +16,12 @@ use super::{Heap, KIND_SHARED, Local, OutOfMemory, Scope, header, header_kind};
 use crate::shared::SharedBlock;
 use crate::value::{Ref, RefKind, Value};
 
-/// Ein Eintrag der Tabelle: der Block und ob der Lesezeiger der laufenden
-/// Sammlung eine Zelle dafür erreicht hat.
+/// Ein Eintrag der Tabelle: der Block, ob der Lesezeiger der laufenden
+/// Sammlung eine Zelle dafür erreicht hat, und ob die Zelle noch jung ist.
 pub(super) struct Entry {
     block: Arc<SharedBlock>,
     reached: bool,
+    young: bool,
 }
 
 impl Heap {
@@ -59,6 +62,7 @@ impl Heap {
             *slot = Some(Entry {
                 block,
                 reached: false,
+                young: true,
             });
         }
         self.external = self.external.saturating_add(capacity);
@@ -133,16 +137,22 @@ impl Heap {
             && let Some(Some(entry)) = self.shared.get_mut(index)
         {
             entry.reached = true;
+            // Die Zelle liegt jetzt in einer alten Seite.
+            entry.young = false;
         }
     }
 
     /// Nach dem Lesezeiger: Einträge, deren Zelle nicht erreicht wurde,
-    /// werden frei, die übrigen warten auf die nächste Sammlung.
-    pub(super) fn sweep_shared(&mut self) {
+    /// werden frei, die übrigen warten auf die nächste Sammlung. Mit
+    /// `young_only` (junge Sammlung) bleiben alte Einträge stehen: Ihre
+    /// Zellen sucht eine junge Sammlung nicht.
+    pub(super) fn sweep_shared(&mut self, young_only: bool) {
         for index in 0..self.shared.len() {
             let keep = self.pinned_shared == Some(index);
             let reached = match self.shared.get_mut(index) {
-                Some(Some(entry)) => std::mem::replace(&mut entry.reached, false),
+                Some(Some(entry)) => {
+                    std::mem::replace(&mut entry.reached, false) || (young_only && !entry.young)
+                }
                 _ => continue,
             };
             if !reached && !keep {
