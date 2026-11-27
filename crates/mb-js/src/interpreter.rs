@@ -1338,12 +1338,26 @@ fn length_key<'s>(agent: &mut Agent, scope: &'s Scope) -> Completion<PropertyKey
 
 impl<'c> Frame<'c, '_> {
     /// Der Platz eines Registers im Registerstapel. Register stammen vom
-    /// Übersetzer und liegen im Rahmen; ein ungültiges liest *undefined*.
+    /// Übersetzer oder aus geprüftem gespeichertem Code und liegen im
+    /// Rahmen; eines außerhalb liest *undefined* und schreibt nichts, statt
+    /// einen anderen Rahmen zu treffen.
     fn slot(&self, operand: i64) -> usize {
         usize::try_from(operand)
             .ok()
+            .filter(|&register| register < self.code.register_count())
             .and_then(|register| self.base.checked_add(register))
             .unwrap_or(usize::MAX)
+    }
+
+    /// Ob die `length` Register ab `first` ganz im Rahmen liegen. Ein Aufruf
+    /// liest die Funktion, `this` und die Argumente über ihre Plätze im
+    /// Registerstapel, nicht über [`Frame::slot`]; ragten sie hinaus, lägen
+    /// sie im Rahmen des Aufgerufenen.
+    fn spans(&self, first: i64, length: usize) -> bool {
+        usize::try_from(first)
+            .ok()
+            .and_then(|first| first.checked_add(length))
+            .is_some_and(|end| end <= self.code.register_count())
     }
 
     fn register<'s>(&self, agent: &Agent, scope: &'s Scope, operand: i64) -> Local<'s> {
@@ -2365,6 +2379,17 @@ impl<'c> Frame<'c, '_> {
     ) -> Completion<Flow> {
         let first = instruction.operand(0);
         let spread = matches!(instruction.op, Op::ConstructSpread | Op::SuperCallSpread);
+        let count = if spread {
+            0
+        } else {
+            usize::try_from(instruction.operand(1)).unwrap_or(0)
+        };
+        // Wie bei [`Frame::call`]: Der Konstruktor, der Platz für `this`,
+        // dann die Argumente oder das Array mit ihnen.
+        let length = if spread { 3 } else { count.saturating_add(2) };
+        if !self.spans(first, length) {
+            return Err(agent.throw_error(ErrorKind::RangeError));
+        }
         let constructor = self.register(agent, scope, first);
         if !is_constructor(agent, agent.heap().get(constructor)) {
             return Err(agent.throw_error(ErrorKind::TypeError));
@@ -2379,11 +2404,6 @@ impl<'c> Frame<'c, '_> {
             first
         };
         let new_target = self.register(agent, scope, target);
-        let count = if spread {
-            0
-        } else {
-            usize::try_from(instruction.operand(1)).unwrap_or(0)
-        };
         if runs_in_instruction(agent.heap(), agent.heap().get(constructor)) {
             // [[Construct]] einer eingebauten Funktion (Abschnitt 10.3.2):
             // `this` bleibt uninitialisiert. Eine gebundene Funktion
@@ -2456,6 +2476,11 @@ impl<'c> Frame<'c, '_> {
         spread: bool,
         tail: bool,
     ) -> Completion<Flow> {
+        // Die Funktion, `this`, dann die Argumente oder das Array mit ihnen.
+        let length = if spread { 3 } else { count.saturating_add(2) };
+        if !self.spans(first, length) {
+            return Err(agent.throw_error(ErrorKind::RangeError));
+        }
         let callee = self.register(agent, scope, first);
         if !is_callable(agent.heap(), agent.heap().get(callee)) {
             return Err(agent.throw_error(ErrorKind::TypeError));
@@ -2506,6 +2531,10 @@ impl<'c> Frame<'c, '_> {
             return Err(agent.throw_error(ErrorKind::RangeError));
         };
         let count = usize::try_from(site.arguments).unwrap_or(0);
+        let length = if site.spread { 3 } else { count.saturating_add(2) };
+        if !self.spans(first, length) {
+            return Err(agent.throw_error(ErrorKind::RangeError));
+        }
         let callee = self.register(agent, scope, first);
         let eval = agent.intrinsic(scope, self.realm, Intrinsic::Eval);
         let heap = agent.heap();
