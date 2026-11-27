@@ -30,6 +30,10 @@ dependencies = [
 [[package]]
 name = "mb-crypto"
 version = "0.0.0"
+dependencies = [
+ "mb-json",
+ "testdata",
+]
 
 [[package]]
 name = "mb-css"

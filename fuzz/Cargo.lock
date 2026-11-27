@@ -78,6 +78,10 @@ name = "mb-compress"
 version = "0.0.0"
 
 [[package]]
+name = "mb-crypto"
+version = "0.0.0"
+
+[[package]]
 name = "mb-css"
 version = "0.0.0"
 dependencies = [
@@ -221,6 +225,7 @@ dependencies = [
  "libfuzzer-sys",
  "mb-base",
  "mb-compress",
+ "mb-crypto",
  "mb-css",
  "mb-encoding",
  "mb-html",

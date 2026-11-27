@@ -13,6 +13,7 @@ mod execution;
 mod idl;
 mod regexp;
 mod runtime;
+mod sha256;
 mod weak;
 pub use arraybuffer::arraybuffer;
 pub use atomics::atomics;
@@ -22,6 +23,7 @@ pub use execution::js_execute;
 pub use idl::webidl;
 pub use regexp::regexp;
 pub use runtime::js_runtime;
+pub use sha256::sha256;
 pub use weak::weak;
 
 pub const MAX_INPUT: usize = 4096;

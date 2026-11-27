@@ -21,7 +21,7 @@ pub struct Source {
 
 /// Alle Testsammlungen. Für einen neuen Stand den Commit ändern und
 /// `cargo run -p testdata` ausführen.
-pub const SOURCES: [Source; 9] = [
+pub const SOURCES: [Source; 11] = [
     Source {
         name: "wpt",
         repository: "https://github.com/web-platform-tests/wpt",
@@ -189,6 +189,27 @@ pub const SOURCES: [Source; 9] = [
             "/features.txt",
             "/harness/",
             "/INTERPRETING.md",
+        ],
+    },
+    Source {
+        name: "acvp-server",
+        repository: "https://github.com/usnistgov/ACVP-Server",
+        commit: "975de31eb83d87039ec88934fdc47d8c312b892d",
+        // Testvektoren des NIST für die Kryptografie in `mb-crypto`, je
+        // Verfahren Aufgaben und Antworten in einer Datei, siehe
+        // `crates/mb-crypto/src/sha256/tests.rs`.
+        paths: &["/gen-val/json-files/SHA2-256-1.0/internalProjection.json"],
+    },
+    Source {
+        name: "pyca-cryptography",
+        repository: "https://github.com/pyca/cryptography",
+        commit: "c88018cf64d96aa0f6c8f2c8d710db5e5b5e9c8b",
+        // Die älteren Testvektoren des NIST (CAVP) für `mb-crypto`, wie das
+        // NIST sie als Antwortdateien veröffentlicht hat.
+        paths: &[
+            "/vectors/cryptography_vectors/hashes/SHA2/SHA256ShortMsg.rsp",
+            "/vectors/cryptography_vectors/hashes/SHA2/SHA256LongMsg.rsp",
+            "/vectors/cryptography_vectors/hashes/SHA2/SHA256Monte.rsp",
         ],
     },
 ];

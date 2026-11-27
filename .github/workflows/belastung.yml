@@ -1,9 +1,10 @@
 name: Belastungstests
 
-# Nächtliche Belastungstests für den Garbage Collector (Schritt 10 in
-# docs/architektur.md, 12.2): Test262 und GC-lastige Programme im
-# Belastungsmodus des Heaps, im Release-Build. Siehe
-# docs/m2-test262-ausfuehrung.md, Abschnitt „Nächtliche Belastungstests“.
+# Nächtliche Belastungstests im Release-Build: für den Garbage Collector
+# (Schritt 10 in docs/architektur.md, 12.2) Test262 und GC-lastige Programme
+# im Belastungsmodus des Heaps, siehe docs/m2-test262-ausfuehrung.md,
+# Abschnitt „Nächtliche Belastungstests“; für SHA-256 die großen Nachrichten
+# des ACVP von 1 bis 8 GiB (Schritt 11a, crates/mb-crypto/src/sha256/tests.rs).
 
 on:
   schedule:
@@ -39,15 +40,23 @@ jobs:
       matrix:
         include:
           - part: test262-language
+            package: mb-js
             testdata: true
             tests: test262_language_under_stress
           - part: test262-built-ins
+            package: mb-js
             testdata: true
             tests: test262_built_ins_under_stress test262_annex_b_built_ins_under_stress
           - part: gc-programme
+            package: mb-js
             testdata: false
             tests: "script::gc_tests::"
+          - part: sha256-grosse-nachrichten
+            package: mb-crypto
+            testdata: true
+            tests: acvp_large_data
     env:
+      STRESS_PACKAGE: ${{ matrix.package }}
       STRESS_TESTS: ${{ matrix.tests }}
     steps:
       # Wie in ci.yml: keine fremden Actions, nur der genaue Commit.
@@ -71,4 +80,4 @@ jobs:
       - name: Belastungstests im Release-Build
         run: |
           read -ra filters <<< "$STRESS_TESTS"
-          cargo test --locked --release -p mb-js --lib -- --ignored --nocapture "${filters[@]}"
+          cargo test --locked --release -p "$STRESS_PACKAGE" --lib -- --ignored --nocapture "${filters[@]}"

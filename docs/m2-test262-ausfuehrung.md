@@ -771,8 +771,8 @@ Die Gründe aller Varianten:
 Der Workflow `.github/workflows/belastung.yml` läuft jede Nacht um 03:45 UTC,
 von Hand und bei Pull Requests, die den Heap (`crates/mb-js/src/heap.rs`,
 `crates/mb-js/src/heap/`) oder den Workflow ändern. Er führt im Release-Build
-die Tests aus, die in `cargo test` mit `#[ignore]` übersprungen werden, in
-drei Jobs:
+die Tests aus, die in `cargo test` mit `#[ignore]` übersprungen werden. Für
+die JavaScript-Engine sind es drei Jobs:
 
 ```sh
 cargo test --locked --release -p mb-js --lib -- --ignored test262_language_under_stress
@@ -803,6 +803,12 @@ Belastungsmodus (je 1.400 bis 8.500 junge und ebenso viele volle
 Sammlungen), zusammen in knapp 2 Minuten. Bei jedem Push laufen sie
 im Debug-Build mit `N = 20.000` (jedes mit mindestens einer jungen
 Sammlung) und mit `N = 8` im Belastungsmodus.
+
+Ein vierter Job gehört nicht zur Engine: Er hasht die vier großen
+Nachrichten des ACVP für SHA-256 (1, 2, 4 und 8 GiB) mit `mb-crypto`
+(`cargo test --locked --release -p mb-crypto --lib -- --ignored
+acvp_large_data`). Am 27.11.2026 brauchte er dafür gut 70 Sekunden und 1 GiB
+Speicher.
 
 ## Fehler und Ressourcen
 
