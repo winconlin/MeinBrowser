@@ -33,7 +33,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::metadata::{Metadata, Mode};
 use super::{Outcome, Setup, expected, proposals, run_file_with, selection};
-use crate::code_cache::MemoryStore;
+use crate::code_cache::{DiskStore, MemoryStore};
 
 const SOURCE: &str = "test262";
 
@@ -418,6 +418,25 @@ fn test262_built_ins_through_code_cache() {
 #[ignore = "nächtlicher Belastungstest, siehe .github/workflows/belastung.yml"]
 fn test262_annex_b_built_ins_through_code_cache() {
     check_suite(&ANNEX_B_BUILT_INS, &through_code_cache());
+}
+
+/// Dasselbe mit dem Speicher auf der Platte aus `mb-storage`. Seine Grenze
+/// von 16 MiB liegt weit unter dem, was die Einträge von `language/`
+/// zusammen brauchen, also entfernt er beim Ablegen immer wieder alte.
+#[test]
+#[ignore = "nächtlicher Belastungstest, siehe .github/workflows/belastung.yml"]
+fn test262_language_through_disk_cache() {
+    let directory =
+        std::env::temp_dir().join(format!("mb-js-test262-platte-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&directory);
+    let cache = mb_storage::cache::DiskCache::open(&directory, 16 << 20).expect("Ordner");
+    let setup = Setup {
+        stress: false,
+        store: Some(Arc::new(DiskStore(cache))),
+    };
+    check_suite(&LANGUAGE, &setup);
+    drop(setup);
+    std::fs::remove_dir_all(&directory).expect("aufräumen");
 }
 
 #[test]

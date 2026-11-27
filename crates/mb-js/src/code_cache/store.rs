@@ -134,3 +134,23 @@ impl CodeStore for MemoryStore {
         entries.bytes = entries.bytes.saturating_add(size);
     }
 }
+
+/// Der Speicher auf der Platte aus `mb-storage` als [`CodeStore`], für die
+/// Tests. Ein Host bindet ihn genauso an; `mb-js` selbst greift nicht auf
+/// Dateien zu (`docs/architektur.md`, Abschnitt 4.2).
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) struct DiskStore(pub(crate) mb_storage::cache::DiskCache);
+
+#[cfg(test)]
+impl CodeStore for DiskStore {
+    fn load(&self, key: &Digest) -> Option<Vec<u8>> {
+        self.0.load(&key.as_bytes().try_into().ok()?)
+    }
+
+    fn store(&self, key: &Digest, bytes: &[u8]) {
+        if let Ok(key) = key.as_bytes().try_into() {
+            self.0.store(&key, bytes);
+        }
+    }
+}

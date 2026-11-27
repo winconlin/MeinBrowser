@@ -22,7 +22,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use mb_js::agent::{Abrupt, Agent, Budget, ErrorKind, Exception, Exhausted};
-use mb_js::code_cache::{self, CodeStore, MemoryStore, Uncacheable};
+use mb_js::code_cache::{self, CodeStore, HEADER, MemoryStore, Uncacheable};
 use mb_js::heap::{Local, Options};
 use mb_js::host::Host;
 use mb_js::realm::RealmId;
@@ -31,8 +31,6 @@ use mb_js::value::Kind;
 
 const SCRIPT_STEPS: u64 = 2048;
 const HEAP_BYTES: usize = 1 << 20;
-/// Die Länge des Kopfs eines Eintrags: Kennung, Fassung, Schlüssel.
-const HEADER: usize = 8 + 4 + 32;
 /// Höchstens so viele Änderungen je Eingabe.
 const MAX_CHANGES: usize = 64;
 
