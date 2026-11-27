@@ -1,0 +1,1 @@
+$function f() { return 1; } function g() { return [[[[[[[[1]]]]]]]]; } function h() { var a = 1, b = 2, c = 3; return function () { return a + b + c; }; }

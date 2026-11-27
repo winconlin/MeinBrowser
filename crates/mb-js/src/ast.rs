@@ -16,7 +16,7 @@ use std::num::NonZeroU32;
 use std::ops::Range;
 use std::rc::Rc;
 
-pub(crate) use captures::{Captures, FunctionCaptures};
+pub(crate) use captures::{Captures, FunctionCaptures, Region};
 
 mod captures;
 
@@ -25,9 +25,18 @@ mod captures;
 pub struct NodeId(NonZeroU32);
 
 impl NodeId {
-    fn index(self) -> usize {
+    pub(crate) fn index(self) -> usize {
         // Kann nicht scheitern: Der Index stammt aus einer Länge.
         usize::try_from(self.0.get() - 1).unwrap_or(usize::MAX)
+    }
+
+    /// Der Knoten mit dem Index `index`, wenn es ihn geben kann.
+    pub(crate) fn from_index(index: usize) -> Option<NodeId> {
+        index
+            .checked_add(1)
+            .and_then(|id| u32::try_from(id).ok())
+            .and_then(NonZeroU32::new)
+            .map(NodeId)
     }
 }
 
@@ -59,12 +68,12 @@ impl Atom {
 
     /// Die Zahl des Atoms, für gespeicherten Bytecode
     /// ([`crate::code_cache`]).
-    pub(crate) fn to_raw(self) -> u32 {
+    pub fn to_raw(self) -> u32 {
         self.0.get()
     }
 
     /// Das Atom zur Zahl aus [`Atom::to_raw`]; 0 ist keines.
-    pub(crate) fn from_raw(raw: u32) -> Option<Atom> {
+    pub fn from_raw(raw: u32) -> Option<Atom> {
         NonZeroU32::new(raw).map(Atom)
     }
 }
@@ -81,11 +90,11 @@ impl FunctionId {
     }
 
     /// Die Nummer, für gespeicherten Bytecode ([`crate::code_cache`]).
-    pub(crate) fn to_raw(self) -> u32 {
+    pub fn to_raw(self) -> u32 {
         self.0
     }
 
-    pub(crate) fn from_raw(raw: u32) -> FunctionId {
+    pub fn from_raw(raw: u32) -> FunctionId {
         FunctionId(raw)
     }
 }
@@ -96,11 +105,11 @@ pub struct ClassId(u32);
 
 impl ClassId {
     /// Die Nummer, für gespeicherten Bytecode ([`crate::code_cache`]).
-    pub(crate) fn to_raw(self) -> u32 {
+    pub fn to_raw(self) -> u32 {
         self.0
     }
 
-    pub(crate) fn from_raw(raw: u32) -> ClassId {
+    pub fn from_raw(raw: u32) -> ClassId {
         ClassId(raw)
     }
 }
@@ -543,6 +552,40 @@ pub struct Function {
     pub expression_body: bool,
     /// Der Quelltext der Funktion (für `Function.prototype.toString`).
     pub range: Range<usize>,
+    /// Bei einem Rumpf, den der Parser nur vorgeprüft hat, was davon
+    /// bleibt; `body` ist dann leer, bis [`Ast::expand`] ihn nachliest.
+    pub lazy: Option<Box<LazyBody>>,
+}
+
+/// Was von einem nur vorgeprüften Funktionsrumpf bleibt
+/// (`docs/architektur.md`, Abschnitt 4.9, Stufe 1): Der Parser hat ihn
+/// ganz gelesen und alle frühen Fehler geprüft, seine Knoten aber wieder
+/// verworfen. Es bleibt, was der Übersetzer über ihn wissen muss, bevor er
+/// nachgelesen ist, und was das Nachlesen braucht.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LazyBody {
+    /// Wo `{` steht, mit dem der Rumpf beginnt.
+    pub(crate) start: usize,
+    /// Was im Rumpf gilt, bevor seine Direktiven gelesen sind.
+    pub(crate) context: crate::parser::Context,
+    /// Die Namen der Parameter mit ihren Lagen.
+    pub(crate) parameters: Box<[(Atom, usize)]>,
+    /// Der Name der Funktion mit seiner Lage, für die Prüfungen nach
+    /// `"use strict"`.
+    pub(crate) name: Option<(Atom, usize)>,
+    /// Ob die Funktion im Rumpf einer `with`-Anweisung steht.
+    pub(crate) in_with: bool,
+    /// Was der Rumpf den Funktionen um die Funktion und dem Script zuträgt,
+    /// als stünde es bei einer Funktion außen ([`Captures`]).
+    pub(crate) beyond: FunctionCaptures,
+    /// Ob der Rumpf oder eine Pfeilfunktion darin `super.x` oder `super[x]`
+    /// enthält; das braucht der Übersetzer schon beim Anlegen einer
+    /// Methode.
+    pub(crate) super_property: bool,
+    /// Ob `this` oder ein direktes `eval` im Rumpf `this` außen liest. Gibt
+    /// es außen keine Funktion, die keine Pfeilfunktion ist, legt dann das
+    /// Script `this` in einen Kontext; `super` allein tut das nicht.
+    pub(crate) script_this: bool,
 }
 
 /// Eine Klasse.
@@ -580,8 +623,34 @@ pub struct Ast {
     /// Der Quelltext, aus dem der Baum entstand, für
     /// `Function.prototype.toString`.
     source: Rc<[u16]>,
+    /// Welche Rümpfe der Parser nur vorprüft, auch beim Nachlesen.
+    pre_check: Option<crate::parser::PreCheck>,
     /// Für den Übersetzer, beim ersten Gebrauch berechnet.
     captures: OnceCell<Captures>,
+}
+
+/// Wie lang die Tabellen eines [`Ast`] sind, damit der Parser einen
+/// vorgeprüften Rumpf wieder verwerfen kann.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Marks {
+    nodes: usize,
+    lists: usize,
+    functions: usize,
+    classes: usize,
+}
+
+impl Marks {
+    /// Der Bereich ab diesen Längen, für [`Captures`].
+    pub(crate) fn region(self) -> Region {
+        Region {
+            nodes: self.nodes,
+            functions: self.functions,
+        }
+    }
+
+    pub(crate) fn nodes(self) -> usize {
+        self.nodes
+    }
 }
 
 impl Ast {
@@ -630,6 +699,11 @@ impl Ast {
         &self.source
     }
 
+    /// Der Quelltext als geteilter Speicher.
+    pub(crate) fn shared_source(&self) -> Rc<[u16]> {
+        Rc::clone(&self.source)
+    }
+
     /// Die Anweisungen des Scripts oder Moduls.
     pub fn body(&self) -> &[NodeId] {
         self.list(self.body)
@@ -664,9 +738,63 @@ impl Ast {
         self.nodes.len()
     }
 
+    pub fn function_count(&self) -> usize {
+        self.functions.len()
+    }
+
+    pub fn class_count(&self) -> usize {
+        self.classes.len()
+    }
+
+    /// Wie viele Atome es gibt; ihre Nummern reichen von 1 bis hierher.
+    pub fn atom_count(&self) -> usize {
+        self.atoms.len()
+    }
+
+    /// Ob der Parser den Rumpf der Funktion `id` nur vorgeprüft hat; dann
+    /// muss [`Ast::expand`] ihn vor dem Übersetzen nachlesen.
+    pub fn is_lazy(&self, id: FunctionId) -> bool {
+        self.function(id)
+            .is_some_and(|function| function.lazy.is_some())
+    }
+
+    /// Liest alle vorgeprüften Rümpfe nach, auch die, die dabei neu
+    /// entstehen. Danach gleicht der Baum einem ganz gelesenen bis auf die
+    /// Reihenfolge der Knoten und Funktionen.
+    pub fn expand_all(&mut self) -> Result<(), crate::parser::SyntaxError> {
+        let mut index = 0;
+        while index < self.functions.len() {
+            let id = FunctionId(to_u32(index));
+            if self.is_lazy(id) {
+                self.expand(id)?;
+            }
+            index += 1;
+        }
+        Ok(())
+    }
+
+    /// Welche Rümpfe der Parser nur vorgeprüft hat.
+    pub(crate) fn pre_check(&self) -> Option<crate::parser::PreCheck> {
+        self.pre_check
+    }
+
+    pub(crate) fn set_pre_check(&mut self, pre_check: Option<crate::parser::PreCheck>) {
+        self.pre_check = pre_check;
+    }
+
     /// Welche Namen innere Funktionen sehen, für den Übersetzer.
     pub(crate) fn captures(&self) -> &Captures {
         self.captures.get_or_init(|| self.compute_captures())
+    }
+
+    /// Die Analyse für die Funktionen, wenn sie schon berechnet ist.
+    pub(crate) fn captures_mut(&mut self) -> Option<&mut Captures> {
+        self.captures.get_mut()
+    }
+
+    /// Verwirft die Analyse; sie wird beim nächsten Gebrauch neu berechnet.
+    pub(crate) fn reset_captures(&mut self) {
+        self.captures.take();
     }
 
     /// Das Atom für `units`, wenn der Baum den Namen enthält.
@@ -735,6 +863,37 @@ impl Ast {
                 FunctionId(0)
             }
         }
+    }
+
+    pub(crate) fn function_mut(&mut self, id: FunctionId) -> Option<&mut Function> {
+        self.functions.get_mut(to_usize(id.0))
+    }
+
+    /// Die Längen der Tabellen, für [`Ast::truncate`].
+    pub(crate) fn marks(&self) -> Marks {
+        Marks {
+            nodes: self.nodes.len(),
+            lists: self.lists.len(),
+            functions: self.functions.len(),
+            classes: self.classes.len(),
+        }
+    }
+
+    /// Verwirft alles, was nach `marks` angelegt wurde, außer den Atomen:
+    /// Sie behalten ihre Nummern, damit ein nachgelesener Rumpf dieselben
+    /// bekommt wie beim ersten Lesen. Die Analyse für den Übersetzer ist
+    /// dann noch nicht berechnet; der Parser fragt sie erst am Ende.
+    pub(crate) fn truncate(&mut self, marks: Marks) {
+        self.nodes.truncate(marks.nodes);
+        self.ranges.truncate(marks.nodes);
+        self.lists.truncate(marks.lists);
+        self.functions.truncate(marks.functions);
+        self.classes.truncate(marks.classes);
+    }
+
+    /// Der Knoten, der als nächster entsteht.
+    pub(crate) fn next_node(&self) -> usize {
+        self.nodes.len()
     }
 
     pub(crate) fn add_class(&mut self, class: Class) -> ClassId {

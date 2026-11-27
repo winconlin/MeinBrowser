@@ -473,6 +473,26 @@ def main():
     code_cache("changed-constants", "var g = function (a) { return [a, typeof a]; }; g(1)",
                bytes([20, 0, 0, 40, 0, 0xFF, 60, 0, 1]))
     code_cache("changed-code", "function f(a) { return a + 1; } f(1)", bytes([5, 0, 0x7F, 9, 0, 0x80]))
+    def pre_check(name, control, source):
+        # Bit 0 module, bit 1 UTF-16LE, bits 2-3 smallest body, bits 4-6 deepest body
+        # (src/pre_check.rs); 0x70 pre-checks every body that can be.
+        data = source.encode("utf-16-le", "surrogatepass") if control & 2 else source.encode()
+        write("js-pre-check", name, bytes([control]) + data)
+    pre_check("closures", 0x70, "function f(a, b = 2) { var c = a + b; return function g() { return c; }; }"
+              " var h = (x) => { return () => this.y + x; };")
+    pre_check("classes", 0x70, "class A extends Object { #p = 1; constructor() { super(); }"
+              " m() { return () => super.m + this.#p; } static { var s = () => { return this; }; } }")
+    pre_check("eval-and-with", 0x70, "function f(a) { return () => { return eval('a') + arguments[0]; }; }"
+              " function g(o) { with (o) { return function () { return x; }; } }")
+    pre_check("generators", 0x70, "function* g() { yield function* () { yield 1; }; }"
+              " async function* h() { for await (const x of y) { yield () => x; } }")
+    pre_check("early-error", 0x70, "function f() { 'use strict'; with (a) {} }")
+    pre_check("spread-after-body", 0x70, "function f() { [...(a), ]; } [...b] = c;")
+    pre_check("module", 0x71, "import { a } from 'x'; export default function () { return () => a + import.meta.url; }"
+              " await 1; export async function h() { await 2; }")
+    pre_check("thresholds", 0x24, "function f() { return 1; } function g() { return [[[[[[[[1]]]]]]]]; }"
+              " function h() { var a = 1, b = 2, c = 3; return function () { return a + b + c; }; }")
+    pre_check("utf16le", 0x72, "function f() { return '\ud800'; }")
     part = b"\x1f\x1f"  # PART_SEPARATOR in src/lib.rs
     write("page", "document", "<!doctype html><style>@media (max-width: 400px) { p { margin: 0 } }"
           " p { border: 2px dashed red; padding: 4px; font-style: italic }"

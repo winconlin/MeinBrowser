@@ -1,0 +1,1 @@
+pfunction* g() { yield function* () { yield 1; }; } async function* h() { for await (const x of y) { yield () => x; } }

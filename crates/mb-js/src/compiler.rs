@@ -1138,6 +1138,10 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
         return Err(CompileError::Unsupported(0));
     };
     let position = function.range.start;
+    // Einen vorgeprüften Rumpf muss erst `Ast::expand` nachlesen.
+    if function.lazy.is_some() {
+        return Err(CompileError::Unsupported(position));
+    }
     let arrow = function.kind == FunctionKind::Arrow;
     let supported = matches!(
         function.kind,

@@ -7,7 +7,9 @@ use super::expression::{ArrowHead, MethodModifiers};
 use super::pattern::Names;
 use super::scope::ScopeKind;
 use super::{Context, ErrorKind, FunctionState, Parser, Result};
-use crate::ast::{Atom, Function, FunctionId, FunctionKind, List, MethodKind, Node, NodeId};
+use crate::ast::{
+    Atom, Function, FunctionId, FunctionKind, LazyBody, List, MethodKind, Node, NodeId,
+};
 use crate::lexer::{Goal, Punctuator};
 
 /// Was vor den Parametern einer Funktion feststeht.
@@ -212,7 +214,7 @@ impl Parser<'_> {
         for &(parameter, _) in &names {
             self.declare_parameter(parameter);
         }
-        let body = self.function_body(parameters.simple, &names, name)?;
+        let (body, lazy) = self.function_body(parameters.simple, &names, name, false)?;
         let function = Function {
             kind: signature.kind,
             generator: signature.generator,
@@ -224,6 +226,7 @@ impl Parser<'_> {
             body,
             expression_body: false,
             range: start..self.previous_end,
+            lazy,
         };
         Ok(self.ast.add_function(function))
     }
@@ -301,14 +304,32 @@ impl Parser<'_> {
         Ok(parameters)
     }
 
-    /// *FunctionBody* in geschweiften Klammern, mit Direktiven.
+    /// *FunctionBody* in geschweiften Klammern, mit Direktiven. Mit
+    /// [`super::PreCheck`] verwirft er die Knoten danach vielleicht wieder
+    /// ([`super::lazy`]); dann ist die Liste leer, und daneben steht, was
+    /// bleibt. `arrow` sagt, ob die Funktion eine Pfeilfunktion ist.
     fn function_body(
         &mut self,
         simple: bool,
         names: &Names,
         name: Option<(Atom, usize)>,
-    ) -> Result<List> {
+        arrow: bool,
+    ) -> Result<(List, Option<Box<LazyBody>>)> {
         let start = self.start(Goal::Div)?;
+        match self.pre_check {
+            None => Ok((self.body_statements(start, simple, names, name)?, None)),
+            Some(pre_check) => self.pre_checked_body(pre_check, start, simple, names, name, arrow),
+        }
+    }
+
+    /// Der Rumpf ab `{` an der Lage `start`, ganz gelesen.
+    pub(super) fn body_statements(
+        &mut self,
+        start: usize,
+        simple: bool,
+        names: &Names,
+        name: Option<(Atom, usize)>,
+    ) -> Result<List> {
         self.expect(Punctuator::LeftBrace, Goal::Div)?;
         let mark = self.scratch.len();
         let was_strict = self.strict();
@@ -420,11 +441,11 @@ impl Parser<'_> {
             self.declare_parameter(parameter);
         }
         let expression_body = !self.at(Punctuator::LeftBrace, Goal::RegExp)?;
-        let body = if expression_body {
+        let (body, lazy) = if expression_body {
             let expression = self.assignment(in_, None)?;
-            self.ast.add_list(&[expression])
+            (self.ast.add_list(&[expression]), None)
         } else {
-            self.function_body(simple, names, None)?
+            self.function_body(simple, names, None, true)?
         };
         let function = Function {
             kind: FunctionKind::Arrow,
@@ -437,6 +458,7 @@ impl Parser<'_> {
             body,
             expression_body,
             range: start..self.previous_end,
+            lazy,
         };
         Ok(self.ast.add_function(function))
     }

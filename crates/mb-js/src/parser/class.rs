@@ -270,6 +270,7 @@ impl Parser<'_> {
             body,
             expression_body: true,
             range: start..self.previous_end,
+            lazy: None,
         }))
     }
 
@@ -299,6 +300,7 @@ impl Parser<'_> {
             body,
             expression_body: false,
             range: start..self.previous_end,
+            lazy: None,
         });
         Ok(self.node(Node::StaticBlock(function), start))
     }

@@ -835,7 +835,10 @@ impl Parser<'_> {
         self.expect(Punctuator::LeftParenthesis, Goal::Div)?;
         let object = self.expression(true)?;
         self.expect(Punctuator::RightParenthesis, Goal::Div)?;
-        let body = self.body()?;
+        self.with_depth = self.with_depth.saturating_add(1);
+        let body = self.body();
+        self.with_depth = self.with_depth.saturating_sub(1);
+        let body = body?;
         Ok(self.node(Node::With { object, body }, start))
     }
 

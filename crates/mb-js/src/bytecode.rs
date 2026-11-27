@@ -866,6 +866,7 @@ impl EvalSite {
             no_arguments: function.is_some_and(|function| function.field_initializer),
             private_names,
             visible_names: self.names.values().cloned().collect(),
+            pre_check: None,
         }
     }
 }

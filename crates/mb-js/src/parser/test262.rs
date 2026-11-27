@@ -11,11 +11,16 @@
 //! späteren Phasen sieht der Parser nicht. Tests für Vorschläge, die noch
 //! nicht in der Spezifikation stehen (der Abschnitt „Proposed language
 //! features“ in `features.txt`), laufen nicht.
+//!
+//! Ein zweiter Lauf liest jeden Test auch mit vorgeprüften Funktionsrümpfen
+//! ([`super::PreCheck::ALL`]) und verlangt mit [`crate::pre_check::compare`]
+//! dasselbe Ergebnis wie ganz gelesen: dieselben Fehler und nach dem
+//! Nachlesen dieselben Funktionen, dieselbe Analyse und denselben Bytecode.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use super::{parse_module, parse_script};
+use super::{PreCheck, parse_module, parse_script};
 
 const SOURCE: &str = "test262";
 const DIRECTORIES: [&str; 4] = [
@@ -179,8 +184,9 @@ impl Tally {
         }
     }
 
-    /// Liest einen Test in allen Modi, die er verlangt.
-    fn check(&mut self, root: &Path, file: &Path, proposals: &BTreeSet<String>) {
+    /// Liest einen Test in allen Modi, die er verlangt, mit `pre_checked`
+    /// auch vorgeprüft zum Vergleich.
+    fn check(&mut self, root: &Path, file: &Path, proposals: &BTreeSet<String>, pre_checked: bool) {
         let relative = file
             .strip_prefix(root)
             .unwrap_or(file)
@@ -222,6 +228,14 @@ impl Tally {
             self.runs += 1;
             let prefix = if mode == Mode::Strict { USE_STRICT } else { "" };
             let source: Vec<u16> = prefix.encode_utf16().chain(text.encode_utf16()).collect();
+            if pre_checked {
+                let module = mode == Mode::Module;
+                if let Err(difference) = crate::pre_check::compare(&source, module, PreCheck::ALL) {
+                    self.failures
+                        .push(format!("{relative} ({mode:?}): {difference:?}"));
+                }
+                continue;
+            }
             let result = match mode {
                 Mode::Module => parse_module(&source).map(|_| ()),
                 Mode::Sloppy | Mode::Strict => parse_script(&source).map(|_| ()),
@@ -259,6 +273,15 @@ impl Tally {
 
 #[test]
 fn test262_syntax() {
+    run(false);
+}
+
+#[test]
+fn test262_pre_checked() {
+    run(true);
+}
+
+fn run(pre_checked: bool) {
     let root = testdata::root().join(SOURCE);
     let proposals = proposals();
     let mut files = Vec::new();
@@ -277,7 +300,7 @@ fn test262_syntax() {
                 scope.spawn(move || {
                     let mut tally = Tally::default();
                     for file in part {
-                        tally.check(root, file, proposals);
+                        tally.check(root, file, proposals, pre_checked);
                     }
                     tally
                 })
@@ -291,7 +314,7 @@ fn test262_syntax() {
         }
     });
     for ((directory, _), count) in MISSING_ERRORS.iter().zip(tally.missing) {
-        if count == 0 {
+        if count == 0 && !pre_checked {
             tally.failures.push(format!(
                 "{directory}: keine fehlenden Fehler mehr, aus MISSING_ERRORS streichen"
             ));
