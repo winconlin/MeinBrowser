@@ -57,6 +57,17 @@ impl Digest {
         Digest { algorithm, bytes }
     }
 
+    /// Ein Hashwert aus seinen Bytes, etwa für einen anderen Anbieter, der
+    /// selbst rechnet. `None`, wenn die Länge nicht zum Verfahren passt.
+    pub fn from_bytes(algorithm: HashAlgorithm, bytes: &[u8]) -> Option<Digest> {
+        if bytes.len() != algorithm.output_len() {
+            return None;
+        }
+        let mut buffer = [0; Digest::MAX_LEN];
+        buffer.get_mut(..bytes.len())?.copy_from_slice(bytes);
+        Some(Digest::new(algorithm, buffer))
+    }
+
     pub fn algorithm(&self) -> HashAlgorithm {
         self.algorithm
     }
