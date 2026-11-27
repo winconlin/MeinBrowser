@@ -37,6 +37,7 @@
 use std::collections::hash_map::RandomState;
 use std::collections::{BTreeMap, VecDeque};
 use std::rc::Rc;
+use std::sync::Arc;
 
 pub use mb_base::{Budget, Cancel, Exhausted};
 
@@ -209,6 +210,9 @@ pub struct Agent {
     pub(crate) next_module_load: u64,
     /// [[ModuleAsyncEvaluationCount]] (Abschnitt 9.6).
     pub(crate) module_async_evaluation_count: u64,
+    /// Der Speicher für übersetzte Scripts, wenn es einen gibt (siehe
+    /// [`crate::code_cache`]).
+    pub(crate) code_store: Option<Arc<dyn crate::code_cache::CodeStore>>,
 }
 
 impl Agent {
@@ -247,6 +251,7 @@ impl Agent {
             dynamic_imports: BTreeMap::new(),
             next_module_load: 0,
             module_async_evaluation_count: 0,
+            code_store: None,
         };
         agent.scope(|agent, scope| -> Result<(), OutOfMemory> {
             for symbol in WellKnownSymbol::ALL {
@@ -272,6 +277,14 @@ impl Agent {
     /// Setzt den Host. Er gilt für die Realms, die danach entstehen.
     pub fn set_host(&mut self, host: Rc<dyn Host>) {
         self.host = Some(host);
+    }
+
+    /// Setzt den Speicher für übersetzte Scripts oder nimmt ihn mit `None`
+    /// weg. Mit einem Speicher lädt [`Agent::evaluate_script`] ein Script,
+    /// das er schon kennt, statt es zu parsen und zu übersetzen, und legt
+    /// jedes andere dort ab (siehe [`crate::code_cache`]).
+    pub fn set_code_store(&mut self, store: Option<Arc<dyn crate::code_cache::CodeStore>>) {
+        self.code_store = store;
     }
 
     /// Der Host, wenn es einen gibt.

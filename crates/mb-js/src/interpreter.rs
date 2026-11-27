@@ -71,7 +71,6 @@
 use std::rc::Rc;
 
 use crate::agent::{Abrupt, Agent, Completion, ErrorKind};
-use crate::ast::Ast;
 use crate::async_function::{
     async_start, await_value, frame_cell, promise, settle, start_running, suspend, take_throw,
 };
@@ -83,7 +82,7 @@ use crate::bytecode::{
     BindingKind, Code, Constant, DynamicName, Extension, Fallback, HandlerKind, Instruction, Op,
 };
 use crate::compare::{is_less_than, is_loosely_equal, is_strictly_equal, same_value};
-use crate::compiler::{CompileError, compile_default_constructor, compile_function};
+use crate::compiler::{CompileError, compile_default_constructor};
 use crate::conversion::{to_boolean, to_number, to_object, to_property_key, to_string};
 use crate::descriptor::PropertyDescriptor;
 use crate::enumerate::{for_in_next, for_in_prepare};
@@ -123,6 +122,7 @@ use crate::reference::{
     copy_data_properties, delete_property, get_value, instanceof_operator, put_value,
     to_object_base,
 };
+use crate::unit::Unit;
 use crate::value::{Kind, Ref, Value};
 
 /// Die Register vor dem ersten eines Rahmens: die Konstanten und der
@@ -246,14 +246,14 @@ pub(crate) fn execute<'s>(
     start(agent, scope, realm, code, None, this, &[])
 }
 
-/// Dasselbe für den Code eines Scripts aus dem Syntaxbaum `unit`. Die
-/// Register in `flags` beginnen mit *true*.
+/// Dasselbe für den Code eines Scripts aus `unit`. Die Register in `flags`
+/// beginnen mit *true*.
 pub(crate) fn execute_script<'s>(
     agent: &mut Agent,
     scope: &'s Scope,
     realm: RealmId,
     code: &Code,
-    unit: &Rc<Ast>,
+    unit: &Unit,
     this: Local<'_>,
     flags: &[u32],
 ) -> Completion<Local<'s>> {
@@ -265,7 +265,7 @@ fn start<'s>(
     scope: &'s Scope,
     realm: RealmId,
     code: &Code,
-    unit: Option<&Rc<Ast>>,
+    unit: Option<&Unit>,
     this: Local<'_>,
     flags: &[u32],
 ) -> Completion<Local<'s>> {
@@ -294,7 +294,7 @@ pub(crate) fn execute_module<'s>(
     scope: &'s Scope,
     realm: RealmId,
     code: &Code,
-    unit: &Rc<Ast>,
+    unit: &Unit,
     environment: Local<'_>,
     state: Option<Local<'_>>,
 ) -> Completion<Local<'s>> {
@@ -321,7 +321,7 @@ pub(crate) fn execute_eval<'s>(
     scope: &'s Scope,
     realm: RealmId,
     code: &Code,
-    unit: &Rc<Ast>,
+    unit: &Unit,
     this: Local<'_>,
     context: Local<'_>,
 ) -> Completion<Local<'s>> {
@@ -339,7 +339,7 @@ pub(crate) fn execute_eval<'s>(
 /// Register, die mit *true* beginnen, und im Code eines Moduls mit `await`
 /// auf oberster Ebene den Zustand.
 struct Start<'a, 'u, 'l> {
-    unit: Option<&'u Rc<Ast>>,
+    unit: Option<&'u Unit>,
     context: Option<Local<'l>>,
     flags: &'a [u32],
     async_state: Option<Local<'l>>,
@@ -1200,13 +1200,15 @@ fn compiled<'s>(
         let pool = heap.local(scope, heap.get_persistent(&compiled.pool));
         return Ok((Rc::clone(&compiled.code), pool));
     }
-    let unit = Rc::clone(&entry.unit);
+    let unit = entry.unit.clone();
     let result = match &entry.origin {
-        Origin::Function(template) => compile_function(&unit, template),
-        Origin::DefaultConstructor { derived, .. } => compile_default_constructor(*derived),
+        Origin::Function(template) => unit.compile(template),
+        Origin::DefaultConstructor { derived, .. } => {
+            compile_default_constructor(*derived).map(Rc::new)
+        }
     };
     let code = match result {
-        Ok(code) => Rc::new(code),
+        Ok(code) => code,
         // Code aus `eval` oder `Function` hat keine Lage im Script.
         Err(CompileError::Unsupported(_)) if unit.is_dynamic() => {
             return Err(Abrupt::Unsupported(0));
@@ -1228,12 +1230,13 @@ fn compiled<'s>(
 /// Legt die Konstanten im Heap an: Zahlen als Werte, BigInts und
 /// Zeichenketten als neue Zellen, Namen als Atome und Funktionen und
 /// Standardkonstruktoren als neue gemeinsame Daten mit ihrer Nummer als
-/// Wert. Für sie braucht es den Syntaxbaum `unit`, aus dem der Code stammt.
+/// Wert. Für sie braucht es den Syntaxbaum oder das übersetzte Script
+/// `unit`, aus dem der Code stammt.
 fn constant_pool<'s>(
     agent: &mut Agent,
     scope: &'s Scope,
     code: &Code,
-    unit: Option<&Rc<Ast>>,
+    unit: Option<&Unit>,
 ) -> Completion<Local<'s>> {
     let pool = agent
         .heap_mut()
@@ -1249,15 +1252,14 @@ fn constant_pool<'s>(
                     let Some(unit) = unit else {
                         return Err(agent.throw_error(ErrorKind::TypeError));
                     };
-                    let shared = agent.add_shared_function(Rc::clone(unit), template.clone())?;
+                    let shared = agent.add_shared_function(unit.clone(), template.clone())?;
                     agent.heap().local(inner, Value::int32(shared))
                 }
                 Constant::DefaultConstructor { derived, class } => {
                     let Some(unit) = unit else {
                         return Err(agent.throw_error(ErrorKind::TypeError));
                     };
-                    let shared =
-                        agent.add_default_constructor(Rc::clone(unit), *derived, *class)?;
+                    let shared = agent.add_default_constructor(unit.clone(), *derived, *class)?;
                     agent.heap().local(inner, Value::int32(shared))
                 }
                 Constant::Dynamic(dynamic) => agent.atom(inner, &dynamic.name)?,
@@ -1269,7 +1271,9 @@ fn constant_pool<'s>(
                 // Code, der zu keinem Modul gehört, kann nur `import()`
                 // enthalten, nicht `import.meta`.
                 Constant::Module => {
-                    let module = unit.and_then(|unit| agent.module_of_unit(unit));
+                    let module = unit
+                        .and_then(Unit::ast)
+                        .and_then(|unit| agent.module_of_unit(unit));
                     let value = match module {
                         Some(module) => Value::int32(
                             i32::try_from(module.index()).map_err(|_| Abrupt::OutOfMemory)?,
@@ -1338,12 +1342,26 @@ fn length_key<'s>(agent: &mut Agent, scope: &'s Scope) -> Completion<PropertyKey
 
 impl<'c> Frame<'c, '_> {
     /// Der Platz eines Registers im Registerstapel. Register stammen vom
-    /// Übersetzer und liegen im Rahmen; ein ungültiges liest *undefined*.
+    /// Übersetzer oder aus geprüftem gespeichertem Code und liegen im
+    /// Rahmen; eines außerhalb liest *undefined* und schreibt nichts, statt
+    /// einen anderen Rahmen zu treffen.
     fn slot(&self, operand: i64) -> usize {
         usize::try_from(operand)
             .ok()
+            .filter(|&register| register < self.code.register_count())
             .and_then(|register| self.base.checked_add(register))
             .unwrap_or(usize::MAX)
+    }
+
+    /// Ob die `length` Register ab `first` ganz im Rahmen liegen. Ein Aufruf
+    /// liest die Funktion, `this` und die Argumente über ihre Plätze im
+    /// Registerstapel, nicht über [`Frame::slot`]; ragten sie hinaus, lägen
+    /// sie im Rahmen des Aufgerufenen.
+    fn spans(&self, first: i64, length: usize) -> bool {
+        usize::try_from(first)
+            .ok()
+            .and_then(|first| first.checked_add(length))
+            .is_some_and(|end| end <= self.code.register_count())
     }
 
     fn register<'s>(&self, agent: &Agent, scope: &'s Scope, operand: i64) -> Local<'s> {
@@ -2365,6 +2383,17 @@ impl<'c> Frame<'c, '_> {
     ) -> Completion<Flow> {
         let first = instruction.operand(0);
         let spread = matches!(instruction.op, Op::ConstructSpread | Op::SuperCallSpread);
+        let count = if spread {
+            0
+        } else {
+            usize::try_from(instruction.operand(1)).unwrap_or(0)
+        };
+        // Wie bei [`Frame::call`]: Der Konstruktor, der Platz für `this`,
+        // dann die Argumente oder das Array mit ihnen.
+        let length = if spread { 3 } else { count.saturating_add(2) };
+        if !self.spans(first, length) {
+            return Err(agent.throw_error(ErrorKind::RangeError));
+        }
         let constructor = self.register(agent, scope, first);
         if !is_constructor(agent, agent.heap().get(constructor)) {
             return Err(agent.throw_error(ErrorKind::TypeError));
@@ -2379,11 +2408,6 @@ impl<'c> Frame<'c, '_> {
             first
         };
         let new_target = self.register(agent, scope, target);
-        let count = if spread {
-            0
-        } else {
-            usize::try_from(instruction.operand(1)).unwrap_or(0)
-        };
         if runs_in_instruction(agent.heap(), agent.heap().get(constructor)) {
             // [[Construct]] einer eingebauten Funktion (Abschnitt 10.3.2):
             // `this` bleibt uninitialisiert. Eine gebundene Funktion
@@ -2456,6 +2480,11 @@ impl<'c> Frame<'c, '_> {
         spread: bool,
         tail: bool,
     ) -> Completion<Flow> {
+        // Die Funktion, `this`, dann die Argumente oder das Array mit ihnen.
+        let length = if spread { 3 } else { count.saturating_add(2) };
+        if !self.spans(first, length) {
+            return Err(agent.throw_error(ErrorKind::RangeError));
+        }
         let callee = self.register(agent, scope, first);
         if !is_callable(agent.heap(), agent.heap().get(callee)) {
             return Err(agent.throw_error(ErrorKind::TypeError));
@@ -2506,6 +2535,14 @@ impl<'c> Frame<'c, '_> {
             return Err(agent.throw_error(ErrorKind::RangeError));
         };
         let count = usize::try_from(site.arguments).unwrap_or(0);
+        let length = if site.spread {
+            3
+        } else {
+            count.saturating_add(2)
+        };
+        if !self.spans(first, length) {
+            return Err(agent.throw_error(ErrorKind::RangeError));
+        }
         let callee = self.register(agent, scope, first);
         let eval = agent.intrinsic(scope, self.realm, Intrinsic::Eval);
         let heap = agent.heap();

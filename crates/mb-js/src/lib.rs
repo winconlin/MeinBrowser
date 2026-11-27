@@ -12,6 +12,7 @@ mod buffer;
 pub mod builtin;
 mod builtins;
 pub mod bytecode;
+pub mod code_cache;
 pub mod compare;
 pub mod compiler;
 pub mod conversion;
@@ -39,6 +40,7 @@ pub mod reference;
 pub mod regexp;
 pub mod script;
 mod shared;
+mod unit;
 pub mod value;
 mod waiting;
 

@@ -198,3 +198,10 @@ path = "fuzz_targets/sha256.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "code-cache"
+path = "fuzz_targets/code_cache.rs"
+test = false
+doc = false
+bench = false

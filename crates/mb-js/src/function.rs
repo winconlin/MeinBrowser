@@ -41,7 +41,7 @@
 use std::rc::Rc;
 
 use crate::agent::{Agent, Completion, ErrorKind};
-use crate::ast::{Ast, ClassId, Function, FunctionKind, Node};
+use crate::ast::{ClassId, FunctionKind};
 use crate::bound_function::innermost_target;
 use crate::builtin::{builtin_entry, builtin_parts};
 use crate::bytecode::{Code, FunctionTemplate};
@@ -53,6 +53,7 @@ use crate::object::{
 };
 use crate::operations::define_property_or_throw;
 use crate::realm::{Intrinsic, RealmId};
+use crate::unit::Unit;
 use crate::value::{Kind, Ref, Value};
 
 /// Das interne Feld mit der Nummer der gemeinsamen Daten.
@@ -74,8 +75,9 @@ const FIELD_ENTRY: usize = 2;
 
 /// Die gemeinsamen Daten der Funktionsobjekte einer Stelle im Quelltext.
 pub(crate) struct SharedFunction {
-    /// Der Syntaxbaum des Scripts, aus dem die Funktion stammt.
-    pub(crate) unit: Rc<Ast>,
+    /// Der Syntaxbaum oder das übersetzte Script, aus dem die Funktion
+    /// stammt.
+    pub(crate) unit: Unit,
     pub(crate) origin: Origin,
     /// Bytecode und Konstanten nach dem ersten Aufruf.
     pub(crate) compiled: Option<Compiled>,
@@ -125,28 +127,28 @@ fn units(text: &str) -> Vec<u16> {
 }
 
 impl Agent {
-    /// Legt gemeinsame Daten für die Funktion `template` aus dem
-    /// Syntaxbaum `unit` an und gibt ihre Nummer zurück.
+    /// Legt gemeinsame Daten für die Funktion `template` aus `unit` an und
+    /// gibt ihre Nummer zurück.
     pub(crate) fn add_shared_function(
         &mut self,
-        unit: Rc<Ast>,
+        unit: Unit,
         template: FunctionTemplate,
     ) -> Result<i32, OutOfMemory> {
         self.add_shared(unit, Origin::Function(template))
     }
 
-    /// Dasselbe für den Konstruktor einer Klasse ohne `constructor` im
-    /// Syntaxbaum `unit`.
+    /// Dasselbe für den Konstruktor einer Klasse ohne `constructor` in
+    /// `unit`.
     pub(crate) fn add_default_constructor(
         &mut self,
-        unit: Rc<Ast>,
+        unit: Unit,
         derived: bool,
         class: ClassId,
     ) -> Result<i32, OutOfMemory> {
         self.add_shared(unit, Origin::DefaultConstructor { derived, class })
     }
 
-    fn add_shared(&mut self, unit: Rc<Ast>, origin: Origin) -> Result<i32, OutOfMemory> {
+    fn add_shared(&mut self, unit: Unit, origin: Origin) -> Result<i32, OutOfMemory> {
         let index = i32::try_from(self.functions.len()).map_err(|_| OutOfMemory)?;
         self.functions.push(SharedFunction {
             unit,
@@ -236,24 +238,11 @@ pub(crate) fn function_source_text<'s>(
             return Ok(None);
         };
         let range = match &entry.origin {
-            Origin::Function(template) => {
-                let Some(function) = entry.unit.function(template.function) else {
-                    return Ok(None);
-                };
-                match function.kind {
-                    FunctionKind::Constructor | FunctionKind::DerivedConstructor => entry
-                        .unit
-                        .class_with_constructor(template.function)
-                        .map_or(function.range.clone(), |class| class.range.clone()),
-                    _ => function.range.clone(),
-                }
-            }
-            Origin::DefaultConstructor { class, .. } => {
-                let Some(class) = entry.unit.class(*class) else {
-                    return Ok(None);
-                };
-                class.range.clone()
-            }
+            Origin::Function(template) => entry.unit.function_text(template.function),
+            Origin::DefaultConstructor { class, .. } => entry.unit.class_text(*class),
+        };
+        let Some(range) = range else {
+            return Ok(None);
         };
         entry.unit.source().get(range).unwrap_or_default().to_vec()
     };
@@ -438,24 +427,12 @@ pub(crate) fn shared_construction(agent: &Agent, shared: usize) -> Construction 
         Origin::DefaultConstructor { derived: true, .. } => return Construction::Derived,
         Origin::DefaultConstructor { derived: false, .. } => return Construction::Base,
     };
-    match entry.unit.function(template.function) {
-        Some(function) if function.kind == FunctionKind::Constructor => Construction::Base,
-        Some(function) if function.kind == FunctionKind::DerivedConstructor => {
-            Construction::Derived
-        }
-        Some(function) if constructs(function) => Construction::Function,
+    match entry.unit.shape(template.function) {
+        Some(shape) if shape.kind == FunctionKind::Constructor => Construction::Base,
+        Some(shape) if shape.kind == FunctionKind::DerivedConstructor => Construction::Derived,
+        Some(shape) if shape.constructs() => Construction::Function,
         _ => Construction::None,
     }
-}
-
-/// Ob Funktionsobjekte der Funktion MakeConstructor bekommen: gewöhnliche
-/// Funktionen aus Deklarationen und Ausdrücken, keine Generatoren und keine
-/// mit `async` (Abschnitte 15.2.4 und 15.2.5). Pfeilfunktionen (Abschnitt
-/// 15.3.4), Methoden, Getter und Setter (Abschnitt 15.4) nicht. Die
-/// Konstruktoren von Klassen entstehen nur mit
-/// [`instantiate_class_constructor`].
-fn constructs(function: &Function) -> bool {
-    function.kind == FunctionKind::Normal && !function.generator && !function.is_async
 }
 
 /// Ein neues Funktionsobjekt für die gemeinsamen Daten `shared` im Realm
@@ -510,13 +487,13 @@ pub(crate) fn instantiate_closure<'s>(
         let Origin::Function(template) = &entry.origin else {
             return None;
         };
-        let function = entry.unit.function(template.function)?;
+        let shape = entry.unit.shape(template.function)?;
         Some((
-            function.kind,
-            function.generator,
-            function.is_async,
-            constructs(function),
-            expected_argument_count(&entry.unit, function),
+            shape.kind,
+            shape.generator,
+            shape.is_async,
+            shape.constructs(),
+            shape.length,
         ))
     });
     // Die Nummer stammt aus den Konstanten des Codes, der die Funktion
@@ -578,10 +555,7 @@ pub(crate) fn instantiate_class_constructor<'s>(
     prototype: Local<'_>,
 ) -> Completion<Local<'s>> {
     let found = shared_entry(agent, shared).and_then(|entry| match &entry.origin {
-        Origin::Function(template) => {
-            let function = entry.unit.function(template.function)?;
-            Some(expected_argument_count(&entry.unit, function))
-        }
+        Origin::Function(template) => Some(entry.unit.shape(template.function)?.length),
         Origin::DefaultConstructor { .. } => Some(0),
     });
     let class =
@@ -637,22 +611,6 @@ fn allocate_function<'s>(
         heap.set_function_field(object, ENVIRONMENT, heap.get(environment));
     }
     Ok(function)
-}
-
-/// ExpectedArgumentCount (Abschnitt 15.1.5): die Parameter vor dem ersten
-/// mit Vorgabewert oder dem Rest.
-fn expected_argument_count(ast: &Ast, function: &Function) -> u32 {
-    let count = ast
-        .list(function.parameters)
-        .iter()
-        .take_while(|&&parameter| {
-            !matches!(
-                ast.node(parameter),
-                Node::WithDefault { .. } | Node::Rest(_)
-            )
-        })
-        .count();
-    u32::try_from(count).unwrap_or(u32::MAX)
 }
 
 /// AddRestrictedFunctionProperties (Abschnitt 10.2.4): `caller` und

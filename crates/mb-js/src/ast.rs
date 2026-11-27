@@ -56,6 +56,17 @@ impl Atom {
     fn index(self) -> usize {
         usize::try_from(self.0.get() - 1).unwrap_or(usize::MAX)
     }
+
+    /// Die Zahl des Atoms, für gespeicherten Bytecode
+    /// ([`crate::code_cache`]).
+    pub(crate) fn to_raw(self) -> u32 {
+        self.0.get()
+    }
+
+    /// Das Atom zur Zahl aus [`Atom::to_raw`]; 0 ist keines.
+    pub(crate) fn from_raw(raw: u32) -> Option<Atom> {
+        NonZeroU32::new(raw).map(Atom)
+    }
 }
 
 /// Eine Funktion in [`Ast`].
@@ -68,11 +79,31 @@ impl FunctionId {
     pub fn index(self) -> usize {
         to_usize(self.0)
     }
+
+    /// Die Nummer, für gespeicherten Bytecode ([`crate::code_cache`]).
+    pub(crate) fn to_raw(self) -> u32 {
+        self.0
+    }
+
+    pub(crate) fn from_raw(raw: u32) -> FunctionId {
+        FunctionId(raw)
+    }
 }
 
 /// Eine Klasse in [`Ast`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ClassId(u32);
+
+impl ClassId {
+    /// Die Nummer, für gespeicherten Bytecode ([`crate::code_cache`]).
+    pub(crate) fn to_raw(self) -> u32 {
+        self.0
+    }
+
+    pub(crate) fn from_raw(raw: u32) -> ClassId {
+        ClassId(raw)
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UnaryOperator {

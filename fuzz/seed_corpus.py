@@ -453,6 +453,26 @@ def main():
     sha256("padding-edge", 1 | 54 << 2, bytes(range(56)))
     sha256("two-blocks", 2, b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq" * 3)
     sha256("blocks", 1 | 63 << 2, bytes(index * 37 % 256 for index in range(1000)))
+    def code_cache(name, source, changes=b""):
+        # Bit 0 of the first byte: 0 compares fresh, stored and loaded runs; 1 changes the stored
+        # entry after a zero byte, three bytes per change (src/code_cache.rs).
+        if changes:
+            write("code-cache", name, b"\x01" + source.encode() + b"\x00" + changes)
+        else:
+            write("code-cache", name, b"\x00" + source.encode())
+    code_cache("functions", "function f(a, b = 2, ...c) { return a + b + c.length; } f(1)")
+    code_cache("closures", "function outer() { let n = 0; return () => ++n; } var g = outer(); g(); g()")
+    code_cache("classes", "class A { #x = 1; static s = 2; get x() { return this.#x; } static { A.t = 3; } }"
+               " class B extends A { constructor() { super(); } } class C extends B {} new C().x + String(C)")
+    code_cache("generators", "function* g() { yield 1; yield* [2, 3]; } async function f() { await 1; }"
+               " async function* h() { yield 1; } [...g()].length")
+    code_cache("eval-and-with", "var x = 1; function f() { var y = 2; return eval('x + y'); }"
+               " with ({ z: 3 }) { f() + z }")
+    code_cache("literals", "[1.5, 123n ** 3n, 'text', /a(b)?c/gu.exec('abc'), `t${1}`].length")
+    code_cache("tail-calls", "'use strict'; function t(n) { return n ? t(n - 1) : 0; } t(100)")
+    code_cache("changed-constants", "var g = function (a) { return [a, typeof a]; }; g(1)",
+               bytes([20, 0, 0, 40, 0, 0xFF, 60, 0, 1]))
+    code_cache("changed-code", "function f(a) { return a + 1; } f(1)", bytes([5, 0, 0x7F, 9, 0, 0x80]))
     part = b"\x1f\x1f"  # PART_SEPARATOR in src/lib.rs
     write("page", "document", "<!doctype html><style>@media (max-width: 400px) { p { margin: 0 } }"
           " p { border: 2px dashed red; padding: 4px; font-style: italic }"
