@@ -97,6 +97,7 @@ dependencies = [
  "mb-base",
  "mb-crypto",
  "mb-json",
+ "mb-storage",
  "mb-unicode",
  "testdata",
 ]
@@ -156,6 +157,9 @@ version = "0.0.0"
 [[package]]
 name = "mb-storage"
 version = "0.0.0"
+dependencies = [
+ "mb-platform",
+]
 
 [[package]]
 name = "mb-style"

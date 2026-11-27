@@ -1,7 +1,8 @@
 //! Das Format eines Eintrags, Schreiben und Lesen.
 //!
 //! Ein Eintrag beginnt mit dem Kopf: `MBJSCODE`, der Fassung [`FORMAT`] als
-//! vier Bytes mit dem niedrigsten zuerst und den 32 Bytes des Schlüssels.
+//! vier Bytes mit dem niedrigsten zuerst, den 32 Bytes der Kennung
+//! [`ENGINE`] und den 32 Bytes des Schlüssels.
 //! Dann folgen die Tabelle der [`Enclosing`], das Script, die Funktionen
 //! und die Klassen. Zahlen stehen als LEB128 ohne Vorzeichen in kürzester
 //! Form, Codeeinheiten und Gleitkommazahlen mit festen Bytes, das niedrigste
@@ -22,7 +23,7 @@ use std::rc::Rc;
 
 use mb_crypto::Digest;
 
-use super::{CompiledFunction, CompiledScript, FORMAT, MAX_LEVELS, Rejected};
+use super::{CompiledFunction, CompiledScript, ENGINE, FORMAT, HEADER, MAX_LEVELS, Rejected};
 use crate::ast::{Atom, ClassId, FunctionId, FunctionKind};
 use crate::bigint::BigInt;
 use crate::bytecode::{
@@ -71,7 +72,9 @@ pub(super) fn encode(script: &CompiledScript, key: &Digest) -> Vec<u8> {
     let mut out = Writer::default();
     out.bytes.extend_from_slice(MAGIC);
     out.bytes.extend_from_slice(&FORMAT.to_le_bytes());
+    out.bytes.extend_from_slice(&ENGINE);
     out.bytes.extend_from_slice(key.as_bytes());
+    debug_assert_eq!(out.bytes.len(), HEADER);
     out.count(body.table.len());
     for enclosing in &body.table {
         out.count(enclosing.contexts.len());
@@ -421,6 +424,9 @@ pub(super) fn decode(
     }
     if reader.take(4)? != FORMAT.to_le_bytes() {
         return reject("andere Fassung des Formats");
+    }
+    if reader.take(ENGINE.len())? != ENGINE {
+        return reject("andere Engine");
     }
     if reader.take(key.as_bytes().len())? != key.as_bytes() {
         return reject("Schlüssel passt nicht zum Quelltext");

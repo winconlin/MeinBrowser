@@ -58,12 +58,24 @@ use crate::compiler::{CompileError, Script, compile_function, compile_script};
 use crate::parser::parse_script;
 use crate::unit::{Shape, function_text};
 
+#[cfg(test)]
+pub(crate) use store::DiskStore;
 pub use store::{CodeStore, MemoryStore};
 
 /// Die Fassung des Formats. Sie steht im Kopf jedes Eintrags und geht in
-/// den Schlüssel ein; ändert sich der Bytecode oder das Format, muss sie
-/// steigen.
-pub const FORMAT: u32 = 1;
+/// den Schlüssel ein; ändert sich das Format, muss sie steigen.
+pub const FORMAT: u32 = 2;
+
+/// Die Kennung dieses Baus der Engine: SHA-256 über die Quellen von `mb-js`
+/// und den Crates, von denen es abhängt (`build.rs`). Sie steht wie
+/// [`FORMAT`] im Kopf und geht in den Schlüssel ein, also findet eine
+/// andere Engine die Einträge dieser nie, auch nicht auf der Platte, und
+/// ein geänderter Übersetzer braucht keine neue Fassung.
+pub const ENGINE: [u8; 32] = include!(concat!(env!("OUT_DIR"), "/engine.rs"));
+
+/// Wie lang der Kopf eines Eintrags ist: die Kennung `MBJSCODE`, die
+/// Fassung, die Kennung der Engine und der Schlüssel.
+pub const HEADER: usize = 8 + 4 + 32 + 32;
 
 /// Wie viele Stufen die Kette einer Funktion im Eintrag höchstens hat. Der
 /// Übersetzer legt je umgebende Funktion höchstens eine an, dazu eine für
@@ -284,11 +296,12 @@ pub fn prepare(source: &[u16]) -> Result<CompiledScript, Uncacheable> {
 }
 
 /// Der Schlüssel für `source`: SHA-256 über eine feste Kennung, die Fassung
-/// des Formats und den Quelltext in UTF-16LE.
+/// des Formats, die Kennung der Engine und den Quelltext in UTF-16LE.
 pub fn key(source: &[u16]) -> Digest {
     let mut context = Builtin.hash(HashAlgorithm::Sha256);
     context.update(DOMAIN);
     context.update(&FORMAT.to_le_bytes());
+    context.update(&ENGINE);
     let mut buffer = Vec::with_capacity(8192);
     for chunk in source.chunks(4096) {
         buffer.clear();

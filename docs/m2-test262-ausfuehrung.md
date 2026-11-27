@@ -771,8 +771,9 @@ Die Gründe aller Varianten:
 Der Workflow `.github/workflows/belastung.yml` läuft jede Nacht um 03:45 UTC,
 von Hand und bei Pull Requests, die den Heap (`crates/mb-js/src/heap.rs`,
 `crates/mb-js/src/heap/`), den Zwischenspeicher für Bytecode
-(`crates/mb-js/src/code_cache.rs`, `crates/mb-js/src/code_cache/`) oder den
-Workflow ändern. Er führt im Release-Build die Tests aus, die in `cargo test`
+(`crates/mb-js/src/code_cache.rs`, `crates/mb-js/src/code_cache/`), den
+Speicher auf der Platte (`crates/mb-storage/src/cache.rs`,
+`crates/mb-storage/src/cache/`) oder den Workflow ändern. Er führt im Release-Build die Tests aus, die in `cargo test`
 mit `#[ignore]` übersprungen werden. Für die JavaScript-Engine sind es vier
 Jobs:
 
@@ -780,7 +781,7 @@ Jobs:
 cargo test --locked --release -p mb-js --lib -- --ignored test262_language_under_stress
 cargo test --locked --release -p mb-js --lib -- --ignored test262_built_ins_under_stress test262_annex_b_built_ins_under_stress
 cargo test --locked --release -p mb-js --lib -- --ignored script::gc_tests::
-cargo test --locked --release -p mb-js --lib -- --ignored test262_language_through_code_cache test262_built_ins_through_code_cache test262_annex_b_built_ins_through_code_cache
+cargo test --locked --release -p mb-js --lib -- --ignored test262_language_through_code_cache test262_built_ins_through_code_cache test262_annex_b_built_ins_through_code_cache test262_language_through_disk_cache
 ```
 
 Die ersten beiden sind die Läufe über `language/`, `built-ins/` und
@@ -819,6 +820,14 @@ zu laufen. Auch hier gelten dieselben Dateien der erwarteten Fehlschläge.
 Am 27.11.2026 brauchten die Läufe im Release-Build auf vier Kernen gut
 1,5 Minuten für `language/` und knapp 2 Minuten für `built-ins/` mit
 `annexB/built-ins/`, und die Zahlen waren dieselben wie ohne Speicher.
+Derselbe Job läuft `language/` noch einmal über den Speicher auf der
+Platte aus `mb-storage` (Schritt 11c), in einem eigenen Ordner unter dem
+temporären Verzeichnis und mit einer Grenze von 16 MiB. Die Einträge von
+`language/` brauchen weit mehr, also entfernt der Speicher beim Ablegen
+immer wieder die ältesten Dateien; die Hilfsdateien und der Test bleiben
+zwischen den zwei Läufen einer Variante, denn sie wurden zuletzt gebraucht.
+Am 27.11.2026 brauchte dieser Lauf im Release-Build 81 Sekunden, mit
+denselben erwarteten Fehlschlägen.
 
 Ein fünfter Job gehört nicht zur Engine: Er hasht die vier großen
 Nachrichten des ACVP für SHA-256 (1, 2, 4 und 8 GiB) mit `mb-crypto`
