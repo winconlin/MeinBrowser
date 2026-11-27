@@ -108,12 +108,10 @@ fn key_of(name: &OsStr) -> Option<Key> {
         b'a'..=b'f' => Some(byte - b'a' + 10),
         _ => None,
     };
+    let (pairs, _) = name.as_chunks::<2>();
     let mut key = [0; 32];
-    for (slot, pair) in key.iter_mut().zip(name.chunks_exact(2)) {
-        let [high, low] = pair else {
-            return None;
-        };
-        *slot = digit(*high)? << 4 | digit(*low)?;
+    for (slot, &[high, low]) in key.iter_mut().zip(pairs) {
+        *slot = digit(high)? << 4 | digit(low)?;
     }
     Some(key)
 }
