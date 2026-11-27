@@ -210,4 +210,7 @@ mod eval_tests;
 mod with_tests;
 
 #[cfg(test)]
+mod gc_tests;
+
+#[cfg(test)]
 mod test262;

@@ -25,9 +25,16 @@
 //! einem Script fragt mit dem Realm als *referrer*. Kann der Übersetzer eine
 //! Hilfsdatei nicht, merkt sich der Host das, und der Läufer zählt den Test
 //! als nicht unterstützt.
+//!
+//! Die Uhr für `Date` ist die des Systems, aber jede Ablesung liegt
+//! mindestens eine Millisekunde nach der vorigen. Tests, die warten, bis
+//! eine Zeitspanne vergangen ist (etwa 100 ms in
+//! `dynamic-import/await-import-evaluation_FIXTURE.js`), brauchen so
+//! höchstens eine Ablesung je Millisekunde und damit eine feste Zahl von
+//! Arbeitsschritten, gleich wie schnell die Engine läuft.
 
 use std::any::Any;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -38,7 +45,7 @@ use crate::builtin::{Builtin, BuiltinCall, define_builtin_function};
 use crate::conversion::to_string;
 use crate::descriptor::PropertyDescriptor;
 use crate::heap::{Local, Scope};
-use crate::host::Host;
+use crate::host::{Host, system_time};
 use crate::module::{LoadPayload, ModuleId, ModuleRequest, Referrer};
 use crate::object::ordinary_object_create;
 use crate::operations::{define_property_or_throw, get};
@@ -52,6 +59,8 @@ use crate::value::{Kind, Value};
 pub(super) struct Test262Host {
     printed: RefCell<Vec<Vec<u16>>>,
     modules: RefCell<Modules>,
+    /// Die zuletzt abgelesene Zeit.
+    clock: Cell<f64>,
 }
 
 /// Die Module eines Tests.
@@ -203,6 +212,12 @@ impl Host for Test262Host {
         define(agent, scope, object, "global", global)?;
         define_builtin_function(agent, scope, realm, global, &PRINT)?;
         define(agent, scope, global, "$262", object)
+    }
+
+    fn current_time(&self) -> f64 {
+        let time = system_time().max(self.clock.get() + 1.0);
+        self.clock.set(time);
+        time
     }
 
     fn load_imported_module(

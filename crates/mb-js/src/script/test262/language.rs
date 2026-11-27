@@ -9,8 +9,13 @@
 //! Prüfen und Übernehmen.
 //!
 //! Jede Variante läuft wie in der festen Auswahl ([`super::run`]) in einem
-//! frischen Agent mit dem Host für Test262, aber nur ohne erzwungene
-//! Sammlungen; den Belastungsmodus prüft die feste Auswahl. Vorschläge aus
+//! frischen Agent mit dem Host für Test262, hier ohne erzwungene
+//! Sammlungen; den Belastungsmodus prüft die feste Auswahl. Dieselben drei
+//! Läufe gibt es noch einmal im Belastungsmodus, der vor jeder Anforderung
+//! abwechselnd jung und voll sammelt und danach den Heap prüft, mit
+//! denselben Dateien der erwarteten Fehlschläge. Sie brauchen ein Vielfaches
+//! der Zeit, sind deshalb mit `#[ignore]` markiert und laufen nachts im
+//! Release-Build (`.github/workflows/belastung.yml`). Vorschläge aus
 //! `features.txt` laufen nicht. Metadaten, die der Leser ablehnt, lassen
 //! die ganze Datei scheitern. Ein Test mit dem Flag `module` hat nur die
 //! Variante `module`. Eine Panik der Engine darf nie erwartet werden.
@@ -235,6 +240,7 @@ fn check_file(
     harness: &BTreeMap<String, String>,
     panics: &mut Vec<String>,
     relative: &str,
+    stress: bool,
 ) -> FileResult {
     let Ok(source) = String::from_utf8(std::fs::read(file).unwrap_or_default()) else {
         return FileResult::Ran(vec![(Variant::File, Some("kein UTF-8".to_owned()))]);
@@ -268,7 +274,7 @@ fn check_file(
     let mut variants = Vec::new();
     for mode in metadata.modes() {
         let result = catch_unwind(AssertUnwindSafe(|| {
-            run_file(Some(file), &source, &metadata, mode, &files, false)
+            run_file(Some(file), &source, &metadata, mode, &files, stress)
         }));
         let failure = match result {
             Ok(result) if result == Ok(wanted) => None,
@@ -353,20 +359,40 @@ fn failing(
 
 #[test]
 fn test262_language() {
-    check_suite(&LANGUAGE);
+    check_suite(&LANGUAGE, false);
 }
 
 #[test]
 fn test262_built_ins() {
-    check_suite(&BUILT_INS);
+    check_suite(&BUILT_INS, false);
 }
 
 #[test]
 fn test262_annex_b_built_ins() {
-    check_suite(&ANNEX_B_BUILT_INS);
+    check_suite(&ANNEX_B_BUILT_INS, false);
 }
 
-fn check_suite(suite: &Suite) {
+#[test]
+#[ignore = "nächtlicher Belastungstest, siehe .github/workflows/belastung.yml"]
+fn test262_language_under_stress() {
+    check_suite(&LANGUAGE, true);
+}
+
+#[test]
+#[ignore = "nächtlicher Belastungstest, siehe .github/workflows/belastung.yml"]
+fn test262_built_ins_under_stress() {
+    check_suite(&BUILT_INS, true);
+}
+
+#[test]
+#[ignore = "nächtlicher Belastungstest, siehe .github/workflows/belastung.yml"]
+fn test262_annex_b_built_ins_under_stress() {
+    check_suite(&ANNEX_B_BUILT_INS, true);
+}
+
+/// Prüft `suite` gegen ihre Datei der erwarteten Fehlschläge, mit
+/// `stress` im Belastungsmodus des Heaps.
+fn check_suite(suite: &Suite, stress: bool) {
     let root = testdata::root().join(SOURCE);
     let base = root.join(suite.directory);
     let mut files = if suite.parts.is_empty() {
@@ -403,7 +429,8 @@ fn check_suite(suite: &Suite) {
                             .unwrap_or(file)
                             .to_string_lossy()
                             .replace('\\', "/");
-                        let result = check_file(file, proposals, harness, &mut panics, &relative);
+                        let result =
+                            check_file(file, proposals, harness, &mut panics, &relative, stress);
                         done.push((index, relative, result));
                     }
                     (done, panics)
@@ -462,7 +489,8 @@ fn check_suite(suite: &Suite) {
          Dateien und {passed_variants} von {variant_count} Varianten",
         files.len()
     );
-    println!("Test262 {}/: {summary}", suite.directory);
+    let label = if stress { " im Belastungsmodus" } else { "" };
+    println!("Test262 {}/{label}: {summary}", suite.directory);
     let mut ranked: Vec<_> = reasons.iter().collect();
     ranked.sort_by(|left, right| right.1.cmp(left.1).then(left.0.cmp(right.0)));
     for (reason, count) in ranked {
@@ -516,7 +544,7 @@ fn check_suite(suite: &Suite) {
         report.push_str("nur die Zahlen im Kopf weichen ab\n");
     }
     panic!(
-        "Test262 {}/ weicht von {} ab ({}):\n{report}",
+        "Test262 {}/{label} weicht von {} ab ({}):\n{report}",
         suite.directory,
         suite.file,
         match written {

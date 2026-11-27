@@ -84,7 +84,18 @@ Worker, also Agents in eigenen Fäden; bis dahin scheitern die Tests unter
 Die Flags `CanBlockIsFalse` und `CanBlockIsTrue` setzen [[CanBlock]] des
 Agents mit `Agent::set_can_block`; ohne eines davon darf der Agent
 blockieren, wie in einer Shell. Beide zusammen sind ein Fehler der
-Metadaten. `locale` und weitere Flags werden als nicht unterstützt
+Metadaten.
+
+Die Uhr für `Date` ist die des Systems, aber jede Ablesung liegt mindestens
+eine Millisekunde nach der vorigen. Das ist eine Lesart, `INTERPRETING.md`
+legt die Uhr nicht fest. `dynamic-import/await-import-evaluation_FIXTURE.js`
+wartet in einer Schleife, bis 100 ms vergangen sind; mit der reinen Uhr des
+Systems hinge es von der Geschwindigkeit der Engine ab, ob die Schleife vor
+dem Ende der 100.000 Arbeitsschritte fertig wird. Im Debug-Build wurde sie
+es, im Release-Build der nächtlichen Belastungstests nicht. So braucht sie
+höchstens 101 Ablesungen.
+
+`locale` und weitere Flags werden als nicht unterstützt
 abgelehnt, ebenso `async` zusammen mit `raw`, denn ohne Harness gäbe es kein
 `$DONE`, das das Ergebnis meldet, und `module` zusammen mit `noStrict` oder
 `onlyStrict`. Vorschlags-Features
@@ -168,9 +179,10 @@ cargo test --locked -p mb-js script::test262::language -- --nocapture
 
 Der Lauf nimmt alle 23.828 Dateien unter `test/language/`, außer den 532 mit
 Vorschlägen aus `features.txt`. Jede Variante läuft wie in der Auswahl in
-einem frischen Agent mit dem Host für Test262 und denselben Quoten, aber nur
-mit normaler Garbage Collection; den Belastungsmodus prüft weiter die
-Auswahl. Die Dateien verteilen sich auf so viele Fäden, wie das System
+einem frischen Agent mit dem Host für Test262 und denselben Quoten, hier
+mit normaler Garbage Collection; im Belastungsmodus laufen bei jedem Push die
+Auswahl und nachts die ganzen Läufe (siehe
+[Nächtliche Belastungstests](#nächtliche-belastungstests)). Die Dateien verteilen sich auf so viele Fäden, wie das System
 anbietet. Auf vier Kernen dauert der Lauf im Debug-Build knapp vier Minuten.
 
 Die Datei `crates/mb-js/src/script/test262/erwartete-fehlschlaege.txt` nennt
@@ -753,6 +765,44 @@ Die Gründe aller Varianten:
 | 33 | TypeError im Test: das Feature `caller`, Temporal und die fehlenden Funktionen für URIs |
 | 12 | `Test262Error`: Eine Assertion schlug fehl |
 | 2 | ReferenceError im Test |
+
+## Nächtliche Belastungstests
+
+Der Workflow `.github/workflows/belastung.yml` läuft jede Nacht um 03:45 UTC,
+von Hand und bei Pull Requests, die den Heap (`crates/mb-js/src/heap.rs`,
+`crates/mb-js/src/heap/`) oder den Workflow ändern. Er führt im Release-Build
+die Tests aus, die in `cargo test` mit `#[ignore]` übersprungen werden, in
+drei Jobs:
+
+```sh
+cargo test --locked --release -p mb-js --lib -- --ignored test262_language_under_stress
+cargo test --locked --release -p mb-js --lib -- --ignored test262_built_ins_under_stress test262_annex_b_built_ins_under_stress
+cargo test --locked --release -p mb-js --lib -- --ignored script::gc_tests::
+```
+
+Die ersten beiden sind die Läufe über `language/`, `built-ins/` und
+`annexB/built-ins/` von oben, aber im Belastungsmodus: Der Heap sammelt vor
+jeder Anforderung, abwechselnd jung und voll, und prüft sich nach jeder
+Sammlung. Sie vergleichen mit denselben Dateien der erwarteten Fehlschläge,
+denn das Ergebnis eines Tests darf nicht davon abhängen, wann gesammelt
+wird. Am 26.11.2026 brauchten sie auf vier Kernen 11 Minuten für
+`language/` und 15 Minuten für `built-ins/` mit `annexB/built-ins/`; ohne
+Belastungsmodus brauchen alle drei im Release-Build zusammen 1,5 Minuten.
+Die Zahlen waren in beiden Modi gleich.
+
+Der dritte Job führt die zehn GC-lastigen Programme aus
+`crates/mb-js/src/script/gc_tests.rs` aus. Jedes baut Daten auf, die
+Sammlungen überstehen müssen, vor allem Verweise aus alten Zellen auf junge:
+Felder, verkettete Listen, Map und Set, schwache Sammlungen, Closures und
+Generatoren, Promise-Ketten mit `await`, Prototypen und Gestalten, Puffer und
+Zeichenketten, Klassen mit privaten Feldern sowie JSON, Ausbreitung und
+Destrukturierung. Es prüft sich selbst und meldet `"ok"`. Nachts laufen sie
+mit `N = 300.000` ohne Belastungsmodus, jedes mit mindestens zehn jungen
+Sammlungen (13 bis 246 junge und 3 bis 8 volle), und mit `N = 400` im
+Belastungsmodus (je 1.400 bis 8.500 junge und ebenso viele volle
+Sammlungen), zusammen in knapp 2 Minuten. Bei jedem Push laufen sie
+im Debug-Build mit `N = 20.000` (jedes mit mindestens einer jungen
+Sammlung) und mit `N = 8` im Belastungsmodus.
 
 ## Fehler und Ressourcen
 
