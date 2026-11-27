@@ -53,10 +53,17 @@ fn keys_and_file_names_belong_together() {
     ] {
         assert_eq!(key_of(OsStr::new(other)), None, "{other}");
     }
-    let leftover = format!(".{}.17.3.tmp", name.to_str().expect("ASCII"));
-    assert!(is_leftover(OsStr::new(&leftover)));
-    assert!(!is_leftover(&name));
-    assert!(!is_leftover(OsStr::new(".fremd.tmp")));
+    let hex = name.to_str().expect("ASCII");
+    assert!(is_leftover(OsStr::new(&format!(".{hex}.17.3.tmp"))));
+    for other in [
+        hex.to_owned(),
+        ".fremd.tmp".to_owned(),
+        format!(".{hex}.tmp"),
+        format!(".{hex}.backup.tmp"),
+        format!(".{hex}x.17.3.tmp"),
+    ] {
+        assert!(!is_leftover(OsStr::new(&other)), "{other}");
+    }
 }
 
 #[test]
@@ -137,9 +144,18 @@ fn foreign_files_stay_and_leftovers_go() {
     let leftover = format!(".{}.1.2.tmp", name(7));
     std::fs::write(root.join(&leftover), b"halb").expect("schreiben");
     std::fs::write(root.join(".fremd.tmp"), b"fremd").expect("schreiben");
+    let similar = format!(".{}.backup.tmp", name(7));
+    std::fs::write(root.join(&similar), b"fremd").expect("schreiben");
     let cache = DiskCache::open(&root, 1 << 20).expect("öffnen");
     assert!(cache.is_empty());
-    assert_eq!(names(&root), [".fremd.tmp", "liesmich.txt", "unterordner"]);
+    let mut expected = vec![
+        ".fremd.tmp".to_owned(),
+        similar,
+        "liesmich.txt".to_owned(),
+        "unterordner".to_owned(),
+    ];
+    expected.sort();
+    assert_eq!(names(&root), expected);
     std::fs::remove_dir_all(&root).expect("aufräumen");
 }
 
@@ -160,6 +176,30 @@ fn vanished_and_changed_files_are_handled() {
     assert_eq!(cache.load(&key(2)), None, "größer als die Grenze");
     assert!(cache.is_empty());
     std::fs::remove_dir_all(&root).expect("aufräumen");
+}
+
+#[test]
+fn a_failed_read_keeps_a_newer_entry() {
+    let mut entries = Entries::default();
+    entries.insert(key(1), 4);
+    let written = entries.by_key[&key(1)].written;
+    // Ein anderer Faden legt denselben Schlüssel neu ab, bevor der Fehler
+    // des ersten Lesens ankommt.
+    entries.insert(key(1), 5);
+    entries.forget(&key(1), written);
+    assert_eq!((entries.by_key.len(), entries.bytes), (1, 5));
+    let written = entries.by_key[&key(1)].written;
+    entries.refresh(&key(1));
+    assert_eq!(
+        entries.by_key[&key(1)].written,
+        written,
+        "Laden schreibt nicht"
+    );
+    entries.forget(&key(1), written);
+    assert_eq!(
+        (entries.by_key.len(), entries.by_use.len(), entries.bytes),
+        (0, 0, 0)
+    );
 }
 
 #[cfg(unix)]

@@ -28,7 +28,7 @@ mod directory;
 mod windows_path;
 
 pub use directory::{
-    FileEntry, TEMPORARY_SUFFIX, create_directory, regular_files, remove, replace, set_modified,
+    FileEntry, create_directory, regular_files, remove, replace, replaced_name, set_modified,
 };
 
 use std::fs::{File, Metadata};

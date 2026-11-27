@@ -76,6 +76,37 @@ fn files_are_replaced_as_a_whole() {
 }
 
 #[test]
+fn temporary_files_name_what_they_replace() {
+    let root = directory("zwischendateien");
+    create_directory(&root).expect("anlegen");
+    replace(&root, OsStr::new("a.b"), b"x").expect("schreiben");
+    let temporary = format!(".a.b.{}.0{TEMPORARY_SUFFIX}", std::process::id());
+    assert_eq!(
+        replaced_name(OsStr::new(&temporary)),
+        Some(OsStr::new("a.b"))
+    );
+    assert_eq!(
+        replaced_name(OsStr::new(".eintrag.17.3.tmp")),
+        Some(OsStr::new("eintrag"))
+    );
+    for name in [
+        "eintrag.17.3.tmp",
+        ".eintrag.tmp",
+        ".eintrag.backup.tmp",
+        ".eintrag.17.tmp",
+        ".eintrag.17.x3.tmp",
+        ".eintrag..3.tmp",
+        "..17.3.tmp",
+        "...17.3.tmp",
+        ".eintrag.17.3.tmp.alt",
+        "a.b",
+    ] {
+        assert_eq!(replaced_name(OsStr::new(name)), None, "{name}");
+    }
+    std::fs::remove_dir_all(&root).expect("aufräumen");
+}
+
+#[test]
 fn names_are_single_components() {
     let root = directory("namen");
     create_directory(&root).expect("anlegen");
