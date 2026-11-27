@@ -48,6 +48,7 @@ use crate::parser::parse_module;
 use crate::promise::{promise_create, settle_pending};
 use crate::realm::{Intrinsic, RealmId};
 use crate::script::ScriptError;
+use crate::unit::Unit;
 use crate::value::{Kind, Value};
 
 mod asynchronous;
@@ -371,9 +372,9 @@ impl Agent {
                 set_slot(agent, environment, binding.slot, Value::HOLE);
                 slots.insert(binding.name.clone(), binding.slot);
                 let shared = match &binding.init {
-                    ModuleInit::Function(template) => {
-                        Some(agent.add_shared_function(Rc::clone(&ast), template.clone())?)
-                    }
+                    ModuleInit::Function(template) => Some(
+                        agent.add_shared_function(Unit::Ast(Rc::clone(&ast)), template.clone())?,
+                    ),
                     _ => None,
                 };
                 functions.push(shared);
@@ -1290,7 +1291,7 @@ impl Agent {
         let Body::SourceText { unit, code, .. } = &record.body else {
             return Ok(());
         };
-        let unit = Rc::clone(unit);
+        let unit = Unit::Ast(Rc::clone(unit));
         let code = Rc::clone(code);
         self.scope(|agent, inner| {
             let heap = agent.heap();

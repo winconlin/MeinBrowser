@@ -15,7 +15,11 @@
 //! abwechselnd jung und voll sammelt und danach den Heap prüft, mit
 //! denselben Dateien der erwarteten Fehlschläge. Sie brauchen ein Vielfaches
 //! der Zeit, sind deshalb mit `#[ignore]` markiert und laufen nachts im
-//! Release-Build (`.github/workflows/belastung.yml`). Vorschläge aus
+//! Release-Build (`.github/workflows/belastung.yml`). Ebenso laufen sie
+//! dort mit einem Speicher für übersetzte Scripts ([`crate::code_cache`]),
+//! den alle Tests teilen: Jede Variante läuft zweimal, beim ersten Mal
+//! übersetzt und gespeichert, beim zweiten Mal geladen, und jedes Script
+//! muss sich speichern und unverändert laden lassen. Vorschläge aus
 //! `features.txt` laufen nicht. Metadaten, die der Leser ablehnt, lassen
 //! die ganze Datei scheitern. Ein Test mit dem Flag `module` hat nur die
 //! Variante `module`. Eine Panik der Engine darf nie erwartet werden.
@@ -24,10 +28,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::metadata::{Metadata, Mode};
-use super::{Outcome, expected, proposals, run_file, selection};
+use super::{Outcome, Setup, expected, proposals, run_file_with, selection};
+use crate::code_cache::MemoryStore;
 
 const SOURCE: &str = "test262";
 
@@ -240,7 +246,7 @@ fn check_file(
     harness: &BTreeMap<String, String>,
     panics: &mut Vec<String>,
     relative: &str,
-    stress: bool,
+    setup: &Setup,
 ) -> FileResult {
     let Ok(source) = String::from_utf8(std::fs::read(file).unwrap_or_default()) else {
         return FileResult::Ran(vec![(Variant::File, Some("kein UTF-8".to_owned()))]);
@@ -273,8 +279,22 @@ fn check_file(
     let wanted = expected(metadata.negative);
     let mut variants = Vec::new();
     for mode in metadata.modes() {
+        // Mit Speicher läuft ein Script zweimal: übersetzt, dann geladen.
+        // Ein Modul wird nicht gespeichert.
+        let runs = if setup.store.is_some() && mode != Mode::Module {
+            2
+        } else {
+            1
+        };
         let result = catch_unwind(AssertUnwindSafe(|| {
-            run_file(Some(file), &source, &metadata, mode, &files, stress)
+            let mut result = run_file_with(Some(file), &source, &metadata, mode, &files, setup);
+            for _ in 1..runs {
+                if result == Ok(wanted) {
+                    result = run_file_with(Some(file), &source, &metadata, mode, &files, setup)
+                        .map_err(|reason| format!("geladen: {reason}"));
+                }
+            }
+            result
         }));
         let failure = match result {
             Ok(result) if result == Ok(wanted) => None,
@@ -359,40 +379,75 @@ fn failing(
 
 #[test]
 fn test262_language() {
-    check_suite(&LANGUAGE, false);
+    check_suite(&LANGUAGE, &Setup::default());
 }
 
 #[test]
 fn test262_built_ins() {
-    check_suite(&BUILT_INS, false);
+    check_suite(&BUILT_INS, &Setup::default());
 }
 
 #[test]
 fn test262_annex_b_built_ins() {
-    check_suite(&ANNEX_B_BUILT_INS, false);
+    check_suite(&ANNEX_B_BUILT_INS, &Setup::default());
+}
+
+/// Der Speicher für die Läufe mit Zwischenspeicher, so groß, dass die
+/// Einträge der Hilfsdateien und einer Variante zwischen ihren zwei Läufen
+/// bleiben.
+fn through_code_cache() -> Setup {
+    Setup {
+        stress: false,
+        store: Some(Arc::new(MemoryStore::new(256 << 20))),
+    }
+}
+
+#[test]
+#[ignore = "nächtlicher Belastungstest, siehe .github/workflows/belastung.yml"]
+fn test262_language_through_code_cache() {
+    check_suite(&LANGUAGE, &through_code_cache());
+}
+
+#[test]
+#[ignore = "nächtlicher Belastungstest, siehe .github/workflows/belastung.yml"]
+fn test262_built_ins_through_code_cache() {
+    check_suite(&BUILT_INS, &through_code_cache());
+}
+
+#[test]
+#[ignore = "nächtlicher Belastungstest, siehe .github/workflows/belastung.yml"]
+fn test262_annex_b_built_ins_through_code_cache() {
+    check_suite(&ANNEX_B_BUILT_INS, &through_code_cache());
 }
 
 #[test]
 #[ignore = "nächtlicher Belastungstest, siehe .github/workflows/belastung.yml"]
 fn test262_language_under_stress() {
-    check_suite(&LANGUAGE, true);
+    check_suite(&LANGUAGE, &under_stress());
 }
 
 #[test]
 #[ignore = "nächtlicher Belastungstest, siehe .github/workflows/belastung.yml"]
 fn test262_built_ins_under_stress() {
-    check_suite(&BUILT_INS, true);
+    check_suite(&BUILT_INS, &under_stress());
 }
 
 #[test]
 #[ignore = "nächtlicher Belastungstest, siehe .github/workflows/belastung.yml"]
 fn test262_annex_b_built_ins_under_stress() {
-    check_suite(&ANNEX_B_BUILT_INS, true);
+    check_suite(&ANNEX_B_BUILT_INS, &under_stress());
 }
 
-/// Prüft `suite` gegen ihre Datei der erwarteten Fehlschläge, mit
-/// `stress` im Belastungsmodus des Heaps.
-fn check_suite(suite: &Suite, stress: bool) {
+fn under_stress() -> Setup {
+    Setup {
+        stress: true,
+        store: None,
+    }
+}
+
+/// Prüft `suite` gegen ihre Datei der erwarteten Fehlschläge, so wie
+/// `setup` es sagt.
+fn check_suite(suite: &Suite, setup: &Setup) {
     let root = testdata::root().join(SOURCE);
     let base = root.join(suite.directory);
     let mut files = if suite.parts.is_empty() {
@@ -414,8 +469,8 @@ fn check_suite(suite: &Suite, stress: bool) {
     std::thread::scope(|scope| {
         let workers: Vec<_> = (0..threads)
             .map(|_| {
-                let (files, base, proposals, harness, next) =
-                    (&files, &base, &proposals, &harness, &next);
+                let (files, base, proposals, harness, next, setup) =
+                    (&files, &base, &proposals, &harness, &next, setup);
                 scope.spawn(move || {
                     let mut done = Vec::new();
                     let mut panics = Vec::new();
@@ -430,7 +485,7 @@ fn check_suite(suite: &Suite, stress: bool) {
                             .to_string_lossy()
                             .replace('\\', "/");
                         let result =
-                            check_file(file, proposals, harness, &mut panics, &relative, stress);
+                            check_file(file, proposals, harness, &mut panics, &relative, setup);
                         done.push((index, relative, result));
                     }
                     (done, panics)
@@ -489,7 +544,11 @@ fn check_suite(suite: &Suite, stress: bool) {
          Dateien und {passed_variants} von {variant_count} Varianten",
         files.len()
     );
-    let label = if stress { " im Belastungsmodus" } else { "" };
+    let label = match (setup.stress, setup.store.is_some()) {
+        (true, _) => " im Belastungsmodus",
+        (false, true) => " mit Zwischenspeicher",
+        (false, false) => "",
+    };
     println!("Test262 {}/{label}: {summary}", suite.directory);
     let mut ranked: Vec<_> = reasons.iter().collect();
     ranked.sort_by(|left, right| right.1.cmp(left.1).then(left.0.cmp(right.0)));

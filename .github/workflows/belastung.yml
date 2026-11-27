@@ -3,8 +3,10 @@ name: Belastungstests
 # Nächtliche Belastungstests im Release-Build: für den Garbage Collector
 # (Schritt 10 in docs/architektur.md, 12.2) Test262 und GC-lastige Programme
 # im Belastungsmodus des Heaps, siehe docs/m2-test262-ausfuehrung.md,
-# Abschnitt „Nächtliche Belastungstests“; für SHA-256 die großen Nachrichten
-# des ACVP von 1 bis 8 GiB (Schritt 11a, crates/mb-crypto/src/sha256/tests.rs).
+# Abschnitt „Nächtliche Belastungstests“; Test262 über den Zwischenspeicher
+# für Bytecode, jede Variante übersetzt und geladen (Schritt 11b,
+# crates/mb-js/src/code_cache.rs); für SHA-256 die großen Nachrichten des ACVP
+# von 1 bis 8 GiB (Schritt 11a, crates/mb-crypto/src/sha256/tests.rs).
 
 on:
   schedule:
@@ -14,6 +16,8 @@ on:
     paths:
       - "crates/mb-js/src/heap.rs"
       - "crates/mb-js/src/heap/**"
+      - "crates/mb-js/src/code_cache.rs"
+      - "crates/mb-js/src/code_cache/**"
       - ".github/workflows/belastung.yml"
 
 permissions:
@@ -51,6 +55,10 @@ jobs:
             package: mb-js
             testdata: false
             tests: "script::gc_tests::"
+          - part: test262-zwischenspeicher
+            package: mb-js
+            testdata: true
+            tests: test262_language_through_code_cache test262_built_ins_through_code_cache test262_annex_b_built_ins_through_code_cache
           - part: sha256-grosse-nachrichten
             package: mb-crypto
             testdata: true

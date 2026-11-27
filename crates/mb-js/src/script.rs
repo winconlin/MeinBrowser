@@ -5,15 +5,18 @@
 
 use std::rc::Rc;
 
+use std::sync::Arc;
+
 use crate::agent::{Abrupt, Agent, Budget, Completion, ErrorKind};
-use crate::ast::Ast;
 use crate::bytecode::FunctionTemplate;
+use crate::code_cache::{CodeStore, CompiledScript, decode_with_key, encode_with_key, key};
 use crate::compiler::{CompileError, Script, compile_script};
 use crate::function::instantiate_function;
 use crate::heap::{Local, Scope};
 use crate::interpreter::execute_script;
 use crate::parser::{SyntaxError, parse_script};
 use crate::realm::RealmId;
+use crate::unit::Unit;
 
 /// Warum ein Script keinen Wert ergab.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,20 +74,77 @@ impl Agent {
         source: &[u16],
     ) -> Result<Local<'s>, ScriptError> {
         self.spend_execution_steps(1).map_err(ScriptError::Abrupt)?;
+        if let Some(store) = self.code_store.clone() {
+            return self.evaluate_cached_script(scope, realm, source, &store);
+        }
         let ast = Rc::new(parse_script(source).map_err(ScriptError::Syntax)?);
-        let script = match compile_script(&ast) {
-            Ok(script) => script,
-            Err(CompileError::Unsupported(position)) => {
-                return Err(ScriptError::Unsupported(position));
-            }
-            Err(CompileError::TooLarge) => {
-                return Err(ScriptError::Abrupt(self.throw_error(ErrorKind::RangeError)));
-            }
-        };
+        let script = self.compile(&ast)?;
         // Parse und Übersetzen laufen ohne Bytecodeschritte. Ein dort
         // gesetztes Abbruchsignal muss vor der ersten Bindung wirken.
         self.spend_execution_steps(0).map_err(ScriptError::Abrupt)?;
-        self.script_evaluation(scope, realm, &ast, &script)
+        self.run_script(scope, realm, &Unit::Ast(ast), &script)
+    }
+
+    fn compile(&mut self, ast: &crate::ast::Ast) -> Result<Script, ScriptError> {
+        match compile_script(ast) {
+            Ok(script) => Ok(script),
+            Err(CompileError::Unsupported(position)) => Err(ScriptError::Unsupported(position)),
+            Err(CompileError::TooLarge) => {
+                Err(ScriptError::Abrupt(self.throw_error(ErrorKind::RangeError)))
+            }
+        }
+    }
+
+    /// Dasselbe mit dem Speicher `store`: Ein Eintrag, der die Prüfung
+    /// besteht, läuft ohne Parsen und Übersetzen. Sonst entsteht das Script
+    /// neu, mit allen Funktionen übersetzt, und kommt in den Speicher. Was
+    /// sich nicht speichern lässt, läuft wie ohne Speicher.
+    fn evaluate_cached_script<'s>(
+        &mut self,
+        scope: &'s Scope,
+        realm: RealmId,
+        source: &[u16],
+        store: &Arc<dyn CodeStore>,
+    ) -> Result<Local<'s>, ScriptError> {
+        let key = key(source);
+        let loaded = store
+            .load(&key)
+            .and_then(|bytes| decode_with_key(&bytes, source, &key).ok());
+        let compiled = match loaded {
+            Some(compiled) => compiled,
+            None => {
+                let ast = parse_script(source).map_err(ScriptError::Syntax)?;
+                let script = self.compile(&ast)?;
+                match CompiledScript::from_script(&ast, script) {
+                    Ok(compiled) => {
+                        store.store(&key, &encode_with_key(&compiled, &key));
+                        compiled
+                    }
+                    Err(script) => {
+                        self.spend_execution_steps(0).map_err(ScriptError::Abrupt)?;
+                        return self.run_script(scope, realm, &Unit::Ast(Rc::new(ast)), &script);
+                    }
+                }
+            }
+        };
+        self.spend_execution_steps(0).map_err(ScriptError::Abrupt)?;
+        let compiled = Rc::new(compiled);
+        self.run_script(
+            scope,
+            realm,
+            &Unit::Compiled(Rc::clone(&compiled)),
+            compiled.script(),
+        )
+    }
+
+    fn run_script<'s>(
+        &mut self,
+        scope: &'s Scope,
+        realm: RealmId,
+        unit: &Unit,
+        script: &Script,
+    ) -> Result<Local<'s>, ScriptError> {
+        self.script_evaluation(scope, realm, unit, script)
             .map_err(|abrupt| match abrupt {
                 Abrupt::Unsupported(position) => ScriptError::Unsupported(position),
                 abrupt => ScriptError::Abrupt(abrupt),
@@ -99,7 +159,7 @@ impl Agent {
         &mut self,
         scope: &'s Scope,
         realm: RealmId,
-        unit: &Rc<Ast>,
+        unit: &Unit,
         script: &Script,
     ) -> Completion<Local<'s>> {
         let flags = self.scope(|agent, inner| {
@@ -118,7 +178,7 @@ fn global_declaration_instantiation(
     agent: &mut Agent,
     scope: &Scope,
     realm: RealmId,
-    unit: &Rc<Ast>,
+    unit: &Unit,
     script: &Script,
 ) -> Completion<Vec<u32>> {
     for (name, _) in &script.lexical_names {
@@ -184,7 +244,7 @@ fn global_declaration_instantiation(
                 binds_name: false,
                 outer: Rc::default(),
             };
-            let shared = agent.add_shared_function(Rc::clone(unit), template)?;
+            let shared = agent.add_shared_function(unit.clone(), template)?;
             let key = agent.key_from_units(inner, name)?;
             let object = instantiate_function(agent, inner, realm, shared, key)?;
             agent.create_global_function_binding(inner, realm, key, object, false)

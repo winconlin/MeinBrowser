@@ -9,9 +9,11 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use crate::agent::{Abrupt, Agent, Budget, ErrorKind, Exception};
+use crate::code_cache::{self, CodeStore, Uncacheable};
 use crate::compare::same_value;
 use crate::compiler::{CompileError, compile_script};
 use crate::heap::{Local, ObjectClass, Options, Scope};
@@ -320,6 +322,15 @@ fn run(
     run_file(None, source, metadata, mode, harness, stress)
 }
 
+/// Wie ein Test läuft: im Belastungsmodus des Heaps (`stress`) und mit
+/// einem Speicher für übersetzte Scripts (`store`, siehe
+/// [`crate::code_cache`]).
+#[derive(Clone, Default)]
+struct Setup {
+    stress: bool,
+    store: Option<Arc<dyn CodeStore>>,
+}
+
 /// Wie [`run`] für den Test in der Datei `file`: Ein Modul lädt seine
 /// Hilfsdateien aus ihrem Verzeichnis.
 fn run_file(
@@ -330,12 +341,61 @@ fn run_file(
     harness: &[(String, String)],
     stress: bool,
 ) -> Result<Outcome, String> {
+    let setup = Setup {
+        stress,
+        store: None,
+    };
+    run_file_with(file, source, metadata, mode, harness, &setup)
+}
+
+/// Die Hilfsdateien, deren Eintrag schon geprüft ist.
+static CHECKED_HARNESS: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+
+/// Prüft für den Lauf mit Speicher, dass sich das Script `text` speichern
+/// lässt, wenn der Übersetzer es kann, und dass sein Eintrag unverändert
+/// zurückkommt. Sonst liefe es unbemerkt ohne Speicher.
+fn check_entry(text: &str) -> Result<(), String> {
+    let units: Vec<u16> = text.encode_utf16().collect();
+    match code_cache::prepare(&units) {
+        Ok(prepared) => {
+            let loaded = code_cache::decode(&code_cache::encode(&prepared), &units)
+                .map_err(|rejected| format!("Zwischenspeicher: {rejected}"))?;
+            if loaded != prepared {
+                return Err("Zwischenspeicher: geladen anders als gespeichert".to_owned());
+            }
+            Ok(())
+        }
+        Err(Uncacheable::Syntax | Uncacheable::Compile(_)) => Ok(()),
+        Err(Uncacheable::Unsupported) => Err("Zwischenspeicher: nicht speicherbar".to_owned()),
+    }
+}
+
+fn run_file_with(
+    file: Option<&Path>,
+    source: &str,
+    metadata: &Metadata,
+    mode: Mode,
+    harness: &[(String, String)],
+    setup: &Setup,
+) -> Result<Outcome, String> {
     let mut agent = Agent::with_options(Options {
         limit: HEAP_BYTES,
-        stress,
+        stress: setup.stress,
         verify: true,
     })
     .map_err(|error| format!("Agent: {error:?}"))?;
+    if let Some(store) = &setup.store {
+        agent.set_code_store(Some(Arc::clone(store)));
+        for (name, text) in harness {
+            let fresh = CHECKED_HARNESS
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(name.clone());
+            if fresh {
+                check_entry(text).map_err(|reason| format!("Harness {name}: {reason}"))?;
+            }
+        }
+    }
     let host = Rc::new(Test262Host::default());
     agent.set_host(Rc::<Test262Host>::clone(&host));
     agent.set_can_block(metadata.can_block());
@@ -362,6 +422,9 @@ fn run_file(
             return Ok(finish(&mut agent, &host, metadata, result));
         }
     };
+    if setup.store.is_some() {
+        check_entry(&text)?;
+    }
     // evaluate_script meldet ein Größenlimit des äußeren Compilers als
     // RangeError. Es darf keinen erwarteten *Laufzeit*-RangeError erfüllen.
     // Deshalb bei negativen Laufzeittests die frühe Phase separat prüfen.

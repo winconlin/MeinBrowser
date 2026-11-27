@@ -30,6 +30,7 @@ use crate::interpreter::execute_eval;
 use crate::object::{get_prototype_from_constructor, set_prototype_of};
 use crate::parser::{DynamicFunctionKind, parse_dynamic_function, parse_eval};
 use crate::realm::{Intrinsic, RealmId};
+use crate::unit::Unit;
 use crate::value::{Kind, Value};
 
 /// So viele Schritte der Arbeitsquote kostet das Lesen und Übersetzen einer
@@ -123,7 +124,7 @@ fn evaluate<'s>(
             agent.heap().local(scope, Value::UNDEFINED),
         ),
     };
-    execute_eval(agent, scope, realm, &code, &ast, this, context)
+    execute_eval(agent, scope, realm, &code, &Unit::Ast(ast), this, context)
 }
 
 /// [`BASE_STEPS`] und [`STEPS_PER_UNIT`] Schritte je Codeeinheit.
@@ -200,7 +201,7 @@ pub(crate) fn create_dynamic_function<'s>(
         binds_name: false,
         outer: Rc::default(),
     };
-    let shared = agent.add_shared_function(Rc::new(ast), template)?;
+    let shared = agent.add_shared_function(Unit::Ast(Rc::new(ast)), template)?;
     let name: Vec<u16> = "anonymous".encode_utf16().collect();
     let key = agent.key_from_units(scope, &name)?;
     let object = instantiate_function(agent, scope, call.realm, shared, key)?;

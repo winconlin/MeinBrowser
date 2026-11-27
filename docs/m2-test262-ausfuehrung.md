@@ -770,14 +770,17 @@ Die Gründe aller Varianten:
 
 Der Workflow `.github/workflows/belastung.yml` läuft jede Nacht um 03:45 UTC,
 von Hand und bei Pull Requests, die den Heap (`crates/mb-js/src/heap.rs`,
-`crates/mb-js/src/heap/`) oder den Workflow ändern. Er führt im Release-Build
-die Tests aus, die in `cargo test` mit `#[ignore]` übersprungen werden. Für
-die JavaScript-Engine sind es drei Jobs:
+`crates/mb-js/src/heap/`), den Zwischenspeicher für Bytecode
+(`crates/mb-js/src/code_cache.rs`, `crates/mb-js/src/code_cache/`) oder den
+Workflow ändern. Er führt im Release-Build die Tests aus, die in `cargo test`
+mit `#[ignore]` übersprungen werden. Für die JavaScript-Engine sind es vier
+Jobs:
 
 ```sh
 cargo test --locked --release -p mb-js --lib -- --ignored test262_language_under_stress
 cargo test --locked --release -p mb-js --lib -- --ignored test262_built_ins_under_stress test262_annex_b_built_ins_under_stress
 cargo test --locked --release -p mb-js --lib -- --ignored script::gc_tests::
+cargo test --locked --release -p mb-js --lib -- --ignored test262_language_through_code_cache test262_built_ins_through_code_cache test262_annex_b_built_ins_through_code_cache
 ```
 
 Die ersten beiden sind die Läufe über `language/`, `built-ins/` und
@@ -804,7 +807,20 @@ Sammlungen), zusammen in knapp 2 Minuten. Bei jedem Push laufen sie
 im Debug-Build mit `N = 20.000` (jedes mit mindestens einer jungen
 Sammlung) und mit `N = 8` im Belastungsmodus.
 
-Ein vierter Job gehört nicht zur Engine: Er hasht die vier großen
+Der vierte Job führt dieselben drei Läufe über Test262 mit einem
+Zwischenspeicher für Bytecode aus (`mb_js::code_cache`, Schritt 11b), den
+alle Tests teilen, 256 MiB groß. Jede Variante außer Modulen läuft zweimal:
+beim ersten Mal übersetzt der Agent die Hilfsdateien, soweit sie noch nicht
+im Speicher liegen, und den Test und legt sie ab, beim zweiten Mal lädt er
+alles aus dem Speicher und führt es ohne Syntaxbaum aus. Vorher muss sich
+jedes Script, das der Übersetzer kann, speichern lassen und unverändert
+zurückkommen; sonst scheitert die Variante, statt unbemerkt ohne Speicher
+zu laufen. Auch hier gelten dieselben Dateien der erwarteten Fehlschläge.
+Am 27.11.2026 brauchten die Läufe im Release-Build auf vier Kernen gut
+1,5 Minuten für `language/` und knapp 2 Minuten für `built-ins/` mit
+`annexB/built-ins/`, und die Zahlen waren dieselben wie ohne Speicher.
+
+Ein fünfter Job gehört nicht zur Engine: Er hasht die vier großen
 Nachrichten des ACVP für SHA-256 (1, 2, 4 und 8 GiB) mit `mb-crypto`
 (`cargo test --locked --release -p mb-crypto --lib -- --ignored
 acvp_large_data`). Am 27.11.2026 brauchte er dafür gut 70 Sekunden und 1 GiB

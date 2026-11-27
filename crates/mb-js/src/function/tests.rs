@@ -1,4 +1,5 @@
 use super::*;
+use crate::ast::Node;
 use crate::heap::Options;
 use crate::key::WellKnownSymbol;
 use crate::object::{get_own_property, get_prototype_of, own_property_keys};
@@ -319,7 +320,7 @@ fn symbols_name_functions_by_their_description() {
             outer: Rc::default(),
         };
         let shared = agent
-            .add_shared_function(Rc::clone(&unit), template)
+            .add_shared_function(Unit::Ast(Rc::clone(&unit)), template)
             .expect("Speicher");
         let iterator = agent.well_known_symbol(scope, WellKnownSymbol::Iterator);
         let anonymous = agent.new_symbol(scope, None).expect("Speicher");
