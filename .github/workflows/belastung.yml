@@ -4,8 +4,9 @@ name: Belastungstests
 # (Schritt 10 in docs/architektur.md, 12.2) Test262 und GC-lastige Programme
 # im Belastungsmodus des Heaps, siehe docs/m2-test262-ausfuehrung.md,
 # Abschnitt „Nächtliche Belastungstests“; Test262 über den Zwischenspeicher
-# für Bytecode, jede Variante übersetzt und geladen (Schritt 11b,
-# crates/mb-js/src/code_cache.rs); für SHA-256 die großen Nachrichten des ACVP
+# für Bytecode, jede Variante übersetzt und geladen, im Arbeitsspeicher und
+# für language/ auch auf der Platte (Schritte 11b und 11c,
+# crates/mb-js/src/code_cache.rs, crates/mb-storage/src/cache.rs); für SHA-256 die großen Nachrichten des ACVP
 # von 1 bis 8 GiB (Schritt 11a, crates/mb-crypto/src/sha256/tests.rs).
 
 on:
@@ -18,6 +19,8 @@ on:
       - "crates/mb-js/src/heap/**"
       - "crates/mb-js/src/code_cache.rs"
       - "crates/mb-js/src/code_cache/**"
+      - "crates/mb-storage/src/cache.rs"
+      - "crates/mb-storage/src/cache/**"
       - ".github/workflows/belastung.yml"
 
 permissions:
@@ -58,7 +61,7 @@ jobs:
           - part: test262-zwischenspeicher
             package: mb-js
             testdata: true
-            tests: test262_language_through_code_cache test262_built_ins_through_code_cache test262_annex_b_built_ins_through_code_cache
+            tests: test262_language_through_code_cache test262_built_ins_through_code_cache test262_annex_b_built_ins_through_code_cache test262_language_through_disk_cache
           - part: sha256-grosse-nachrichten
             package: mb-crypto
             testdata: true

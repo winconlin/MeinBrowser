@@ -93,14 +93,25 @@ fn run(agent: &mut Agent, realm: RealmId, source: &str) -> String {
 
 /// Ein Speicher, der zählt, wie oft er gefragt wurde und etwas hatte.
 #[derive(Default)]
-struct Counting {
-    inner: MemoryStore,
+struct Counting<S = MemoryStore> {
+    inner: S,
     loads: AtomicUsize,
     hits: AtomicUsize,
     stores: AtomicUsize,
 }
 
-impl CodeStore for Counting {
+impl<S: CodeStore> Counting<S> {
+    fn new(inner: S) -> Counting<S> {
+        Counting {
+            inner,
+            loads: AtomicUsize::new(0),
+            hits: AtomicUsize::new(0),
+            stores: AtomicUsize::new(0),
+        }
+    }
+}
+
+impl<S: CodeStore> CodeStore for Counting<S> {
     fn load(&self, key: &Digest) -> Option<Vec<u8>> {
         self.loads.fetch_add(1, Ordering::Relaxed);
         let bytes = self.inner.load(key);
@@ -147,6 +158,83 @@ fn scripts_run_the_same_from_the_store() {
         assert_eq!(store.stores.load(Ordering::Relaxed), 1, "{source}");
         assert_eq!(store.hits.load(Ordering::Relaxed), 1, "{source}");
     }
+}
+
+/// Ein eigener Ordner je Test (RS-14).
+fn directory(name: &str) -> std::path::PathBuf {
+    let directory =
+        std::env::temp_dir().join(format!("mb-js-code-cache-{}-{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&directory);
+    directory
+}
+
+fn disk(directory: &std::path::Path) -> Arc<Counting<DiskStore>> {
+    let cache = mb_storage::cache::DiskCache::open(directory, 16 << 20).expect("Ordner");
+    Arc::new(Counting::new(DiskStore(cache)))
+}
+
+#[test]
+fn scripts_run_the_same_from_the_disk() {
+    let directory = directory("platte");
+    for source in SCRIPTS {
+        let (mut plain, realm) = agent();
+        let expected = run(&mut plain, realm, source);
+        // Jede Runde mit einem frisch geöffneten Speicher, wie nach einem
+        // Neustart.
+        for round in 0..2 {
+            let store = disk(&directory);
+            let (mut cached, realm) = agent();
+            cached.set_code_store(Some(Arc::<Counting<DiskStore>>::clone(&store)));
+            assert_eq!(
+                run(&mut cached, realm, source),
+                expected,
+                "{source}, Runde {round}"
+            );
+            let hits = store.hits.load(Ordering::Relaxed);
+            let stores = store.stores.load(Ordering::Relaxed);
+            assert_eq!(
+                (hits, stores),
+                if round == 0 { (0, 1) } else { (1, 0) },
+                "{source}"
+            );
+        }
+    }
+    assert_eq!(disk(&directory).inner.0.len(), SCRIPTS.len());
+    std::fs::remove_dir_all(&directory).expect("aufräumen");
+}
+
+#[test]
+fn a_changed_file_on_disk_is_rejected_and_replaced() {
+    let directory = directory("veraendert");
+    let source = "function f(a) { return a * 2; } f(21)";
+    let store = disk(&directory);
+    let (mut agent_a, realm) = agent();
+    agent_a.set_code_store(Some(Arc::<Counting<DiskStore>>::clone(&store)));
+    assert_eq!(run(&mut agent_a, realm, source), "42");
+    let files: Vec<_> = std::fs::read_dir(&directory)
+        .expect("auflisten")
+        .map(|entry| entry.expect("Eintrag").path())
+        .collect();
+    let [file] = files.as_slice() else {
+        panic!("ein Eintrag: {files:?}");
+    };
+    let mut bytes = std::fs::read(file).expect("lesen");
+    // Ein Byte hinter dem Kopf geändert: abgelehnt, neu übersetzt und neu
+    // abgelegt.
+    if let Some(byte) = bytes.last_mut() {
+        *byte ^= 0x40;
+    }
+    std::fs::write(file, &bytes).expect("schreiben");
+    let store = disk(&directory);
+    let (mut agent_b, realm) = agent();
+    agent_b.set_code_store(Some(Arc::<Counting<DiskStore>>::clone(&store)));
+    assert_eq!(run(&mut agent_b, realm, source), "42");
+    assert_eq!(store.hits.load(Ordering::Relaxed), 1);
+    assert_eq!(store.stores.load(Ordering::Relaxed), 1);
+    let restored = std::fs::read(file).expect("lesen");
+    assert_ne!(restored, bytes);
+    assert_eq!(decode(&restored, &units(source)).map(|_| ()), Ok(()));
+    std::fs::remove_dir_all(&directory).expect("aufräumen");
 }
 
 #[test]
@@ -199,6 +287,10 @@ fn the_header_must_match() {
     let mut changed = bytes.clone();
     changed[8] ^= 1;
     assert_eq!(reason(&changed, &source), Err("andere Fassung des Formats"));
+    // Ein Eintrag einer anderen Engine, mit passendem Schlüssel.
+    let mut changed = bytes.clone();
+    changed[12] ^= 1;
+    assert_eq!(reason(&changed, &source), Err("andere Engine"));
     let mut changed = bytes.clone();
     changed.push(0);
     assert_eq!(reason(&changed, &source), Err("Bytes hinter dem Eintrag"));
@@ -218,7 +310,7 @@ fn every_changed_byte_is_rejected_or_harmless() {
     for source in SCRIPTS.iter().take(3) {
         let units = units(source);
         let bytes = encode(&prepare(&units).expect("speicherbar"));
-        let header = MAGIC_LENGTH + 4 + 32;
+        let header = HEADER;
         for index in header..bytes.len() {
             for value in [0, 0xFF, bytes[index] ^ 0x01] {
                 if value == bytes[index] {
@@ -245,9 +337,6 @@ fn every_changed_byte_is_rejected_or_harmless() {
         }
     }
 }
-
-/// Die Länge der Kennung am Anfang.
-const MAGIC_LENGTH: usize = 8;
 
 #[test]
 fn the_verifier_rejects_what_the_compiler_never_emits() {
@@ -430,7 +519,7 @@ fn a_deep_chain_is_rejected_before_it_is_built() {
     // Ein Kopf, dann `levels` leere Stufen, jede in der davor.
     let entry = |levels: usize| {
         let mut bytes = encode(&prepare(&source).expect("speicherbar"));
-        bytes.truncate(8 + 4 + 32);
+        bytes.truncate(HEADER);
         leb(&mut bytes, levels);
         for level in 0..levels {
             bytes.extend_from_slice(&[0, 0]);

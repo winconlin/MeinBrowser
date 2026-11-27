@@ -13,7 +13,11 @@ mb-crypto = { path = "../mb-crypto" }
 mb-json = { path = "../mb-json" }
 mb-unicode = { path = "../mb-unicode" }
 
+[build-dependencies]
+mb-crypto = { path = "../mb-crypto" }
+
 [dev-dependencies]
+mb-storage = { path = "../mb-storage" }
 testdata = { path = "../../tools/testdata" }
 
 [lints]
