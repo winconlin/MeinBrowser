@@ -17,9 +17,11 @@
 //!   ihn die Angaben zur Funktion verlangen. Befehle, die nur im Code von
 //!   Modulen oder `eval` vorkommen, gibt es nicht.
 //! - Jede Funktion und Klasse, die der Code nennt, steht im Eintrag, und
-//!   ihr Quelltext liegt im Quelltext des Scripts.
+//!   ihr Quelltext liegt im Quelltext des Scripts. Was eine Funktion vom
+//!   umgebenden Code sieht, hat höchstens so viele Stufen, wie der
+//!   Übersetzer anlegen kann.
 
-use super::{CompiledScript, Rejected};
+use super::{CompiledScript, MAX_LEVELS, Rejected};
 use crate::ast::FunctionKind;
 use crate::bytecode::{Code, Constant, Instruction, Op, Operand};
 use crate::compiler::CompileError;
@@ -149,7 +151,13 @@ fn verify_code(script: &CompiledScript, code: &Code, owner: Owner) -> Result<(),
     // kein Befehl liest.
     for constant in code.constants() {
         let known = match constant {
-            Constant::Function(template) => script.function(template.function).is_some(),
+            Constant::Function(template) => {
+                check(
+                    template.outer.depth() <= MAX_LEVELS,
+                    "Stufen zu tief verschachtelt",
+                )?;
+                script.function(template.function).is_some()
+            }
             Constant::DefaultConstructor { class, .. } => script.class_text(*class).is_some(),
             Constant::EvalInstantiation(_) | Constant::EvalBinding(_) => false,
             _ => true,

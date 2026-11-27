@@ -376,3 +376,73 @@ fn the_key_covers_format_and_every_unit() {
     changed[12_345] ^= 1;
     assert_ne!(key(&long), key(&changed));
 }
+
+/// Die längste Kette in den Konstanten des Eintrags.
+fn deepest_chain(script: &CompiledScript) -> usize {
+    let functions = script
+        .functions
+        .iter()
+        .filter_map(|(_, function)| function.code.as_deref().ok());
+    std::iter::once(&script.script.code)
+        .chain(functions)
+        .flat_map(Code::constants)
+        .filter_map(|constant| match constant {
+            Constant::Function(template) => Some(template.outer.depth()),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+#[test]
+fn the_deepest_nesting_loads_back() {
+    // Je Funktion zwei Ebenen des Parsers, die tiefsten Formen, die es gibt.
+    for (open, middle, close) in [("a => ", "1", ""), ("class C { static { ", "1;", " } }")] {
+        let deepest = (1..=crate::parser::MAX_DEPTH as usize)
+            .rev()
+            .map(|depth| {
+                units(&format!(
+                    "{}{middle}{}",
+                    open.repeat(depth),
+                    close.repeat(depth)
+                ))
+            })
+            .find(|source| parse_script(source).is_ok())
+            .expect("eine Tiefe passt");
+        let prepared = prepare(&deepest).expect("speicherbar");
+        let depth = deepest_chain(&prepared);
+        assert!((100..=MAX_LEVELS).contains(&depth), "{depth} Stufen");
+        let loaded = decode(&encode(&prepared), &deepest).expect("lädt");
+        assert_eq!(loaded, prepared);
+    }
+}
+
+#[test]
+fn a_deep_chain_is_rejected_before_it_is_built() {
+    fn leb(out: &mut Vec<u8>, mut value: usize) {
+        while value >= 0x80 {
+            out.push(u8::try_from(value & 0x7F).expect("sieben Bits") | 0x80);
+            value >>= 7;
+        }
+        out.push(u8::try_from(value).expect("sieben Bits"));
+    }
+    let source = units("1");
+    // Ein Kopf, dann `levels` leere Stufen, jede in der davor.
+    let entry = |levels: usize| {
+        let mut bytes = encode(&prepare(&source).expect("speicherbar"));
+        bytes.truncate(8 + 4 + 32);
+        leb(&mut bytes, levels);
+        for level in 0..levels {
+            bytes.extend_from_slice(&[0, 0]);
+            leb(&mut bytes, level);
+        }
+        bytes
+    };
+    let reason = |bytes: &[u8]| decode(bytes, &source).map(|_| ()).map_err(|e| e.reason());
+    assert_eq!(reason(&entry(MAX_LEVELS)), Err("Eintrag zu kurz"));
+    assert_eq!(
+        reason(&entry(MAX_LEVELS + 1)),
+        Err("Stufen zu tief verschachtelt")
+    );
+    assert_eq!(reason(&entry(100_000)), Err("Stufen zu tief verschachtelt"));
+}

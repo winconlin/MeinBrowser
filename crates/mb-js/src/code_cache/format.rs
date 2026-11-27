@@ -13,7 +13,8 @@
 //! sich einen Eintrag.
 //!
 //! Der Leser prüft nur die Form: dass jede Zahl passt, jede Art bekannt ist,
-//! Namen in Tabellen aufsteigen und nichts übrig bleibt. Ob der Bytecode
+//! Namen in Tabellen aufsteigen, keine Kette tiefer ist, als der Übersetzer
+//! sie anlegt, und nichts übrig bleibt. Ob der Bytecode
 //! stimmt, prüft danach `verify.rs`.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -21,7 +22,7 @@ use std::rc::Rc;
 
 use mb_crypto::Digest;
 
-use super::{CompiledFunction, CompiledScript, FORMAT, Rejected};
+use super::{CompiledFunction, CompiledScript, FORMAT, MAX_LEVELS, Rejected};
 use crate::ast::{Atom, ClassId, FunctionId, FunctionKind};
 use crate::bigint::BigInt;
 use crate::bytecode::{
@@ -426,8 +427,17 @@ pub(super) fn decode(
     }
     let count = reader.count()?;
     let mut table: Vec<Rc<Enclosing>> = Vec::new();
+    // Die Zahl der Stufen jeder Kette in der Tabelle.
+    let mut depths: Vec<usize> = Vec::new();
     for _ in 0..count {
-        let enclosing = reader.enclosing_entry(&table)?;
+        let (enclosing, parent) = reader.enclosing_entry(&table)?;
+        let depth = parent
+            .and_then(|parent| depths.get(parent))
+            .map_or(1, |depth| depth.saturating_add(1));
+        if depth > MAX_LEVELS {
+            return reject("Stufen zu tief verschachtelt");
+        }
+        depths.push(depth);
         table.push(Rc::new(enclosing));
     }
     let script = reader.script(&table)?;
@@ -580,8 +590,12 @@ impl<'b> Reader<'b> {
         }
     }
 
-    /// Ein Eintrag der Tabelle; seine äußere Stufe steht schon in `table`.
-    fn enclosing_entry(&mut self, table: &[Rc<Enclosing>]) -> Result<Enclosing, Rejected> {
+    /// Ein Eintrag der Tabelle mit der Stelle seiner äußeren Stufe, die
+    /// schon in `table` steht.
+    fn enclosing_entry(
+        &mut self,
+        table: &[Rc<Enclosing>],
+    ) -> Result<(Enclosing, Option<usize>), Rejected> {
         let count = self.count()?;
         let mut contexts = Vec::new();
         for _ in 0..count {
@@ -598,18 +612,19 @@ impl<'b> Reader<'b> {
             last = Some(atom);
             registers.insert(atom);
         }
-        let parent = match self.usize()? {
-            0 => None,
+        let (parent, index) = match self.usize()? {
+            0 => (None, None),
             index => match table.get(index - 1) {
-                Some(parent) => Some(Rc::clone(parent)),
+                Some(parent) => (Some(Rc::clone(parent)), Some(index - 1)),
                 None => return reject("äußere Stufe nicht davor"),
             },
         };
-        Ok(Enclosing {
+        let enclosing = Enclosing {
             contexts,
             registers,
             parent,
-        })
+        };
+        Ok((enclosing, index))
     }
 
     fn function_scope(&mut self) -> Result<Option<FunctionScope>, Rejected> {

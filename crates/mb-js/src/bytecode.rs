@@ -929,6 +929,33 @@ pub struct Enclosing {
     pub(crate) parent: Option<Rc<Enclosing>>,
 }
 
+impl Enclosing {
+    /// Wie viele Stufen die Kette hat, diese mitgezählt.
+    pub(crate) fn depth(&self) -> usize {
+        let mut depth = 1_usize;
+        let mut current = self.parent.as_deref();
+        while let Some(level) = current {
+            depth = depth.saturating_add(1);
+            current = level.parent.as_deref();
+        }
+        depth
+    }
+}
+
+/// Baut die Kette ohne Rekursion ab (RS-8): Jede Stufe, die nur noch hier
+/// hängt, gibt ihre äußere vorher ab.
+impl Drop for Enclosing {
+    fn drop(&mut self) {
+        let mut next = self.parent.take();
+        while let Some(level) = next {
+            match Rc::try_unwrap(level) {
+                Ok(mut level) => next = level.parent.take(),
+                Err(_) => break,
+            }
+        }
+    }
+}
+
 /// Die Plätze eines Kontexts.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct ContextLayout {

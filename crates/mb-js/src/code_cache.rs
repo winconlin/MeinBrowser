@@ -65,6 +65,13 @@ pub use store::{CodeStore, MemoryStore};
 /// steigen.
 pub const FORMAT: u32 = 1;
 
+/// Wie viele Stufen die Kette einer Funktion im Eintrag höchstens hat. Der
+/// Übersetzer legt je umgebende Funktion höchstens eine an, dazu eine für
+/// das Script, und der Parser verschachtelt Funktionen höchstens
+/// [`MAX_DEPTH`](crate::parser::MAX_DEPTH) tief. Tiefere Ketten lehnt der
+/// Leser ab, bevor er sie aufbaut.
+const MAX_LEVELS: usize = crate::parser::MAX_DEPTH as usize + 1;
+
 /// Was vor dem Quelltext in den Schlüssel eingeht.
 const DOMAIN: &[u8] = b"MeinBrowser mb-js Bytecode\0";
 

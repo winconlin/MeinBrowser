@@ -253,3 +253,39 @@ fn handlers_are_found_from_the_inside_out() {
         "{code}"
     );
 }
+
+#[test]
+fn long_chains_drop_without_recursion() {
+    // Auf einem kleinen Stapel: Ein rekursiver Abbau bräuchte je Stufe
+    // einen Rahmen.
+    std::thread::Builder::new()
+        .stack_size(64 << 10)
+        .spawn(|| {
+            let chain = |levels: usize| {
+                let mut chain = Rc::new(Enclosing::default());
+                for _ in 1..levels {
+                    chain = Rc::new(Enclosing {
+                        contexts: Vec::new(),
+                        registers: BTreeSet::new(),
+                        parent: Some(chain),
+                    });
+                }
+                chain
+            };
+            let long = chain(1_000_000);
+            assert_eq!(long.depth(), 1_000_000);
+            drop(long);
+            // Was noch woanders hängt, bleibt ganz.
+            let long = chain(200_000);
+            let mut middle = &long;
+            for _ in 0..100_000 {
+                middle = middle.parent.as_ref().expect("äußere Stufe");
+            }
+            let middle = Rc::clone(middle);
+            drop(long);
+            assert_eq!(middle.depth(), 100_000);
+        })
+        .expect("Faden")
+        .join()
+        .expect("kein Überlauf");
+}
