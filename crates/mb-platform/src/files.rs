@@ -23,8 +23,13 @@
 //! Die Prüfung am Handle bleibt nötig; eine lexikalische Prüfung verhindert
 //! keine Rennen mit Verweisen oder Reparse Points im Dateisystem.
 
+mod directory;
 #[cfg(any(windows, test))]
 mod windows_path;
+
+pub use directory::{
+    FileEntry, TEMPORARY_SUFFIX, create_directory, regular_files, remove, replace, set_modified,
+};
 
 use std::fs::{File, Metadata};
 use std::io::{self, Read};
