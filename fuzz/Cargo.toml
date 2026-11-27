@@ -16,6 +16,7 @@ members = ["."]
 libfuzzer-sys = "=0.4.13"
 mb-base = { path = "../crates/mb-base" }
 mb-compress = { path = "../crates/mb-compress" }
+mb-crypto = { path = "../crates/mb-crypto" }
 mb-css = { path = "../crates/mb-css" }
 mb-encoding = { path = "../crates/mb-encoding" }
 mb-html = { path = "../crates/mb-html" }
@@ -187,6 +188,13 @@ bench = false
 [[bin]]
 name = "atomics"
 path = "fuzz_targets/atomics.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sha256"
+path = "fuzz_targets/sha256.rs"
 test = false
 doc = false
 bench = false

@@ -14,7 +14,7 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOLCHAIN = "nightly-2026-10-27"
-TARGETS = ("html", "css", "url", "xml", "png", "gif", "deflate", "font", "json", "encoding", "unicode", "page", "js", "js-runtime", "js-execute", "webidl", "regexp", "bigint", "date", "arraybuffer", "weak", "atomics")
+TARGETS = ("html", "css", "url", "xml", "png", "gif", "deflate", "font", "json", "encoding", "unicode", "page", "js", "js-runtime", "js-execute", "webidl", "regexp", "bigint", "date", "arraybuffer", "weak", "atomics", "sha256")
 WATCHDOG_GRACE = 120
 STAT = re.compile(r"^stat::(number_of_executed_units|average_exec_per_sec|peak_rss_mb):\s*(\d+)\s*$")
 

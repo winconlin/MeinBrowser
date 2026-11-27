@@ -444,6 +444,15 @@ def main():
                                            (10, 4 | 0x30, 2, 8, 0), (10, 4 | 0x10, 3, 0, 1), (10, 0x44, 0, 8, 0),
                                            (11, 4, 2, 0x10, 0), (11, 6, 1, 8, 0), (11, 0x44, 2, 8, 0),
                                            (11, 2, 0, 8, 0), (10, 4 | 0x10, 0x87, 8, 0), (11, 4, 0x85, 0x40, 0)])
+    def sha256(name, control, message):
+        # The first byte splits the message for update(): bits 0-1 the kind, bits 2-7 a fixed
+        # length (src/sha256.rs).
+        write("sha256", name, bytes([control]) + message)
+    sha256("empty", 0, b"")
+    sha256("abc", 3, b"abc")
+    sha256("padding-edge", 1 | 54 << 2, bytes(range(56)))
+    sha256("two-blocks", 2, b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq" * 3)
+    sha256("blocks", 1 | 63 << 2, bytes(index * 37 % 256 for index in range(1000)))
     part = b"\x1f\x1f"  # PART_SEPARATOR in src/lib.rs
     write("page", "document", "<!doctype html><style>@media (max-width: 400px) { p { margin: 0 } }"
           " p { border: 2px dashed red; padding: 4px; font-style: italic }"
