@@ -37,10 +37,9 @@ pub struct FileEntry {
     pub modified: SystemTime,
 }
 
-/// So enden die Namen der Dateien, die [`replace`] beim Schreiben anlegt.
-/// Sie beginnen mit einem Punkt; bleibt eine nach einem Absturz liegen,
-/// darf, wer den Ordner verwaltet, sie entfernen.
-pub const TEMPORARY_SUFFIX: &str = ".tmp";
+/// So enden die Namen der Dateien, die [`replace`] beim Schreiben anlegt:
+/// `.<Name>.<Prozess>.<Zähler>.tmp`, siehe [`replaced_name`].
+const TEMPORARY_SUFFIX: &str = ".tmp";
 
 /// Zählt die Dateien, die dieser Prozess beim Ersetzen anlegt.
 static NEXT_TEMPORARY: AtomicU64 = AtomicU64::new(0);
@@ -123,6 +122,24 @@ pub fn regular_files(directory: &Path) -> io::Result<Vec<FileEntry>> {
         });
     }
     Ok(files)
+}
+
+/// Wenn `name` eine Datei ist, die [`replace`] beim Schreiben anlegt, der
+/// Name der Datei, die sie ersetzen sollte. Bleibt eine solche Datei nach
+/// einem Absturz liegen, darf, wer den Ordner verwaltet, sie entfernen.
+/// Andere Namen, auch ähnliche, ergeben `None`.
+pub fn replaced_name(name: &OsStr) -> Option<&OsStr> {
+    let number = |part: &str| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit());
+    let rest = name
+        .to_str()?
+        .strip_prefix('.')?
+        .strip_suffix(TEMPORARY_SUFFIX)?;
+    let (rest, counter) = rest.rsplit_once('.')?;
+    let (target, process) = rest.rsplit_once('.')?;
+    if !number(counter) || !number(process) {
+        return None;
+    }
+    single(OsStr::new(target)).ok()
 }
 
 /// Schreibt `bytes` als Datei `name` in den Ordner `directory` und ersetzt

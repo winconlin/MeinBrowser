@@ -45,13 +45,22 @@ pub struct DiskCache {
 
 #[derive(Debug, Default)]
 struct Entries {
-    /// Nach dem Schlüssel: wann der Eintrag zuletzt gebraucht wurde und
-    /// wie viele Bytes er hat.
-    by_key: BTreeMap<Key, (u64, u64)>,
+    by_key: BTreeMap<Key, Entry>,
     /// Die Schlüssel nach dem Zeitpunkt, also der älteste zuerst.
     by_use: BTreeMap<u64, Key>,
     next: u64,
     bytes: u64,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Entry {
+    /// Wann der Eintrag zuletzt gebraucht wurde.
+    used: u64,
+    /// Wann seine Datei geschrieben oder beim Öffnen gefunden wurde. Ein
+    /// Faden, der ohne Sperre liest, erkennt daran, ob die Datei, die er
+    /// nicht lesen konnte, noch die des Eintrags ist.
+    written: u64,
+    len: u64,
 }
 
 impl Entries {
@@ -61,22 +70,54 @@ impl Entries {
         now
     }
 
-    /// Nimmt `key` mit `len` Bytes als zuletzt gebraucht auf.
+    /// Nimmt `key` mit einer neuen Datei mit `len` Bytes als zuletzt
+    /// gebraucht auf.
     fn insert(&mut self, key: Key, len: u64) {
         self.remove(&key);
         let now = self.touch();
-        self.by_key.insert(key, (now, len));
+        self.by_key.insert(
+            key,
+            Entry {
+                used: now,
+                written: now,
+                len,
+            },
+        );
         self.by_use.insert(now, key);
         self.bytes = self.bytes.saturating_add(len);
     }
 
+    /// Merkt sich `key` als zuletzt gebraucht.
+    fn refresh(&mut self, key: &Key) {
+        let now = self.touch();
+        let Some(entry) = self.by_key.get_mut(key) else {
+            return;
+        };
+        let before = std::mem::replace(&mut entry.used, now);
+        self.by_use.remove(&before);
+        self.by_use.insert(now, *key);
+    }
+
     fn remove(&mut self, key: &Key) -> bool {
-        let Some((used, len)) = self.by_key.remove(key) else {
+        let Some(entry) = self.by_key.remove(key) else {
             return false;
         };
-        self.by_use.remove(&used);
-        self.bytes = self.bytes.saturating_sub(len);
+        self.by_use.remove(&entry.used);
+        self.bytes = self.bytes.saturating_sub(entry.len);
         true
+    }
+
+    /// Vergisst `key`, wenn seine Datei noch die ist, die zum Zeitpunkt
+    /// `written` geschrieben wurde. Eine neuere hat ein anderer Faden
+    /// abgelegt, und sie bleibt.
+    fn forget(&mut self, key: &Key, written: u64) {
+        if self
+            .by_key
+            .get(key)
+            .is_some_and(|entry| entry.written == written)
+        {
+            self.remove(key);
+        }
     }
 
     /// Der Eintrag, der am längsten nicht gebraucht wurde.
@@ -119,12 +160,7 @@ fn key_of(name: &OsStr) -> Option<Key> {
 /// Ob die Datei der Rest eines Eintrags ist, den `mb_platform` beim
 /// Ersetzen noch nicht an seinen Platz gesetzt hatte.
 fn is_leftover(name: &OsStr) -> bool {
-    name.to_str().is_some_and(|name| {
-        name.strip_prefix('.')
-            .and_then(|rest| rest.strip_suffix(files::TEMPORARY_SUFFIX))
-            .and_then(|rest| rest.get(..64))
-            .is_some_and(|key| key_of(OsStr::new(key)).is_some())
-    })
+    files::replaced_name(name).is_some_and(|name| key_of(name).is_some())
 }
 
 impl DiskCache {
@@ -211,26 +247,20 @@ impl DiskCache {
 
     /// Der Eintrag zum Schlüssel, wenn es einen gibt.
     pub fn load(&self, key: &Key) -> Option<Vec<u8>> {
-        if !self.lock().by_key.contains_key(key) {
-            return None;
-        }
+        let written = self.lock().by_key.get(key)?.written;
         // Gelesen wird ohne Sperre; ersetzt ein anderer Faden den Eintrag
         // gerade, liefert das den alten oder den neuen ganz.
         let path = self.path(key);
         match files::read_regular(&path, self.limit) {
             Ok(bytes) => {
-                let mut entries = self.lock();
-                if let Some(&(_, len)) = entries.by_key.get(key) {
-                    entries.insert(*key, len);
-                }
-                drop(entries);
+                self.lock().refresh(key);
                 // Damit die Reihenfolge einen Neustart übersteht. Gelingt
                 // es nicht, gilt nach dem Neustart die alte Zeit.
                 let _ = files::set_modified(&path, SystemTime::now());
                 Some(bytes)
             }
             Err(_) => {
-                self.lock().remove(key);
+                self.lock().forget(key, written);
                 None
             }
         }
