@@ -290,7 +290,7 @@ fn runtime_negative_requires_the_exact_error_and_phase() {
         "throw new Error('TypeError')",
         "assert.sameValue(1, 2)",
         "let = ;",
-        "{ using a = null; }",
+        "(() => { { function arguments() {} } })();",
         "while (true) {}",
     ] {
         assert_ne!(run_negative(source), wanted, "{source}");
@@ -299,8 +299,12 @@ fn runtime_negative_requires_the_exact_error_and_phase() {
         ordinary("while (true) {}"),
         Outcome::Host(Abrupt::Exhausted(crate::agent::Exhausted::Steps))
     );
-    // `using` kann der Übersetzer noch nicht.
-    assert_eq!(ordinary("{ using a = null; }"), Outcome::Unsupported);
+    // Eine Funktion namens `arguments` in einem Block einer Pfeilfunktion
+    // kann der Übersetzer nicht (Anhang B.3.2.1).
+    assert_eq!(
+        ordinary("(() => { { function arguments() {} } })();"),
+        Outcome::Unsupported
+    );
 }
 
 /// `type: EvalError` gilt nur für ein Fehlerobjekt mit %EvalError.prototype%
@@ -573,8 +577,13 @@ fn modules_run_once_and_load_their_files_from_the_test_directory() {
         ("bad_FIXTURE.js", "0++;"),
         ("value_FIXTURE.json", "{\"a\": [1, 2]}"),
         ("broken_FIXTURE.json", "{a: 1}"),
-        // `using` kann der Übersetzer noch nicht.
-        ("using_FIXTURE.js", "{ using a = null; }"),
+        // Eine Funktion namens `arguments` in einem Block einer
+        // Pfeilfunktion kann der Übersetzer nicht (Anhang B.3.2.1); in
+        // einem Modul geht das nur in Code eines indirekten `eval`.
+        (
+            "unsupported_FIXTURE.js",
+            "(0, eval)('(() => { { function arguments() {} } })()');",
+        ),
     ] {
         std::fs::write(directory.join(name), text).expect("Hilfsdatei");
     }
@@ -633,7 +642,10 @@ fn modules_run_once_and_load_their_files_from_the_test_directory() {
                 "await Promise.reject(new RangeError());",
                 Outcome::Error(ErrorKind::RangeError),
             ),
-            ("await import('./using_FIXTURE.js');", Outcome::Unsupported),
+            (
+                "await import('./unsupported_FIXTURE.js');",
+                Outcome::Unsupported,
+            ),
             ("export {", Outcome::Syntax),
         ] {
             assert_eq!(run_module(source, stress), wanted, "{source}");
@@ -655,7 +667,7 @@ fn modules_run_once_and_load_their_files_from_the_test_directory() {
                 Outcome::Normal,
             ),
             (
-                "import('./using_FIXTURE.js').then($DONE, () => $DONE());",
+                "import('./unsupported_FIXTURE.js').then($DONE, () => $DONE());",
                 Outcome::Unsupported,
             ),
         ] {

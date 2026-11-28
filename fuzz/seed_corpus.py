@@ -196,6 +196,12 @@ def execution_seeds():
           "a: b: function f(){return g;} { l: function g(){} } f();"
           " try { f() = 1; } catch (e) {} try { for (f() of [1]) ; } catch (e) {}"
           " (function(){ eval('{ function h(){return h;} }'); return h(); })();")
+    write("js-execute", "source-using",
+          "var l=[]; function r(n){return {[Symbol.dispose](){l.push(n);}};}"
+          " { using a=r(1), b=null; for (using c of [r(2)]) ; for (using d=r(3); ; ) break;"
+          " try { using e={[Symbol.dispose](){throw 4;}}; throw 5; } catch (x) { l.push(x.suppressed); } }"
+          " try { { using f=1; } } catch (x) {} (function(){ using g=r(6); return 7; })();"
+          " (async function(){ { await using h=null, i=r(8); } for (await using j of [r(9)]) ; })();")
     write("js-execute", "source-syntax-error", "let = ;")
     write("js-execute", "source-widths", "127;128;32768;70000;")
     write("js-execute", "source-constants", "".join(f"{value}.25;" for value in range(300)))
@@ -482,6 +488,11 @@ def main():
     code_cache("annex-b-labels-and-call-targets", "l: function f() { return 1; }"
                " var r = []; { m: function g() { return 2; } r.push(g()); }"
                " try { f()++; } catch (e) { r.push(e.name); } r.push(f(), typeof g); r.join()")
+    code_cache("using", "var l = []; function r(n) { return { [Symbol.dispose]() { l.push(n); } }; }"
+               " async function f() { await using x = null, y = r(9); }"
+               " { using a = r(1), b = null; for (using c of [r(2)]) ;"
+               " try { using d = { [Symbol.dispose]() { throw 3; } }; throw 4; }"
+               " catch (e) { l.push(e.error, e.suppressed); } } l.join()")
     code_cache("changed-constants", "var g = function (a) { return [a, typeof a]; }; g(1)",
                bytes([20, 0, 0, 40, 0, 0xFF, 60, 0, 1]))
     code_cache("changed-code", "function f(a) { return a + 1; } f(1)", bytes([5, 0, 0x7F, 9, 0, 0x80]))
@@ -498,6 +509,8 @@ def main():
               " function g(o) { with (o) { return function () { return x; }; } }")
     pre_check("generators", 0x70, "function* g() { yield function* () { yield 1; }; }"
               " async function* h() { for await (const x of y) { yield () => x; } }")
+    pre_check("using", 0x70, "function f(a) { using b = a; { using c = null; } for (using d of a) ; }"
+              " async function g() { await using e = null; for (await using h of []) { using i = h; } }")
     pre_check("early-error", 0x70, "function f() { 'use strict'; with (a) {} }")
     pre_check("spread-after-body", 0x70, "function f() { [...(a), ]; } [...b] = c;")
     pre_check("module", 0x71, "import { a } from 'x'; export default function () { return () => a + import.meta.url; }"

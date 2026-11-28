@@ -45,6 +45,7 @@ mod boolean;
 mod collection;
 mod data_view;
 mod date;
+mod disposable;
 mod error;
 mod function;
 mod generator;
@@ -76,6 +77,8 @@ use crate::operations::define_property_or_throw;
 use crate::realm::{Intrinsic, RealmId};
 use crate::value::Value;
 
+pub(crate) use disposable::create_disposable_resource;
+pub(crate) use error::suppressed_error_create;
 pub(crate) use function::HAS_INSTANCE as FUNCTION_PROTOTYPE_HAS_INSTANCE;
 pub(crate) use function::PROTOTYPE as FUNCTION_PROTOTYPE;
 pub(crate) use math::random_seed;

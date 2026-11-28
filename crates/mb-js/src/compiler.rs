@@ -60,6 +60,15 @@
 //! lexikalischen. Nur setzt sie im Block nie die var-Bindung nach Anhang
 //! B.3.2.
 //!
+//! `using` und `await using` binden wie `const`. Jede Ressource hat zwei
+//! Register, ihre Methode zum Freigeben und ihren Wert
+//! ([`Op::AddDisposableResource`]). Ein Block, ein Rumpf, ein Modul oder
+//! eine Schleife mit `using` ist ein Bereich wie `try` mit `finally`
+//! ([`Compiler::begin_disposal`]): Jeder Weg hinaus gibt erst die Ressourcen
+//! in umgekehrter Reihenfolge frei, und ein Fehler dabei kommt mit
+//! [`Op::DisposeError`] zum Abschluss. Bei `for`-`of` hat jeder Durchlauf
+//! seinen eigenen Bereich, bei `for` die ganze Schleife einen.
+//!
 //! Klassen: Eine Klasse hat einen eigenen Bereich mit ihrem Namen als
 //! Konstante, die bis zum Ende der Klasse in der TDZ bleibt (classEnv). Darin
 //! wertet sie die Oberklasse aus, dann legt [`Op::CreateClass`] Konstruktor
@@ -197,7 +206,7 @@ use crate::bigint::BigInt;
 use crate::bytecode::{
     BindingKind, Code, Constant, ContextBinding, ContextLayout, DynamicName, Emitter, Enclosing,
     EvalSite, Extension, Fallback, FunctionScope, FunctionTemplate, HandlerKind, Label, Op,
-    TemplateStrings, TooLarge,
+    THROW_COMPLETION, TemplateStrings, TooLarge,
 };
 use crate::number;
 use crate::value::Value;
@@ -248,7 +257,7 @@ const COMPLETION: i64 = 1;
 /// Wie es nach `finally` weitergeht: normal hinter `try`, mit der Ausnahme
 /// wieder werfen oder ab [`FIRST_EXIT`] auf einem der Wege hinaus.
 const NORMAL: i64 = 0;
-const THROW: i64 = 1;
+const THROW: i64 = THROW_COMPLETION as i64;
 const FIRST_EXIT: usize = 2;
 
 /// Wie eine Funktionsdeklaration in einem Block nach Anhang B.3.2 bei ihrer
@@ -386,6 +395,13 @@ enum ForTarget {
     Lexical(NodeId),
     /// `var` mit einem Bezeichner oder Muster.
     Var(NodeId),
+    /// `using` oder, mit `asynchronous`, `await using` mit dem Deklarator
+    /// und seinem Bezeichner.
+    Using {
+        declarator: NodeId,
+        target: NodeId,
+        asynchronous: bool,
+    },
     /// Ein Ausdruck oder ein Muster als Ziel einer Zuweisung.
     Expression,
 }
@@ -454,6 +470,27 @@ impl Target {
             exits: Vec::new(),
         }
     }
+}
+
+/// Eine Ressource aus `using` oder `await using`: das erste ihrer beiden
+/// Register für die Methode und den Wert ([`Op::AddDisposableResource`]) und
+/// ob sie mit Await freigegeben wird.
+#[derive(Clone, Copy, Debug)]
+struct Resource {
+    register: u32,
+    asynchronous: bool,
+}
+
+/// Ein Bereich mit Ressourcen, die an seinem Ende frei werden
+/// ([`Compiler::begin_disposal`]): seine Ressourcen in der Reihenfolge des
+/// Quelltexts, das Register mit dem Kontext zu Beginn, das erste der beiden
+/// Register für die Art und den Wert des Abschlusses und wo er beginnt.
+#[derive(Debug)]
+struct Disposal {
+    resources: Vec<(NodeId, Resource)>,
+    context: i64,
+    kind: u32,
+    start: usize,
 }
 
 /// Übersetzt eine Schleife oder ein `switch` mit seinem Ziel
@@ -665,6 +702,9 @@ struct Compiler<'a> {
     /// Stelle hat ihr eigenes Template-Objekt (Abschnitt 13.2.8.4), auch
     /// wenn ihre Teile denen einer anderen gleichen.
     template_sites: BTreeMap<NodeId, i64>,
+    /// Die Ressourcen der Deklaratoren von `using` und `await using` in den
+    /// Bereichen um die aktuelle Stelle ([`Compiler::begin_disposal`]).
+    resources: BTreeMap<NodeId, Resource>,
 }
 
 /// Übersetzt ein Script (Abschnitt 16.1).
@@ -856,8 +896,14 @@ pub fn compile_module(ast: &Ast) -> Result<Module> {
         bindings.push(ModuleBinding { name, slot, init });
     }
     let start = compiler.emitter.offset();
+    // ExecuteModule: DisposeResources mit der Umgebung des Moduls nach
+    // seinen Anweisungen.
+    let disposal = compiler.begin_disposal(&compiler.using_declarators(body))?;
     for &item in body {
         compiler.module_item(item, default_slot)?;
+    }
+    if let Some(disposal) = disposal {
+        compiler.end_disposal(disposal)?;
     }
     compiler.emit(Op::LdaUndefined, &[])?;
     let async_state = compiler.async_state;
@@ -1582,8 +1628,14 @@ pub fn compile_function(ast: &Ast, template: &FunctionTemplate) -> Result<Code> 
         compiler.tail_calls.clear();
         compiler.emit_return()?;
     } else {
+        // EvaluateFunctionBody und die übrigen Rümpfe: DisposeResources mit
+        // der Umgebung des Rumpfs nach seinen Anweisungen.
+        let disposal = compiler.begin_disposal(&compiler.using_declarators(body))?;
         for &item in body {
             compiler.top_level_item(item)?;
+        }
+        if let Some(disposal) = disposal {
+            compiler.end_disposal(disposal)?;
         }
         compiler.emit(Op::LdaUndefined, &[])?;
         compiler.emit_return()?;
@@ -1715,6 +1767,7 @@ impl<'a> Compiler<'a> {
             strict_class: false,
             function_scope: None,
             template_sites: BTreeMap::new(),
+            resources: BTreeMap::new(),
         }
     }
 
@@ -2005,8 +2058,14 @@ impl<'a> Compiler<'a> {
     fn lexical_declarations(&self, item: NodeId) -> Result<Vec<(Atom, bool, usize)>> {
         let mut bindings = Vec::new();
         match *self.ast.node(item) {
+            // `using` und `await using` binden wie `const`
+            // (IsConstantDeclaration).
             Node::Variables {
-                kind: kind @ (DeclarationKind::Let | DeclarationKind::Const),
+                kind:
+                    kind @ (DeclarationKind::Let
+                    | DeclarationKind::Const
+                    | DeclarationKind::Using
+                    | DeclarationKind::AwaitUsing),
                 declarators,
             } => {
                 for &declarator in self.ast.list(declarators) {
@@ -2017,7 +2076,7 @@ impl<'a> Compiler<'a> {
                     self.bound_names(target, &mut names);
                     let end = self.ast.range(declarator).end;
                     for atom in names {
-                        bindings.push((atom, kind == DeclarationKind::Const, end));
+                        bindings.push((atom, kind != DeclarationKind::Let, end));
                     }
                 }
             }
@@ -2806,8 +2865,12 @@ impl<'a> Compiler<'a> {
                 let ast = self.ast;
                 let items = ast.list(list);
                 let mark = self.enter_block(items, false)?;
+                let disposal = self.begin_disposal(&self.using_declarators(items))?;
                 for &item in items {
                     self.statement(item)?;
+                }
+                if let Some(disposal) = disposal {
+                    self.end_disposal(disposal)?;
                 }
                 self.leave_block(mark)
             }
@@ -3013,8 +3076,23 @@ impl<'a> Compiler<'a> {
                         }
                     }
                 }
+                // InitializeReferencedBinding mit dem Hinweis
+                // ~sync-dispose~ oder ~async-dispose~: erst
+                // AddDisposableResource, dann die Bindung. Wirft das, bleibt
+                // sie in der TDZ.
                 DeclarationKind::Using | DeclarationKind::AwaitUsing => {
-                    return Err(self.unsupported(declarator));
+                    let (Some(init), Some(resource)) = (init, self.resources.get(&declarator))
+                    else {
+                        return Err(self.unsupported(declarator));
+                    };
+                    let resource = *resource;
+                    self.named_expression(init, units)?;
+                    self.position(declarator)?;
+                    self.add_disposable_resource(resource)?;
+                    let binding = self
+                        .lookup(atom)
+                        .ok_or_else(|| self.unsupported(declarator))?;
+                    self.store_location(binding.location)?;
                 }
             }
         }
@@ -3170,9 +3248,13 @@ impl<'a> Compiler<'a> {
             return Err(self.unsupported(node));
         };
         let mut per_iteration = false;
+        let mut disposal = None;
         let mark = match init {
             Some(init) if matches!(self.ast.node(init), Node::Variables { .. }) => {
                 let mark = self.enter_block(&[init], false)?;
+                // Mit `using` im Kopf werden die Ressourcen nach der ganzen
+                // Schleife frei, oder gleich, wenn der Kopf wirft.
+                disposal = self.begin_disposal(&self.using_declarators(&[init]))?;
                 self.statement(init)?;
                 per_iteration = matches!(
                     self.ast.node(init),
@@ -3218,6 +3300,9 @@ impl<'a> Compiler<'a> {
             self.bind(exit)?;
         }
         self.bind_all(target.breaks)?;
+        if let Some(disposal) = disposal {
+            self.end_disposal(disposal)?;
+        }
         if let Some(mark) = mark {
             self.leave_block(mark)?;
         }
@@ -3259,7 +3344,7 @@ impl<'a> Compiler<'a> {
         }
         let lhs = self.for_of_target(left)?;
         let mark = self.next_register;
-        if let ForTarget::Lexical(_) = lhs {
+        if let ForTarget::Lexical(_) | ForTarget::Using { .. } = lhs {
             let tdz = self.enter_tdz(left)?;
             self.expression(right)?;
             self.leave_block(tdz)?;
@@ -3303,8 +3388,22 @@ impl<'a> Compiler<'a> {
             .checked_add(1)
             .ok_or(CompileError::TooLarge)?;
         self.push_target(target);
-        let block = self.for_of_binding(left, lhs, item)?;
+        let (block, disposal) = match lhs {
+            ForTarget::Using {
+                declarator,
+                target,
+                asynchronous,
+            } => {
+                let (block, disposal) =
+                    self.for_of_using(left, declarator, target, asynchronous, item)?;
+                (Some(block), Some(disposal))
+            }
+            _ => (self.for_of_binding(left, lhs, item)?, None),
+        };
         self.statement(body)?;
+        if let Some(disposal) = disposal {
+            self.end_disposal(disposal)?;
+        }
         if let Some(block) = block {
             self.leave_block(block)?;
         }
@@ -3381,7 +3480,11 @@ impl<'a> Compiler<'a> {
         match kind {
             DeclarationKind::Var => Ok(ForTarget::Var(target)),
             DeclarationKind::Let | DeclarationKind::Const => Ok(ForTarget::Lexical(target)),
-            DeclarationKind::Using | DeclarationKind::AwaitUsing => Err(self.unsupported(left)),
+            DeclarationKind::Using | DeclarationKind::AwaitUsing => Ok(ForTarget::Using {
+                declarator,
+                target,
+                asynchronous: kind == DeclarationKind::AwaitUsing,
+            }),
         }
     }
 
@@ -3503,6 +3606,41 @@ impl<'a> Compiler<'a> {
         Ok(mark)
     }
 
+    /// `for`-`of` mit `using` oder `await using`: Jeder Durchlauf bekommt
+    /// einen neuen Bereich für den Namen und für die Ressource aus dem Wert
+    /// im Akkumulator, die am Ende des Rumpfs frei wird, auch mit `continue`
+    /// (ForIn/OfBodyEvaluation, Schritte zu *iterationEnv*). Gibt die Marke
+    /// des Bereichs und den Bereich zum Freigeben zurück; das Register
+    /// `item` hält den Wert dazwischen.
+    fn for_of_using(
+        &mut self,
+        left: NodeId,
+        declarator: NodeId,
+        target: NodeId,
+        asynchronous: bool,
+        item: i64,
+    ) -> Result<(u32, Disposal)> {
+        let Node::BindingIdentifier(atom) = *self.ast.node(target) else {
+            return Err(self.unsupported(target));
+        };
+        self.emit(Op::Star, &[item])?;
+        let block = self.enter_block(&[left], false)?;
+        let Some(disposal) = self.begin_disposal(&[(declarator, asynchronous)])? else {
+            return Err(self.unsupported(declarator));
+        };
+        let resource = self
+            .resources
+            .get(&declarator)
+            .copied()
+            .ok_or_else(|| self.unsupported(declarator))?;
+        self.emit(Op::Ldar, &[item])?;
+        self.position(left)?;
+        self.add_disposable_resource(resource)?;
+        let binding = self.lookup(atom).ok_or_else(|| self.unsupported(left))?;
+        self.store_location(binding.location)?;
+        Ok((block, disposal))
+    }
+
     /// Bindet den Wert im Akkumulator an das Ziel links in `for`-`of`
     /// (ForIn/OfBodyEvaluation, Abschnitt 14.7.5.7). Mit `let` und `const`
     /// beginnt dafür ein neuer Bereich, dessen Marke zurückkommt; `var`
@@ -3552,6 +3690,9 @@ impl<'a> Compiler<'a> {
                 self.release_reference(reference);
                 Ok(None)
             }
+            // Bindet [`Compiler::for_of_using`]; in `for`-`in` lässt der
+            // Parser `using` nicht zu.
+            ForTarget::Using { declarator, .. } => Err(self.unsupported(declarator)),
         }
     }
 
@@ -3824,6 +3965,216 @@ impl<'a> Compiler<'a> {
             self.bind(next)?;
         }
         Ok(())
+    }
+
+    /// Die Deklaratoren von `using` und `await using` direkt in `items`,
+    /// mit `true` für `await using`.
+    fn using_declarators(&self, items: &[NodeId]) -> Vec<(NodeId, bool)> {
+        let mut found = Vec::new();
+        for &item in items {
+            if let Node::Variables {
+                kind: kind @ (DeclarationKind::Using | DeclarationKind::AwaitUsing),
+                declarators,
+            } = *self.ast.node(item)
+            {
+                let asynchronous = kind == DeclarationKind::AwaitUsing;
+                for &declarator in self.ast.list(declarators) {
+                    found.push((declarator, asynchronous));
+                }
+            }
+        }
+        found
+    }
+
+    /// Beginnt einen Bereich, an dessen Ende die Ressourcen der Deklaratoren
+    /// `declarators` frei werden (DisposeResources mit der
+    /// [[DisposeCapability]] der Umgebung), `None` ohne Deklaratoren. Er
+    /// liegt im Bereich der Bindungen, gleich nach deren Instantiierung.
+    ///
+    /// Jede Ressource bekommt zwei Register, die Methode mit *undefined* für
+    /// eine Ressource, die (noch) nicht hinzukam, und den Wert. Der Bereich
+    /// selbst ist gebaut wie `try` mit `finally` ([`Compiler::try_statement`]):
+    /// Jeder Weg hinaus, auch eine Ausnahme, geht erst durch das Freigeben
+    /// ([`Compiler::end_disposal`]).
+    fn begin_disposal(&mut self, declarators: &[(NodeId, bool)]) -> Result<Option<Disposal>> {
+        if declarators.is_empty() {
+            return Ok(None);
+        }
+        let mut resources = Vec::new();
+        for &(declarator, asynchronous) in declarators {
+            if asynchronous && !self.is_async() {
+                return Err(self.unsupported(declarator));
+            }
+            let register = self.allocate()?;
+            self.allocate()?;
+            let resource = Resource {
+                register,
+                asynchronous,
+            };
+            self.resources.insert(declarator, resource);
+            resources.push((declarator, resource));
+        }
+        self.emit(Op::LdaUndefined, &[])?;
+        for &(_, resource) in &resources {
+            self.emit(Op::Star, &[i64::from(resource.register)])?;
+        }
+        let context = i64::from(self.allocate()?);
+        self.emit(Op::SaveContext, &[context])?;
+        let kind = self.allocate()?;
+        let value = self.allocate()?;
+        let mut target = Target::new(TargetKind::Finally, Vec::new());
+        target.finally = Some((kind, value));
+        self.push_target(target);
+        // HasCallInTailPosition: Nach einem Aufruf sind die Ressourcen
+        // noch freizugeben.
+        self.protected = self
+            .protected
+            .checked_add(1)
+            .ok_or(CompileError::TooLarge)?;
+        Ok(Some(Disposal {
+            resources,
+            context,
+            kind,
+            start: self.emitter.offset(),
+        }))
+    }
+
+    /// AddDisposableResource für den Wert im Akkumulator.
+    fn add_disposable_resource(&mut self, resource: Resource) -> Result<()> {
+        self.emit(
+            Op::AddDisposableResource,
+            &[
+                i64::from(resource.register),
+                i64::from(resource.asynchronous),
+            ],
+        )
+    }
+
+    /// Beendet den Bereich aus [`Compiler::begin_disposal`]: Das normale
+    /// Ende, ein Handler für jede Ausnahme darin und die Wege hinaus legen
+    /// den Abschluss in zwei Register wie für `finally`, dann werden die
+    /// Ressourcen frei ([`Compiler::dispose_resources`]), und es geht mit
+    /// dem Abschluss weiter.
+    fn end_disposal(&mut self, disposal: Disposal) -> Result<()> {
+        let end = self.emitter.offset();
+        self.protected = self.protected.saturating_sub(1);
+        let target = self.pop_target();
+        let kind = i64::from(disposal.kind);
+        let value = kind.checked_add(1).ok_or(CompileError::TooLarge)?;
+        self.emit(Op::LdaSmi, &[NORMAL])?;
+        self.emit(Op::Star, &[kind])?;
+        let normal = self.jump(Op::Jump)?;
+        self.emitter
+            .handler(disposal.start, end, HandlerKind::Finally);
+        self.emit(Op::RestoreContext, &[disposal.context])?;
+        self.emit(Op::Star, &[value])?;
+        self.emit(Op::LdaSmi, &[THROW])?;
+        self.emit(Op::Star, &[kind])?;
+        self.bind(normal)?;
+        self.bind_all(target.breaks)?;
+        self.dispose_resources(&disposal)?;
+        self.emit(Op::LdaSmi, &[THROW])?;
+        self.emit(Op::TestEqualStrict, &[kind])?;
+        let next = self.jump(Op::JumpIfFalse)?;
+        self.emit(Op::Ldar, &[value])?;
+        self.emit(Op::Rethrow, &[])?;
+        self.bind(next)?;
+        for (declarator, _) in &disposal.resources {
+            self.resources.remove(declarator);
+        }
+        self.dispatch_exits(kind, value, target.exits)
+    }
+
+    /// DisposeResources: die Ressourcen in umgekehrter Reihenfolge, jede,
+    /// die hinzukam. Jeder Aufruf hat einen Handler, der seinen Fehler mit
+    /// [`Op::DisposeError`] an den Abschluss hängt; danach geht es mit der
+    /// nächsten weiter.
+    ///
+    /// Mit `await using` wartet der Code auf das Ergebnis jeder Methode.
+    /// Zwei Register halten dann *needsAwait* und *hasAwaited*: Eine
+    /// Ressource aus *null* oder *undefined* hat keine Methode, verlangt
+    /// aber ein Await(*undefined*), vor der nächsten Ressource aus `using`
+    /// oder am Ende, wenn bis dahin keines kam.
+    fn dispose_resources(&mut self, disposal: &Disposal) -> Result<()> {
+        let kind = i64::from(disposal.kind);
+        let flags = if disposal
+            .resources
+            .iter()
+            .any(|(_, resource)| resource.asynchronous)
+        {
+            let needs_await = i64::from(self.allocate()?);
+            let has_awaited = i64::from(self.allocate()?);
+            self.emit(Op::LdaFalse, &[])?;
+            self.emit(Op::Star, &[needs_await])?;
+            self.emit(Op::Star, &[has_awaited])?;
+            Some((needs_await, has_awaited))
+        } else {
+            None
+        };
+        for &(_, resource) in disposal.resources.iter().rev() {
+            let method = i64::from(resource.register);
+            let value = method.checked_add(1).ok_or(CompileError::TooLarge)?;
+            self.emit(Op::LdaUndefined, &[])?;
+            self.emit(Op::TestEqualStrict, &[method])?;
+            let absent = self.jump(Op::JumpIfTrue)?;
+            let mut without_method = None;
+            match flags {
+                Some((needs_await, _)) if resource.asynchronous => {
+                    self.emit(Op::Ldar, &[method])?;
+                    without_method = Some((self.jump(Op::JumpIfNullish)?, needs_await));
+                }
+                // Auch nach einem Await davor fällt *needsAwait* hier weg:
+                // Mit *hasAwaited* zählt es nicht mehr.
+                Some((needs_await, has_awaited)) => {
+                    self.await_if_needed(needs_await, has_awaited)?;
+                    self.emit(Op::LdaFalse, &[])?;
+                    self.emit(Op::Star, &[needs_await])?;
+                }
+                None => {}
+            }
+            let start = self.emitter.offset();
+            self.emit(Op::Call, &[method, 0])?;
+            if let Some((_, has_awaited)) = flags.filter(|_| resource.asynchronous) {
+                // Der Wert der Ressource wird nicht mehr gebraucht; sein
+                // Register hält das Ergebnis, bis *hasAwaited* gesetzt ist.
+                self.emit(Op::Star, &[value])?;
+                self.emit(Op::LdaTrue, &[])?;
+                self.emit(Op::Star, &[has_awaited])?;
+                self.emit(Op::Ldar, &[value])?;
+                self.emit(Op::Await, &[])?;
+                self.emit(Op::ResumeAsync, &[])?;
+            }
+            let end = self.emitter.offset();
+            let done = self.jump(Op::Jump)?;
+            self.emitter.handler(start, end, HandlerKind::Catch);
+            self.emit(Op::DisposeError, &[kind])?;
+            if let Some((jump, needs_await)) = without_method {
+                let skip = self.jump(Op::Jump)?;
+                self.bind(jump)?;
+                self.emit(Op::LdaTrue, &[])?;
+                self.emit(Op::Star, &[needs_await])?;
+                self.bind(skip)?;
+            }
+            self.bind(done)?;
+            self.bind(absent)?;
+        }
+        if let Some((needs_await, has_awaited)) = flags {
+            self.await_if_needed(needs_await, has_awaited)?;
+        }
+        Ok(())
+    }
+
+    /// Await(*undefined*), wenn *needsAwait* gilt und *hasAwaited* nicht.
+    fn await_if_needed(&mut self, needs_await: i64, has_awaited: i64) -> Result<()> {
+        self.emit(Op::Ldar, &[needs_await])?;
+        let skip = self.jump(Op::JumpIfFalse)?;
+        self.emit(Op::Ldar, &[has_awaited])?;
+        let done = self.jump(Op::JumpIfTrue)?;
+        self.emit(Op::LdaUndefined, &[])?;
+        self.emit(Op::Await, &[])?;
+        self.emit(Op::ResumeAsync, &[])?;
+        self.bind(done)?;
+        self.bind(skip)
     }
 
     /// CatchClauseEvaluation (Abschnitt 14.15.2) mit der Ausnahme im

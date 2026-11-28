@@ -206,7 +206,7 @@ Schritt 9c-1 waren das die mit `module`, jetzt keine mehr. Eine Panik der Engine
 sie kann nicht erwartet werden. Jede Datei der festen Auswahl muss auch hier
 bestehen.
 
-Mit diesem Stand bestehen 23.133 von 23.296 ausgeführten Dateien und 43.515
+Mit diesem Stand bestehen 23.252 von 23.296 ausgeführten Dateien und 43.742
 von 43.794 Varianten. Seit Schritt 7 gibt es async-Funktionen, `for await`
 und async-Generatoren, seit Schritt 8a `Object` mit allen Funktionen,
 `Object.prototype` und `Function.prototype` vollständig und gebundene
@@ -307,12 +307,15 @@ Dateien, die an ihnen scheiterten, darunter alle unter
 prüfen. Die beiden übrigen, `tco-call.js` und `tco-member.js` unter
 `expressions/tagged-template/`, erschöpfen jetzt wie die anderen `tco-*.js`
 die Arbeitsschritte.
+Seit Schritt 13c gibt es `using` und `await using`; damit bestehen alle 119
+Dateien, an denen der Übersetzer bis dahin scheiterte (`Unsupported`): 67
+unter `statements/await-using/`, 48 unter `statements/using/` und vier
+unter `statements/for-of/` (`head-using-*.js` und `head-await-using-*.js`).
+Elf davon sind Module, 70 haben das Flag `async`, zwei erwarten einen
+Fehler. Keine Datei scheitert neu, und keine scheitert mehr mit
+`Unsupported`.
 
-Es scheitern noch 163 Dateien. In 119 davon kann der Übersetzer ein
-Konstrukt noch nicht (`Unsupported`). 108 sind Scripts, die nach einer
-Suche in den Quelltexten alle `using` oder `await using` nennen. Die
-elf Module haben alle das Feature `explicit-resource-management`, vier davon
-auch `top-level-await`. 42 Dateien
+Es scheitern noch 44 Dateien. 42 davon
 erschöpfen die Arbeitsschritte: 34 `tco-*.js`, die sich im strikten Modus
 100.000-mal als Endaufruf aufrufen (siehe [unten](#anschluss-für-claude)),
 `comments/S7.4_A5.js` und `S7.4_A6.js` und vier unter `literals/regexp/`
@@ -330,7 +333,6 @@ Fehlschläge gibt der Test mit `--nocapture` aus:
 
 | Varianten | Grund |
 | ---: | --- |
-| 227 | Der Übersetzer kann ein Konstrukt noch nicht (`Unsupported`), davon elf in Modulen |
 | 50 | Die Arbeitsschritte sind erschöpft |
 | 2 | TypeError im Test: die beiden Dateien mit dem Feature `caller` |
 
@@ -343,11 +345,11 @@ cargo test --locked -p mb-js script::test262::language::test262_annex_b_built_in
 
 Derselbe Läufer nimmt die Teile von `test/built-ins/`, deren eingebaute
 Objekte es schon mit allen Eigenschaften gibt: `AggregateError/`, `Array/`,
-`ArrayBuffer/`, `ArrayIteratorPrototype/`, `AsyncFunction/`, `AsyncGeneratorFunction/`, `Atomics/`, `BigInt/`, `Boolean/`, `DataView/`, `Date/`, `Error/`, `FinalizationRegistry/`, `Function/`, `GeneratorFunction/`, `Iterator/`, `JSON/`, `Map/`,
+`ArrayBuffer/`, `ArrayIteratorPrototype/`, `AsyncFunction/`, `AsyncGeneratorFunction/`, `AsyncIteratorPrototype/`, `Atomics/`, `BigInt/`, `Boolean/`, `DataView/`, `Date/`, `Error/`, `FinalizationRegistry/`, `Function/`, `GeneratorFunction/`, `Iterator/`, `JSON/`, `Map/`,
 `MapIteratorPrototype/`, `Math/`, `NativeErrors/`, `Number/`, `Object/`,
 `Promise/`, `Proxy/`, `Reflect/`, `RegExp/`, `RegExpStringIteratorPrototype/`,
 `Set/`, `SetIteratorPrototype/`, `SharedArrayBuffer/`, `String/`, `StringIteratorPrototype/`,
-`Symbol/`, `TypedArray/`, `TypedArrayConstructors/`, `Uint8Array/`, `WeakMap/`,
+`SuppressedError/`, `Symbol/`, `TypedArray/`, `TypedArrayConstructors/`, `Uint8Array/`, `WeakMap/`,
 `WeakRef/`, `WeakSet/` und die globalen Funktionen `eval/`, `isFinite/`,
 `isNaN/`, `parseFloat/` und `parseInt/`. Ihre erwarteten Fehlschläge stehen in
 `crates/mb-js/src/script/test262/erwartete-fehlschlaege-built-ins.txt`, mit
@@ -358,12 +360,12 @@ ein neuer Teil von `built-ins/` ändert nur die zweite. Ein dritter Lauf
 nimmt ebenso die Teile von `test/annexB/built-ins/`, bisher `Date/`,
 `Function/`, `Object/`, `RegExp/` und `String/`, gegen `erwartete-fehlschlaege-annexb-built-ins.txt`.
 
-Von 18.560 Dateien laufen 18.357. Übersprungen werden 203 mit Vorschlägen aus
+Von 18.595 Dateien laufen 18.392. Übersprungen werden 203 mit Vorschlägen aus
 `features.txt`: 89 unter `Promise/`, 61 mit `immutable-arraybuffer`, 29 unter
 `ArrayBuffer/`, elf unter `DataView/`, neun unter `Atomics/`, acht unter `TypedArray/` und je zwei
 unter `TypedArrayConstructors/` und `Uint8Array/`, 35 unter `Error/` mit
 `error-stack-accessor` und 18 unter `Iterator/prototype/join/` mit
-`Iterator.prototype.join`. Es bestehen 17.547 Dateien und 34.832 von 36.431
+`Iterator.prototype.join`. Es bestehen 17.582 Dateien und 34.902 von 36.501
 Varianten:
 
 | Teil | Dateien | Varianten |
@@ -374,6 +376,7 @@ Varianten:
 | `ArrayIteratorPrototype/` | 27 von 27 | 46 von 46 |
 | `AsyncFunction/` | 18 von 18 | 36 von 36 |
 | `AsyncGeneratorFunction/` | 23 von 23 | 46 von 46 |
+| `AsyncIteratorPrototype/` | 13 von 13 | 26 von 26 |
 | `Atomics/` | 268 von 380 | 536 von 760 |
 | `BigInt/` | 77 von 77 | 154 von 154 |
 | `Boolean/` | 51 von 51 | 101 von 101 |
@@ -401,6 +404,7 @@ Varianten:
 | `SharedArrayBuffer/` | 104 von 104 | 208 von 208 |
 | `String/` | 1.217 von 1.223 | 2.431 von 2.443 |
 | `StringIteratorPrototype/` | 7 von 7 | 14 von 14 |
+| `SuppressedError/` | 22 von 22 | 44 von 44 |
 | `Symbol/` | 98 von 98 | 192 von 192 |
 | `TypedArray/` | 1.355 von 1.445 | 2.694 von 2.874 |
 | `TypedArrayConstructors/` | 731 von 736 | 1.432 von 1.442 |
@@ -454,7 +458,9 @@ unter `TypedArrayConstructors/internals/HasProperty/`. Auch dabei scheitert
 keine Datei neu. Mit Schritt 9c-1 besteht auch die einzige Datei mit dem
 Flag `module`, `Proxy/preventExtensions/trap-is-undefined-target-is-proxy.js`.
 Mit Schritt 13a bestehen die vier Dateien unter `String/raw/`, die Templates
-mit Tag brauchten.
+mit Tag brauchten. Mit Schritt 13c laufen `AsyncIteratorPrototype/` und
+`SuppressedError/` neu mit, und alle 35 Dateien bestehen, darunter die neun
+zu @@asyncDispose an %AsyncIteratorPrototype%.
 Jede der 810 Dateien, die noch scheitern, ist einem Grund
 zugeordnet, nach dem Grund, den der Läufer meldet, und den Namen in der
 Datei:

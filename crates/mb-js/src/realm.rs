@@ -96,8 +96,8 @@ pub enum Intrinsic {
     ArrayIteratorPrototype,
     /// %StringIteratorPrototype% (Abschnitt 22.1.5.1).
     StringIteratorPrototype,
-    /// %AsyncIteratorPrototype% (Abschnitt 27.1.4), bisher nur mit
-    /// @@asyncIterator.
+    /// %AsyncIteratorPrototype% (Abschnitt 27.1.4) mit @@asyncIterator und
+    /// @@asyncDispose.
     AsyncIteratorPrototype,
     /// %AsyncFromSyncIteratorPrototype% (Abschnitt 27.1.5.2) mit `next`,
     /// `return` und `throw`.
@@ -183,6 +183,8 @@ pub enum Intrinsic {
     /// %AggregateError.prototype% (Abschnitt 20.5.7.3), auch mit `name`
     /// und `message` und %Error.prototype% als Prototyp.
     AggregateErrorPrototype,
+    /// %SuppressedError.prototype% (Abschnitt 20.5.8.3), ebenso.
+    SuppressedErrorPrototype,
     /// %Object% (Abschnitt 20.1.1).
     Object,
     /// %Array% (Abschnitt 23.1.1).
@@ -213,6 +215,8 @@ pub enum Intrinsic {
     /// %AggregateError% (Abschnitt 20.5.7.1), auch mit %Error% als
     /// Prototyp.
     AggregateError,
+    /// %SuppressedError% (Abschnitt 20.5.8.1), ebenso.
+    SuppressedError,
     /// %Promise% (Abschnitt 27.5.3).
     Promise,
     /// %Boolean% (Abschnitt 20.3.1).
@@ -856,6 +860,7 @@ fn set_default_global_bindings(
         ("Set", Intrinsic::Set),
         ("SharedArrayBuffer", Intrinsic::SharedArrayBuffer),
         ("String", Intrinsic::String),
+        ("SuppressedError", Intrinsic::SuppressedError),
         ("Symbol", Intrinsic::Symbol),
         ("SyntaxError", Intrinsic::SyntaxError),
         ("TypeError", Intrinsic::TypeError),

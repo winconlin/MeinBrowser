@@ -45,6 +45,11 @@ const SCRIPTS: &[&str] = &[
     "\"use strict\"; function tail(n) { return n == 0 ? 'fertig' : tail(n - 1); } tail(10000)",
     "var { a, b: [c, ...d] = [] } = { a: 1, b: [2, 3, 4] }; a + c + d.length",
     "typeof import('x')",
+    "var log = []; function r(n) { return { [Symbol.dispose]() { log.push(n); } }; } \
+     async function f() { await using x = null, y = r(9); } \
+     { using a = r(1), b = null; for (using c of [r(2)]) ; \
+       try { using d = { [Symbol.dispose]() { throw 3; } }; throw 4; } \
+       catch (e) { log.push(e.error, e.suppressed); } } log.join()",
     "function t(s, ...v) { return s.raw.join('|') + s.length + v.join(); } \
      function f() { return (s => s)`x`; } [t`a${1}b\\u{`, f() === f(), String.raw`\\n${2}`].join()",
 ];
@@ -490,6 +495,46 @@ fn a_loaded_script_has_its_own_template_objects() {
         ),
         "\"true,true\""
     );
+}
+
+#[test]
+fn disposal_instructions_are_checked() {
+    let source = units("async function f() { { await using a = null; } } { using b = null; }");
+    let prepared = prepare(&source).expect("speicherbar");
+    let code = &prepared.script.code;
+    let mut offsets = Vec::new();
+    let mut offset = 0;
+    while let Some(instruction) = code.decode(offset) {
+        if matches!(instruction.op, Op::AddDisposableResource | Op::DisposeError) {
+            offsets.push((instruction.op, offset));
+        }
+        offset = instruction.end;
+    }
+    assert_eq!(
+        offsets.iter().map(|&(op, _)| op).collect::<Vec<_>>(),
+        [Op::AddDisposableResource, Op::DisposeError]
+    );
+    let registers = u8::try_from(code.register_count()).expect("wenige Register");
+    let rejected = |at: usize, byte: u8| {
+        let mut changed = prepared.clone();
+        changed.script.code.bytes[at] = byte;
+        decode(&encode(&changed), &source)
+            .map(|_| ())
+            .map_err(|error| error.reason())
+    };
+    for &(op, offset) in &offsets {
+        // Das zweite Register fehlt.
+        assert_eq!(
+            rejected(offset + 1, registers - 1),
+            Err("Register eines Befehls außerhalb"),
+            "{op:?}"
+        );
+    }
+    let (_, add) = offsets[0];
+    // Die Art allein schadet nicht: Ohne Await ruft der Code die Methode
+    // aus dem Promise nur auf.
+    assert_eq!(rejected(add + 2, 1), Ok(()));
+    assert_eq!(rejected(add + 2, 2), Err("unbekannte Art der Freigabe"));
 }
 
 #[test]

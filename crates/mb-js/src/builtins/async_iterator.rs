@@ -1,5 +1,5 @@
-//! %AsyncIteratorPrototype% (Abschnitt 27.1.4), bisher nur mit
-//! @@asyncIterator, und %AsyncFromSyncIteratorPrototype% (Abschnitt
+//! %AsyncIteratorPrototype% (Abschnitt 27.1.4) mit @@asyncIterator und
+//! @@asyncDispose, und %AsyncFromSyncIteratorPrototype% (Abschnitt
 //! 27.1.5.2) mit `next`, `return` und `throw`.
 //!
 //! Einen Async-from-Sync Iterator legt GetIterator mit ~async~ für Objekte
@@ -10,14 +10,11 @@
 //! AsyncFromSyncIteratorContinuation fängt *unwrap* *done* ein und
 //! *closeIterator* den synchronen Iterator, denn IteratorClose liest nur
 //! [[Iterator]].
-//!
-//! @@asyncDispose an %AsyncIteratorPrototype% fehlt noch, wie @@dispose an
-//! %Iterator.prototype%.
 
 use super::promise::if_abrupt_reject_promise;
 use super::{define_functions, define_symbol_function, units};
 use crate::agent::{Abrupt, Agent, Completion, ErrorKind};
-use crate::builtin::{Builtin, BuiltinCall, create_builtin_closure};
+use crate::builtin::{Builtin, BuiltinCall, create_builtin_closure, create_builtin_function};
 use crate::heap::{Local, ObjectClass, Scope};
 use crate::iterator::{
     SYNC_ITERATOR, SYNC_NEXT, create_iterator_result_object, iterator_close,
@@ -35,6 +32,21 @@ static ASYNC_ITERATOR_PROTOTYPE_ASYNC_ITERATOR: Builtin = Builtin {
     length: 0,
     constructor: false,
     behaviour: async_iterator_prototype_async_iterator,
+};
+
+static ASYNC_ITERATOR_PROTOTYPE_ASYNC_DISPOSE: Builtin = Builtin {
+    name: "[Symbol.asyncDispose]",
+    length: 0,
+    constructor: false,
+    behaviour: async_iterator_prototype_async_dispose,
+};
+
+/// *unwrap* aus @@asyncDispose: ohne Namen und ohne [[Construct]].
+static RETURN_UNDEFINED: Builtin = Builtin {
+    name: "",
+    length: 1,
+    constructor: false,
+    behaviour: return_undefined,
 };
 
 /// Der Parameter der drei Methoden ist optional und zählt darum nicht zu
@@ -86,6 +98,14 @@ pub(super) fn create(agent: &mut Agent, scope: &Scope, realm: RealmId) -> Comple
         WellKnownSymbol::AsyncIterator,
         &ASYNC_ITERATOR_PROTOTYPE_ASYNC_ITERATOR,
     )?;
+    define_symbol_function(
+        agent,
+        scope,
+        realm,
+        prototype,
+        WellKnownSymbol::AsyncDispose,
+        &ASYNC_ITERATOR_PROTOTYPE_ASYNC_DISPOSE,
+    )?;
     agent.set_intrinsic(realm, Intrinsic::AsyncIteratorPrototype, prototype);
     let async_from_sync = ordinary_object_create(agent, scope, Some(prototype))?;
     define_functions(
@@ -112,6 +132,58 @@ fn async_iterator_prototype_async_iterator<'s>(
 ) -> Completion<Local<'s>> {
     let heap = agent.heap();
     Ok(heap.local(scope, heap.get(arguments.this)))
+}
+
+/// %AsyncIteratorPrototype% [ %Symbol.asyncDispose% ] ( ) (Abschnitt
+/// 27.1.4.1): ruft `return` ohne Argumente und erfüllt danach mit
+/// *undefined*.
+fn async_iterator_prototype_async_dispose<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    arguments: &BuiltinCall<'_, '_>,
+) -> Completion<Local<'s>> {
+    let realm = arguments.realm;
+    let this = arguments.this;
+    let capability = intrinsic_capability(agent, scope, realm)?;
+    let key = agent.key_from_units(scope, &units("return"))?;
+    let method = match get_method(agent, scope, this, key) {
+        Ok(method) => method,
+        Err(abrupt) => return if_abrupt_reject_promise(agent, scope, realm, abrupt, &capability),
+    };
+    let undefined = agent.heap().local(scope, Value::UNDEFINED);
+    let Some(method) = method else {
+        call(agent, scope, capability.resolve, undefined, &[undefined])?;
+        return Ok(capability.promise);
+    };
+    let result = match call(agent, scope, method, this, &[]) {
+        Ok(result) => result,
+        Err(abrupt) => return if_abrupt_reject_promise(agent, scope, realm, abrupt, &capability),
+    };
+    let constructor = agent.intrinsic(scope, realm, Intrinsic::Promise);
+    let wrapper = match promise_resolve(agent, scope, realm, constructor, result) {
+        Ok(wrapper) => wrapper,
+        Err(abrupt) => return if_abrupt_reject_promise(agent, scope, realm, abrupt, &capability),
+    };
+    let on_fulfilled = create_builtin_function(agent, scope, realm, &RETURN_UNDEFINED)?;
+    perform_promise_then(
+        agent,
+        scope,
+        realm,
+        wrapper,
+        on_fulfilled,
+        undefined,
+        Some(capability),
+    )?;
+    Ok(capability.promise)
+}
+
+/// *unwrap* aus @@asyncDispose.
+fn return_undefined<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    _arguments: &BuiltinCall<'_, '_>,
+) -> Completion<Local<'s>> {
+    Ok(agent.heap().local(scope, Value::UNDEFINED))
 }
 
 /// [[Iterator]] und [[NextMethod]] aus [[SyncIteratorRecord]] von `this`.

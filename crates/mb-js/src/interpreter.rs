@@ -77,9 +77,10 @@ use crate::async_function::{
 use crate::async_generator::{async_generator_create, async_generator_yield, suspend_frame};
 use crate::bound_function::{is_bound_function, unwrap_call, unwrap_construct};
 use crate::builtin::{builtin_parts, call_builtin};
-use crate::builtins::create_regexp;
+use crate::builtins::{create_disposable_resource, create_regexp, suppressed_error_create};
 use crate::bytecode::{
     BindingKind, Code, Constant, DynamicName, Extension, Fallback, HandlerKind, Instruction, Op,
+    THROW_COMPLETION,
 };
 use crate::compare::{is_less_than, is_loosely_equal, is_strictly_equal, same_value};
 use crate::compiler::{CompileError, compile_default_constructor};
@@ -3475,6 +3476,32 @@ impl<'c> Frame<'c, '_> {
                 };
                 let result = call(agent, scope, method, iterator, &[])?;
                 self.set_accumulator(agent, result);
+            }
+            Op::AddDisposableResource => {
+                let value = self.accumulator_copy(agent, scope);
+                let asynchronous = second != 0;
+                if let Some((method, value)) =
+                    create_disposable_resource(agent, scope, self.realm, value, asynchronous)?
+                {
+                    self.set_register(agent, first, method);
+                    self.set_register(agent, first.saturating_add(1), value);
+                }
+            }
+            Op::DisposeError => {
+                let error = self.accumulator_copy(agent, scope);
+                let kind = self.slot(first);
+                let value = first.saturating_add(1);
+                let throw = Value::int32(THROW_COMPLETION);
+                let thrown = agent.heap().register(kind).as_int32() == Some(THROW_COMPLETION);
+                let completion = if thrown {
+                    let suppressed = self.register(agent, scope, value);
+                    let suppressed = agent.thrown_value(scope, suppressed, self.realm)?;
+                    suppressed_error_create(agent, scope, self.realm, error, suppressed)?
+                } else {
+                    agent.heap().set_register(kind, throw);
+                    error
+                };
+                self.set_register(agent, value, completion);
             }
             Op::ThrowIfNotObject => {
                 if !matches!(agent.heap().get(self.accumulator).kind(), Kind::Object(_)) {

@@ -400,6 +400,23 @@ fn check_code(code: &Code, source_length: usize, top_level_await: bool) -> Stats
                     "the async yield* record fits its frame"
                 );
             }
+            Op::AddDisposableResource | Op::DisposeError => {
+                // A resource is its dispose method and its value; the
+                // completion a failed disposal joins is its kind and value.
+                let first = usize::try_from(instruction.operand(0)).expect("resource register");
+                assert!(
+                    first
+                        .checked_add(2)
+                        .is_some_and(|end| end <= code.register_count()),
+                    "the resource or completion record fits its frame"
+                );
+                if instruction.op == Op::AddDisposableResource {
+                    assert!(
+                        matches!(instruction.operand(1), 0 | 1),
+                        "a resource is disposed synchronously or asynchronously"
+                    );
+                }
+            }
             Op::CreateRestObject => {
                 // The source value, then the keys the rest excludes.
                 let source = usize::try_from(instruction.operand(0)).expect("source register");
@@ -1082,13 +1099,29 @@ mod tests {
 
     #[test]
     fn syntax_and_unsupported_paths_preserve_positions() {
+        // Since `using` (step 13c) no construct is unsupported at the top
+        // level of a script. These arrow bodies are: a function named
+        // `arguments` in one of their blocks would create its binding only
+        // when evaluated (Annex B.3.2.1). Their positions go through the
+        // same check.
+        for source in [
+            "x=()=>{{function arguments(){}}};",
+            "x=()=>{if(b){function arguments(){}}};",
+            "x=a=>{for(;;){function arguments(){}}};",
+        ] {
+            let source: Vec<u16> = source.encode_utf16().collect();
+            assert!(matches!(
+                check_source(&source),
+                Outcome::Compiled(stats) if stats.unsupported_functions == 1
+            ));
+        }
         for source in [
             "{using a=null;}",
             "if(b){using a=null;}",
             "for(using a of b){}",
         ] {
             let source: Vec<u16> = source.encode_utf16().collect();
-            assert_eq!(check_source(&source), Outcome::Unsupported);
+            assert!(matches!(check_source(&source), Outcome::Compiled(_)));
         }
         let source: Vec<u16> = "let = ;".encode_utf16().collect();
         assert_eq!(check_source(&source), Outcome::Syntax);
@@ -1119,7 +1152,10 @@ mod tests {
 
     #[test]
     fn unsupported_deferred_bodies_preserve_positions() {
-        for source in ["function f(){using a=null;}", "function f(){{using a=b;}}"] {
+        for source in [
+            "var f=()=>{{function arguments(){}}};",
+            "var f=()=>{if(a){function arguments(){}}};",
+        ] {
             let stats = checked(source);
             assert_eq!(stats.functions, 0);
             assert_eq!(stats.unsupported_functions, 1);
