@@ -270,6 +270,7 @@ name = "testrunner"
 version = "0.0.0"
 dependencies = [
  "mb-base",
+ "mb-js",
  "mb-layout",
  "mb-platform",
  "mb-raster",

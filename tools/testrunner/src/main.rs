@@ -4,6 +4,13 @@
 //! [MUSTER …]`: nur die Tests, deren Pfad eines der Muster enthält; mit
 //! `--out` kommen Test und Referenz jedes gescheiterten Tests als PPM in das
 //! Verzeichnis, mit `--alle` auch die der bestandenen.
+//!
+//! `cargo run -p testrunner --release -- --testharness [--wpt VERZEICHNIS]
+//! [--erwartet DATEI] [MUSTER …]`: die Tests mit testharness.js in der
+//! Shell (siehe `testharness.rs`), aus `target/testdata/wpt` oder dem
+//! angegebenen Verzeichnis. Jede Datei, deren Harness nicht OK ist, und
+//! jeder Untertest, der nicht besteht, kommt mit Meldung auf die Ausgabe;
+//! mit `--erwartet` kommen die erwarteten Ergebnisse in die Datei.
 
 #![forbid(unsafe_code)]
 
@@ -14,6 +21,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use mb_layout::Fonts;
 use mb_text::FontLibrary;
+use testrunner::testharness::{self, HarnessStatus, Status};
 use testrunner::{M1_REFTESTS, RefTest, Relation, differing_pixels, parse_list, render, to_ppm};
 
 /// Der Stapel je Arbeitsfaden; Layout und Zeichnen arbeiten rekursiv.
@@ -28,6 +36,9 @@ enum Outcome {
 }
 
 fn main() -> ExitCode {
+    if std::env::args().nth(1).as_deref() == Some("--testharness") {
+        return testharness_main();
+    }
     let mut out: Option<PathBuf> = None;
     let mut all = false;
     let mut patterns = Vec::new();
@@ -163,4 +174,47 @@ fn run(
         Relation::Match => Outcome::Fail(format!("{differing} Pixel verschieden")),
         Relation::Mismatch => Outcome::Fail("gleich, sollte verschieden sein".into()),
     }
+}
+
+/// Die Tests mit testharness.js.
+fn testharness_main() -> ExitCode {
+    let mut wpt = testdata::root().join("wpt");
+    let mut expectations: Option<PathBuf> = None;
+    let mut patterns = Vec::new();
+    let mut args = std::env::args().skip(2);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--wpt" => wpt = args.next().map_or(wpt, PathBuf::from),
+            "--erwartet" => expectations = args.next().map(PathBuf::from),
+            _ => patterns.push(arg),
+        }
+    }
+    let paths: Vec<String> = testharness::select(&wpt)
+        .into_iter()
+        .filter(|path| patterns.is_empty() || patterns.iter().any(|p| path.contains(p)))
+        .collect();
+    let results = testharness::run_all(&wpt, &paths);
+    for (path, result) in &results {
+        if result.harness != HarnessStatus::Ok {
+            let message = result.message.as_deref().unwrap_or("");
+            println!("{} {path}: {message}", result.harness.name());
+        }
+        for subtest in &result.subtests {
+            if subtest.status != Status::Pass {
+                let message = subtest.message.as_deref().unwrap_or("");
+                println!("  {} {}: {message}", subtest.status.name(), subtest.name);
+            }
+        }
+    }
+    let rendered = testharness::render_expectations(&results);
+    if let Some(summary) = rendered.lines().find(|line| line.contains(" Dateien, ")) {
+        println!("{}", summary.trim_start_matches("# "));
+    }
+    if let Some(file) = expectations
+        && let Err(error) = std::fs::write(&file, &rendered)
+    {
+        eprintln!("{}: {error}", file.display());
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
 }
