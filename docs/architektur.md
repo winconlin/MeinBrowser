@@ -657,10 +657,10 @@ Die Meilensteine bauen aufeinander auf, viele Teile lassen sich aber parallel be
 |---|---|---|---|
 | M0 | Fundament | Workspace, CI für Linux, Windows und macOS, Abhängigkeitswächter, Unicode-Generator, Plattformschicht mit Fenster, Eingabe und CPU-Bildausgabe | Ein Fenster zeigt auf allen drei Systemen ein selbst gezeichnetes Testbild, die CI ist grün. |
 | M1 | Erstes Dokument | Encoding, URL, HTML-Parser, Dokumentspeicher, CSS-Grundlagen, Block- und Inline-Layout, einfache Textformung, Systemschriften, CPU-Renderer, dazu XML und XHTML sowie PNG mit Deflate, weil die Referenztests sie brauchen (entschieden am 25.10.2026) | html5lib-tests vollständig bestanden, die URL-Testdaten der WPT weitgehend bestanden, eine lokale HTML-Datei wird korrekt angezeigt (gemessen an den Referenztests in `tools/testrunner/m1-referenztests.txt`). |
-| M2 | JavaScript | Parser, Bytecode, Interpreter, Garbage Collector, eingebaute Objekte (ohne Intl), WebIDL-Generator, DOM-Bindings, Ereignisschleife, eigener WPT-Läufer | Test262 ohne Intl zu einem hohen Anteil bestanden, testharness.js läuft, WPT-Ergebnisse für DOM-Bereiche werden täglich gemessen. |
+| M2 | JavaScript | Parser, Bytecode, Interpreter, Garbage Collector, eingebaute Objekte (ohne Intl), WebIDL-Generator, DOM-Bindings, Ereignisschleife, eigener WPT-Läufer | Test262 ohne Intl zu mindestens 85 Prozent bestanden, testharness.js läuft, WPT-Ergebnisse für DOM-Bereiche werden täglich gemessen. |
 | M3 | Netzwerk | DNS, HTTP/1.1, TLS 1.3 und 1.2, X.509, Kompression, Cookies, Fetch, HTTP-Cache, HSTS | Beliebige HTTPS-Seiten laden. WPT-Bereiche zu Fetch und Cookies werden gemessen. |
 | M4 | Modernes Layout und GPU | Flex, Grid, Positionierung, Floats, Tabellen, Scrollen, Transformationen, Filter, Animationen, GPU-Renderer, Compositor | CSS-Bereiche der WPT erreichen ihre Zielquoten, CPU- und GPU-Renderer stimmen in den Referenztests überein. |
-| M5 | Alltagstauglich | Formulare, Frames, Navigation und Verlauf, Prozessisolation und Sandbox, Speicherung, alle Bildformate, WOFF2, komplexe Schriften, Bidi, HTTP/2, Canvas 2D, SVG, Oberfläche mit Tabs, Lesezeichen und Downloads, Skins, WebDriver | Die Liste meistbesuchter Seiten ist bedienbar, die Entwickler nutzen den Browser im Alltag. |
+| M5 | Alltagstauglich | Formulare, Frames, Navigation und Verlauf, Prozessisolation und Sandbox, Speicherung, alle Bildformate, WOFF2, komplexe Schriften, Bidi, HTTP/2, Canvas 2D, SVG, Oberfläche mit Tabs, Lesezeichen und Downloads, Skins, WebDriver | Die Liste meistbesuchter Seiten ist bedienbar, die Entwickler nutzen den Browser im Alltag, Test262 ohne Intl besteht zu mindestens 95 Prozent. |
 | M6 | Erweiterungen | Manifest V2 und V3 von Chrome und Firefox, CRX3 und XPI, Inhalts-Skripte, die APIs aus [5.3](#53-reihenfolge-der-apis) Stufe 1 bis 3, Themes | Die Zielerweiterungen laufen ohne Änderung. |
 | M7 | Medien und Grafik | Audio, Video, Media Source Extensions, eigene Codecs, Web Audio, WebGL 1 und 2, WebGPU, WebAssembly, Intl | Videoseiten ohne DRM spielen ab, Konformitätstests für WebGL und WebAssembly werden gemessen. |
 | M8 | Leistung | Basis-JIT, Einfrieren von Tabs, paralleles Stil und Layout, HTTP/3 und QUIC, später optimierender JIT | Die Zielwerte aus [Abschnitt 7](#7-ressourcenschonung) sind erreicht, Speedometer und JetStream werden regelmäßig gemessen. |
@@ -700,7 +700,7 @@ Für die übrigen Teile von M2 stehen an:
 - **Skripte im Dokument:** DOM-Bindings, Ereignisschleife und das Ausführen von `script`-Elementen in `mb-web`.
 - **Messung:** ein WPT-Läufer für testharness.js und ein nächtlicher Lauf, der die Ergebnisse je Bereich festhält. Bisher laufen nachts nur das Fuzzing, die Belastungstests für den Garbage Collector, Test262 über den Zwischenspeicher für Bytecode und die großen Nachrichten für SHA-256.
 
-Danach folgt M3. Für „Test262 ohne Intl zu einem hohen Anteil bestanden“ ist noch kein Zahlenwert festgelegt.
+Danach folgt M3. Für Test262 gilt in M2 seit dem 28.11.2026 die Grenze von 85 Prozent der 48.882 Dateien außerhalb von `intl402/` und `staging/`; mit 42.028 bestandenen Dateien ist sie erreicht. Temporal (4.605 Dateien unter `test/built-ins/Temporal/`) und die Unicode-Eigenschaften der regulären Ausdrücke kommen später als eigene Schritte. Bis M5 sollen 95 Prozent bestehen; ohne Temporal sind höchstens gut 90 Prozent möglich.
 
 ---
 
@@ -729,6 +729,7 @@ Was daraus folgt:
 - **JavaScript-Engine (31.10.2026):** Werte mit NaN-Boxing und Int32-Schnellweg, Bytecode für eine Registermaschine mit Akkumulator, echte Endaufrufe nach Abschnitt 15.10 von ECMA-262, Heap und Garbage Collector bis zum JIT ohne `unsafe`, Test262 mit `cargo test` in `mb-js`. Bereiche und Handles tragen die Nummer ihres Heaps, eine Verwechslung löst eine Panic aus; Werte tragen keine, eine Marke im Typ wird vor dem JIT erneut geprüft. Differentielle Tests vergleichen vorerst nur eigene Wege (normal, Belastungsmodus, Zwischenspeicher für Bytecode), keine fremde Engine ([4.9](#49-javascript-und-webassembly)).
 - **DRM und Widevine:** eigene EME-Schnittstelle und eigener CDM-Host, mit optionalem externen Widevine-CDM; standardmäßig deaktiviert, nur nach Zustimmung und in einem eigenen eingeschränkten Prozess ([4.13](#413-bilder-audio-und-video)).
 - **Rust-Edition:** Edition 2024 ist im Workspace eingestellt; die Mindestversion des Compilers bleibt offen.
+- **Grenzen für Test262 (28.11.2026):** Gezählt werden alle Dateien unter `test/` außerhalb von `intl402/` und `staging/`, zurzeit 48.882. M2 verlangt, dass mindestens 85 Prozent davon bestehen, M5 mindestens 95 Prozent. 100 Prozent sind kein Ziel: Einige Dateien brauchen Worker oder `document.all`, und Test262 wächst ständig ([12.2](#122-nächste-schritte)).
 
 **Noch offen**
 
