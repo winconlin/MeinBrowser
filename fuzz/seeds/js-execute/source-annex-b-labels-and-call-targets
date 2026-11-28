@@ -1,0 +1,1 @@
+a: b: function f(){return g;} { l: function g(){} } f(); try { f() = 1; } catch (e) {} try { for (f() of [1]) ; } catch (e) {} (function(){ eval('{ function h(){return h;} }'); return h(); })();

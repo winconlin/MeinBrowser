@@ -54,7 +54,7 @@ jobs:
           - part: test262-language
             package: mb-js
             testdata: true
-            tests: test262_language_under_stress
+            tests: test262_language_under_stress test262_annex_b_language_under_stress
           - part: test262-built-ins
             package: mb-js
             testdata: true
@@ -66,11 +66,11 @@ jobs:
           - part: test262-zwischenspeicher
             package: mb-js
             testdata: true
-            tests: test262_language_through_code_cache test262_built_ins_through_code_cache test262_annex_b_built_ins_through_code_cache test262_language_through_disk_cache
+            tests: test262_language_through_code_cache test262_built_ins_through_code_cache test262_annex_b_built_ins_through_code_cache test262_annex_b_language_through_code_cache test262_language_through_disk_cache
           - part: test262-vorpruefung
             package: mb-js
             testdata: true
-            tests: test262_language_every_body_pre_checked test262_built_ins_every_body_pre_checked test262_annex_b_built_ins_every_body_pre_checked
+            tests: test262_language_every_body_pre_checked test262_built_ins_every_body_pre_checked test262_annex_b_built_ins_every_body_pre_checked test262_annex_b_language_every_body_pre_checked
           - part: sha256-grosse-nachrichten
             package: mb-crypto
             testdata: true

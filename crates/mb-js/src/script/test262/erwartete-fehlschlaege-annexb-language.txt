@@ -1,0 +1,22 @@
+# Erwartete Fehlschläge der Test262-Dateien unter test/annexB/language/, Pfade
+# relativ dazu. Ohne Modus scheitern alle Varianten der Datei, sonst
+# nur der genannte. Erzeugt von script/test262/language.rs; bei einer
+# Abweichung schreibt der Test die neue Fassung nach
+# target/test262/erwartete-fehlschlaege-annexb-language.txt.
+# 845 Dateien, 0 Vorschläge übersprungen; bestanden 829 von 845 Dateien und 863 von 895 Varianten
+expressions/assignment/dstr/array-pattern-emulates-undefined.js
+expressions/assignment/dstr/object-pattern-emulates-undefined.js
+expressions/coalesce/emulates-undefined.js
+expressions/logical-assignment/emulates-undefined-coalesce.js
+expressions/strict-does-not-equals/emulates-undefined.js
+expressions/strict-equals/emulates-undefined.js
+expressions/yield/star-iterable-return-emulates-undefined-throws-when-called.js
+expressions/yield/star-iterable-throw-emulates-undefined-throws-when-called.js
+statements/class/subclass/superclass-emulates-undefined.js
+statements/class/subclass/superclass-prototype-emulates-undefined.js
+statements/const/dstr/array-pattern-emulates-undefined.js
+statements/const/dstr/object-pattern-emulates-undefined.js
+statements/for-await-of/iterator-close-return-emulates-undefined-throws-when-called.js
+statements/for-of/iterator-close-return-emulates-undefined-throws-when-called.js
+statements/function/default-parameters-emulates-undefined.js
+statements/switch/emulates-undefined.js

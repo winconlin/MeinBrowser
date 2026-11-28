@@ -51,6 +51,8 @@ enum Outcome {
     /// Ein Fehler beim Laden oder Linken eines Moduls.
     Resolution(ErrorKind),
     Test262Error,
+    /// Ein Fehlerobjekt mit dem Prototyp von %EvalError% eines Realms.
+    EvalError,
     ThrownValue,
     /// Ein Test mit `async` meldete einen Fehlschlag.
     AsyncFailure,
@@ -72,9 +74,10 @@ const ERROR_KINDS: [ErrorKind; 4] = [
 /// verlangt („the name of the thrown exception's constructor“), ohne
 /// JavaScript auszuführen: Ein Fehlerobjekt, dessen Prototyp der Prototyp
 /// einer Fehlerart in einem Realm des Agents ist, zählt wie ein Fehler der
-/// Engine dieser Art; ein Objekt mit `Test262Error.prototype` eines Realms
-/// als Prototyp zählt als Test262Error. Gelesen werden nur Prototypen und
-/// eigene Dateneigenschaften.
+/// Engine dieser Art, eines mit %EvalError.prototype% als EvalError; ein
+/// Objekt mit `Test262Error.prototype` eines Realms als Prototyp zählt als
+/// Test262Error. Gelesen werden nur Prototypen und eigene
+/// Dateneigenschaften.
 fn classify(agent: &mut Agent, scope: &Scope, value: Local<'_>) -> Outcome {
     let error = {
         let heap = agent.heap();
@@ -94,6 +97,10 @@ fn classify(agent: &mut Agent, scope: &Scope, value: Local<'_>) -> Outcome {
                 if same(agent, prototype, expected) {
                     return Outcome::Error(kind);
                 }
+            }
+            let expected = agent.intrinsic(scope, realm, Intrinsic::EvalErrorPrototype);
+            if same(agent, prototype, expected) {
+                return Outcome::EvalError;
             }
         }
         let global = agent.global_object(scope, realm);
@@ -305,6 +312,7 @@ fn expected(negative: Option<Negative>) -> Outcome {
         Some(Negative::Parse) => Outcome::Syntax,
         Some(Negative::Runtime(kind)) => Outcome::Error(kind),
         Some(Negative::Test262Error) => Outcome::Test262Error,
+        Some(Negative::EvalError) => Outcome::EvalError,
         Some(Negative::Resolution(kind)) => Outcome::Resolution(kind),
     }
 }
@@ -437,7 +445,7 @@ fn run_file_with(
     // Deshalb bei negativen Laufzeittests die frühe Phase separat prüfen.
     if matches!(
         metadata.negative,
-        Some(Negative::Runtime(_) | Negative::Test262Error)
+        Some(Negative::Runtime(_) | Negative::Test262Error | Negative::EvalError)
     ) {
         let units: Vec<u16> = text.encode_utf16().collect();
         let ast = match parse_script(&units) {

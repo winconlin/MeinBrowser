@@ -192,6 +192,10 @@ def execution_seeds():
     write("js-execute", "source-unsupported", "function f(){} class A{} try { f(); } catch(e) {}")
     write("js-execute", "source-tagged-templates", "function t(s,...v){return s;} t`a${1}b\\u{`;"
           " var o={m(s){return this;}}; o.m`x`; t`a`===t`a`; (function(){return t`y`;})();")
+    write("js-execute", "source-annex-b-labels-and-call-targets",
+          "a: b: function f(){return g;} { l: function g(){} } f();"
+          " try { f() = 1; } catch (e) {} try { for (f() of [1]) ; } catch (e) {}"
+          " (function(){ eval('{ function h(){return h;} }'); return h(); })();")
     write("js-execute", "source-syntax-error", "let = ;")
     write("js-execute", "source-widths", "127;128;32768;70000;")
     write("js-execute", "source-constants", "".join(f"{value}.25;" for value in range(300)))
@@ -475,6 +479,9 @@ def main():
     code_cache("tagged-templates", "function t(s, ...v) { return s.raw.join() + v.length; }"
                " var o = { m(s) { return this === o; } }; function f() { return t`x`; }"
                " [t`a${1}b\\u{`, o.m`y`, f() === f(), String.raw`\\n${2}`].join()")
+    code_cache("annex-b-labels-and-call-targets", "l: function f() { return 1; }"
+               " var r = []; { m: function g() { return 2; } r.push(g()); }"
+               " try { f()++; } catch (e) { r.push(e.name); } r.push(f(), typeof g); r.join()")
     code_cache("changed-constants", "var g = function (a) { return [a, typeof a]; }; g(1)",
                bytes([20, 0, 0, 40, 0, 0xFF, 60, 0, 1]))
     code_cache("changed-code", "function f(a) { return a + 1; } f(1)", bytes([5, 0, 0x7F, 9, 0, 0x80]))
