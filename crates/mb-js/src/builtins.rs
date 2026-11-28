@@ -46,6 +46,7 @@ mod collection;
 mod data_view;
 mod date;
 mod disposable;
+mod disposable_stack;
 mod error;
 mod function;
 mod generator;
@@ -127,6 +128,7 @@ pub(crate) fn create_intrinsics(
     reflect::create(agent, scope, realm)?;
     proxy::create(agent, scope, realm)?;
     weak_ref::create(agent, scope, realm)?;
+    disposable_stack::create(agent, scope, realm)?;
     promise::create(agent, scope, realm)
 }
 

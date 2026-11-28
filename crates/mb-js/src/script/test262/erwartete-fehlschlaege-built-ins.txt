@@ -3,7 +3,7 @@
 # nur der genannte. Erzeugt von script/test262/language.rs; bei einer
 # Abweichung schreibt der Test die neue Fassung nach
 # target/test262/erwartete-fehlschlaege-built-ins.txt.
-# 18595 Dateien, 203 Vorschläge übersprungen; bestanden 17582 von 18392 Dateien und 34902 von 36501 Varianten
+# 18792 Dateien, 203 Vorschläge übersprungen; bestanden 17779 von 18589 Dateien und 35296 von 36895 Varianten
 Array/prototype/concat/Array.prototype.concat_large-typed-array.js
 Array/prototype/concat/Array.prototype.concat_small-typed-array.js
 Array/prototype/concat/Array.prototype.concat_spreadable-sparse-object.js

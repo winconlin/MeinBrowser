@@ -193,6 +193,7 @@ const KIND_FINALIZATION_REGISTRY: u64 = 33;
 const KIND_SHARED: u64 = 34;
 const KIND_SHARED_ARRAY_BUFFER: u64 = 35;
 const KIND_NAMESPACE: u64 = 36;
+const KIND_DISPOSABLE_STACK: u64 = 37;
 
 /// Die Kennzeichen stehen in den Bits 8 bis 31 des Kopfworts.
 const FLAG_SHIFT: u32 = 8;
@@ -240,7 +241,7 @@ fn ephemeron_width(header: u64) -> usize {
 }
 
 /// Die Arten der Objektzellen.
-const OBJECT_KINDS: [u64; 24] = [
+const OBJECT_KINDS: [u64; 25] = [
     KIND_OBJECT,
     KIND_ARRAY,
     KIND_FUNCTION,
@@ -265,6 +266,7 @@ const OBJECT_KINDS: [u64; 24] = [
     KIND_FINALIZATION_REGISTRY,
     KIND_SHARED_ARRAY_BUFFER,
     KIND_NAMESPACE,
+    KIND_DISPOSABLE_STACK,
 ];
 
 /// Die internen Felder eines Funktionsobjekts, Werte vor den eingebetteten
@@ -333,6 +335,11 @@ pub(crate) const FINALIZATION_REGISTRY_FIELDS: usize = 5;
 /// Das interne Feld eines Namensraum-Objekts: die Nummer seines Moduls,
 /// das für [[Module]] und [[Exports]] steht.
 pub(crate) const NAMESPACE_FIELDS: usize = 1;
+/// Die internen Felder eines DisposableStack oder AsyncDisposableStack: ob
+/// er async ist ([[AsyncDisposableState]] statt [[DisposableState]]), ob
+/// er ~disposed~ ist, die Zelle mit den Ressourcen seiner
+/// [[DisposeCapability]] oder *undefined* und wie viele es sind.
+pub(crate) const DISPOSABLE_STACK_FIELDS: usize = 4;
 
 fn is_object(kind: u64) -> bool {
     OBJECT_KINDS.contains(&kind)
@@ -362,6 +369,7 @@ fn object_fields(kind: u64) -> usize {
         KIND_WEAK_REF => WEAK_REF_FIELDS,
         KIND_FINALIZATION_REGISTRY => FINALIZATION_REGISTRY_FIELDS,
         KIND_NAMESPACE => NAMESPACE_FIELDS,
+        KIND_DISPOSABLE_STACK => DISPOSABLE_STACK_FIELDS,
         _ => 0,
     }
 }

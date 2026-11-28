@@ -88,6 +88,7 @@ pub fn is_callable(heap: &Heap, value: Value<'_>) -> bool {
                 | ObjectClass::Collection
                 | ObjectClass::RegExp
                 | ObjectClass::Date
+                | ObjectClass::DisposableStack
                 | ObjectClass::WeakRef
                 | ObjectClass::FinalizationRegistry
                 | ObjectClass::ArrayBuffer

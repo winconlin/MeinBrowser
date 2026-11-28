@@ -136,6 +136,11 @@ pub enum Intrinsic {
     WeakRefPrototype,
     /// %FinalizationRegistry.prototype% (Abschnitt 26.2.3).
     FinalizationRegistryPrototype,
+    /// %DisposableStack.prototype% und %AsyncDisposableStack.prototype%
+    /// (Anker sec-properties-of-the-disposablestack-prototype-object und
+    /// sec-properties-of-the-asyncdisposablestack-prototype-object).
+    DisposableStackPrototype,
+    AsyncDisposableStackPrototype,
     /// %ArrayBuffer.prototype% (Abschnitt 25.1.6), ein gewöhnliches
     /// Objekt.
     ArrayBufferPrototype,
@@ -262,6 +267,11 @@ pub enum Intrinsic {
     WeakRef,
     /// %FinalizationRegistry% (Abschnitt 26.2.1).
     FinalizationRegistry,
+    /// %DisposableStack% und %AsyncDisposableStack% (Anker
+    /// sec-disposablestack-constructor und
+    /// sec-asyncdisposablestack-constructor).
+    DisposableStack,
+    AsyncDisposableStack,
     /// %ArrayBuffer% (Abschnitt 25.1.4).
     ArrayBuffer,
     /// %SharedArrayBuffer% (Abschnitt 25.2.3).
@@ -832,12 +842,14 @@ fn set_default_global_bindings(
         ("AggregateError", Intrinsic::AggregateError),
         ("Array", Intrinsic::Array),
         ("ArrayBuffer", Intrinsic::ArrayBuffer),
+        ("AsyncDisposableStack", Intrinsic::AsyncDisposableStack),
         ("BigInt", Intrinsic::BigInt),
         ("BigInt64Array", Intrinsic::BigInt64Array),
         ("BigUint64Array", Intrinsic::BigUint64Array),
         ("Boolean", Intrinsic::Boolean),
         ("DataView", Intrinsic::DataView),
         ("Date", Intrinsic::Date),
+        ("DisposableStack", Intrinsic::DisposableStack),
         ("Error", Intrinsic::Error),
         ("EvalError", Intrinsic::EvalError),
         ("FinalizationRegistry", Intrinsic::FinalizationRegistry),

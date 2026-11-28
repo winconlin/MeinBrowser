@@ -268,6 +268,9 @@ mod tests;
 mod budget_tests;
 
 #[cfg(test)]
+mod disposable_stack_tests;
+
+#[cfg(test)]
 mod eval_tests;
 
 #[cfg(test)]

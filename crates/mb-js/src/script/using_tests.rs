@@ -43,8 +43,9 @@ fn run(agent: &mut Agent, realm: RealmId, source: &str) -> String {
 /// Vor jedem Fall stehen `log`, ein Array für die Reihenfolge, und
 /// `res(name)`, eine Ressource, die beim Freigeben `name` in `log`
 /// schreibt. Mit `jobs` laufen nach dem Script alle Jobs, und das Ergebnis
-/// ist `log.join()`; sonst ist es der Wert des Scripts.
-fn check_with(cases: &[(&str, &str)], jobs: bool, stress: bool) {
+/// ist `log.join()`; sonst ist es der Wert des Scripts. Die Tests von
+/// DisposableStack nehmen dieselben Fälle.
+pub(super) fn check_with(cases: &[(&str, &str)], jobs: bool, stress: bool) {
     let mut failures = Vec::new();
     for &(source, expected) in cases {
         let mut agent = Agent::with_options(Options {
@@ -73,11 +74,11 @@ fn check_with(cases: &[(&str, &str)], jobs: bool, stress: bool) {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-fn check(cases: &[(&str, &str)]) {
+pub(super) fn check(cases: &[(&str, &str)]) {
     check_with(cases, false, false);
 }
 
-fn check_async(cases: &[(&str, &str)]) {
+pub(super) fn check_async(cases: &[(&str, &str)]) {
     check_with(cases, true, false);
     check_with(cases, true, true);
 }

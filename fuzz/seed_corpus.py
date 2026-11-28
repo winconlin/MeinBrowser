@@ -202,6 +202,13 @@ def execution_seeds():
           " try { using e={[Symbol.dispose](){throw 4;}}; throw 5; } catch (x) { l.push(x.suppressed); } }"
           " try { { using f=1; } } catch (x) {} (function(){ using g=r(6); return 7; })();"
           " (async function(){ { await using h=null, i=r(8); } for (await using j of [r(9)]) ; })();")
+    write("js-execute", "source-disposable-stack",
+          "var l=[]; var s=new DisposableStack(); s.use({[Symbol.dispose](){l.push(1);}});"
+          " s.adopt(2,v=>l.push(v)); s.defer(()=>{throw 3;}); s.defer(()=>{throw 4;}); var t=s.move();"
+          " try { t.dispose(); } catch (e) { l.push(e.error, e.suppressed); } try { s.use(null); } catch (e) {}"
+          " var a=new AsyncDisposableStack(); a.use(null); a.defer(async()=>l.push(5));"
+          " a.use({[Symbol.dispose](){l.push(6);}}); a.disposeAsync().then(()=>l.push(a.disposed));"
+          " (async function(){ await using b=new AsyncDisposableStack(); b.defer(()=>Promise.reject(7)); })();")
     write("js-execute", "source-syntax-error", "let = ;")
     write("js-execute", "source-widths", "127;128;32768;70000;")
     write("js-execute", "source-constants", "".join(f"{value}.25;" for value in range(300)))
