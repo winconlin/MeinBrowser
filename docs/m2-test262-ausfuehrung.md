@@ -6,9 +6,11 @@ Tests durch Parser, Compiler und Interpreter aus, und `script/test262/language.r
 alle Dateien unter `test/language/` gegen eine Datei der erwarteten
 Fehlschläge (siehe [unten](#ganz-language-mit-erwarteten-ergebnissen)), die
 unter den fertigen Teilen von `test/built-ins/` gegen eine zweite
-und die unter den fertigen Teilen von `test/annexB/built-ins/` gegen eine
+die unter den fertigen Teilen von `test/annexB/built-ins/` gegen eine
 dritte (siehe
-[unten](#built-ins-und-annexbbuilt-ins-mit-erwarteten-ergebnissen)). Das ergänzt die M2-Arbeit
+[unten](#built-ins-und-annexbbuilt-ins-mit-erwarteten-ergebnissen)) und
+alle unter `test/annexB/language/` gegen eine vierte (siehe
+[unten](#annexblanguage-mit-erwarteten-ergebnissen)). Das ergänzt die M2-Arbeit
 aus [Architektur, Abschnitt 10](architektur.md#10-kompatibilität-messen), ohne
 die Implementierung der Engine zu ändern.
 
@@ -76,7 +78,9 @@ Lesart, `INTERPRETING.md` legt es nicht fest. Auch für einen
 SharedArrayBuffer wirft es einen TypeError, denn den kann
 DetachArrayBuffer nicht ablösen. Es fehlen
 `IsHTMLDDA`, `agent` und `AbstractModuleSource`, bis die Engine die Teile
-dafür hat; Tests, die sie brauchen, schlagen fehl. Für `agent` braucht es
+dafür hat; Tests, die sie brauchen, schlagen fehl, außer einigen mit
+`IsHTMLDDA`, für die *undefined* an seiner Stelle genügt (siehe
+[unten](#annexblanguage-mit-erwarteten-ergebnissen)). Für `agent` braucht es
 Worker, also Agents in eigenen Fäden; bis dahin scheitern die Tests unter
 `Atomics/`, die mehrere Agents starten, schon in `atomicsHelper.js`, das
 `$262.agent` liest, und stehen in den erwarteten Fehlschlägen.
@@ -105,9 +109,10 @@ nicht unterstützte Formen der ausgewerteten Felder werden abgelehnt.
 
 Die Auswahl ist eine Regressionstest-Grundlage für den vorhandenen
 Sprachumfang, auch im Belastungsmodus. Die Bestehensquoten für
-`test/language/` und die fertigen Teile von `test/built-ins/` und
-`test/annexB/built-ins/` liefern die Läufe weiter unten; für das
-übrige `built-ins/` und `annexB/` gibt es noch keine, und keine der Zahlen
+`test/language/`, die fertigen Teile von `test/built-ins/` und
+`test/annexB/built-ins/` und `test/annexB/language/` liefern die Läufe
+weiter unten; für das übrige `built-ins/` und `annexB/built-ins/` gibt es
+noch keine, und keine der Zahlen
 ist ein vollständiger ECMAScript-Konformitätsnachweis. Die Syntaxzahlen werden getrennt geführt;
 Syntax-Negativtests dürfen nicht in diese Auswahl.
 
@@ -774,6 +779,52 @@ Die Gründe aller Varianten:
 | 12 | `Test262Error`: Eine Assertion schlug fehl |
 | 2 | ReferenceError im Test |
 
+## `annexB/language/` mit erwarteten Ergebnissen
+
+```sh
+cargo test --locked -p mb-js script::test262::language::test262_annex_b_language -- --nocapture
+```
+
+Seit Schritt 13b läuft derselbe Läufer über alle 845 Dateien unter
+`test/annexB/language/`, gegen
+`crates/mb-js/src/script/test262/erwartete-fehlschlaege-annexb-language.txt`
+mit Pfaden relativ zu `test/annexB/language/`, sonst wie oben. Keine Datei
+hat einen Vorschlag aus `features.txt`. Es bestehen 829 von 845 Dateien und
+863 von 895 Varianten; 469 Dateien liegen unter `eval-code/`, 159 unter
+`function-code/` und 153 unter `global-code/`, meist zu den Funktionen in
+Blöcken nach Anhang B.3.2 und B.3.3.
+
+Für den Lauf kamen in Schritt 13b drei Teile dazu: Funktionsdeklarationen
+mit Marke nach Anhang B.3.1 (`statements/labeled/function-declaration.js`),
+außerhalb des strikten Modus Aufrufe als Ziel von `=`, einer
+zusammengesetzten Zuweisung, `++`, `--` und dem Kopf von `for`-`in` und
+`for`-`of`, bei denen erst der Aufruf läuft und dann ein ReferenceError
+folgt, vor der rechten Seite und ohne den Wert zu lesen (Anhang B, Runtime
+Errors for Function Call Assignment Targets; die sieben Dateien unter
+`expressions/assignmenttargettype/`), und `EvalError` als erwartete Art
+(siehe [unten](#fehler-und-ressourcen)) für die drei
+`comments/single-line-html-close-first-line-*.js`, die mit `-->` in der
+ersten Zeile beginnen. Außerdem fand der Lauf einen Fehler: Nannte eine
+innere Funktion den Namen einer Funktion in einem Block eines direkten
+`eval` in einer Funktion, hatte der Block einen eigenen Kontext, und die
+Funktion kam nach Anhang B.3.2.3 eine Stufe zu weit innen statt in die
+var-Bindung. Das traf die acht `eval-code/direct/func-*-eval-func-block-scoping.js`.
+
+Es scheitern noch 16 Dateien, alle mit dem Feature `IsHTMLDDA`: Sie
+brauchen `$262.IsHTMLDDA` (Anhang B.3.6), das der Host noch nicht hat
+(siehe [oben](#harness-und-heutige-grenzen)). Zehn weitere Dateien mit dem
+Feature bestehen, prüfen aber nichts: Ohne die Eigenschaft ist
+`$262.IsHTMLDDA` *undefined*, und für *undefined* gilt, was sie von einem
+Objekt mit [[IsHTMLDDA]] verlangen (`typeof`, `==`, `!=`, `!`, `&&`,
+`||`, `&&=`, `||=`, `?:` und `if`). Die Gründe der 32 Varianten:
+
+| Varianten | Grund |
+| ---: | --- |
+| 22 | `Test262Error`: Eine Assertion schlug fehl |
+| 4 | ReferenceError im Test: Mit *undefined* statt des Objekts werten `??` und `??=` die rechte Seite aus, einen unbekannten Namen (`expressions/coalesce/`, `expressions/logical-assignment/`) |
+| 4 | TypeError im Test: *undefined* statt des Objekts als Oberklasse (`statements/class/subclass/`) |
+| 2 | `AsyncFailure`: `statements/for-await-of/iterator-close-return-emulates-undefined-throws-when-called.js` |
+
 ## Nächtliche Belastungstests
 
 Der Workflow `.github/workflows/belastung.yml` läuft jede Nacht um 03:45 UTC,
@@ -788,12 +839,18 @@ mit `#[ignore]` übersprungen werden. Für die JavaScript-Engine sind es fünf
 Jobs:
 
 ```sh
-cargo test --locked --release -p mb-js --lib -- --ignored test262_language_under_stress
+cargo test --locked --release -p mb-js --lib -- --ignored test262_language_under_stress test262_annex_b_language_under_stress
 cargo test --locked --release -p mb-js --lib -- --ignored test262_built_ins_under_stress test262_annex_b_built_ins_under_stress
 cargo test --locked --release -p mb-js --lib -- --ignored script::gc_tests::
-cargo test --locked --release -p mb-js --lib -- --ignored test262_language_through_code_cache test262_built_ins_through_code_cache test262_annex_b_built_ins_through_code_cache test262_language_through_disk_cache
-cargo test --locked --release -p mb-js --lib -- --ignored test262_language_every_body_pre_checked test262_built_ins_every_body_pre_checked test262_annex_b_built_ins_every_body_pre_checked
+cargo test --locked --release -p mb-js --lib -- --ignored test262_language_through_code_cache test262_built_ins_through_code_cache test262_annex_b_built_ins_through_code_cache test262_annex_b_language_through_code_cache test262_language_through_disk_cache
+cargo test --locked --release -p mb-js --lib -- --ignored test262_language_every_body_pre_checked test262_built_ins_every_body_pre_checked test262_annex_b_built_ins_every_body_pre_checked test262_annex_b_language_every_body_pre_checked
 ```
+
+Seit Schritt 13b läuft `annexB/language/` in allen drei Arten mit: im
+Belastungsmodus im ersten Job, über den Zwischenspeicher im vierten und
+vorgeprüft im fünften. Die drei Läufe darüber brauchten am
+28.11.2026 im Release-Build auf vier Kernen zusammen gut 11 Sekunden, mit
+denselben erwarteten Fehlschlägen.
 
 Die ersten beiden sind die Läufe über `language/`, `built-ins/` und
 `annexB/built-ins/` von oben, aber im Belastungsmodus: Der Heap sammelt vor
@@ -874,15 +931,19 @@ erwarteten Laufzeitfehler erfüllen.
 Ausnahme. Der Läufer liest dafür weder `constructor` noch `name`, sondern
 ordnet ohne JavaScript ein: Ein Fehler der Engine, den kein `catch` fing,
 zählt nach seiner Art. Ein Fehlerobjekt zählt als RangeError,
-ReferenceError, SyntaxError oder TypeError, wenn sein direkter Prototyp der
-Prototyp dieser Art in einem Realm des Agents ist. Ein Objekt, dessen
+ReferenceError, SyntaxError, TypeError oder EvalError, wenn sein direkter
+Prototyp der Prototyp dieser Art in einem Realm des Agents ist; einen
+EvalError wirft die Engine selbst nie, nur ein Test mit
+`throw new EvalError(…)`. Ein Objekt, dessen
 direkter Prototyp `Test262Error.prototype` ist, gelesen als eigene
 Dateneigenschaften des globalen Objekts und des Konstruktors, zählt als
 `Test262Error`. Strings, Objekte mit passendem `name` oder `constructor` und
 Objekte, die nur weiter oben in ihrer Prototypkette einen dieser Prototypen
 haben, zählen nicht; das ist strenger als der Vergleich der Namen. Als
-erwartete Art liest der Metadatenleser bisher nur diese fünf; EvalError,
-URIError und Error lehnt er ab, in `test/language/` erwartet sie kein Test.
+erwartete Art liest der Metadatenleser bisher nur diese sechs, EvalError
+seit Schritt 13b für drei Dateien unter `annexB/language/comments/`, und
+nur in der Phase `runtime`; URIError und Error lehnt er ab, sie erwartet
+kein Test.
 Bei der Beobachtung werden keine JavaScript-Getter oder Konversionen
 aufgerufen.
 
@@ -908,11 +969,16 @@ aufzurufenden Gettern.
    Belastungsmodus laufen sollen. Für die feste Liste gibt es keine
    Ausnahmeliste; die erwarteten Fehlschläge gelten nur für den Lauf über
    `language/`.
-3. `annexB/language/`, das `tools/testdata` schon holt, in den Lauf mit
-   erwarteten Ergebnissen aufnehmen, und mit jeder Welle von Schritt 8
-   weitere Teile von `built-ins/` und `annexB/built-ins/`: je Teil ein
-   Eintrag in `BUILT_INS` oder `ANNEX_B_BUILT_INS` in `language.rs` und sein
-   Pfad in `tools/testdata`.
+3. Mit jedem neuen eingebauten Objekt weitere Teile von `built-ins/` und
+   `annexB/built-ins/` in den Lauf mit erwarteten Ergebnissen aufnehmen: je
+   Teil ein Eintrag in `BUILT_INS` oder `ANNEX_B_BUILT_INS` in
+   `language.rs` und sein Pfad in `tools/testdata`. `annexB/language/` läuft
+   seit Schritt 13b ganz.
+4. `$262.IsHTMLDDA` mit einem Objekt mit [[IsHTMLDDA]] (Anhang B.3.6), wenn
+   die Engine es für `document.all` bekommt: `typeof` ergibt
+   `"undefined"`, ToBoolean *false*, `==` mit *null* und *undefined*
+   *true*. Danach müssen die 16 Dateien unter `annexB/language/` und die
+   sieben unter `annexB/built-ins/` bestehen.
 
 Von elf bei der Vorbereitung untersuchten Dateien sind fünf seit Schritt 8a
 in der Auswahl (`expressions/call/11.2.3-3_4.js`, `11.2.3-3_6.js`,

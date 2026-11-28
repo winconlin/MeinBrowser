@@ -129,6 +129,19 @@ const ANNEX_B_BUILT_INS: Suite = Suite {
     expected: include_str!("erwartete-fehlschlaege-annexb-built-ins.txt"),
 };
 
+/// Die Sprache nach Anhang B: Kommentare im Stil von HTML (B.1.1),
+/// Literale (B.1.2 und B.1.3), Funktionsdeklarationen in Blöcken und in
+/// `if` für Funktionen, Scripts und `eval` (B.3.2 und B.3.3), mit Marke
+/// (B.3.1), `var` in `catch` (B.3.4), Initialisierer in `for`-`in` (B.3.5)
+/// und [[IsHTMLDDA]] (B.3.6).
+const ANNEX_B_LANGUAGE: Suite = Suite {
+    directory: "test/annexB/language",
+    parts: &[],
+    selection: false,
+    file: "erwartete-fehlschlaege-annexb-language.txt",
+    expected: include_str!("erwartete-fehlschlaege-annexb-language.txt"),
+};
+
 /// Eine Variante einer Datei: ein Modus, oder die ganze Datei, wenn sie
 /// sich nicht ausführen lässt.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -392,6 +405,11 @@ fn test262_annex_b_built_ins() {
     check_suite(&ANNEX_B_BUILT_INS, &Setup::default());
 }
 
+#[test]
+fn test262_annex_b_language() {
+    check_suite(&ANNEX_B_LANGUAGE, &Setup::default());
+}
+
 /// Der Speicher für die Läufe mit Zwischenspeicher, so groß, dass die
 /// Einträge der Hilfsdateien und einer Variante zwischen ihren zwei Läufen
 /// bleiben.
@@ -432,6 +450,12 @@ fn test262_annex_b_built_ins_every_body_pre_checked() {
 
 #[test]
 #[ignore = "nächtlicher Belastungstest, siehe .github/workflows/belastung.yml"]
+fn test262_annex_b_language_every_body_pre_checked() {
+    check_suite(&ANNEX_B_LANGUAGE, &every_body_pre_checked());
+}
+
+#[test]
+#[ignore = "nächtlicher Belastungstest, siehe .github/workflows/belastung.yml"]
 fn test262_language_through_code_cache() {
     check_suite(&LANGUAGE, &through_code_cache());
 }
@@ -446,6 +470,12 @@ fn test262_built_ins_through_code_cache() {
 #[ignore = "nächtlicher Belastungstest, siehe .github/workflows/belastung.yml"]
 fn test262_annex_b_built_ins_through_code_cache() {
     check_suite(&ANNEX_B_BUILT_INS, &through_code_cache());
+}
+
+#[test]
+#[ignore = "nächtlicher Belastungstest, siehe .github/workflows/belastung.yml"]
+fn test262_annex_b_language_through_code_cache() {
+    check_suite(&ANNEX_B_LANGUAGE, &through_code_cache());
 }
 
 /// Dasselbe mit dem Speicher auf der Platte aus `mb-storage`. Seine Grenze
@@ -484,6 +514,12 @@ fn test262_built_ins_under_stress() {
 #[ignore = "nächtlicher Belastungstest, siehe .github/workflows/belastung.yml"]
 fn test262_annex_b_built_ins_under_stress() {
     check_suite(&ANNEX_B_BUILT_INS, &under_stress());
+}
+
+#[test]
+#[ignore = "nächtlicher Belastungstest, siehe .github/workflows/belastung.yml"]
+fn test262_annex_b_language_under_stress() {
+    check_suite(&ANNEX_B_LANGUAGE, &under_stress());
 }
 
 fn under_stress() -> Setup {

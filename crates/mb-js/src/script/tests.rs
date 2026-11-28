@@ -1908,7 +1908,9 @@ fn functions_in_blocks_also_set_var_bindings() {
         ("if (false) ; else function f() { return 5; } f()", "5"),
         ("switch (1) { case 1: function f() { return 6; } } f()", "6"),
         ("l: { function f() { return 7; } } f()", "7"),
-        ("l: function f() {}", "Unsupported(3)"),
+        // Mit Marke im Block nicht (Anhang B.3.1, B.3.2 nennt nur
+        // Funktionen direkt in der Liste des Blocks).
+        ("{ l: function f() {} } typeof f", "\"undefined\""),
         // In Funktionen.
         (
             "function g() { { function f() { return 7; } } return f(); } g()",
@@ -1947,6 +1949,137 @@ fn functions_in_blocks_also_set_var_bindings() {
         (
             "var g = () => { { function arguments() {} } }; g()",
             "Unsupported(18)",
+        ),
+    ]);
+}
+
+/// Anhang B.3.1: Außerhalb des strikten Modus darf eine Marke vor einer
+/// Funktionsdeklaration stehen, auch mehrere. Auf oberster Ebene zählt sie
+/// wie eine ohne Marke zu den var-Deklarationen, in einem Block zu den
+/// lexikalischen; die Anweisung selbst tut nichts.
+#[test]
+fn labelled_function_declarations() {
+    check(&[
+        ("l: function f() { return 1; } f()", "1"),
+        ("var r = f(); l: function f() { return 2; } r", "2"),
+        ("a: b: c: function f() { return 3; } f()", "3"),
+        ("1; l: function f() {}", "1"),
+        (
+            "function f() { return 1; } l: function f() { return 2; } f()",
+            "2",
+        ),
+        ("l: function f() { return 1; } var f; f()", "1"),
+        ("var t = typeof f; l: function f() {} t", "\"function\""),
+        // Die globale Bindung entsteht wie bei `function` ohne Marke.
+        (
+            "l: function f() {} Object.getOwnPropertyDescriptor(globalThis, 'f').configurable",
+            "false",
+        ),
+        // In Funktionen.
+        (
+            "function g() { var r = f(); l: function f() { return 4; } return r; } g()",
+            "4",
+        ),
+        (
+            "function g() { return typeof arguments; l: function arguments() {} } g()",
+            "\"function\"",
+        ),
+        (
+            "function g() { l: function f() { return x; } var x = 5; return f(); } g()",
+            "5",
+        ),
+        // In Blöcken und `switch`: lexikalisch, ab Beginn des Blocks.
+        ("{ var r = f(); l: function f() { return 6; } } r", "6"),
+        (
+            "var r; switch (1) { case 0: l: function f() { return 7; } case 1: r = f(); } r",
+            "7",
+        ),
+        (
+            "switch (1) { case 1: l: function f() {} } typeof f",
+            "\"undefined\"",
+        ),
+        (
+            "function g() { { l: function f() {} } return typeof f; } g()",
+            "\"undefined\"",
+        ),
+        (
+            "{ l: function f() { return 1; } { function f() { return 2; } } } typeof f",
+            "\"undefined\"",
+        ),
+        (
+            "{ let g = () => f(); l: function f() { return 8; } var r = g(); } r",
+            "8",
+        ),
+        // Mit `break` zur Marke, im Block nach der Funktion.
+        ("var r = 1; l: { m: function f() {} break l; } r", "1"),
+        // In `eval` auf oberster Ebene eine var-Bindung.
+        ("eval('l: function f() { return 9; }'); f()", "9"),
+        (
+            "function g() { eval('l: function f() { return 10; }'); return f(); } g()",
+            "10",
+        ),
+        ("eval('{ l: function f() {} }'); typeof f", "\"undefined\""),
+        // Im strikten Modus ein früher Fehler.
+        (
+            "'use strict'; l: function f() {}",
+            "Syntax(SyntaxError { kind: InvalidLabelledFunction, position: 17 })",
+        ),
+    ]);
+}
+
+/// Anhang B, Runtime Errors for Function Call Assignment Targets: Außerhalb
+/// des strikten Modus darf ein Aufruf Ziel von `=`, einer zusammengesetzten
+/// Zuweisung, `++`, `--` und dem Kopf von `for`-`in` und `for`-`of` sein. Der
+/// Aufruf läuft, dann wirft das einen ReferenceError, vor der rechten Seite
+/// und ohne den Wert zu lesen.
+#[test]
+fn calls_as_assignment_targets_throw_reference_errors() {
+    let prelude = "var log = []; \
+        function f() { log.push('f'); return { valueOf() { log.push('valueOf'); } }; } \
+        function g() { log.push('g'); } ";
+    for target in [
+        "f() = g()",
+        "f() += g()",
+        "f() **= g()",
+        "f()++",
+        "f()--",
+        "++f()",
+        "--f()",
+        "(f()) = g()",
+        "((f())) >>>= g()",
+        "for (f() in {a: 1}) g();",
+        "for (f() of [1]) g();",
+    ] {
+        let source = format!(
+            "{prelude} try {{ {target}; 'kein Fehler' }} \
+             catch (e) {{ (e instanceof ReferenceError) + ' ' + log }}"
+        );
+        assert_eq!(eval(&source), "\"true f\"", "{target}");
+    }
+    check(&[
+        // Ohne Durchlauf kein Ziel.
+        ("var n = 0; function f() { n++; } for (f() in {}) ; n", "0"),
+        ("var n = 0; function f() { n++; } for (f() of []) ; n", "0"),
+        // `this` aus der Basis, auch für `async(…)`.
+        (
+            "var t; var o = { m() { t = this; } }; try { o.m() = 1; } catch (e) {} t === o",
+            "true",
+        ),
+        ("function async() {} async() = 1", "ReferenceError"),
+        ("function f() { throw 1; } f() = 2", "throw 1"),
+        // Im strikten Modus, mit `&&=`, `||=`, `??=` und in Mustern ein
+        // früher Fehler.
+        (
+            "'use strict'; f() = 1",
+            "Syntax(SyntaxError { kind: InvalidAssignmentTarget, position: 18 })",
+        ),
+        (
+            "f() &&= 1",
+            "Syntax(SyntaxError { kind: InvalidAssignmentTarget, position: 4 })",
+        ),
+        (
+            "[f()] = [1]",
+            "Syntax(SyntaxError { kind: InvalidAssignmentTarget, position: 1 })",
         ),
     ]);
 }

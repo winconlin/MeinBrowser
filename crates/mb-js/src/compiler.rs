@@ -55,8 +55,10 @@
 //! folgen die Werte der Ausdrücke. Jede Stelle hat eine eigene Konstante;
 //! ihr Platz im Pool hält das Objekt nach dem ersten Mal.
 //!
-//! Noch nicht unterstützt sind Funktionsdeklarationen mit Marke (Anhang
-//! B.3.1).
+//! Eine Funktionsdeklaration mit Marke (Anhang B.3.1) zählt wie eine ohne:
+//! auf oberster Ebene zu den var-Deklarationen, in einem Block zu den
+//! lexikalischen. Nur setzt sie im Block nie die var-Bindung nach Anhang
+//! B.3.2.
 //!
 //! Klassen: Eine Klasse hat einen eigenen Bereich mit ihrem Namen als
 //! Konstante, die bis zum Ende der Klasse in der TDZ bleibt (classEnv). Darin
@@ -510,6 +512,11 @@ enum Reference {
         constant: i64,
         register: u32,
     },
+    /// Ein Aufruf als Ziel außerhalb des strikten Modus (Anhang B,
+    /// Runtime Errors for Function Call Assignment Targets): Der Aufruf ist
+    /// ausgewertet, danach hat [`Op::ThrowReferenceError`] geworfen. Lesen
+    /// und Schreiben erreicht der Code nie, sie übersetzen sich zu nichts.
+    Call,
 }
 
 /// Wohin ResolveBinding beim Übersetzen führt.
@@ -1837,22 +1844,40 @@ impl<'a> Compiler<'a> {
         let mut functions = Vec::new();
         let mut names = BTreeSet::new();
         for &item in body.iter().rev() {
-            let Node::FunctionDeclaration(id) = *self.ast.node(item) else {
+            let Some((node, id)) = self.declared_function(item) else {
                 continue;
             };
             let function = self
                 .ast
                 .function(id)
-                .ok_or_else(|| self.unsupported(item))?;
+                .ok_or_else(|| self.unsupported(node))?;
             let Some(name) = function.name else {
-                return Err(self.unsupported(item));
+                return Err(self.unsupported(node));
             };
             if names.insert(name) {
-                functions.push((name, id, item));
+                functions.push((name, id, node));
             }
         }
         functions.reverse();
         Ok(functions)
+    }
+
+    /// Die Funktionsdeklaration, die `item` ist, auch hinter Marken
+    /// (Anhang B.3.1, LabelledItem : FunctionDeclaration). Außerhalb des
+    /// strikten Modus zählt sie wie eine ohne Marke: auf oberster Ebene zu
+    /// den var-Deklarationen (TopLevelVarScopedDeclarations), in einem
+    /// Block zu den lexikalischen (LexicallyScopedDeclarations). Nach
+    /// Anhang B.3.2 setzt sie aber nie die gleichnamige var-Bindung, denn
+    /// sie steht nicht direkt in der Liste des Blocks.
+    fn declared_function(&self, item: NodeId) -> Option<(NodeId, FunctionId)> {
+        let mut node = item;
+        loop {
+            match *self.ast.node(node) {
+                Node::FunctionDeclaration(id) => return Some((node, id)),
+                Node::Labeled { body, .. } => node = body,
+                _ => return None,
+            }
+        }
     }
 
     /// Die Bindungen, die ein *ModuleItem* auf oberster Ebene anlegt
@@ -2243,8 +2268,10 @@ impl<'a> Compiler<'a> {
                 Node::ClassDeclaration(id) => {
                     names.extend(self.ast.class(id).and_then(|class| class.name));
                 }
-                Node::FunctionDeclaration(id) if functions => {
-                    names.extend(self.ast.function(id).and_then(|function| function.name));
+                Node::FunctionDeclaration(_) | Node::Labeled { .. } if functions => {
+                    let function = self.declared_function(item);
+                    let function = function.and_then(|(_, id)| self.ast.function(id));
+                    names.extend(function.and_then(|function| function.name));
                 }
                 _ => {}
             }
@@ -2284,7 +2311,7 @@ impl<'a> Compiler<'a> {
         let mut holes = Vec::new();
         let mut functions = Vec::new();
         for &item in items {
-            if let Node::FunctionDeclaration(id) = *self.ast.node(item) {
+            if let Some((item, id)) = self.declared_function(item) {
                 let name = self.block_function(item, id)?;
                 // Außerhalb des strikten Modus darf eine Funktion im selben
                 // Block wiederkommen, die letzte gilt (Anhang B.3.2.4).
@@ -2479,12 +2506,17 @@ impl<'a> Compiler<'a> {
     /// ResolveBinding (Abschnitt 9.4.2) beim Übersetzen mit den
     /// Erweiterungen auf dem Weg: Liegt zwischen der Stelle und der Bindung
     /// ein var-Bereich, in dem ein nicht striktes `eval` Bindungen anlegen
-    /// kann, oder eine `with`-Anweisung, ist der Name dynamisch. Der Weg beginnt im Bereich mit der
-    /// Stelle `from` in `scopes`, ohne für die innerste Stelle.
+    /// kann, oder eine `with`-Anweisung, ist der Name dynamisch. Der Weg
+    /// beginnt im Bereich mit der Stelle `from` in `scopes`, ohne `from` im
+    /// innersten. Die Tiefen der Kontexte zählen auch dann von der
+    /// aktuellen Stelle aus, über die Kontexte der Bereiche innerhalb von
+    /// `from`.
     fn resolve_from(&self, from: Option<usize>, atom: Atom, node: NodeId) -> Result<Resolved> {
-        let mut depth: u32 = 0;
-        let mut extensions = Vec::new();
         let end = from.map_or(self.scopes.len(), |index| index.saturating_add(1));
+        let inner = self.scopes.get(end..).unwrap_or_default();
+        let inner = inner.iter().filter(|scope| scope.has_context()).count();
+        let mut depth = u32::try_from(inner).map_err(|_| CompileError::TooLarge)?;
+        let mut extensions = Vec::new();
         let scopes = self.scopes.get(..end).unwrap_or_default();
         let mut found = None;
         for scope in scopes.iter().rev() {
@@ -3040,8 +3072,9 @@ impl<'a> Compiler<'a> {
             | Node::ForOf { .. }
             | Node::ForIn { .. }
             | Node::Switch { .. } => self.breakable(body, labels),
-            // Anhang B.3.1.
-            Node::FunctionDeclaration(_) => Err(self.unsupported(body)),
+            // Anhang B.3.1: Das Funktionsobjekt entstand schon zu Beginn
+            // des Bereichs, LabelledEvaluation ergibt `empty`.
+            Node::FunctionDeclaration(_) => Ok(()),
             _ => {
                 self.push_target(Target::new(TargetKind::Labeled, labels));
                 self.statement(body)?;
@@ -6050,6 +6083,18 @@ impl<'a> Compiler<'a> {
                     name: register,
                 })
             }
+            // AssignmentTargetType ist hier ~web-compat~; im strikten Modus
+            // lehnt schon der Parser den Aufruf als Ziel ab. Der Aufruf
+            // läuft, dann folgt der ReferenceError, vor der rechten Seite
+            // und ohne GetValue.
+            Node::Call {
+                optional: false, ..
+            } => {
+                self.expression(self.without_parens(target))?;
+                self.position(target)?;
+                self.emit(Op::ThrowReferenceError, &[])?;
+                Ok(Reference::Call)
+            }
             _ => Err(self.unsupported(target)),
         }
     }
@@ -6078,6 +6123,7 @@ impl<'a> Compiler<'a> {
             Reference::Dynamic { constant, register } => {
                 self.emit(Op::LdaDynamic, &[constant, i64::from(register)])
             }
+            Reference::Call => Ok(()),
         }
     }
 
@@ -6101,12 +6147,13 @@ impl<'a> Compiler<'a> {
             Reference::Dynamic { constant, register } => {
                 self.emit(Op::StaDynamic, &[constant, i64::from(register)])
             }
+            Reference::Call => Ok(()),
         }
     }
 
     fn release_reference(&mut self, reference: Reference) {
         match reference {
-            Reference::Local(..) => {}
+            Reference::Local(..) | Reference::Call => {}
             Reference::Global { register, .. }
             | Reference::Named { base: register, .. }
             | Reference::Keyed { base: register, .. }

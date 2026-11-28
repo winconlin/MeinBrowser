@@ -89,7 +89,8 @@ fn unsupported_or_ambiguous_metadata_cannot_silently_pass() {
         "negative: {phase: runtime, type: TypeError}",
         "negative:\n  phase: parse\n  type: TypeError",
         "negative:\n  phase: parse\n  type: Test262Error",
-        "negative:\n  phase: runtime\n  type: EvalError",
+        "negative:\n  phase: runtime\n  type: URIError",
+        "negative:\n  phase: resolution\n  type: EvalError",
         "locale: [en]",
     ] {
         assert!(
@@ -300,6 +301,29 @@ fn runtime_negative_requires_the_exact_error_and_phase() {
     );
     // `using` kann der Übersetzer noch nicht.
     assert_eq!(ordinary("{ using a = null; }"), Outcome::Unsupported);
+}
+
+/// `type: EvalError` gilt nur für ein Fehlerobjekt mit %EvalError.prototype%
+/// (die drei Dateien unter `annexB/language/comments/` werfen es).
+#[test]
+fn eval_error_negatives_need_an_eval_error_object() {
+    let meta = metadata("negative:\n  phase: runtime\n  type: EvalError");
+    assert_eq!(meta.negative, Some(Negative::EvalError));
+    let wanted = expected(meta.negative);
+    assert_eq!(wanted, Outcome::EvalError);
+    let files = harness(&meta);
+    let run_negative = |source| run(source, &meta, Mode::Sloppy, &files, false).expect("Harness");
+    for source in ["throw new EvalError('m');", "throw EvalError();"] {
+        assert_eq!(run_negative(source), wanted, "{source}");
+    }
+    for source in [
+        "1",
+        "throw Object.create(EvalError.prototype);",
+        "throw new TypeError();",
+        "throw 'EvalError';",
+    ] {
+        assert_ne!(run_negative(source), wanted, "{source}");
+    }
 }
 
 #[test]

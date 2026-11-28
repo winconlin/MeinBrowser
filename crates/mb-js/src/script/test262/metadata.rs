@@ -19,6 +19,10 @@ pub(super) enum Negative {
     Runtime(ErrorKind),
     /// `phase: runtime` mit `type: Test262Error` aus `sta.js`.
     Test262Error,
+    /// `phase: runtime` mit `type: EvalError`. Die Engine wirft selbst
+    /// keinen, darum ist er keine [`ErrorKind`]; Tests werfen ihn mit
+    /// `throw new EvalError(…)`.
+    EvalError,
     /// `phase: resolution`: beim Laden oder Linken eines Moduls.
     Resolution(ErrorKind),
 }
@@ -222,6 +226,7 @@ impl Metadata {
             self.negative = Some(match (phase.as_deref(), error_type.as_deref()) {
                 (Some("parse"), Some("SyntaxError")) => Negative::Parse,
                 (Some("runtime"), Some("Test262Error")) => Negative::Test262Error,
+                (Some("runtime"), Some("EvalError")) => Negative::EvalError,
                 (Some("runtime"), Some(name)) => Negative::Runtime(kind(name)?),
                 (Some("resolution"), Some(name)) if self.is_module() => {
                     Negative::Resolution(kind(name)?)

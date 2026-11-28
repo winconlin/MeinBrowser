@@ -397,7 +397,6 @@ fn unsupported_constructs_name_their_place() {
         ("{ using a = b; }", 8),
         ("if (c) { using a = b; }", 15),
         ("for (using a of b) {}", 5),
-        ("l: function g() {}", 3),
     ];
     for (source, position) in cases {
         assert_eq!(
@@ -433,6 +432,8 @@ fn unsupported_constructs_name_their_place() {
     ] {
         assert!(compile(source).is_ok(), "{source}");
     }
+    // Funktionsdeklarationen mit Marke seit Schritt 13b.
+    assert!(compile("l: function g() {}").is_ok());
     let module = parse_module(&units("1;")).expect("gültiges Modul");
     assert_eq!(
         compile_script(&module).map(|_| ()),

@@ -324,6 +324,21 @@ fn annex_b_hoists_functions_in_blocks_of_eval_code() {
             "\"undefined\"",
         ),
         ("let bf = 5; eval('{ function bf() {} }'); bf", "5"),
+        // Nennt eine innere Funktion den Namen, hat der Block einen eigenen
+        // Kontext; die var-Bindung liegt eine Stufe weiter außen, im
+        // `switch` und in zwei Blöcken ebenso.
+        (
+            "function f() { eval('{ function bf() { return bf; } }'); return bf() === bf; } f()",
+            "true",
+        ),
+        (
+            "function f() { eval('switch (1) { case 1: function bf() { bf = 1; return 2; } } bf()'); return typeof bf; } f()",
+            "\"function\"",
+        ),
+        (
+            "function f() { eval('{ { function bf() { return () => bf; } } }'); return typeof bf()(); } f()",
+            "\"function\"",
+        ),
     ]);
 }
 

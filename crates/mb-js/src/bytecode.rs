@@ -174,7 +174,8 @@ ops! {
     /// wenn der Akkumulator nicht die Lücke hält: `this` ist schon gebunden.
     ThrowIfNotHole [],
     /// Wirft einen ReferenceError, für `delete` mit `super` (Abschnitt
-    /// 13.5.1.2, Schritt 4.b).
+    /// 13.5.1.2, Schritt 4.b) und nach einem Aufruf als Ziel einer
+    /// Zuweisung außerhalb des strikten Modus (Anhang B).
     ThrowReferenceError [],
 
     /// Ein neuer Kontext mit so vielen Plätzen für Bindungen, wie die Zahl
