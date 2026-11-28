@@ -238,6 +238,7 @@ pub fn get_prototype_of<'s>(
             | ObjectClass::Collection
             | ObjectClass::RegExp
             | ObjectClass::Date
+            | ObjectClass::DisposableStack
             | ObjectClass::WeakRef
             | ObjectClass::FinalizationRegistry
             | ObjectClass::ArrayBuffer
@@ -282,6 +283,7 @@ pub fn set_prototype_of(
         | ObjectClass::Collection
         | ObjectClass::RegExp
         | ObjectClass::Date
+        | ObjectClass::DisposableStack
         | ObjectClass::WeakRef
         | ObjectClass::FinalizationRegistry
         | ObjectClass::ArrayBuffer
@@ -367,6 +369,7 @@ pub fn is_extensible(agent: &mut Agent, object: Local<'_>) -> Completion<bool> {
         | ObjectClass::Collection
         | ObjectClass::RegExp
         | ObjectClass::Date
+        | ObjectClass::DisposableStack
         | ObjectClass::WeakRef
         | ObjectClass::FinalizationRegistry
         | ObjectClass::ArrayBuffer
@@ -413,6 +416,7 @@ pub fn prevent_extensions(agent: &mut Agent, object: Local<'_>) -> Completion<bo
         | ObjectClass::Collection
         | ObjectClass::RegExp
         | ObjectClass::Date
+        | ObjectClass::DisposableStack
         | ObjectClass::WeakRef
         | ObjectClass::FinalizationRegistry
         | ObjectClass::ArrayBuffer
@@ -477,6 +481,7 @@ pub fn get_own_property<'s>(
         | ObjectClass::Collection
         | ObjectClass::RegExp
         | ObjectClass::Date
+        | ObjectClass::DisposableStack
         | ObjectClass::WeakRef
         | ObjectClass::FinalizationRegistry
         | ObjectClass::ArrayBuffer
@@ -562,6 +567,7 @@ pub fn define_own_property(
         | ObjectClass::Collection
         | ObjectClass::RegExp
         | ObjectClass::Date
+        | ObjectClass::DisposableStack
         | ObjectClass::WeakRef
         | ObjectClass::FinalizationRegistry
         | ObjectClass::ArrayBuffer
@@ -1311,6 +1317,7 @@ pub fn own_property_keys<'s>(
         | ObjectClass::Collection
         | ObjectClass::RegExp
         | ObjectClass::Date
+        | ObjectClass::DisposableStack
         | ObjectClass::WeakRef
         | ObjectClass::FinalizationRegistry
         | ObjectClass::ArrayBuffer

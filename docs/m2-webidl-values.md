@@ -181,5 +181,5 @@ zur Vermeidung von Überschneidungen nicht bearbeitet.
    Schritte 9c-2 und 10 bis 12 verbleiben gemäß Architekturplan auf Claudes Spur.
 
 Damit ist ein weiteres WebIDL-Arbeitspaket erledigt, M2 jedoch noch nicht
-abgeschlossen. Die genaue Zielquote für „Test262 ohne Intl zu einem hohen Anteil“
-ist im Architekturplan weiterhin offen.
+abgeschlossen. Für Test262 ohne Intl verlangt M2 seit dem 28.11.2026 mindestens
+85 Prozent ([Architekturplan, 12.2](architektur.md#122-nächste-schritte)).

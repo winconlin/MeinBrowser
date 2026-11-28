@@ -345,7 +345,7 @@ cargo test --locked -p mb-js script::test262::language::test262_annex_b_built_in
 
 Derselbe Läufer nimmt die Teile von `test/built-ins/`, deren eingebaute
 Objekte es schon mit allen Eigenschaften gibt: `AggregateError/`, `Array/`,
-`ArrayBuffer/`, `ArrayIteratorPrototype/`, `AsyncFunction/`, `AsyncGeneratorFunction/`, `AsyncIteratorPrototype/`, `Atomics/`, `BigInt/`, `Boolean/`, `DataView/`, `Date/`, `Error/`, `FinalizationRegistry/`, `Function/`, `GeneratorFunction/`, `Iterator/`, `JSON/`, `Map/`,
+`ArrayBuffer/`, `ArrayIteratorPrototype/`, `AsyncDisposableStack/`, `AsyncFunction/`, `AsyncGeneratorFunction/`, `AsyncIteratorPrototype/`, `Atomics/`, `BigInt/`, `Boolean/`, `DataView/`, `Date/`, `DisposableStack/`, `Error/`, `FinalizationRegistry/`, `Function/`, `GeneratorFunction/`, `Iterator/`, `JSON/`, `Map/`,
 `MapIteratorPrototype/`, `Math/`, `NativeErrors/`, `Number/`, `Object/`,
 `Promise/`, `Proxy/`, `Reflect/`, `RegExp/`, `RegExpStringIteratorPrototype/`,
 `Set/`, `SetIteratorPrototype/`, `SharedArrayBuffer/`, `String/`, `StringIteratorPrototype/`,
@@ -360,12 +360,12 @@ ein neuer Teil von `built-ins/` ändert nur die zweite. Ein dritter Lauf
 nimmt ebenso die Teile von `test/annexB/built-ins/`, bisher `Date/`,
 `Function/`, `Object/`, `RegExp/` und `String/`, gegen `erwartete-fehlschlaege-annexb-built-ins.txt`.
 
-Von 18.595 Dateien laufen 18.392. Übersprungen werden 203 mit Vorschlägen aus
+Von 18.792 Dateien laufen 18.589. Übersprungen werden 203 mit Vorschlägen aus
 `features.txt`: 89 unter `Promise/`, 61 mit `immutable-arraybuffer`, 29 unter
 `ArrayBuffer/`, elf unter `DataView/`, neun unter `Atomics/`, acht unter `TypedArray/` und je zwei
 unter `TypedArrayConstructors/` und `Uint8Array/`, 35 unter `Error/` mit
 `error-stack-accessor` und 18 unter `Iterator/prototype/join/` mit
-`Iterator.prototype.join`. Es bestehen 17.582 Dateien und 34.902 von 36.501
+`Iterator.prototype.join`. Es bestehen 17.779 Dateien und 35.296 von 36.895
 Varianten:
 
 | Teil | Dateien | Varianten |
@@ -374,6 +374,7 @@ Varianten:
 | `Array/` | 3.061 von 3.083 | 6.075 von 6.119 |
 | `ArrayBuffer/` | 192 von 192 | 384 von 384 |
 | `ArrayIteratorPrototype/` | 27 von 27 | 46 von 46 |
+| `AsyncDisposableStack/` | 104 von 104 | 208 von 208 |
 | `AsyncFunction/` | 18 von 18 | 36 von 36 |
 | `AsyncGeneratorFunction/` | 23 von 23 | 46 von 46 |
 | `AsyncIteratorPrototype/` | 13 von 13 | 26 von 26 |
@@ -382,6 +383,7 @@ Varianten:
 | `Boolean/` | 51 von 51 | 101 von 101 |
 | `DataView/` | 549 von 549 | 1.098 von 1.098 |
 | `Date/` | 586 von 594 | 1.172 von 1.188 |
+| `DisposableStack/` | 93 von 93 | 186 von 186 |
 | `Error/` | 58 von 58 | 116 von 116 |
 | `FinalizationRegistry/` | 47 von 47 | 94 von 94 |
 | `Function/` | 486 von 509 | 868 von 893 |
@@ -460,7 +462,10 @@ Flag `module`, `Proxy/preventExtensions/trap-is-undefined-target-is-proxy.js`.
 Mit Schritt 13a bestehen die vier Dateien unter `String/raw/`, die Templates
 mit Tag brauchten. Mit Schritt 13c laufen `AsyncIteratorPrototype/` und
 `SuppressedError/` neu mit, und alle 35 Dateien bestehen, darunter die neun
-zu @@asyncDispose an %AsyncIteratorPrototype%.
+zu @@asyncDispose an %AsyncIteratorPrototype%. Mit Schritt 13d laufen
+`DisposableStack/` und `AsyncDisposableStack/` neu mit, und alle 197 Dateien
+bestehen, auch die 29 mit dem Flag `async`, die unter anderem zählen, nach
+wie vielen Jobs `disposeAsync` sein Promise erfüllt.
 Jede der 810 Dateien, die noch scheitern, ist einem Grund
 zugeordnet, nach dem Grund, den der Läufer meldet, und den Namen in der
 Datei:
