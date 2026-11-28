@@ -6,6 +6,9 @@
 //! Pixel für Pixel verglichen, ohne Toleranz. `cargo run -p testrunner
 //! --release` lässt die Liste für M1 laufen; die Schriften sind die des
 //! Systems.
+//!
+//! Dazu kommt der Läufer für Tests mit testharness.js in einer
+//! JavaScript-Shell ([`testharness`], Schritt 14a).
 
 #![forbid(unsafe_code)]
 
@@ -16,6 +19,7 @@ use mb_base::Budget;
 use mb_layout::Fonts;
 use mb_raster::Canvas;
 
+pub mod testharness;
 #[cfg(test)]
 mod tests;
 

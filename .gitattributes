@@ -11,3 +11,4 @@ crates/mb-js/src/script/test262/erwartete-fehlschlaege.txt text eol=lf
 crates/mb-js/src/script/test262/erwartete-fehlschlaege-built-ins.txt text eol=lf
 crates/mb-js/src/script/test262/erwartete-fehlschlaege-annexb-built-ins.txt text eol=lf
 crates/mb-js/src/script/test262/erwartete-fehlschlaege-annexb-language.txt text eol=lf
+tools/testrunner/testharness-erwartet.txt text eol=lf

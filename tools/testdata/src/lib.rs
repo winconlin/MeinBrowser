@@ -59,6 +59,12 @@ pub const SOURCES: [Source; 11] = [
             "/css/CSS2/reference/",
             "/css/CSS2/support/",
             "/css/reference/",
+            // Tests mit testharness.js in der Shell, siehe
+            // `tools/testrunner/src/testharness.rs`.
+            "/resources/testharness.js",
+            "/common/gc.js",
+            "/wasm/jsapi/",
+            "/js/builtins/weakrefs/",
         ],
     },
     Source {

@@ -1,0 +1,739 @@
+# Erwartete Ergebnisse der Tests mit testharness.js in der Shell, Pfade
+# relativ zur Wurzel der WPT. Je Datei steht der Status der Harness, wenn
+# er nicht OK ist, und jeder Untertest, der nicht besteht, mit seinem
+# Status; Tabulatoren trennen die Felder. Unter wasm/jsapi/ laufen die
+# Dateien mit global=jsshell, unter js/builtins/weakrefs/ alle als eigene
+# Variante. Erzeugt von tools/testrunner (testharness.rs); bei einer
+# Abweichung schreibt der Test die neue Fassung nach
+# target/testrunner/testharness-erwartet.txt.
+# 87 Dateien, Harness OK in 76; bestanden 1 von 720 Untertests
+js/builtins/weakrefs/cleanup-prevented-with-reference.optional.any.js	FAIL	cleanupCallback has only one optional chance to be called for a GC that cleans up a registered target.
+js/builtins/weakrefs/cleanup-prevented-with-unregister.optional.any.js	FAIL	Cleanup might be prevented with an unregister usage
+js/builtins/weakrefs/finalizationregistry-cleanupCallback-gets-a-microtask.optional.any.js	FAIL	HostCleanupFinalizationRegistry is an implementation-defined abstract operation that is expected to call CleanupFinalizationRegistry(finalizationRegistry) at some point in the future, if possible.
+js/builtins/weakrefs/gc-has-one-chance-to-call-cleanupCallback-queueMicrotask.optional.any.js	FAIL	cleanupCallback has only one optional chance to be called for a GC that cleans up a registered target.
+js/builtins/weakrefs/gc-has-one-chance-to-call-cleanupCallback.optional.any.js	FAIL	cleanupCallback has only one optional chance to be called for a GC that cleans up a registered target.
+js/builtins/weakrefs/holdings-multiple-values.optional.any.js	FAIL	Requires FinalizationRegistry.prototype.cleanupSome
+js/builtins/weakrefs/holdings-multiple-values.optional.any.js	FAIL	`undefined` as registered holding value
+js/builtins/weakrefs/holdings-multiple-values.optional.any.js	FAIL	`null` as registered holding value
+js/builtins/weakrefs/holdings-multiple-values.optional.any.js	FAIL	`""` as registered holding value
+js/builtins/weakrefs/holdings-multiple-values.optional.any.js	FAIL	`{}` as registered holding value
+js/builtins/weakrefs/holdings-multiple-values.optional.any.js	FAIL	`42` as registered holding value
+js/builtins/weakrefs/holdings-multiple-values.optional.any.js	FAIL	`true` as registered holding value
+js/builtins/weakrefs/holdings-multiple-values.optional.any.js	FAIL	`false` as registered holding value
+js/builtins/weakrefs/holdings-multiple-values.optional.any.js	FAIL	`Symbol(1)` as registered holding value
+js/builtins/weakrefs/reentrancy.optional.any.js	FAIL	cleanupCallback has only one optional chance to be called for a GC that cleans up a registered target.
+js/builtins/weakrefs/return-undefined-with-gc.optional.any.js	FAIL	Return undefined regardless the result of CleanupFinalizationRegistry
+js/builtins/weakrefs/unregister-cleaned-up-cell.optional.any.js	FAIL	Cannot unregister a cell that has been cleaned up
+wasm/jsapi/constructor/compile.any.js	FAIL	Missing argument
+wasm/jsapi/constructor/compile.any.js	FAIL	Invalid arguments
+wasm/jsapi/constructor/compile.any.js	FAIL	Branding
+wasm/jsapi/constructor/compile.any.js	FAIL	Promise type
+wasm/jsapi/constructor/compile.any.js	FAIL	Empty buffer
+wasm/jsapi/constructor/compile.any.js	FAIL	Invalid code
+wasm/jsapi/constructor/compile.any.js	FAIL	Result type
+wasm/jsapi/constructor/compile.any.js	FAIL	Stray argument
+wasm/jsapi/constructor/compile.any.js	FAIL	Changing the buffer
+wasm/jsapi/constructor/instantiate-bad-imports.any.js	ERROR
+wasm/jsapi/constructor/instantiate-bad-imports.any.js	FAIL	WebAssembly.instantiate(module): Non-object imports argument: null
+wasm/jsapi/constructor/instantiate-bad-imports.any.js	FAIL	WebAssembly.instantiate(module): Non-object imports argument: true
+wasm/jsapi/constructor/instantiate-bad-imports.any.js	FAIL	WebAssembly.instantiate(module): Non-object imports argument: ""
+wasm/jsapi/constructor/instantiate-bad-imports.any.js	FAIL	WebAssembly.instantiate(module): Non-object imports argument: symbol "Symbol()"
+wasm/jsapi/constructor/instantiate-bad-imports.any.js	FAIL	WebAssembly.instantiate(module): Non-object imports argument: 1
+wasm/jsapi/constructor/instantiate-bad-imports.any.js	FAIL	WebAssembly.instantiate(module): Non-object imports argument: 0.1
+wasm/jsapi/constructor/instantiate-bad-imports.any.js	FAIL	WebAssembly.instantiate(module): Non-object imports argument: NaN
+wasm/jsapi/constructor/instantiate-bad-imports.any.js	FAIL	WebAssembly.instantiate(module): Non-object module: undefined
+wasm/jsapi/constructor/instantiate-bad-imports.any.js	FAIL	WebAssembly.instantiate(module): Non-object module: null
+wasm/jsapi/constructor/instantiate-bad-imports.any.js	FAIL	WebAssembly.instantiate(module): Non-object module: true
+wasm/jsapi/constructor/instantiate-bad-imports.any.js	FAIL	WebAssembly.instantiate(module): Non-object module: ""
+wasm/jsapi/constructor/instantiate-bad-imports.any.js	FAIL	WebAssembly.instantiate(module): Non-object module: symbol "Symbol()"
+wasm/jsapi/constructor/instantiate-bad-imports.any.js	FAIL	WebAssembly.instantiate(module): Non-object module: 1
+wasm/jsapi/constructor/instantiate-bad-imports.any.js	FAIL	WebAssembly.instantiate(module): Non-object module: 0.1
+wasm/jsapi/constructor/instantiate-bad-imports.any.js	FAIL	WebAssembly.instantiate(module): Non-object module: NaN
+wasm/jsapi/constructor/instantiate-bad-imports.any.js	FAIL	WebAssembly.instantiate(module): Missing imports argument
+wasm/jsapi/constructor/instantiate-bad-imports.any.js	FAIL	WebAssembly.instantiate(module): Imports argument with missing property: undefined
+wasm/jsapi/constructor/instantiate-bad-imports.any.js	FAIL	WebAssembly.instantiate(module): Imports argument with missing property: empty object
+wasm/jsapi/constructor/instantiate-bad-imports.any.js	FAIL	WebAssembly.instantiate(module): Imports argument with missing property: wrong property
+wasm/jsapi/constructor/instantiate.any.js	FAIL	Missing arguments
+wasm/jsapi/constructor/instantiate.any.js	FAIL	Branding
+wasm/jsapi/constructor/instantiate.any.js	FAIL	Invalid arguments
+wasm/jsapi/constructor/instantiate.any.js	FAIL	Promise type
+wasm/jsapi/constructor/instantiate.any.js	FAIL	Empty module without imports argument: BufferSource argument
+wasm/jsapi/constructor/instantiate.any.js	FAIL	Empty module without imports argument: Module argument
+wasm/jsapi/constructor/instantiate.any.js	FAIL	Empty module with undefined imports argument: BufferSource argument
+wasm/jsapi/constructor/instantiate.any.js	FAIL	Empty module with undefined imports argument: Module argument
+wasm/jsapi/constructor/instantiate.any.js	FAIL	Empty module with empty imports argument: BufferSource argument
+wasm/jsapi/constructor/instantiate.any.js	FAIL	Empty module with empty imports argument: Module argument
+wasm/jsapi/constructor/instantiate.any.js	FAIL	getter order for imports object: BufferSource argument
+wasm/jsapi/constructor/instantiate.any.js	FAIL	getter order for imports object: Module argument
+wasm/jsapi/constructor/instantiate.any.js	FAIL	imports: BufferSource argument
+wasm/jsapi/constructor/instantiate.any.js	FAIL	imports: Module argument
+wasm/jsapi/constructor/instantiate.any.js	FAIL	imports with empty module names: BufferSource argument
+wasm/jsapi/constructor/instantiate.any.js	FAIL	imports with empty module names: Module argument
+wasm/jsapi/constructor/instantiate.any.js	FAIL	imports with empty names: BufferSource argument
+wasm/jsapi/constructor/instantiate.any.js	FAIL	imports with empty names: Module argument
+wasm/jsapi/constructor/instantiate.any.js	FAIL	exports with empty name: function: BufferSource argument
+wasm/jsapi/constructor/instantiate.any.js	FAIL	exports with empty name: function: Module argument
+wasm/jsapi/constructor/instantiate.any.js	FAIL	exports with empty name: table: BufferSource argument
+wasm/jsapi/constructor/instantiate.any.js	FAIL	exports with empty name: table: Module argument
+wasm/jsapi/constructor/instantiate.any.js	FAIL	exports with empty name: global: BufferSource argument
+wasm/jsapi/constructor/instantiate.any.js	FAIL	exports with empty name: global: Module argument
+wasm/jsapi/constructor/instantiate.any.js	FAIL	No imports: BufferSource argument
+wasm/jsapi/constructor/instantiate.any.js	FAIL	No imports: Module argument
+wasm/jsapi/constructor/instantiate.any.js	FAIL	exports and imports: BufferSource argument
+wasm/jsapi/constructor/instantiate.any.js	FAIL	exports and imports: Module argument
+wasm/jsapi/constructor/instantiate.any.js	FAIL	i64 exports and imports: BufferSource argument
+wasm/jsapi/constructor/instantiate.any.js	FAIL	i64 exports and imports: Module argument
+wasm/jsapi/constructor/instantiate.any.js	FAIL	import with i32-returning function: BufferSource argument
+wasm/jsapi/constructor/instantiate.any.js	FAIL	import with i32-returning function: Module argument
+wasm/jsapi/constructor/instantiate.any.js	FAIL	import with function that takes and returns i32: BufferSource argument
+wasm/jsapi/constructor/instantiate.any.js	FAIL	import with function that takes and returns i32: Module argument
+wasm/jsapi/constructor/instantiate.any.js	FAIL	import with i64-returning function: BufferSource argument
+wasm/jsapi/constructor/instantiate.any.js	FAIL	import with i64-returning function: Module argument
+wasm/jsapi/constructor/instantiate.any.js	FAIL	import with function that takes and returns i64: BufferSource argument
+wasm/jsapi/constructor/instantiate.any.js	FAIL	import with function that takes and returns i64: Module argument
+wasm/jsapi/constructor/instantiate.any.js	FAIL	import with i32-taking function: BufferSource argument
+wasm/jsapi/constructor/instantiate.any.js	FAIL	import with i32-taking function: Module argument
+wasm/jsapi/constructor/instantiate.any.js	FAIL	import with i64-taking function: BufferSource argument
+wasm/jsapi/constructor/instantiate.any.js	FAIL	import with i64-taking function: Module argument
+wasm/jsapi/constructor/instantiate.any.js	FAIL	export i64-returning function: BufferSource argument
+wasm/jsapi/constructor/instantiate.any.js	FAIL	export i64-returning function: Module argument
+wasm/jsapi/constructor/instantiate.any.js	FAIL	i32 mutable WebAssembly.Global import: BufferSource argument
+wasm/jsapi/constructor/instantiate.any.js	FAIL	i32 mutable WebAssembly.Global import: Module argument
+wasm/jsapi/constructor/instantiate.any.js	FAIL	i64 mutable WebAssembly.Global import: BufferSource argument
+wasm/jsapi/constructor/instantiate.any.js	FAIL	i64 mutable WebAssembly.Global import: Module argument
+wasm/jsapi/constructor/instantiate.any.js	FAIL	Multiple i64 arguments: BufferSource argument
+wasm/jsapi/constructor/instantiate.any.js	FAIL	Multiple i64 arguments: Module argument
+wasm/jsapi/constructor/instantiate.any.js	FAIL	stray argument: BufferSource argument
+wasm/jsapi/constructor/instantiate.any.js	FAIL	stray argument: Module argument
+wasm/jsapi/constructor/instantiate.any.js	FAIL	Synchronous options handling: Buffer argument
+wasm/jsapi/constructor/instantiate.any.js	FAIL	Synchronous options handling: Module argument
+wasm/jsapi/constructor/instantiate.any.js	FAIL	Empty buffer
+wasm/jsapi/constructor/instantiate.any.js	FAIL	Invalid code
+wasm/jsapi/constructor/instantiate.any.js	FAIL	Changing the buffer
+wasm/jsapi/constructor/multi-value.any.js	FAIL	multiple return values from wasm to js
+wasm/jsapi/constructor/multi-value.any.js	FAIL	multiple return values inside wasm
+wasm/jsapi/constructor/multi-value.any.js	FAIL	multiple return values from js to wasm
+wasm/jsapi/constructor/toStringTag.any.js	FAIL	@@toStringTag exists on the namespace object with the appropriate descriptor
+wasm/jsapi/constructor/toStringTag.any.js	FAIL	Object.prototype.toString applied to the namespace object
+wasm/jsapi/constructor/toStringTag.any.js	FAIL	Object.prototype.toString applied after modifying the namespace object's @@toStringTag
+wasm/jsapi/constructor/toStringTag.any.js	FAIL	Object.prototype.toString applied after deleting @@toStringTag
+wasm/jsapi/constructor/validate.any.js	FAIL	Missing argument
+wasm/jsapi/constructor/validate.any.js	FAIL	Invalid arguments
+wasm/jsapi/constructor/validate.any.js	FAIL	Branding
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [] in Uint8Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [] in Int8Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [] in Uint16Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [] in Int16Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [] in Uint32Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [] in Int32Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [0] in Uint8Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [0] in Int8Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [0 61] in Uint8Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [0 61] in Int8Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [0 61] in Uint16Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [0 61] in Int16Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [0 61 73] in Uint8Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [0 61 73] in Int8Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [0 61 73 6d] in Uint8Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [0 61 73 6d] in Int8Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [0 61 73 6d] in Uint16Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [0 61 73 6d] in Int16Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [0 61 73 6d] in Uint32Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [0 61 73 6d] in Int32Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [0 61 73 6d 1] in Uint8Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [0 61 73 6d 1] in Int8Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [0 61 73 6d 1 0] in Uint8Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [0 61 73 6d 1 0] in Int8Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [0 61 73 6d 1 0] in Uint16Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [0 61 73 6d 1 0] in Int16Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [0 61 73 6d 1 0 0] in Uint8Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [0 61 73 6d 1 0 0] in Int8Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [0 61 73 6d 1 0 0 0] in Uint8Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [0 61 73 6d 1 0 0 0] in Int8Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [0 61 73 6d 1 0 0 0] in Uint16Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [0 61 73 6d 1 0 0 0] in Int16Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [0 61 73 6d 1 0 0 0] in Uint32Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [0 61 73 6d 1 0 0 0] in Int32Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [0 61 73 6d 0 0 0 0] in Uint8Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [0 61 73 6d 0 0 0 0] in Int8Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [0 61 73 6d 0 0 0 0] in Uint16Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [0 61 73 6d 0 0 0 0] in Int16Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [0 61 73 6d 0 0 0 0] in Uint32Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [0 61 73 6d 0 0 0 0] in Int32Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [0 61 73 6d 2 0 0 0] in Uint8Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [0 61 73 6d 2 0 0 0] in Int8Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [0 61 73 6d 2 0 0 0] in Uint16Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [0 61 73 6d 2 0 0 0] in Int16Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [0 61 73 6d 2 0 0 0] in Uint32Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [0 61 73 6d 2 0 0 0] in Int32Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [0 61 73 6d 1 0 0 0 0 0] in Uint8Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [0 61 73 6d 1 0 0 0 0 0] in Int8Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [0 61 73 6d 1 0 0 0 0 0] in Uint16Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [0 61 73 6d 1 0 0 0 0 0] in Int16Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [0 61 73 6d 1 0 0 0 0 1 0] in Uint8Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [0 61 73 6d 1 0 0 0 0 1 0] in Int8Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [0 61 73 6d 1 0 0 0 0 2 1 61] in Uint8Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [0 61 73 6d 1 0 0 0 0 2 1 61] in Int8Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [0 61 73 6d 1 0 0 0 0 2 1 61] in Uint16Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [0 61 73 6d 1 0 0 0 0 2 1 61] in Int16Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [0 61 73 6d 1 0 0 0 0 2 1 61] in Uint32Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Validating module [0 61 73 6d 1 0 0 0 0 2 1 61] in Int32Array
+wasm/jsapi/constructor/validate.any.js	FAIL	Stray argument
+wasm/jsapi/esm-integration/exports.tentative.any.js	FAIL	Exported names from a WebAssembly module
+wasm/jsapi/esm-integration/global-exports-live-bindings.tentative.any.js	FAIL	Local mutable global exports should be live bindings
+wasm/jsapi/esm-integration/global-exports-live-bindings.tentative.any.js	FAIL	Dep module mutable global exports should be live bindings
+wasm/jsapi/esm-integration/global-exports.tentative.any.js	FAIL	WebAssembly module global values should be unwrapped when importing in ESM integration
+wasm/jsapi/esm-integration/global-exports.tentative.any.js	FAIL	WebAssembly mutable global values should be unwrapped when importing in ESM integration
+wasm/jsapi/esm-integration/global-exports.tentative.any.js	FAIL	WebAssembly local global values should be unwrapped when exporting in ESM integration
+wasm/jsapi/esm-integration/global-exports.tentative.any.js	FAIL	WebAssembly module globals from imported WebAssembly modules should be unwrapped
+wasm/jsapi/esm-integration/global-exports.tentative.any.js	FAIL	WebAssembly should properly handle all global types
+wasm/jsapi/esm-integration/js-wasm-cycle.tentative.any.js	FAIL	Check bindings in JavaScript and WebAssembly cycle (JS higher)
+wasm/jsapi/esm-integration/mutable-global-sharing.tentative.any.js	FAIL	WebAssembly modules should export shared mutable globals with correct initial values
+wasm/jsapi/esm-integration/mutable-global-sharing.tentative.any.js	FAIL	Wasm-to-Wasm mutable global sharing is live
+wasm/jsapi/esm-integration/mutable-global-sharing.tentative.any.js	FAIL	Multiple JavaScript imports return the same WebAssembly module instance
+wasm/jsapi/esm-integration/mutable-global-sharing.tentative.any.js	FAIL	v128 globals should work correctly in WebAssembly-to-WebAssembly imports
+wasm/jsapi/esm-integration/mutable-global-sharing.tentative.any.js	FAIL	v128 global mutations should work correctly between WebAssembly modules
+wasm/jsapi/esm-integration/namespace-instance.tentative.any.js	FAIL	WebAssembly.namespaceInstance() should return the underlying instance with shared state
+wasm/jsapi/esm-integration/namespace-instance.tentative.any.js	FAIL	WebAssembly.namespaceInstance() should throw TypeError for non-WebAssembly namespaces
+wasm/jsapi/esm-integration/namespace-instance.tentative.any.js	FAIL	WebAssembly.namespaceInstance() should work correctly with multiple modules
+wasm/jsapi/esm-integration/resolve-export.tentative.any.js	FAIL	ResolveExport on invalid re-export from WebAssembly
+wasm/jsapi/esm-integration/source-phase-string-builtins.tentative.any.js	ERROR
+wasm/jsapi/esm-integration/source-phase-string-constants.tentative.any.js	ERROR
+wasm/jsapi/esm-integration/source-phase.tentative.any.js	ERROR
+wasm/jsapi/esm-integration/string-builtins.tentative.any.js	FAIL	String builtins should be supported in imports in ESM integration
+wasm/jsapi/esm-integration/string-constants.tentative.any.js	FAIL	String constants from wasm:js/string-constants should be supported in ESM integration
+wasm/jsapi/esm-integration/v128-tdz.tentative.any.js	FAIL	v128 global exports should cause TDZ errors
+wasm/jsapi/esm-integration/wasm-import-wasm-export.tentative.any.js	FAIL	Check import and export between WebAssembly modules
+wasm/jsapi/exception/basic.tentative.any.js	FAIL	Wasm function throws argument
+wasm/jsapi/exception/basic.tentative.any.js	FAIL	Wasm function throws null
+wasm/jsapi/exception/basic.tentative.any.js	FAIL	Wasm function throws integer
+wasm/jsapi/exception/basic.tentative.any.js	FAIL	Imported JS function throws
+wasm/jsapi/exception/basic.tentative.any.js	FAIL	Imported JS function throws, Wasm catches and rethrows
+wasm/jsapi/exception/constructor.tentative.any.js	FAIL	name
+wasm/jsapi/exception/constructor.tentative.any.js	FAIL	length
+wasm/jsapi/exception/constructor.tentative.any.js	FAIL	No arguments
+wasm/jsapi/exception/constructor.tentative.any.js	FAIL	Calling
+wasm/jsapi/exception/constructor.tentative.any.js	FAIL	Invalid descriptor argument
+wasm/jsapi/exception/constructor.tentative.any.js	FAIL	Invalid exception argument
+wasm/jsapi/exception/getArg.tentative.any.js	FAIL	Missing arguments
+wasm/jsapi/exception/getArg.tentative.any.js	FAIL	Invalid exception argument
+wasm/jsapi/exception/getArg.tentative.any.js	FAIL	Index out of bounds
+wasm/jsapi/exception/getArg.tentative.any.js	FAIL	Getting out-of-range argument
+wasm/jsapi/exception/getArg.tentative.any.js	FAIL	getArg
+wasm/jsapi/exception/identity.tentative.any.js	FAIL	Identity check
+wasm/jsapi/exception/is.tentative.any.js	FAIL	Missing arguments
+wasm/jsapi/exception/is.tentative.any.js	FAIL	Invalid exception argument
+wasm/jsapi/exception/is.tentative.any.js	FAIL	is
+wasm/jsapi/exception/toString.tentative.any.js	FAIL	Object.prototype.toString on an Exception
+wasm/jsapi/exception/toString.tentative.any.js	FAIL	@@toStringTag exists on the prototype with the appropriate descriptor
+wasm/jsapi/function/call.tentative.any.js	FAIL	test calling function
+wasm/jsapi/function/call.tentative.any.js	FAIL	test constructing function
+wasm/jsapi/function/constructor.tentative.any.js	FAIL	name
+wasm/jsapi/function/constructor.tentative.any.js	FAIL	length
+wasm/jsapi/function/constructor.tentative.any.js	FAIL	Too few arguments
+wasm/jsapi/function/constructor.tentative.any.js	FAIL	Calling
+wasm/jsapi/function/constructor.tentative.any.js	FAIL	construct with JS function
+wasm/jsapi/function/constructor.tentative.any.js	FAIL	fail with missing results
+wasm/jsapi/function/constructor.tentative.any.js	FAIL	fail with missing parameters
+wasm/jsapi/function/constructor.tentative.any.js	FAIL	fail with non-string parameters & results
+wasm/jsapi/function/constructor.tentative.any.js	FAIL	fail with non-existent parameter and result type
+wasm/jsapi/function/constructor.tentative.any.js	FAIL	fail with non-function object
+wasm/jsapi/function/constructor.tentative.any.js	FAIL	fail to construct with non-callable object
+wasm/jsapi/function/table.tentative.any.js	FAIL	Test insertion into table
+wasm/jsapi/function/type.tentative.any.js	FAIL	Check empty results and parameters
+wasm/jsapi/function/type.tentative.any.js	FAIL	Check all types
+wasm/jsapi/gc/casts.tentative.any.js	ERROR
+wasm/jsapi/gc/exported-object.tentative.any.js	ERROR
+wasm/jsapi/gc/i31.tentative.any.js	ERROR
+wasm/jsapi/global/constructor.any.js	FAIL	name
+wasm/jsapi/global/constructor.any.js	FAIL	length
+wasm/jsapi/global/constructor.any.js	FAIL	No arguments
+wasm/jsapi/global/constructor.any.js	FAIL	Calling
+wasm/jsapi/global/constructor.any.js	FAIL	Order of evaluation
+wasm/jsapi/global/constructor.any.js	FAIL	Invalid descriptor argument
+wasm/jsapi/global/constructor.any.js	FAIL	Invalid type argument
+wasm/jsapi/global/constructor.any.js	FAIL	Construct v128 global
+wasm/jsapi/global/constructor.any.js	FAIL	i64 with default
+wasm/jsapi/global/constructor.any.js	FAIL	Default value for type i32
+wasm/jsapi/global/constructor.any.js	FAIL	Explicit value undefined for type i32
+wasm/jsapi/global/constructor.any.js	FAIL	Explicit value null for type i32
+wasm/jsapi/global/constructor.any.js	FAIL	Explicit value true for type i32
+wasm/jsapi/global/constructor.any.js	FAIL	Explicit value false for type i32
+wasm/jsapi/global/constructor.any.js	FAIL	Explicit value 2 for type i32
+wasm/jsapi/global/constructor.any.js	FAIL	Explicit value "3" for type i32
+wasm/jsapi/global/constructor.any.js	FAIL	Explicit value object with toString returning string for type i32
+wasm/jsapi/global/constructor.any.js	FAIL	Explicit value object with valueOf returning string for type i32
+wasm/jsapi/global/constructor.any.js	FAIL	Explicit value object with toString returning number for type i32
+wasm/jsapi/global/constructor.any.js	FAIL	Explicit value object with valueOf returning number for type i32
+wasm/jsapi/global/constructor.any.js	FAIL	BigInt value for type i32
+wasm/jsapi/global/constructor.any.js	FAIL	Default value for type f32
+wasm/jsapi/global/constructor.any.js	FAIL	Explicit value undefined for type f32
+wasm/jsapi/global/constructor.any.js	FAIL	Explicit value null for type f32
+wasm/jsapi/global/constructor.any.js	FAIL	Explicit value true for type f32
+wasm/jsapi/global/constructor.any.js	FAIL	Explicit value false for type f32
+wasm/jsapi/global/constructor.any.js	FAIL	Explicit value 2 for type f32
+wasm/jsapi/global/constructor.any.js	FAIL	Explicit value "3" for type f32
+wasm/jsapi/global/constructor.any.js	FAIL	Explicit value object with toString returning string for type f32
+wasm/jsapi/global/constructor.any.js	FAIL	Explicit value object with valueOf returning string for type f32
+wasm/jsapi/global/constructor.any.js	FAIL	Explicit value object with toString returning number for type f32
+wasm/jsapi/global/constructor.any.js	FAIL	Explicit value object with valueOf returning number for type f32
+wasm/jsapi/global/constructor.any.js	FAIL	BigInt value for type f32
+wasm/jsapi/global/constructor.any.js	FAIL	Default value for type f64
+wasm/jsapi/global/constructor.any.js	FAIL	Explicit value undefined for type f64
+wasm/jsapi/global/constructor.any.js	FAIL	Explicit value null for type f64
+wasm/jsapi/global/constructor.any.js	FAIL	Explicit value true for type f64
+wasm/jsapi/global/constructor.any.js	FAIL	Explicit value false for type f64
+wasm/jsapi/global/constructor.any.js	FAIL	Explicit value 2 for type f64
+wasm/jsapi/global/constructor.any.js	FAIL	Explicit value "3" for type f64
+wasm/jsapi/global/constructor.any.js	FAIL	Explicit value object with toString returning string for type f64
+wasm/jsapi/global/constructor.any.js	FAIL	Explicit value object with valueOf returning string for type f64
+wasm/jsapi/global/constructor.any.js	FAIL	Explicit value object with toString returning number for type f64
+wasm/jsapi/global/constructor.any.js	FAIL	Explicit value object with valueOf returning number for type f64
+wasm/jsapi/global/constructor.any.js	FAIL	BigInt value for type f64
+wasm/jsapi/global/constructor.any.js	FAIL	Explicit value undefined for type i64
+wasm/jsapi/global/constructor.any.js	FAIL	Explicit value true for type i64
+wasm/jsapi/global/constructor.any.js	FAIL	Explicit value false for type i64
+wasm/jsapi/global/constructor.any.js	FAIL	Explicit value "3" for type i64
+wasm/jsapi/global/constructor.any.js	FAIL	Explicit value 123n for type i64
+wasm/jsapi/global/constructor.any.js	FAIL	Explicit value object with toString returning string for type i64
+wasm/jsapi/global/constructor.any.js	FAIL	Explicit value object with valueOf returning string for type i64
+wasm/jsapi/global/constructor.any.js	FAIL	Explicit value object with toString returning bigint for type i64
+wasm/jsapi/global/constructor.any.js	FAIL	Explicit value object with valueOf returning bigint for type i64
+wasm/jsapi/global/constructor.any.js	FAIL	Pass non-bigint as i64 Global value: null
+wasm/jsapi/global/constructor.any.js	FAIL	Pass non-bigint as i64 Global value: 666
+wasm/jsapi/global/constructor.any.js	FAIL	Pass non-bigint as i64 Global value: object "5"
+wasm/jsapi/global/constructor.any.js	FAIL	Pass non-bigint as i64 Global value: object "[object Object]"
+wasm/jsapi/global/constructor.any.js	FAIL	Pass non-bigint as i64 Global value: symbol "Symbol()"
+wasm/jsapi/global/constructor.any.js	FAIL	Stray argument
+wasm/jsapi/global/toString.any.js	FAIL	Object.prototype.toString on an Global
+wasm/jsapi/global/toString.any.js	FAIL	@@toStringTag exists on the prototype with the appropriate descriptor
+wasm/jsapi/global/type.tentative.any.js	FAIL	i32, mutable
+wasm/jsapi/global/type.tentative.any.js	FAIL	i32, immutable
+wasm/jsapi/global/type.tentative.any.js	FAIL	i64, mutable
+wasm/jsapi/global/type.tentative.any.js	FAIL	i64, immutable
+wasm/jsapi/global/type.tentative.any.js	FAIL	f32, mutable
+wasm/jsapi/global/type.tentative.any.js	FAIL	f32, immutable
+wasm/jsapi/global/type.tentative.any.js	FAIL	f64, mutable
+wasm/jsapi/global/type.tentative.any.js	FAIL	f64, immutable
+wasm/jsapi/global/type.tentative.any.js	FAIL	externref, mutable
+wasm/jsapi/global/type.tentative.any.js	FAIL	externref, immutable
+wasm/jsapi/global/type.tentative.any.js	FAIL	funcref, mutable
+wasm/jsapi/global/type.tentative.any.js	FAIL	funcref, immutable
+wasm/jsapi/global/type.tentative.any.js	FAIL	key ordering
+wasm/jsapi/global/value-get-set.any.js	FAIL	Branding
+wasm/jsapi/global/value-get-set.any.js	FAIL	Immutable i32 (missing)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Immutable i32 with ToNumber side-effects (missing)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Immutable i32 (undefined)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Immutable i32 with ToNumber side-effects (undefined)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Immutable i32 (null)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Immutable i32 with ToNumber side-effects (null)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Immutable i32 (false)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Immutable i32 with ToNumber side-effects (false)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Immutable i32 (empty string)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Immutable i32 with ToNumber side-effects (empty string)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Immutable i32 (zero)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Immutable i32 with ToNumber side-effects (zero)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Mutable i32 (true)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Mutable i32 (one)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Mutable i32 (string)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Mutable i32 (true on prototype)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Immutable i64 (missing)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Immutable i64 with ToNumber side-effects (missing)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Immutable i64 (undefined)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Immutable i64 with ToNumber side-effects (undefined)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Immutable i64 (null)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Immutable i64 with ToNumber side-effects (null)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Immutable i64 (false)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Immutable i64 with ToNumber side-effects (false)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Immutable i64 (empty string)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Immutable i64 with ToNumber side-effects (empty string)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Immutable i64 (zero)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Immutable i64 with ToNumber side-effects (zero)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Mutable i64 (true)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Mutable i64 (one)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Mutable i64 (string)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Mutable i64 (true on prototype)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Immutable f32 (missing)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Immutable f32 with ToNumber side-effects (missing)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Immutable f32 (undefined)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Immutable f32 with ToNumber side-effects (undefined)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Immutable f32 (null)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Immutable f32 with ToNumber side-effects (null)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Immutable f32 (false)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Immutable f32 with ToNumber side-effects (false)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Immutable f32 (empty string)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Immutable f32 with ToNumber side-effects (empty string)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Immutable f32 (zero)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Immutable f32 with ToNumber side-effects (zero)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Mutable f32 (true)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Mutable f32 (one)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Mutable f32 (string)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Mutable f32 (true on prototype)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Immutable f64 (missing)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Immutable f64 with ToNumber side-effects (missing)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Immutable f64 (undefined)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Immutable f64 with ToNumber side-effects (undefined)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Immutable f64 (null)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Immutable f64 with ToNumber side-effects (null)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Immutable f64 (false)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Immutable f64 with ToNumber side-effects (false)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Immutable f64 (empty string)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Immutable f64 with ToNumber side-effects (empty string)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Immutable f64 (zero)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Immutable f64 with ToNumber side-effects (zero)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Mutable f64 (true)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Mutable f64 (one)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Mutable f64 (string)
+wasm/jsapi/global/value-get-set.any.js	FAIL	Mutable f64 (true on prototype)
+wasm/jsapi/global/value-get-set.any.js	FAIL	i64 mutability
+wasm/jsapi/global/value-get-set.any.js	FAIL	Calling setter without argument
+wasm/jsapi/global/value-get-set.any.js	FAIL	Stray argument
+wasm/jsapi/global/valueOf.any.js	FAIL	Branding
+wasm/jsapi/global/valueOf.any.js	FAIL	Stray argument
+wasm/jsapi/instance/constructor-bad-imports.any.js	ERROR
+wasm/jsapi/instance/constructor-bad-imports.any.js	FAIL	new WebAssembly.Instance(module): Non-object imports argument: null
+wasm/jsapi/instance/constructor-bad-imports.any.js	FAIL	new WebAssembly.Instance(module): Non-object imports argument: true
+wasm/jsapi/instance/constructor-bad-imports.any.js	FAIL	new WebAssembly.Instance(module): Non-object imports argument: ""
+wasm/jsapi/instance/constructor-bad-imports.any.js	FAIL	new WebAssembly.Instance(module): Non-object imports argument: symbol "Symbol()"
+wasm/jsapi/instance/constructor-bad-imports.any.js	FAIL	new WebAssembly.Instance(module): Non-object imports argument: 1
+wasm/jsapi/instance/constructor-bad-imports.any.js	FAIL	new WebAssembly.Instance(module): Non-object imports argument: 0.1
+wasm/jsapi/instance/constructor-bad-imports.any.js	FAIL	new WebAssembly.Instance(module): Non-object imports argument: NaN
+wasm/jsapi/instance/constructor-bad-imports.any.js	FAIL	new WebAssembly.Instance(module): Non-object module: undefined
+wasm/jsapi/instance/constructor-bad-imports.any.js	FAIL	new WebAssembly.Instance(module): Non-object module: null
+wasm/jsapi/instance/constructor-bad-imports.any.js	FAIL	new WebAssembly.Instance(module): Non-object module: true
+wasm/jsapi/instance/constructor-bad-imports.any.js	FAIL	new WebAssembly.Instance(module): Non-object module: ""
+wasm/jsapi/instance/constructor-bad-imports.any.js	FAIL	new WebAssembly.Instance(module): Non-object module: symbol "Symbol()"
+wasm/jsapi/instance/constructor-bad-imports.any.js	FAIL	new WebAssembly.Instance(module): Non-object module: 1
+wasm/jsapi/instance/constructor-bad-imports.any.js	FAIL	new WebAssembly.Instance(module): Non-object module: 0.1
+wasm/jsapi/instance/constructor-bad-imports.any.js	FAIL	new WebAssembly.Instance(module): Non-object module: NaN
+wasm/jsapi/instance/constructor-bad-imports.any.js	FAIL	new WebAssembly.Instance(module): Missing imports argument
+wasm/jsapi/instance/constructor-bad-imports.any.js	FAIL	new WebAssembly.Instance(module): Imports argument with missing property: undefined
+wasm/jsapi/instance/constructor-bad-imports.any.js	FAIL	new WebAssembly.Instance(module): Imports argument with missing property: empty object
+wasm/jsapi/instance/constructor-bad-imports.any.js	FAIL	new WebAssembly.Instance(module): Imports argument with missing property: wrong property
+wasm/jsapi/instance/constructor-caching.any.js	FAIL	Untitled
+wasm/jsapi/instance/constructor.any.js	FAIL	name
+wasm/jsapi/instance/constructor.any.js	FAIL	length
+wasm/jsapi/instance/constructor.any.js	FAIL	No arguments
+wasm/jsapi/instance/constructor.any.js	FAIL	Non-Module arguments
+wasm/jsapi/instance/constructor.any.js	FAIL	Calling
+wasm/jsapi/instance/constructor.any.js	FAIL	Empty module without imports argument
+wasm/jsapi/instance/constructor.any.js	FAIL	Empty module with undefined imports argument
+wasm/jsapi/instance/constructor.any.js	FAIL	Empty module with empty imports argument
+wasm/jsapi/instance/constructor.any.js	FAIL	getter order for imports object
+wasm/jsapi/instance/constructor.any.js	FAIL	imports
+wasm/jsapi/instance/constructor.any.js	FAIL	imports with empty module names
+wasm/jsapi/instance/constructor.any.js	FAIL	imports with empty names
+wasm/jsapi/instance/constructor.any.js	FAIL	exports with empty name: function
+wasm/jsapi/instance/constructor.any.js	FAIL	exports with empty name: table
+wasm/jsapi/instance/constructor.any.js	FAIL	exports with empty name: global
+wasm/jsapi/instance/constructor.any.js	FAIL	No imports
+wasm/jsapi/instance/constructor.any.js	FAIL	exports and imports
+wasm/jsapi/instance/constructor.any.js	FAIL	i64 exports and imports
+wasm/jsapi/instance/constructor.any.js	FAIL	import with i32-returning function
+wasm/jsapi/instance/constructor.any.js	FAIL	import with function that takes and returns i32
+wasm/jsapi/instance/constructor.any.js	FAIL	import with i64-returning function
+wasm/jsapi/instance/constructor.any.js	FAIL	import with function that takes and returns i64
+wasm/jsapi/instance/constructor.any.js	FAIL	import with i32-taking function
+wasm/jsapi/instance/constructor.any.js	FAIL	import with i64-taking function
+wasm/jsapi/instance/constructor.any.js	FAIL	export i64-returning function
+wasm/jsapi/instance/constructor.any.js	FAIL	i32 mutable WebAssembly.Global import
+wasm/jsapi/instance/constructor.any.js	FAIL	i64 mutable WebAssembly.Global import
+wasm/jsapi/instance/constructor.any.js	FAIL	Multiple i64 arguments
+wasm/jsapi/instance/constructor.any.js	FAIL	stray argument
+wasm/jsapi/instance/exports.any.js	FAIL	Branding
+wasm/jsapi/instance/exports.any.js	FAIL	Stray argument
+wasm/jsapi/instance/exports.any.js	FAIL	Setting (sloppy mode)
+wasm/jsapi/instance/exports.any.js	FAIL	Setting (strict mode)
+wasm/jsapi/instance/toString.any.js	FAIL	Object.prototype.toString on an Instance
+wasm/jsapi/instance/toString.any.js	FAIL	@@toStringTag exists on the prototype with the appropriate descriptor
+wasm/jsapi/interface.any.js	ERROR
+wasm/jsapi/interface.any.js	FAIL	WebAssembly: property descriptor
+wasm/jsapi/interface.any.js	FAIL	WebAssembly: calling
+wasm/jsapi/interface.any.js	FAIL	WebAssembly: constructing
+wasm/jsapi/interface.any.js	FAIL	WebAssembly.Module: property descriptor
+wasm/jsapi/interface.any.js	FAIL	WebAssembly.Module: prototype
+wasm/jsapi/interface.any.js	FAIL	WebAssembly.Module: prototype.constructor
+wasm/jsapi/interface.any.js	FAIL	WebAssembly.Instance: property descriptor
+wasm/jsapi/interface.any.js	FAIL	WebAssembly.Instance: prototype
+wasm/jsapi/interface.any.js	FAIL	WebAssembly.Instance: prototype.constructor
+wasm/jsapi/interface.any.js	FAIL	WebAssembly.Memory: property descriptor
+wasm/jsapi/interface.any.js	FAIL	WebAssembly.Memory: prototype
+wasm/jsapi/interface.any.js	FAIL	WebAssembly.Memory: prototype.constructor
+wasm/jsapi/interface.any.js	FAIL	WebAssembly.Table: property descriptor
+wasm/jsapi/interface.any.js	FAIL	WebAssembly.Table: prototype
+wasm/jsapi/interface.any.js	FAIL	WebAssembly.Table: prototype.constructor
+wasm/jsapi/interface.any.js	FAIL	WebAssembly.Global: property descriptor
+wasm/jsapi/interface.any.js	FAIL	WebAssembly.Global: prototype
+wasm/jsapi/interface.any.js	FAIL	WebAssembly.Global: prototype.constructor
+wasm/jsapi/interface.any.js	FAIL	WebAssembly.CompileError: property descriptor
+wasm/jsapi/interface.any.js	FAIL	WebAssembly.CompileError: prototype
+wasm/jsapi/interface.any.js	FAIL	WebAssembly.CompileError: prototype.constructor
+wasm/jsapi/interface.any.js	FAIL	WebAssembly.LinkError: property descriptor
+wasm/jsapi/interface.any.js	FAIL	WebAssembly.LinkError: prototype
+wasm/jsapi/interface.any.js	FAIL	WebAssembly.LinkError: prototype.constructor
+wasm/jsapi/interface.any.js	FAIL	WebAssembly.RuntimeError: property descriptor
+wasm/jsapi/interface.any.js	FAIL	WebAssembly.RuntimeError: prototype
+wasm/jsapi/interface.any.js	FAIL	WebAssembly.RuntimeError: prototype.constructor
+wasm/jsapi/js-string/basic.any.js	ERROR
+wasm/jsapi/js-string/constants.any.js	FAIL	Untitled
+wasm/jsapi/js-string/constants.any.js	FAIL	Untitled 1
+wasm/jsapi/js-string/constants.any.js	FAIL	Untitled 2
+wasm/jsapi/js-string/constants.any.js	FAIL	Untitled 3
+wasm/jsapi/js-string/constants.any.js	FAIL	Untitled 4
+wasm/jsapi/js-string/constants.any.js	FAIL	Untitled 5
+wasm/jsapi/js-string/constants.any.js	FAIL	Untitled 6
+wasm/jsapi/js-string/constants.any.js	FAIL	Untitled 7
+wasm/jsapi/js-string/constants.any.js	FAIL	Untitled 8
+wasm/jsapi/js-string/constants.any.js	FAIL	Untitled 9
+wasm/jsapi/js-string/constants.any.js	FAIL	Untitled 10
+wasm/jsapi/js-string/constants.any.js	FAIL	Untitled 11
+wasm/jsapi/js-string/constants.any.js	FAIL	Untitled 12
+wasm/jsapi/js-string/constants.any.js	FAIL	Untitled 13
+wasm/jsapi/js-string/constants.any.js	FAIL	Untitled 14
+wasm/jsapi/js-string/constants.any.js	FAIL	Untitled 15
+wasm/jsapi/js-string/constants.any.js	FAIL	Untitled 16
+wasm/jsapi/js-string/constants.any.js	FAIL	Untitled 17
+wasm/jsapi/js-string/constants.any.js	FAIL	Untitled 18
+wasm/jsapi/js-string/constants.any.js	FAIL	Untitled 19
+wasm/jsapi/js-string/constants.any.js	FAIL	Untitled 20
+wasm/jsapi/js-string/constants.any.js	FAIL	Untitled 21
+wasm/jsapi/js-string/constants.any.js	FAIL	Untitled 22
+wasm/jsapi/js-string/constants.any.js	FAIL	Untitled 23
+wasm/jsapi/js-string/constants.any.js	FAIL	Untitled 24
+wasm/jsapi/js-string/constants.any.js	FAIL	Untitled 25
+wasm/jsapi/js-string/constants.any.js	FAIL	Untitled 26
+wasm/jsapi/js-string/constants.any.js	FAIL	Untitled 27
+wasm/jsapi/js-string/constants.any.js	FAIL	Untitled 28
+wasm/jsapi/js-string/constants.any.js	FAIL	Untitled 29
+wasm/jsapi/js-string/constants.any.js	FAIL	Untitled 30
+wasm/jsapi/js-string/constants.any.js	FAIL	Untitled 31
+wasm/jsapi/js-string/constants.any.js	FAIL	Untitled 32
+wasm/jsapi/js-string/constants.any.js	FAIL	Untitled 33
+wasm/jsapi/js-string/constants.any.js	FAIL	Untitled 34
+wasm/jsapi/js-string/constants.any.js	FAIL	Untitled 35
+wasm/jsapi/js-string/constants.any.js	FAIL	Untitled 36
+wasm/jsapi/js-string/constants.any.js	FAIL	Untitled 37
+wasm/jsapi/js-string/constants.any.js	FAIL	Untitled 38
+wasm/jsapi/js-string/constants.any.js	FAIL	Untitled 39
+wasm/jsapi/js-string/imports.any.js	FAIL	Untitled
+wasm/jsapi/jspi/js-promise-integration.any.js	FAIL	Valid use of API
+wasm/jsapi/jspi/js-promise-integration.any.js	FAIL	Promising function always entered
+wasm/jsapi/jspi/js-promise-integration.any.js	FAIL	Always get a Promise
+wasm/jsapi/jspi/js-promise-integration.any.js	FAIL	Suspend once
+wasm/jsapi/jspi/js-promise-integration.any.js	FAIL	Suspend/resume in a loop
+wasm/jsapi/jspi/js-promise-integration.any.js	FAIL	Suspending with mismatched args and via Proxy
+wasm/jsapi/jspi/js-promise-integration.any.js	FAIL	Make sure we actually suspend
+wasm/jsapi/jspi/js-promise-integration.any.js	FAIL	Do suspend even if the import's return value is not a Promise by wrapping it with Promise.resolve
+wasm/jsapi/jspi/js-promise-integration.any.js	FAIL	Catch rejected promise
+wasm/jsapi/jspi/js-promise-integration.any.js	FAIL	Test sandwich with suspension
+wasm/jsapi/jspi/js-promise-integration.any.js	FAIL	Test sandwich with no suspension
+wasm/jsapi/jspi/js-promise-integration.any.js	FAIL	Promising with no return
+wasm/jsapi/jspi/js-promise-integration.any.js	FAIL	Suspend two modules
+wasm/jsapi/jspi/notraps.any.js	FAIL	catch SuspendError
+wasm/jsapi/jspi/notraps.any.js	FAIL	throw on reentrance
+wasm/jsapi/jspi/notraps.any.js	FAIL	unwrapped export
+wasm/jsapi/jspi/rejects.any.js	FAIL	Throw after the first suspension
+wasm/jsapi/jspi/rejects.any.js	FAIL	Throw before suspending
+wasm/jsapi/jspi/rejects.any.js	FAIL	Throw and propagate via Promise
+wasm/jsapi/jspi/rejects.any.js	FAIL	Stack overflow
+wasm/jsapi/jspi/rejects.any.js	FAIL	Try to suspend JS
+wasm/jsapi/memory/buffer.any.js	FAIL	Branding
+wasm/jsapi/memory/buffer.any.js	FAIL	Stray argument
+wasm/jsapi/memory/buffer.any.js	FAIL	Setting (sloppy mode)
+wasm/jsapi/memory/buffer.any.js	FAIL	Setting (strict mode)
+wasm/jsapi/memory/constructor-shared.tentative.any.js	FAIL	Shared memory without maximum
+wasm/jsapi/memory/constructor-shared.tentative.any.js	FAIL	Order of evaluation for descriptor (with shared)
+wasm/jsapi/memory/constructor-shared.tentative.any.js	FAIL	Shared memory
+wasm/jsapi/memory/constructor-types.tentative.any.js	FAIL	Initializing with both initial and minimum
+wasm/jsapi/memory/constructor-types.tentative.any.js	FAIL	Zero minimum
+wasm/jsapi/memory/constructor-types.tentative.any.js	FAIL	Non-zero minimum
+wasm/jsapi/memory/constructor.any.js	FAIL	name
+wasm/jsapi/memory/constructor.any.js	FAIL	length
+wasm/jsapi/memory/constructor.any.js	FAIL	No arguments
+wasm/jsapi/memory/constructor.any.js	FAIL	Calling
+wasm/jsapi/memory/constructor.any.js	FAIL	Invalid descriptor argument
+wasm/jsapi/memory/constructor.any.js	FAIL	Undefined initial value in descriptor
+wasm/jsapi/memory/constructor.any.js	FAIL	Out-of-range initial value in descriptor: NaN
+wasm/jsapi/memory/constructor.any.js	FAIL	Out-of-range maximum value in descriptor: NaN
+wasm/jsapi/memory/constructor.any.js	FAIL	Out-of-range initial value in descriptor: Infinity
+wasm/jsapi/memory/constructor.any.js	FAIL	Out-of-range maximum value in descriptor: Infinity
+wasm/jsapi/memory/constructor.any.js	FAIL	Out-of-range initial value in descriptor: -Infinity
+wasm/jsapi/memory/constructor.any.js	FAIL	Out-of-range maximum value in descriptor: -Infinity
+wasm/jsapi/memory/constructor.any.js	FAIL	Out-of-range initial value in descriptor: -1
+wasm/jsapi/memory/constructor.any.js	FAIL	Out-of-range maximum value in descriptor: -1
+wasm/jsapi/memory/constructor.any.js	FAIL	Out-of-range initial value in descriptor: 4294967296
+wasm/jsapi/memory/constructor.any.js	FAIL	Out-of-range maximum value in descriptor: 4294967296
+wasm/jsapi/memory/constructor.any.js	FAIL	Out-of-range initial value in descriptor: 68719476736
+wasm/jsapi/memory/constructor.any.js	FAIL	Out-of-range maximum value in descriptor: 68719476736
+wasm/jsapi/memory/constructor.any.js	FAIL	Initial value exceeds maximum
+wasm/jsapi/memory/constructor.any.js	FAIL	Proxy descriptor
+wasm/jsapi/memory/constructor.any.js	FAIL	Order of evaluation for descriptor
+wasm/jsapi/memory/constructor.any.js	FAIL	Zero initial
+wasm/jsapi/memory/constructor.any.js	FAIL	Non-zero initial
+wasm/jsapi/memory/constructor.any.js	FAIL	Stray argument
+wasm/jsapi/memory/grow.any.js	FAIL	Missing arguments
+wasm/jsapi/memory/grow.any.js	FAIL	Branding
+wasm/jsapi/memory/grow.any.js	FAIL	Zero initial
+wasm/jsapi/memory/grow.any.js	FAIL	Zero initial with valueOf
+wasm/jsapi/memory/grow.any.js	FAIL	Non-zero initial
+wasm/jsapi/memory/grow.any.js	FAIL	Zero initial with respected maximum
+wasm/jsapi/memory/grow.any.js	FAIL	Zero initial with respected maximum grown twice
+wasm/jsapi/memory/grow.any.js	FAIL	Zero initial growing too much
+wasm/jsapi/memory/grow.any.js	FAIL	Out-of-range argument: undefined
+wasm/jsapi/memory/grow.any.js	FAIL	Out-of-range argument: NaN
+wasm/jsapi/memory/grow.any.js	FAIL	Out-of-range argument: Infinity
+wasm/jsapi/memory/grow.any.js	FAIL	Out-of-range argument: -Infinity
+wasm/jsapi/memory/grow.any.js	FAIL	Out-of-range argument: -1
+wasm/jsapi/memory/grow.any.js	FAIL	Out-of-range argument: 4294967296
+wasm/jsapi/memory/grow.any.js	FAIL	Out-of-range argument: 68719476736
+wasm/jsapi/memory/grow.any.js	FAIL	Out-of-range argument: "0x100000000"
+wasm/jsapi/memory/grow.any.js	FAIL	Out-of-range argument: object "[object Object]"
+wasm/jsapi/memory/grow.any.js	FAIL	Stray argument
+wasm/jsapi/memory/grow.any.js	FAIL	Growing shared memory does not detach old buffer
+wasm/jsapi/memory/to-fixed-length-buffer-shared.any.js	FAIL	toFixedLengthBuffer caching behavior
+wasm/jsapi/memory/to-fixed-length-buffer.any.js	FAIL	API surface
+wasm/jsapi/memory/to-fixed-length-buffer.any.js	FAIL	toFixedLengthBuffer caching behavior
+wasm/jsapi/memory/to-resizable-buffer-shared.any.js	FAIL	toResizableBuffer caching behavior
+wasm/jsapi/memory/to-resizable-buffer-shared.any.js	FAIL	toResizableBuffer max size
+wasm/jsapi/memory/to-resizable-buffer-shared.any.js	FAIL	Resizing a Memory's resizable buffer
+wasm/jsapi/memory/to-resizable-buffer.any.js	FAIL	API surface
+wasm/jsapi/memory/to-resizable-buffer.any.js	FAIL	toResizableBuffer caching behavior
+wasm/jsapi/memory/to-resizable-buffer.any.js	FAIL	toResizableBuffer max size
+wasm/jsapi/memory/to-resizable-buffer.any.js	FAIL	Resizing a Memory's resizable buffer
+wasm/jsapi/memory/to-resizable-buffer.any.js	FAIL	Resizable buffers from Memory cannot be detached by JS
+wasm/jsapi/memory/toString.any.js	FAIL	Object.prototype.toString on an Memory
+wasm/jsapi/memory/toString.any.js	FAIL	@@toStringTag exists on the prototype with the appropriate descriptor
+wasm/jsapi/memory/type.tentative.any.js	FAIL	Zero initial, no maximum
+wasm/jsapi/memory/type.tentative.any.js	FAIL	Non-zero initial, no maximum
+wasm/jsapi/memory/type.tentative.any.js	FAIL	Zero maximum
+wasm/jsapi/memory/type.tentative.any.js	FAIL	None-zero maximum
+wasm/jsapi/memory/type.tentative.any.js	FAIL	non-shared memory
+wasm/jsapi/memory/type.tentative.any.js	FAIL	shared memory
+wasm/jsapi/module/constructor.any.js	FAIL	name
+wasm/jsapi/module/constructor.any.js	FAIL	length
+wasm/jsapi/module/constructor.any.js	FAIL	No arguments
+wasm/jsapi/module/constructor.any.js	FAIL	Calling
+wasm/jsapi/module/constructor.any.js	FAIL	Invalid arguments
+wasm/jsapi/module/constructor.any.js	FAIL	Empty buffer
+wasm/jsapi/module/constructor.any.js	FAIL	Invalid code
+wasm/jsapi/module/constructor.any.js	FAIL	Prototype
+wasm/jsapi/module/constructor.any.js	FAIL	Extensibility
+wasm/jsapi/module/constructor.any.js	FAIL	Stray argument
+wasm/jsapi/module/customSections.any.js	FAIL	Missing arguments
+wasm/jsapi/module/customSections.any.js	FAIL	Non-Module arguments
+wasm/jsapi/module/customSections.any.js	FAIL	Branding
+wasm/jsapi/module/customSections.any.js	FAIL	Empty module
+wasm/jsapi/module/customSections.any.js	FAIL	Empty module: array caching
+wasm/jsapi/module/customSections.any.js	FAIL	Custom sections
+wasm/jsapi/module/customSections.any.js	FAIL	Custom sections with surrogate pairs
+wasm/jsapi/module/customSections.any.js	FAIL	Custom sections with U+FFFD
+wasm/jsapi/module/customSections.any.js	FAIL	Stray argument
+wasm/jsapi/module/customSections.any.js	FAIL	Custom section buffers are independent copies
+wasm/jsapi/module/customSections.any.js	FAIL	Mutating a custom section buffer does not change other copies
+wasm/jsapi/module/exports.any.js	FAIL	Missing arguments
+wasm/jsapi/module/exports.any.js	FAIL	Non-Module arguments
+wasm/jsapi/module/exports.any.js	FAIL	Branding
+wasm/jsapi/module/exports.any.js	FAIL	Return type
+wasm/jsapi/module/exports.any.js	FAIL	Empty module
+wasm/jsapi/module/exports.any.js	FAIL	Empty module: array caching
+wasm/jsapi/module/exports.any.js	FAIL	exports
+wasm/jsapi/module/exports.any.js	FAIL	exports with empty name: function
+wasm/jsapi/module/exports.any.js	FAIL	exports with empty name: table
+wasm/jsapi/module/exports.any.js	FAIL	exports with empty name: global
+wasm/jsapi/module/exports.any.js	FAIL	Stray argument
+wasm/jsapi/module/imports.any.js	FAIL	Missing arguments
+wasm/jsapi/module/imports.any.js	FAIL	Non-Module arguments
+wasm/jsapi/module/imports.any.js	FAIL	Branding
+wasm/jsapi/module/imports.any.js	FAIL	Return type
+wasm/jsapi/module/imports.any.js	FAIL	Empty module
+wasm/jsapi/module/imports.any.js	FAIL	Empty module: array caching
+wasm/jsapi/module/imports.any.js	FAIL	imports
+wasm/jsapi/module/imports.any.js	FAIL	imports with empty module name
+wasm/jsapi/module/imports.any.js	FAIL	imports with empty names
+wasm/jsapi/module/imports.any.js	FAIL	imports with empty module names and names
+wasm/jsapi/module/imports.any.js	FAIL	Stray argument
+wasm/jsapi/module/moduleSource.tentative.any.js	FAIL	AbstractModuleSource intrinsic
+wasm/jsapi/module/moduleSource.tentative.any.js	FAIL	AbstractModuleSourceProto intrinsic
+wasm/jsapi/module/moduleSource.tentative.any.js	FAIL	AbstractModuleSourceProto toStringTag brand check
+wasm/jsapi/module/toString.any.js	FAIL	Object.prototype.toString on an Module
+wasm/jsapi/module/toString.any.js	FAIL	@@toStringTag exists on the prototype with the appropriate descriptor
+wasm/jsapi/prototypes.any.js	FAIL	_Module
+wasm/jsapi/prototypes.any.js	FAIL	_Instance
+wasm/jsapi/prototypes.any.js	FAIL	_Memory
+wasm/jsapi/prototypes.any.js	FAIL	_Table
+wasm/jsapi/prototypes.any.js	FAIL	_Global
+wasm/jsapi/table/constructor-types.tentative.any.js	FAIL	Initializing with both initial and minimum
+wasm/jsapi/table/constructor-types.tentative.any.js	FAIL	Zero minimum
+wasm/jsapi/table/constructor-types.tentative.any.js	FAIL	Non-zero minimum
+wasm/jsapi/table/constructor.any.js	FAIL	name
+wasm/jsapi/table/constructor.any.js	FAIL	length
+wasm/jsapi/table/constructor.any.js	FAIL	No arguments
+wasm/jsapi/table/constructor.any.js	FAIL	Calling
+wasm/jsapi/table/constructor.any.js	FAIL	Empty descriptor
+wasm/jsapi/table/constructor.any.js	FAIL	Invalid descriptor argument
+wasm/jsapi/table/constructor.any.js	FAIL	Undefined initial value in descriptor
+wasm/jsapi/table/constructor.any.js	FAIL	Undefined element value in descriptor
+wasm/jsapi/table/constructor.any.js	FAIL	Out-of-range initial value in descriptor: NaN
+wasm/jsapi/table/constructor.any.js	FAIL	Out-of-range maximum value in descriptor: NaN
+wasm/jsapi/table/constructor.any.js	FAIL	Out-of-range initial value in descriptor: Infinity
+wasm/jsapi/table/constructor.any.js	FAIL	Out-of-range maximum value in descriptor: Infinity
+wasm/jsapi/table/constructor.any.js	FAIL	Out-of-range initial value in descriptor: -Infinity
+wasm/jsapi/table/constructor.any.js	FAIL	Out-of-range maximum value in descriptor: -Infinity
+wasm/jsapi/table/constructor.any.js	FAIL	Out-of-range initial value in descriptor: -1
+wasm/jsapi/table/constructor.any.js	FAIL	Out-of-range maximum value in descriptor: -1
+wasm/jsapi/table/constructor.any.js	FAIL	Out-of-range initial value in descriptor: 4294967296
+wasm/jsapi/table/constructor.any.js	FAIL	Out-of-range maximum value in descriptor: 4294967296
+wasm/jsapi/table/constructor.any.js	FAIL	Out-of-range initial value in descriptor: 68719476736
+wasm/jsapi/table/constructor.any.js	FAIL	Out-of-range maximum value in descriptor: 68719476736
+wasm/jsapi/table/constructor.any.js	FAIL	Initial value exceeds maximum
+wasm/jsapi/table/constructor.any.js	FAIL	Basic (zero)
+wasm/jsapi/table/constructor.any.js	FAIL	Basic (non-zero)
+wasm/jsapi/table/constructor.any.js	FAIL	Stray argument
+wasm/jsapi/table/constructor.any.js	FAIL	Proxy descriptor
+wasm/jsapi/table/constructor.any.js	FAIL	Type conversion for descriptor.element
+wasm/jsapi/table/constructor.any.js	FAIL	Order of evaluation for descriptor
+wasm/jsapi/table/constructor.any.js	FAIL	initialize externref table with default value
+wasm/jsapi/table/constructor.any.js	FAIL	initialize table with a wrong element value
+wasm/jsapi/table/constructor.any.js	FAIL	initialize anyfunc table with default value
+wasm/jsapi/table/constructor.any.js	FAIL	initialize anyfunc table with a bad default value
+wasm/jsapi/table/constructor.any.js	FAIL	initialize anyfunc table with a bad default value and a bad descriptor
+wasm/jsapi/table/get-set.any.js	ERROR
+wasm/jsapi/table/grow.any.js	FAIL	Missing arguments
+wasm/jsapi/table/grow.any.js	FAIL	Branding
+wasm/jsapi/table/grow.any.js	FAIL	Basic
+wasm/jsapi/table/grow.any.js	FAIL	Reached maximum
+wasm/jsapi/table/grow.any.js	FAIL	Exceeded maximum
+wasm/jsapi/table/grow.any.js	FAIL	Out-of-range argument: undefined
+wasm/jsapi/table/grow.any.js	FAIL	Out-of-range argument: NaN
+wasm/jsapi/table/grow.any.js	FAIL	Out-of-range argument: Infinity
+wasm/jsapi/table/grow.any.js	FAIL	Out-of-range argument: -Infinity
+wasm/jsapi/table/grow.any.js	FAIL	Out-of-range argument: -1
+wasm/jsapi/table/grow.any.js	FAIL	Out-of-range argument: 4294967296
+wasm/jsapi/table/grow.any.js	FAIL	Out-of-range argument: 68719476736
+wasm/jsapi/table/grow.any.js	FAIL	Out-of-range argument: "0x100000000"
+wasm/jsapi/table/grow.any.js	FAIL	Out-of-range argument: object "[object Object]"
+wasm/jsapi/table/grow.any.js	FAIL	Stray argument
+wasm/jsapi/table/grow.any.js	FAIL	Grow with exported-function argument
+wasm/jsapi/table/grow.any.js	FAIL	Grow with non-function argument
+wasm/jsapi/table/grow.any.js	FAIL	Grow with JS-function argument
+wasm/jsapi/table/length.any.js	FAIL	Branding
+wasm/jsapi/table/length.any.js	FAIL	Stray argument
+wasm/jsapi/table/length.any.js	FAIL	Setting (sloppy mode)
+wasm/jsapi/table/length.any.js	FAIL	Setting (strict mode)
+wasm/jsapi/table/toString.any.js	FAIL	Object.prototype.toString on an Table
+wasm/jsapi/table/toString.any.js	FAIL	@@toStringTag exists on the prototype with the appropriate descriptor
+wasm/jsapi/table/type.tentative.any.js	FAIL	Zero initial, no maximum
+wasm/jsapi/table/type.tentative.any.js	FAIL	Non-zero initial, no maximum
+wasm/jsapi/table/type.tentative.any.js	FAIL	Zero maximum
+wasm/jsapi/table/type.tentative.any.js	FAIL	Non-zero maximum
+wasm/jsapi/tag/constructor.tentative.any.js	FAIL	name
+wasm/jsapi/tag/constructor.tentative.any.js	FAIL	length
+wasm/jsapi/tag/constructor.tentative.any.js	FAIL	No arguments
+wasm/jsapi/tag/constructor.tentative.any.js	FAIL	Calling
+wasm/jsapi/tag/constructor.tentative.any.js	FAIL	Invalid descriptor argument
+wasm/jsapi/tag/constructor.tentative.any.js	FAIL	Invalid type parameter
+wasm/jsapi/tag/toString.tentative.any.js	FAIL	Object.prototype.toString on a Tag
+wasm/jsapi/tag/toString.tentative.any.js	FAIL	@@toStringTag exists on the prototype with the appropriate descriptor
+wasm/jsapi/tag/type.tentative.any.js	FAIL	[]
+wasm/jsapi/tag/type.tentative.any.js	FAIL	[i32 i64]
+wasm/jsapi/tag/type.tentative.any.js	FAIL	[i32 i64 f32 f64]
