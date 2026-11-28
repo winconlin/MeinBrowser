@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::*;
 use crate::agent::{Abrupt, Agent, Exception};
-use crate::bytecode::Op;
+use crate::bytecode::{Op, TemplateStrings};
 use crate::heap::{Local, Options};
 use crate::number;
 use crate::realm::RealmId;
@@ -45,6 +45,8 @@ const SCRIPTS: &[&str] = &[
     "\"use strict\"; function tail(n) { return n == 0 ? 'fertig' : tail(n - 1); } tail(10000)",
     "var { a, b: [c, ...d] = [] } = { a: 1, b: [2, 3, 4] }; a + c + d.length",
     "typeof import('x')",
+    "function t(s, ...v) { return s.raw.join('|') + s.length + v.join(); } \
+     function f() { return (s => s)`x`; } [t`a${1}b\\u{`, f() === f(), String.raw`\\n${2}`].join()",
 ];
 
 fn agent() -> (Agent, RealmId) {
@@ -427,6 +429,66 @@ fn functions_named_in_constants_must_be_in_the_entry() {
             .map(|_| ())
             .map_err(|error| error.reason()),
         Err("Konstante ohne Gegenstück im Eintrag")
+    );
+}
+
+#[test]
+fn template_constants_are_checked() {
+    let source = units("(s => s)`a${1}b`");
+    let prepared = prepare(&source).expect("speicherbar");
+    let rejected = |change: &dyn Fn(&mut Constant)| {
+        let mut changed = prepared.clone();
+        for constant in &mut changed.script.code.constants {
+            if matches!(constant, Constant::Template(_)) {
+                change(constant);
+            }
+        }
+        decode(&encode(&changed), &source)
+            .map(|_| ())
+            .map_err(|error| error.reason())
+    };
+    assert_eq!(
+        rejected(&|constant| *constant = Constant::String(units("a"))),
+        Err("Konstante falscher Art")
+    );
+    assert_eq!(
+        rejected(&|constant| {
+            *constant = Constant::Template(Rc::new(TemplateStrings {
+                cooked: Vec::new(),
+                raw: Vec::new(),
+            }));
+        }),
+        Err("Template ohne Teile")
+    );
+}
+
+/// Bytecode aus dem Speicher ist keine Stelle im Quelltext: Jedes Script,
+/// das ihn lädt, bekommt eigene Template-Objekte.
+#[test]
+fn a_loaded_script_has_its_own_template_objects() {
+    let store = Arc::new(Counting::default());
+    let (mut agent, realm) = agent();
+    agent.set_code_store(Some(Arc::<Counting>::clone(&store)));
+    run(
+        &mut agent,
+        realm,
+        "var keep = []; function t(s) { return s; }",
+    );
+    for _ in 0..2 {
+        run(
+            &mut agent,
+            realm,
+            "keep.push(t`x`, (function () { return t`y`; })())",
+        );
+    }
+    assert_eq!(store.hits.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        run(
+            &mut agent,
+            realm,
+            "[keep[0] !== keep[2], keep[1] !== keep[3]].join()"
+        ),
+        "\"true,true\""
     );
 }
 

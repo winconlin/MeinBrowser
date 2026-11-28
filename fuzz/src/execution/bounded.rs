@@ -203,7 +203,7 @@ mod tests {
         );
         assert_eq!(both("null.x"), Outcome::Error(ErrorKind::TypeError));
         assert!(matches!(both("let = ;"), Outcome::Syntax(_)));
-        assert!(matches!(both("f`x`"), Outcome::Unsupported(_)));
+        assert!(matches!(both("{using a=null;}"), Outcome::Unsupported(_)));
     }
 
     #[test]

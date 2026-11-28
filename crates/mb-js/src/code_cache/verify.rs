@@ -363,6 +363,9 @@ fn constants_fit(script: &CompiledScript, code: &Code, instruction: &Instruction
         Op::CallEval => matches!(constant(1), Some(Constant::EvalSite(_))),
         Op::ImportCall => matches!(constant(0), Some(Constant::Module)),
         Op::CreateRegExp => string(0) && string(1),
+        // Nur dieser Befehl liest den Platz eines Templates und schreibt
+        // das Objekt hinein.
+        Op::GetTemplateObject => matches!(constant(0), Some(Constant::Template(_))),
         Op::CreatePrivateName => string(0),
         Op::CreateClosure => function(0) && name(1),
         Op::CreateClosureKeyed => function(0),

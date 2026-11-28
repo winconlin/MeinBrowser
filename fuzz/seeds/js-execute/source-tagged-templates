@@ -1,0 +1,1 @@
+function t(s,...v){return s;} t`a${1}b\u{`; var o={m(s){return this;}}; o.m`x`; t`a`===t`a`; (function(){return t`y`;})();

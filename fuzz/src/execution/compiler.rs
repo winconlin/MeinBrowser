@@ -166,6 +166,7 @@ fn check_code(code: &Code, source_length: usize, top_level_await: bool) -> Stats
     let mut stats = Stats::default();
     let mut starts = BTreeSet::new();
     let mut targets = Vec::new();
+    let mut template_sites = BTreeSet::new();
     let mut offset = 0;
     let mut last = None;
     while offset < bytes.len() {
@@ -461,6 +462,20 @@ fn check_code(code: &Code, source_length: usize, top_level_await: bool) -> Stats
                         .checked_add(5)
                         .is_some_and(|end| end <= code.register_count()),
                     "the field loop fits its frame"
+                );
+            }
+            Op::GetTemplateObject => {
+                let Some(Constant::Template(strings)) = code.constant(instruction.operand(0))
+                else {
+                    panic!("a tagged template reads its own template constant");
+                };
+                assert!(
+                    !strings.raw().is_empty() && strings.cooked().len() == strings.raw().len(),
+                    "a template has as many cooked as raw strings, at least one"
+                );
+                assert!(
+                    template_sites.insert(instruction.operand(0)),
+                    "every template site has its own constant and object"
                 );
             }
             Op::CreatePrivateName => {
@@ -1067,7 +1082,11 @@ mod tests {
 
     #[test]
     fn syntax_and_unsupported_paths_preserve_positions() {
-        for source in ["class A{[f`x`](){}}", "x={a:f`x`};", "f`x`;"] {
+        for source in [
+            "{using a=null;}",
+            "if(b){using a=null;}",
+            "for(using a of b){}",
+        ] {
             let source: Vec<u16> = source.encode_utf16().collect();
             assert_eq!(check_source(&source), Outcome::Unsupported);
         }
@@ -1100,7 +1119,7 @@ mod tests {
 
     #[test]
     fn unsupported_deferred_bodies_preserve_positions() {
-        for source in ["function f(){x=[f`x`];}", "function f(){f`x`;}"] {
+        for source in ["function f(){using a=null;}", "function f(){{using a=b;}}"] {
             let stats = checked(source);
             assert_eq!(stats.functions, 0);
             assert_eq!(stats.unsupported_functions, 1);

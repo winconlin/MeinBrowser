@@ -201,7 +201,7 @@ Schritt 9c-1 waren das die mit `module`, jetzt keine mehr. Eine Panik der Engine
 sie kann nicht erwartet werden. Jede Datei der festen Auswahl muss auch hier
 bestehen.
 
-Mit diesem Stand bestehen 23.089 von 23.296 ausgeführten Dateien und 43.431
+Mit diesem Stand bestehen 23.133 von 23.296 ausgeführten Dateien und 43.515
 von 43.794 Varianten. Seit Schritt 7 gibt es async-Funktionen, `for await`
 und async-Generatoren, seit Schritt 8a `Object` mit allen Funktionen,
 `Object.prototype` und `Function.prototype` vollständig und gebundene
@@ -296,13 +296,19 @@ Unterklassen: `subclass-WeakMap.js`, `subclass-WeakRef.js` und
 `statements/class/subclass-builtins/` und je `regular-subclassing.js` und
 `super-must-be-called.js` unter
 `statements/class/subclass/builtin-objects/WeakMap/` und `WeakSet/`.
-Es scheitern noch 207 Dateien. In 165 davon kann der Übersetzer ein
-Konstrukt noch nicht (`Unsupported`). 154 sind Scripts: Nach einer Suche in
-den Quelltexten nennen 108 `using` oder `await using`, und die übrigen 46
-nutzen Templates mit Tag, zwei davon in einem Aufruf von `import()`. Die
+Seit Schritt 13a gibt es Templates mit Tag; damit bestehen 44 der 46
+Dateien, die an ihnen scheiterten, darunter alle unter
+`expressions/template-literal/`, die die Werte der Teile über einen Tag
+prüfen. Die beiden übrigen, `tco-call.js` und `tco-member.js` unter
+`expressions/tagged-template/`, erschöpfen jetzt wie die anderen `tco-*.js`
+die Arbeitsschritte.
+
+Es scheitern noch 163 Dateien. In 119 davon kann der Übersetzer ein
+Konstrukt noch nicht (`Unsupported`). 108 sind Scripts, die nach einer
+Suche in den Quelltexten alle `using` oder `await using` nennen. Die
 elf Module haben alle das Feature `explicit-resource-management`, vier davon
-auch `top-level-await`. 40 Dateien
-erschöpfen die Arbeitsschritte: 32 `tco-*.js`, die sich im strikten Modus
+auch `top-level-await`. 42 Dateien
+erschöpfen die Arbeitsschritte: 34 `tco-*.js`, die sich im strikten Modus
 100.000-mal als Endaufruf aufrufen (siehe [unten](#anschluss-für-claude)),
 `comments/S7.4_A5.js` und `S7.4_A6.js` und vier unter `literals/regexp/`
 (`S7.8.5_A1.1_T2.js`, `S7.8.5_A1.4_T2.js`, `S7.8.5_A2.1_T2.js` und
@@ -319,8 +325,8 @@ Fehlschläge gibt der Test mit `--nocapture` aus:
 
 | Varianten | Grund |
 | ---: | --- |
-| 313 | Der Übersetzer kann ein Konstrukt noch nicht (`Unsupported`), davon elf in Modulen |
-| 48 | Die Arbeitsschritte sind erschöpft |
+| 227 | Der Übersetzer kann ein Konstrukt noch nicht (`Unsupported`), davon elf in Modulen |
+| 50 | Die Arbeitsschritte sind erschöpft |
 | 2 | TypeError im Test: die beiden Dateien mit dem Feature `caller` |
 
 ## `built-ins/` und `annexB/built-ins/` mit erwarteten Ergebnissen
@@ -352,7 +358,7 @@ Von 18.560 Dateien laufen 18.357. Übersprungen werden 203 mit Vorschlägen aus
 `ArrayBuffer/`, elf unter `DataView/`, neun unter `Atomics/`, acht unter `TypedArray/` und je zwei
 unter `TypedArrayConstructors/` und `Uint8Array/`, 35 unter `Error/` mit
 `error-stack-accessor` und 18 unter `Iterator/prototype/join/` mit
-`Iterator.prototype.join`. Es bestehen 17.543 Dateien und 34.824 von 36.431
+`Iterator.prototype.join`. Es bestehen 17.547 Dateien und 34.832 von 36.431
 Varianten:
 
 | Teil | Dateien | Varianten |
@@ -388,7 +394,7 @@ Varianten:
 | `Set/` | 383 von 383 | 764 von 764 |
 | `SetIteratorPrototype/` | 11 von 11 | 22 von 22 |
 | `SharedArrayBuffer/` | 104 von 104 | 208 von 208 |
-| `String/` | 1.213 von 1.223 | 2.423 von 2.443 |
+| `String/` | 1.217 von 1.223 | 2.431 von 2.443 |
 | `StringIteratorPrototype/` | 7 von 7 | 14 von 14 |
 | `Symbol/` | 98 von 98 | 192 von 192 |
 | `TypedArray/` | 1.355 von 1.445 | 2.694 von 2.874 |
@@ -442,7 +448,9 @@ brauchten und nur ohne strikten Modus laufen: neun unter `Proxy/has/`,
 unter `TypedArrayConstructors/internals/HasProperty/`. Auch dabei scheitert
 keine Datei neu. Mit Schritt 9c-1 besteht auch die einzige Datei mit dem
 Flag `module`, `Proxy/preventExtensions/trap-is-undefined-target-is-proxy.js`.
-Jede der 814 Dateien, die noch scheitern, ist einem Grund
+Mit Schritt 13a bestehen die vier Dateien unter `String/raw/`, die Templates
+mit Tag brauchten.
+Jede der 810 Dateien, die noch scheitern, ist einem Grund
 zugeordnet, nach dem Grund, den der Läufer meldet, und den Namen in der
 Datei:
 
@@ -453,7 +461,6 @@ Datei:
 | 112 | Die Harness `atomicsHelper.js` liest `$262.agent`, das der Host noch nicht hat (alle unter `Atomics/`, siehe unten) |
 | 21 | Das Feature `caller` unter `Function/`: Die Dateien setzen die Erweiterung aus Abschnitt 17.1 voraus |
 | 8 | Temporal: die Dateien unter `Date/prototype/toTemporalInstant/` |
-| 4 | Templates mit Tag unter `String/raw/` (`Unsupported`) |
 | 4 | Die globalen Funktionen für URIs fehlen: `15.2.3.3-4-9.js`, `-10.js` und `-11.js` unter `Object/getOwnPropertyDescriptor/` lesen `decodeURI`, `decodeURIComponent` und `encodeURIComponent`, `Object/getOwnPropertyNames/15.2.3.4-4-1.js` erwartet ihre Namen am globalen Objekt |
 | 1 | `Function/prototype/toString/line-terminator-normalisation-CR.js`: ein ReferenceError, obwohl die Datei keinen fehlenden Namen nennt |
 
@@ -667,7 +674,8 @@ ist es der einzige fehlende Name, den sie nennen:
 | 1 | Die Arbeitsschritte sind erschöpft: `repeat/repeat-string-n-times.js` baut in einer Schleife eine Zeichenkette aus 10.000 Punkten |
 
 Seit Schritt 9a bestehen die zwölf mit `eval` und die fünf mit `Function`,
-seit Schritt 9b auch die mit `with`; es scheitern zehn.
+seit Schritt 9b auch die mit `with` und seit Schritt 13a die vier unter
+`String/raw/`; es scheitern sechs.
 
 Unter `RegExp/` aus Welle 8g scheiterten vor Schritt 9a 534 der 1.879
 Dateien, der Teil
@@ -759,7 +767,7 @@ Die Gründe aller Varianten:
 
 | Varianten | Grund |
 | ---: | --- |
-| 924 | Ein Muster nennt eine Unicode-Eigenschaft ohne Daten, oder der Übersetzer kann ein Konstrukt noch nicht (Templates mit Tag) (`Unsupported`) |
+| 916 | Ein Muster nennt eine Unicode-Eigenschaft ohne Daten (`Unsupported`) |
 | 412 | Die Arbeitsschritte sind erschöpft |
 | 224 | Eine Datei der Harness wirft einen TypeError: `atomicsHelper.js` liest `$262.agent` |
 | 33 | TypeError im Test: das Feature `caller`, Temporal und die fehlenden Funktionen für URIs |

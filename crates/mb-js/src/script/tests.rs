@@ -359,7 +359,7 @@ fn throw_and_early_errors() {
     assert!(syntax.starts_with("Syntax("), "{syntax}");
     let redeclared = eval("let a; var a;");
     assert!(redeclared.starts_with("Syntax("), "{redeclared}");
-    assert_eq!(eval("1; a`x`;"), "Unsupported(3)");
+    assert_eq!(eval("1; { using a = null; }"), "Unsupported(11)");
 }
 
 #[test]
@@ -2493,7 +2493,7 @@ fn tail_calls_throw_to_the_caller() {
 #[test]
 fn a_failed_tail_call_leaves_no_frame() {
     let (mut agent, realm) = checked();
-    let source = "function g() { a`x`; } (function () { 'use strict'; return g(); })()";
+    let source = "function g() { using a = null; } (function () { 'use strict'; return g(); })()";
     assert!(run(&mut agent, realm, source).starts_with("Unsupported"));
     assert_eq!(run(&mut agent, realm, "1 + 1"), "2");
 }
@@ -4754,4 +4754,101 @@ fn class_errors_belong_to_the_right_realm() {
             );
         }
     });
+}
+
+#[test]
+fn tagged_templates_call_the_tag_with_the_template_object() {
+    check(&[
+        (
+            "function tag(s, ...v) { return s.length + ':' + s.join('|') + ':' + s.raw.join('|') \
+             + ':' + v.join(); } tag`a${1}b${2}c`",
+            "\"3:a|b|c:a|b|c:1,2\"",
+        ),
+        // Werte und Rohwerte nach Abschnitt 12.9.6, eine ungültige
+        // Escape-Sequenz ergibt *undefined*, CR LF wird im Rohwert zu LF.
+        (
+            "(s => [s[0], s.raw[0], s[1], s.raw[1]].join('|'))`\\x41\\n${0}\\u{`",
+            "\"A\\n|\\\\x41\\\\n||\\\\u{\"",
+        ),
+        ("(s => s.raw[0])`a\r\nb\rc`", "\"a\\nb\\nc\""),
+        ("String.raw`a\\n${1}b`", "\"a\\\\n1b\""),
+        // Eingefroren, `raw` nicht aufzählbar.
+        (
+            "var s = (s => s)`a${0}b`; [Object.isFrozen(s), Object.isFrozen(s.raw), \
+             Array.isArray(s), Array.isArray(s.raw), Object.keys(s).join(), \
+             Object.getOwnPropertyDescriptor(s, 'raw').enumerable].join()",
+            "\"true,true,true,true,0,1,false\"",
+        ),
+        // `this` ist die Basis des Tags.
+        ("var o = { m(s) { return this === o; } }; o.m`x`", "true"),
+        ("var o = { m(s) { return this === o; } }; o['m']`x`", "true"),
+        (
+            "var o = { m(s) { return this; } }; (0, o.m)`x` === undefined",
+            "false",
+        ),
+        (
+            "\"use strict\"; var o = { m(s) { return this; } }; (0, o.m)`x` === undefined",
+            "true",
+        ),
+        // Erst der Tag, dann die Ausdrücke, dann die Prüfung des Aufrufs.
+        (
+            "var log = []; function tag() { log.push('call'); } \
+             (log.push('tag'), tag)`${log.push('sub')}`; log.join()",
+            "\"tag,sub,call\"",
+        ),
+        (
+            "var n = 0; try { (void 0)`${n++}`; } catch (e) { n += 10; } n",
+            "11",
+        ),
+        ("1`x`", "TypeError"),
+        // Verkettet und mit `new`.
+        ("function t(s) { return t; } t`a``b``c` === t", "true"),
+        (
+            "function tag(s) { return function () { this.v = s[0]; }; } (new tag`x`).v",
+            "\"x\"",
+        ),
+        (
+            "class A { m(s) { return s[0]; } } class B extends A { n() { return super.m`y`; } } new B().n()",
+            "\"y\"",
+        ),
+    ]);
+}
+
+#[test]
+fn every_template_site_has_its_own_object() {
+    check(&[
+        // Dieselbe Stelle gibt bei jeder Auswertung dasselbe Objekt.
+        ("function f() { return (s => s)`x`; } f() === f()", "true"),
+        (
+            "var a = []; for (var i = 0; i < 2; i++) a.push((s => s)`x${i}`); a[0] === a[1]",
+            "true",
+        ),
+        (
+            "function outer() { return () => (s => s)`x`; } outer()() === outer()()",
+            "true",
+        ),
+        // Gleicher Text an zwei Stellen gibt zwei Objekte.
+        ("var t = s => s; t`x` === t`x`", "false"),
+        // Jedes `eval` und jedes `Function` ist eine neue Stelle.
+        ("var t = s => s; eval('t`x`') === eval('t`x`')", "false"),
+        (
+            "var t = s => s; Function('t', 'return t`x`')(t) === Function('t', 'return t`x`')(t)",
+            "false",
+        ),
+        (
+            "var t = s => s; function f() { return eval('t`x`'); } f() === f()",
+            "false",
+        ),
+    ]);
+    // Zwei Scripts mit gleichem Text sind zwei Stellen, auch in einem Realm.
+    let (mut agent, realm) = checked();
+    run(
+        &mut agent,
+        realm,
+        "var keep = []; function t(s) { return s; }",
+    );
+    for _ in 0..2 {
+        run(&mut agent, realm, "keep.push(t`x`)");
+    }
+    assert_eq!(run(&mut agent, realm, "keep[0] !== keep[1]"), "true");
 }
