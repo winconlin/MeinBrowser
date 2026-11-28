@@ -6,7 +6,9 @@ name: Belastungstests
 # Abschnitt „Nächtliche Belastungstests“; Test262 über den Zwischenspeicher
 # für Bytecode, jede Variante übersetzt und geladen, im Arbeitsspeicher und
 # für language/ auch auf der Platte (Schritte 11b und 11c,
-# crates/mb-js/src/code_cache.rs, crates/mb-storage/src/cache.rs); für SHA-256 die großen Nachrichten des ACVP
+# crates/mb-js/src/code_cache.rs, crates/mb-storage/src/cache.rs); Test262
+# mit jedem Funktionsrumpf nur vorgeprüft und beim ersten Aufruf nachgelesen
+# (Schritt 12, crates/mb-js/src/parser/lazy.rs); für SHA-256 die großen Nachrichten des ACVP
 # von 1 bis 8 GiB (Schritt 11a, crates/mb-crypto/src/sha256/tests.rs).
 
 on:
@@ -21,6 +23,9 @@ on:
       - "crates/mb-js/src/code_cache/**"
       - "crates/mb-storage/src/cache.rs"
       - "crates/mb-storage/src/cache/**"
+      - "crates/mb-js/src/parser/lazy.rs"
+      - "crates/mb-js/src/parser/lazy/**"
+      - "crates/mb-js/src/unit.rs"
       - ".github/workflows/belastung.yml"
 
 permissions:
@@ -62,6 +67,10 @@ jobs:
             package: mb-js
             testdata: true
             tests: test262_language_through_code_cache test262_built_ins_through_code_cache test262_annex_b_built_ins_through_code_cache test262_language_through_disk_cache
+          - part: test262-vorpruefung
+            package: mb-js
+            testdata: true
+            tests: test262_language_every_body_pre_checked test262_built_ins_every_body_pre_checked test262_annex_b_built_ins_every_body_pre_checked
           - part: sha256-grosse-nachrichten
             package: mb-crypto
             testdata: true

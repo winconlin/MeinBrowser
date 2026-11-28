@@ -97,11 +97,13 @@ fn evaluate<'s>(
 ) -> Completion<Local<'s>> {
     spend_source_steps(agent, source.len())?;
     let site = direct.map(|direct| direct.site);
-    let options = site.map(EvalSite::options).unwrap_or_default();
+    let options = crate::parser::EvalOptions {
+        pre_check: agent.pre_check,
+        ..site.map(EvalSite::options).unwrap_or_default()
+    };
     let Ok(ast) = parse_eval(source, &options) else {
         return Err(agent.throw_error(ErrorKind::SyntaxError));
     };
-    let ast = Rc::new(ast);
     let code = match compile_eval(&ast, site) {
         Ok(code) => code,
         Err(EvalError::Conflict) => return Err(agent.throw_error(ErrorKind::SyntaxError)),
@@ -124,7 +126,15 @@ fn evaluate<'s>(
             agent.heap().local(scope, Value::UNDEFINED),
         ),
     };
-    execute_eval(agent, scope, realm, &code, &Unit::Ast(ast), this, context)
+    execute_eval(
+        agent,
+        scope,
+        realm,
+        &code,
+        &Unit::from_ast(ast),
+        this,
+        context,
+    )
 }
 
 /// [`BASE_STEPS`] und [`STEPS_PER_UNIT`] Schritte je Codeeinheit.
@@ -201,7 +211,7 @@ pub(crate) fn create_dynamic_function<'s>(
         binds_name: false,
         outer: Rc::default(),
     };
-    let shared = agent.add_shared_function(Unit::Ast(Rc::new(ast)), template)?;
+    let shared = agent.add_shared_function(Unit::from_ast(ast), template)?;
     let name: Vec<u16> = "anonymous".encode_utf16().collect();
     let key = agent.key_from_units(scope, &name)?;
     let object = instantiate_function(agent, scope, call.realm, shared, key)?;

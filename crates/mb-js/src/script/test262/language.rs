@@ -399,7 +399,35 @@ fn through_code_cache() -> Setup {
     Setup {
         stress: false,
         store: Some(Arc::new(MemoryStore::new(256 << 20))),
+        pre_check_all: false,
     }
+}
+
+/// Jeder Rumpf, der es sein kann, ist nur vorgeprüft und wird erst beim
+/// ersten Aufruf nachgelesen; die erwarteten Fehlschläge bleiben dieselben.
+fn every_body_pre_checked() -> Setup {
+    Setup {
+        pre_check_all: true,
+        ..Setup::default()
+    }
+}
+
+#[test]
+#[ignore = "nächtlicher Belastungstest, siehe .github/workflows/belastung.yml"]
+fn test262_language_every_body_pre_checked() {
+    check_suite(&LANGUAGE, &every_body_pre_checked());
+}
+
+#[test]
+#[ignore = "nächtlicher Belastungstest, siehe .github/workflows/belastung.yml"]
+fn test262_built_ins_every_body_pre_checked() {
+    check_suite(&BUILT_INS, &every_body_pre_checked());
+}
+
+#[test]
+#[ignore = "nächtlicher Belastungstest, siehe .github/workflows/belastung.yml"]
+fn test262_annex_b_built_ins_every_body_pre_checked() {
+    check_suite(&ANNEX_B_BUILT_INS, &every_body_pre_checked());
 }
 
 #[test]
@@ -433,6 +461,7 @@ fn test262_language_through_disk_cache() {
     let setup = Setup {
         stress: false,
         store: Some(Arc::new(DiskStore(cache))),
+        pre_check_all: false,
     };
     check_suite(&LANGUAGE, &setup);
     drop(setup);
@@ -461,6 +490,7 @@ fn under_stress() -> Setup {
     Setup {
         stress: true,
         store: None,
+        pre_check_all: false,
     }
 }
 
@@ -563,10 +593,11 @@ fn check_suite(suite: &Suite, setup: &Setup) {
          Dateien und {passed_variants} von {variant_count} Varianten",
         files.len()
     );
-    let label = match (setup.stress, setup.store.is_some()) {
-        (true, _) => " im Belastungsmodus",
-        (false, true) => " mit Zwischenspeicher",
-        (false, false) => "",
+    let label = match (setup.stress, setup.store.is_some(), setup.pre_check_all) {
+        (true, _, _) => " im Belastungsmodus",
+        (false, true, _) => " mit Zwischenspeicher",
+        (false, false, true) => " mit jedem Rumpf vorgeprüft",
+        (false, false, false) => "",
     };
     println!("Test262 {}/{label}: {summary}", suite.directory);
     let mut ranked: Vec<_> = reasons.iter().collect();

@@ -322,13 +322,16 @@ fn run(
     run_file(None, source, metadata, mode, harness, stress)
 }
 
-/// Wie ein Test läuft: im Belastungsmodus des Heaps (`stress`) und mit
+/// Wie ein Test läuft: im Belastungsmodus des Heaps (`stress`), mit
 /// einem Speicher für übersetzte Scripts (`store`, siehe
-/// [`crate::code_cache`]).
+/// [`crate::code_cache`]) und mit jedem Funktionsrumpf nur vorgeprüft, der
+/// es sein kann (`pre_check_all`, [`crate::parser::PreCheck::ALL`]), statt
+/// nach der Vorgabe.
 #[derive(Clone, Default)]
 struct Setup {
     stress: bool,
     store: Option<Arc<dyn CodeStore>>,
+    pre_check_all: bool,
 }
 
 /// Wie [`run`] für den Test in der Datei `file`: Ein Modul lädt seine
@@ -344,6 +347,7 @@ fn run_file(
     let setup = Setup {
         stress,
         store: None,
+        pre_check_all: false,
     };
     run_file_with(file, source, metadata, mode, harness, &setup)
 }
@@ -384,6 +388,9 @@ fn run_file_with(
         verify: true,
     })
     .map_err(|error| format!("Agent: {error:?}"))?;
+    if setup.pre_check_all {
+        agent.set_pre_check(Some(crate::parser::PreCheck::ALL));
+    }
     if let Some(store) = &setup.store {
         agent.set_code_store(Some(Arc::clone(store)));
         for (name, text) in harness {

@@ -55,9 +55,11 @@ use crate::value::{Kind, Value};
 /// So viele Bytes Rust-Stapel dürfen verschachtelte Läufe des Interpreters
 /// unter dem äußersten belegen. Ein Faden mit 1 MiB Stapel behält dahinter
 /// Platz für den letzten Lauf und das Übersetzen einer Funktion bei ihrem
-/// ersten Aufruf; das prüfen die Tests im Debug-Build. Gemessen reichte der
-/// Platz dort bis zu einem Budget von 640 KiB, ein Lauf braucht etwa
-/// 13 KiB. Der Rest bleibt für den Code, der das Script startet.
+/// ersten Aufruf, auch wenn dabei ein nur vorgeprüfter Rumpf nachgelesen
+/// wird ([`crate::parser::PreCheck::DEFAULT`]); das prüfen die Tests im
+/// Debug-Build. Gemessen am 28.11.2026 reichte der Platz dort bis zu einem
+/// Budget von 512 KiB, bei 576 KiB lief der Stapel über; ein Lauf braucht
+/// etwa 13 KiB. Der Rest bleibt für den Code, der das Script startet.
 pub const STACK_BUDGET: usize = 384 * 1024;
 
 /// Standardquote eines äußersten Script- oder Funktionsaufrufs. Ein Schritt
@@ -213,6 +215,9 @@ pub struct Agent {
     /// Der Speicher für übersetzte Scripts, wenn es einen gibt (siehe
     /// [`crate::code_cache`]).
     pub(crate) code_store: Option<Arc<dyn crate::code_cache::CodeStore>>,
+    /// Welche Funktionsrümpfe der Parser in Scripts, Modulen und `eval` nur
+    /// vorprüft; `None` liest alles ganz.
+    pub(crate) pre_check: Option<crate::parser::PreCheck>,
 }
 
 impl Agent {
@@ -252,6 +257,7 @@ impl Agent {
             next_module_load: 0,
             module_async_evaluation_count: 0,
             code_store: None,
+            pre_check: Some(crate::parser::PreCheck::DEFAULT),
         };
         agent.scope(|agent, scope| -> Result<(), OutOfMemory> {
             for symbol in WellKnownSymbol::ALL {
@@ -285,6 +291,15 @@ impl Agent {
     /// jedes andere dort ab (siehe [`crate::code_cache`]).
     pub fn set_code_store(&mut self, store: Option<Arc<dyn crate::code_cache::CodeStore>>) {
         self.code_store = store;
+    }
+
+    /// Legt fest, welche Funktionsrümpfe der Parser in Scripts, Modulen und
+    /// `eval` nur vorprüft (Vorgabe: [`crate::parser::PreCheck::DEFAULT`]);
+    /// mit `None` liest er jeden Rumpf ganz. Ein nur vorgeprüfter Rumpf
+    /// wird beim ersten Aufruf der Funktion nachgelesen. Was das Programm
+    /// tut, ändert sich dadurch nicht.
+    pub fn set_pre_check(&mut self, pre_check: Option<crate::parser::PreCheck>) {
+        self.pre_check = pre_check;
     }
 
     /// Der Host, wenn es einen gibt.

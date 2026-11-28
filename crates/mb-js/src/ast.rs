@@ -753,6 +753,31 @@ impl Ast {
 
     /// Ob der Parser den Rumpf der Funktion `id` nur vorgeprüft hat; dann
     /// muss [`Ast::expand`] ihn vor dem Übersetzen nachlesen.
+    /// Wie viele Bytes die Tabellen ungefähr belegen: Knoten, Lagen,
+    /// Listen, Funktionen mit den Angaben vorgeprüfter Rümpfe und Klassen.
+    /// Atome und Quelltext zählen nicht mit, sie sind mit und ohne
+    /// Vorprüfung gleich. Für Messungen.
+    #[cfg(test)]
+    pub(crate) fn table_bytes(&self) -> usize {
+        use std::mem::size_of;
+        let lazy: usize = self
+            .functions
+            .iter()
+            .filter_map(|function| function.lazy.as_deref())
+            .map(|lazy| {
+                size_of::<LazyBody>()
+                    + lazy.parameters.len() * size_of::<(Atom, usize)>()
+                    + lazy.beyond.names.len() * size_of::<Atom>()
+            })
+            .sum();
+        self.nodes.len() * size_of::<Node>()
+            + self.ranges.len() * size_of::<(u32, u32)>()
+            + self.lists.len() * size_of::<NodeId>()
+            + self.functions.len() * size_of::<Function>()
+            + self.classes.len() * size_of::<Class>()
+            + lazy
+    }
+
     pub fn is_lazy(&self, id: FunctionId) -> bool {
         self.function(id)
             .is_some_and(|function| function.lazy.is_some())

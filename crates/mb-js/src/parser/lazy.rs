@@ -21,6 +21,9 @@
 //! die tiefer verschachtelt sind als eine andere. Diese zweite Grenze
 //! begrenzt den Stapel beim Nachlesen; das geschieht beim ersten Aufruf,
 //! und der kann tief in verschachtelten Läufen des Interpreters liegen.
+//! Mit [`PreCheck::immediate`] behält er auch Funktionsausdrücke direkt
+//! hinter `(` oder `!`, wie `(function () { … })()`: Solche werden meist
+//! sofort aufgerufen, und ein Nachlesen läse sie nur ein zweites Mal.
 //! Feldinitialisierer, `static`-Blöcke und Pfeilfunktionen mit einem
 //! Ausdruck als Rumpf behält er immer, ebenso alles Übrige außerhalb von
 //! Funktionsrümpfen.
@@ -41,13 +44,31 @@ pub struct PreCheck {
     /// Rümpfe, deren Inhalt mehr Ebenen tief verschachtelt ist, behält er
     /// ganz ([`MAX_DEPTH`] zählt dieselben Ebenen).
     pub max_depth: u32,
+    /// Funktionsausdrücke direkt hinter `(` oder `!` behält er ganz; ihre
+    /// inneren Funktionen prüft er trotzdem nur vor.
+    pub immediate: bool,
 }
 
 impl PreCheck {
+    /// Die Vorgabe des Agents ([`crate::agent::Agent::set_pre_check`]).
+    ///
+    /// Die Grenze für die Tiefe ist gemessen (Debug-Build, Faden mit 1 MiB
+    /// Stapel, Test `pre_checked_bodies_are_read_again_on_a_small_stack`):
+    /// Mit 128 Ebenen reicht der Stapel für das Nachlesen in der tiefsten
+    /// Verschachtelung noch bei einem [`crate::agent::STACK_BUDGET`] von
+    /// 640 KiB, mehr als für das Übersetzen eines Rumpfs, den der Parser
+    /// gerade noch annimmt; ohne Grenze nur bis 448 KiB.
+    pub const DEFAULT: PreCheck = PreCheck {
+        min_nodes: 32,
+        max_depth: 128,
+        immediate: true,
+    };
+
     /// Jeder Rumpf, der es sein kann, wird nur vorgeprüft; für Tests.
     pub const ALL: PreCheck = PreCheck {
         min_nodes: 0,
         max_depth: MAX_DEPTH,
+        immediate: false,
     };
 }
 
@@ -106,6 +127,16 @@ impl Parser<'_> {
             script_this: captures.beyond_this,
         };
         Ok((List::default(), Some(Box::new(lazy))))
+    }
+
+    /// Ob das zuletzt gelesene Token `(` oder `!` ist. Kein anderes Token
+    /// endet mit einem dieser Zeichen: Zeichenketten, Templates und
+    /// reguläre Ausdrücke enden mit ihren eigenen Zeichen oder Flags.
+    pub(super) fn after_wrapping_token(&self) -> bool {
+        self.previous_end
+            .checked_sub(1)
+            .and_then(|index| self.source.get(index))
+            .is_some_and(|&unit| unit == u16::from(b'(') || unit == u16::from(b'!'))
     }
 
     /// Vergisst, was der Parser sich über Knoten ab dem Index `index` gemerkt
@@ -234,5 +265,7 @@ impl<'a> Parser<'a> {
     }
 }
 
+#[cfg(test)]
+mod measure;
 #[cfg(test)]
 mod tests;

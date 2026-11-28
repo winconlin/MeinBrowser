@@ -244,7 +244,7 @@ pub(crate) fn function_source_text<'s>(
         let Some(range) = range else {
             return Ok(None);
         };
-        entry.unit.source().get(range).unwrap_or_default().to_vec()
+        entry.unit.text(range).unwrap_or_default()
     };
     Ok(Some(agent.heap_mut().alloc_string(scope, &text)?))
 }

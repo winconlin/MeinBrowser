@@ -773,8 +773,10 @@ von Hand und bei Pull Requests, die den Heap (`crates/mb-js/src/heap.rs`,
 `crates/mb-js/src/heap/`), den Zwischenspeicher für Bytecode
 (`crates/mb-js/src/code_cache.rs`, `crates/mb-js/src/code_cache/`), den
 Speicher auf der Platte (`crates/mb-storage/src/cache.rs`,
-`crates/mb-storage/src/cache/`) oder den Workflow ändern. Er führt im Release-Build die Tests aus, die in `cargo test`
-mit `#[ignore]` übersprungen werden. Für die JavaScript-Engine sind es vier
+`crates/mb-storage/src/cache/`), die Vorprüfung der Funktionsrümpfe
+(`crates/mb-js/src/parser/lazy.rs`, `crates/mb-js/src/parser/lazy/`,
+`crates/mb-js/src/unit.rs`) oder den Workflow ändern. Er führt im Release-Build die Tests aus, die in `cargo test`
+mit `#[ignore]` übersprungen werden. Für die JavaScript-Engine sind es fünf
 Jobs:
 
 ```sh
@@ -782,6 +784,7 @@ cargo test --locked --release -p mb-js --lib -- --ignored test262_language_under
 cargo test --locked --release -p mb-js --lib -- --ignored test262_built_ins_under_stress test262_annex_b_built_ins_under_stress
 cargo test --locked --release -p mb-js --lib -- --ignored script::gc_tests::
 cargo test --locked --release -p mb-js --lib -- --ignored test262_language_through_code_cache test262_built_ins_through_code_cache test262_annex_b_built_ins_through_code_cache test262_language_through_disk_cache
+cargo test --locked --release -p mb-js --lib -- --ignored test262_language_every_body_pre_checked test262_built_ins_every_body_pre_checked test262_annex_b_built_ins_every_body_pre_checked
 ```
 
 Die ersten beiden sind die Läufe über `language/`, `built-ins/` und
@@ -828,6 +831,16 @@ immer wieder die ältesten Dateien; die Hilfsdateien und der Test bleiben
 zwischen den zwei Läufen einer Variante, denn sie wurden zuletzt gebraucht.
 Am 27.11.2026 brauchte dieser Lauf im Release-Build 81 Sekunden, mit
 denselben erwarteten Fehlschlägen.
+
+Der fünfte Job führt die drei Läufe mit jedem Funktionsrumpf nur vorgeprüft
+aus (`PreCheck::ALL`, Schritt 12): Der Parser behält keinen Rumpf, den er
+verwerfen kann, auch keinen kleinen, tiefen oder sofort aufgerufenen, und
+jede Funktion wird erst bei ihrem ersten Aufruf nachgelesen. Die Läufe bei
+jedem Push nutzen die Vorgabe des Agents (`PreCheck::DEFAULT`), dieser Job
+also auch die Fälle, die sie ausnimmt. Es gelten dieselben Dateien der
+erwarteten Fehlschläge. Am 28.11.2026 brauchten die drei Läufe im
+Release-Build auf vier Kernen zusammen knapp 1,5 Minuten, so lange wie mit
+der Vorgabe.
 
 Ein fünfter Job gehört nicht zur Engine: Er hasht die vier großen
 Nachrichten des ACVP für SHA-256 (1, 2, 4 und 8 GiB) mit `mb-crypto`

@@ -129,7 +129,7 @@ fn proposals() -> BTreeSet<String> {
 }
 
 /// Alle Testdateien unter `directory`, ohne Rekursion und sortiert.
-fn test_files(root: &Path, directory: &str) -> Vec<PathBuf> {
+pub(super) fn test_files(root: &Path, directory: &str) -> Vec<PathBuf> {
     let mut files = Vec::new();
     let mut work = vec![root.join(directory)];
     while let Some(path) = work.pop() {

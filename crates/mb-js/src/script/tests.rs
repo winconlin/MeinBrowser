@@ -2132,6 +2132,76 @@ fn deepest_body(open: &str, middle: &str, close: &str) -> String {
     }
 }
 
+/// Ein nur vorgeprüfter Rumpf wird erst beim ersten Aufruf nachgelesen, auch
+/// in der tiefsten Verschachtelung, die das Budget erlaubt, und so tief
+/// verschachtelt, wie [`crate::parser::PreCheck::DEFAULT`] ihn noch
+/// vorprüft (RS-8).
+#[test]
+fn pre_checked_bodies_are_read_again_on_a_small_stack() {
+    let thread = std::thread::Builder::new()
+        .stack_size(1 << 20)
+        .spawn(|| {
+            let (mut agent, realm) = checked();
+            agent.with_execution_budget(std::rc::Rc::new(crate::agent::Budget::unlimited()), |agent| {
+                let counting = "var n = 0, limit = Infinity, deep; function a(x) { return x; } \
+                                var o = {get a() { n++; if (n < limit) return this.a; return deep(); }}; \
+                                o.a";
+                assert_eq!(run(agent, realm, counting), "RangeError");
+                let levels = run(agent, realm, "n");
+                for (open, middle, close) in [
+                    ("(", "1", ")"),
+                    ("[{a: ", "1", "}]"),
+                    ("{ let a = 1; ", "a;", " }"),
+                    ("if (1) ", "1;", ""),
+                    ("1 ? ", "1", " : 1"),
+                    ("a(", "1", ")"),
+                    ("function f() { return ", "1", "; }"),
+                ] {
+                    let body = deepest_pre_checked_body(open, middle, close);
+                    let source = format!(
+                        "n = 0; limit = {levels} - 1; deep = function () {{ {body} }}; \
+                         typeof o.a"
+                    );
+                    let result = run(agent, realm, &source);
+                    assert!(result.starts_with('"'), "{open}…{close}: {result}");
+                }
+            });
+        })
+        .expect("Faden");
+    assert!(thread.join().is_ok());
+}
+
+/// Wie [`deepest_body`], aber nur so tief, dass der Parser den Rumpf mit
+/// [`crate::parser::PreCheck::DEFAULT`] noch vorprüft.
+fn deepest_pre_checked_body(open: &str, middle: &str, close: &str) -> String {
+    let mut depth = 300;
+    loop {
+        let body = format!("{}{middle}{};", open.repeat(depth), close.repeat(depth));
+        let source = format!("deep = function () {{ {body} }};");
+        let pre_checked = crate::parser::parse_script_pre_checked(
+            &units(&source),
+            crate::parser::PreCheck::DEFAULT,
+        );
+        // `deep` beginnt hinter `deep = `; seine inneren Funktionen zählen
+        // nicht.
+        let deep_is_lazy = pre_checked.is_ok_and(|ast| {
+            (0..ast.function_count()).any(|index| {
+                let id = u32::try_from(index).map(crate::ast::FunctionId::from_raw);
+                id.is_ok_and(|id| {
+                    ast.function(id)
+                        .is_some_and(|function| function.range.start == 7)
+                        && ast.is_lazy(id)
+                })
+            })
+        });
+        if deep_is_lazy {
+            return body;
+        }
+        assert!(depth > 1, "{open}…{close}: kein vorgeprüfter Rumpf");
+        depth -= 1;
+    }
+}
+
 /// `new` (EvaluateNew, Abschnitt 13.3.5.1.1) mit [[Construct]] (Abschnitt
 /// 10.2.2): ein neues Objekt mit dem Prototyp aus `prototype` als `this`,
 /// außer der Rumpf gibt ein Objekt zurück.
