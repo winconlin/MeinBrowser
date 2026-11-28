@@ -34,6 +34,7 @@ pub mod object;
 pub mod operations;
 pub mod operators;
 pub mod parser;
+pub mod pre_check;
 mod promise;
 pub mod realm;
 pub mod reference;

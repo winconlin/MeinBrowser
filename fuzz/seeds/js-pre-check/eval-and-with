@@ -1,0 +1,1 @@
+pfunction f(a) { return () => { return eval('a') + arguments[0]; }; } function g(o) { with (o) { return function () { return x; }; } }

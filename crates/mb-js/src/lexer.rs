@@ -335,6 +335,16 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    /// Ein Lexer, der das nächste Token ab `position` sucht, etwa am Anfang
+    /// eines Funktionsrumpfs, den der Parser nachliest.
+    pub(crate) fn starting_at(source: &'a [u16], module: bool, position: usize) -> Lexer<'a> {
+        Lexer {
+            source,
+            position: position.min(source.len()),
+            module,
+        }
+    }
+
     /// Wo das nächste Token gesucht wird, in Codeeinheiten.
     pub fn position(&self) -> usize {
         self.position

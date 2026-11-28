@@ -1,0 +1,1 @@
+pclass A extends Object { #p = 1; constructor() { super(); } m() { return () => super.m + this.#p; } static { var s = () => { return this; }; } }

@@ -1,0 +1,1 @@
+pfunction f(a, b = 2) { var c = a + b; return function g() { return c; }; } var h = (x) => { return () => this.y + x; };

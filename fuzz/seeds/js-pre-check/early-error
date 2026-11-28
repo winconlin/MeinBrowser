@@ -1,0 +1,1 @@
+pfunction f() { 'use strict'; with (a) {} }

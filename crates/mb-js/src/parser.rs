@@ -24,7 +24,10 @@
 //! - Quelltext für `eval` liest [`parse_eval`] als Script mit dem, was der
 //!   Code um ein direktes `eval` erlaubt ([`EvalOptions`]); den für den
 //!   Konstruktor `Function` und seine Verwandten [`parse_dynamic_function`].
-//! - Was noch fehlt: das bloße Vorprüfen von Funktionsrümpfen ohne Baum.
+//! - Funktionsrümpfe kann er nur vorprüfen ([`PreCheck`], [`lazy`]): Er
+//!   liest sie ganz, mit allen frühen Fehlern, verwirft dann aber ihre
+//!   Knoten und behält nur, was der Übersetzer außen von ihnen wissen muss.
+//!   [`Ast::expand`] liest einen solchen Rumpf später nach.
 
 #![forbid(unsafe_code)]
 
@@ -37,6 +40,7 @@ use crate::regexp;
 mod class;
 mod expression;
 mod function;
+pub mod lazy;
 mod module;
 mod pattern;
 mod scope;
@@ -47,6 +51,8 @@ mod test262;
 mod tests;
 
 use scope::Scope;
+
+pub use lazy::{PreCheck, parse_module_pre_checked, parse_script_pre_checked};
 
 /// Wie tief Ausdrücke, Anweisungen und Muster höchstens verschachtelt
 /// sind. Jede Ebene kostet einige Stapelrahmen; der Test
@@ -207,6 +213,8 @@ pub struct EvalOptions {
     /// selbst ein direktes `eval`, braucht dessen Stelle sie alle, auch die,
     /// die der Code nicht nennt.
     pub visible_names: Vec<Vec<u16>>,
+    /// Welche Funktionsrümpfe nur vorgeprüft werden; ohne Angabe keine.
+    pub pre_check: Option<PreCheck>,
 }
 
 /// Liest den Quelltext eines `eval` als Script (PerformEval, Abschnitt
@@ -214,6 +222,7 @@ pub struct EvalOptions {
 /// EvalDeclarationInstantiation).
 pub fn parse_eval(source: &[u16], options: &EvalOptions) -> Result<Ast> {
     let mut parser = Parser::new(source, false)?;
+    parser.pre_check = options.pre_check;
     let context = &mut parser.function.context;
     context.strict = options.strict;
     context.new_target = options.new_target;
@@ -321,9 +330,9 @@ pub fn parse_dynamic_function(
 }
 
 /// Was für den Code einer Funktion gilt, die Parameter der Grammatik
-/// eingeschlossen.
-#[derive(Clone, Copy, Debug, Default)]
-struct Context {
+/// eingeschlossen. Ein vorgeprüfter Rumpf merkt es sich für das Nachlesen.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Context {
     strict: bool,
     /// *[Yield]*: `yield` ist ein Operator.
     yield_: bool,
@@ -460,6 +469,13 @@ pub(crate) struct Parser<'a> {
     /// Spreads mit einem Komma dahinter: Sie können kein Rest-Element
     /// werden.
     spread_with_comma: BTreeSet<NodeId>,
+    /// Welche Funktionsrümpfe nur vorgeprüft werden.
+    pre_check: Option<PreCheck>,
+    /// Wie viele Rümpfe von `with`-Anweisungen die Stelle umgeben, über
+    /// Funktionen hinweg.
+    with_depth: u32,
+    /// Die größte Tiefe seit dem Anfang des aktuellen Funktionsrumpfs.
+    max_depth: u32,
 }
 
 impl<'a> Parser<'a> {
@@ -492,6 +508,9 @@ impl<'a> Parser<'a> {
             exported_bindings: Vec::new(),
             arrow_head: None,
             spread_with_comma: BTreeSet::new(),
+            pre_check: None,
+            with_depth: 0,
+            max_depth: 0,
         })
     }
 
@@ -527,6 +546,7 @@ impl<'a> Parser<'a> {
         self.ast.intern_str("arguments");
         let strict = self.function.context.strict;
         self.ast.finish(body, self.module, strict, self.source);
+        self.ast.set_pre_check(self.pre_check);
         if self.module && self.function.contains_await {
             self.ast.mark_top_level_await();
         }
@@ -719,6 +739,7 @@ impl<'a> Parser<'a> {
             return Err(self.error(ErrorKind::TooDeep));
         }
         self.depth += 1;
+        self.max_depth = self.max_depth.max(self.depth);
         Ok(())
     }
 

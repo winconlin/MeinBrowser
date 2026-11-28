@@ -1,0 +1,1 @@
+qimport { a } from 'x'; export default function () { return () => a + import.meta.url; } await 1; export async function h() { await 2; }
