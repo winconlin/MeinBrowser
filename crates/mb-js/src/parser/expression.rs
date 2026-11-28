@@ -1055,11 +1055,15 @@ impl Parser<'_> {
                 self.advance();
                 Ok(self.node(node, start))
             }
-            NameStart::Function => self.function_expression(start, false),
+            NameStart::Function => {
+                let wrapped = self.after_wrapping_token();
+                self.function_expression(start, false, wrapped)
+            }
             NameStart::Class => self.class_expression(),
             NameStart::AsyncFunction => {
+                let wrapped = self.after_wrapping_token();
                 self.advance();
-                self.function_expression(start, true)
+                self.function_expression(start, true, wrapped)
             }
             NameStart::AsyncArrow => self.async_arrow_identifier(start),
             NameStart::Identifier => self.identifier_expression(start),

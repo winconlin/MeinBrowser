@@ -3,11 +3,14 @@
 //!
 //! Meist ist das der Syntaxbaum: Eine Funktion wird bei ihrem ersten Aufruf
 //! aus ihm übersetzt, und `length`, ihre Art und ihr Quelltext stehen in
-//! ihm. Ein Script aus dem Zwischenspeicher für Bytecode
+//! ihm. Hat der Parser ihren Rumpf nur vorgeprüft
+//! ([`crate::parser::PreCheck`]), liest der Baum ihn vor dem Übersetzen
+//! nach; darum liegt er in einer [`RefCell`]. Ein Script aus dem Zwischenspeicher für Bytecode
 //! ([`crate::code_cache`]) hat keinen Syntaxbaum. Dort ist jede Funktion
 //! schon übersetzt, und die Angaben, die die Laufzeit braucht, liegen
 //! daneben.
 
+use std::cell::RefCell;
 use std::ops::Range;
 use std::rc::Rc;
 
@@ -21,7 +24,7 @@ use crate::compiler::{CompileError, compile_function};
 pub(crate) enum Unit {
     /// Ein Syntaxbaum, aus dem Funktionen bei ihrem ersten Aufruf übersetzt
     /// werden.
-    Ast(Rc<Ast>),
+    Ast(Rc<RefCell<Ast>>),
     /// Ein Script, dessen Funktionen alle schon übersetzt sind.
     Compiled(Rc<CompiledScript>),
 }
@@ -87,9 +90,21 @@ pub(crate) fn function_text(ast: &Ast, id: FunctionId) -> Option<Range<usize>> {
 }
 
 impl Unit {
+    /// Der Ursprung für den Syntaxbaum `ast`.
+    pub(crate) fn from_ast(ast: Ast) -> Unit {
+        Unit::Ast(Rc::new(RefCell::new(ast)))
+    }
+
+    /// Wendet `read` auf den Syntaxbaum an. Nur während des Nachlesens ist
+    /// er geliehen, und dabei läuft nichts, was hierher fragen könnte; dann
+    /// ist das Ergebnis `None`.
+    fn read<T>(ast: &RefCell<Ast>, read: impl FnOnce(&Ast) -> Option<T>) -> Option<T> {
+        read(&*ast.try_borrow().ok()?)
+    }
+
     pub(crate) fn shape(&self, id: FunctionId) -> Option<Shape> {
         match self {
-            Unit::Ast(ast) => Some(Shape::of(ast, ast.function(id)?)),
+            Unit::Ast(ast) => Unit::read(ast, |ast| Some(Shape::of(ast, ast.function(id)?))),
             Unit::Compiled(script) => Some(script.function(id)?.shape),
         }
     }
@@ -97,7 +112,7 @@ impl Unit {
     /// Wo der Quelltext der Funktion für `toString` liegt.
     pub(crate) fn function_text(&self, id: FunctionId) -> Option<Range<usize>> {
         match self {
-            Unit::Ast(ast) => function_text(ast, id),
+            Unit::Ast(ast) => Unit::read(ast, |ast| function_text(ast, id)),
             Unit::Compiled(script) => Some(script.function(id)?.text()),
         }
     }
@@ -105,22 +120,38 @@ impl Unit {
     /// Wo der Quelltext einer Klasse liegt, für ihren Standardkonstruktor.
     pub(crate) fn class_text(&self, id: ClassId) -> Option<Range<usize>> {
         match self {
-            Unit::Ast(ast) => Some(ast.class(id)?.range.clone()),
+            Unit::Ast(ast) => Unit::read(ast, |ast| Some(ast.class(id)?.range.clone())),
             Unit::Compiled(script) => script.class_text(id),
         }
     }
 
-    pub(crate) fn source(&self) -> &[u16] {
+    /// Der Quelltext an der Lage `range`.
+    pub(crate) fn text(&self, range: Range<usize>) -> Option<Vec<u16>> {
         match self {
-            Unit::Ast(ast) => ast.source(),
-            Unit::Compiled(script) => script.source(),
+            Unit::Ast(ast) => Unit::read(ast, |ast| Some(ast.source().get(range)?.to_vec())),
+            Unit::Compiled(script) => Some(script.source().get(range)?.to_vec()),
         }
     }
 
-    /// Der Bytecode der Funktion an der Stelle `template`.
+    /// Der Bytecode der Funktion an der Stelle `template`. Einen nur
+    /// vorgeprüften Rumpf liest der Syntaxbaum vorher nach.
     pub(crate) fn compile(&self, template: &FunctionTemplate) -> Result<Rc<Code>, CompileError> {
         match self {
-            Unit::Ast(ast) => compile_function(ast, template).map(Rc::new),
+            Unit::Ast(ast) => {
+                let mut ast = ast
+                    .try_borrow_mut()
+                    .map_err(|_| CompileError::Unsupported(0))?;
+                if ast.is_lazy(template.function) {
+                    // Das scheitert nur, wenn der Baum nicht mehr zum
+                    // Quelltext passt.
+                    let position = ast
+                        .function(template.function)
+                        .map_or(0, |function| function.range.start);
+                    ast.expand(template.function)
+                        .map_err(|_| CompileError::Unsupported(position))?;
+                }
+                compile_function(&ast, template).map(Rc::new)
+            }
             Unit::Compiled(script) => match script.function(template.function) {
                 Some(function) => function.code.clone(),
                 None => Err(CompileError::Unsupported(0)),
@@ -131,13 +162,13 @@ impl Unit {
     /// Ob der Quelltext zur Laufzeit aus `eval` oder `Function` kam.
     pub(crate) fn is_dynamic(&self) -> bool {
         match self {
-            Unit::Ast(ast) => ast.is_dynamic(),
+            Unit::Ast(ast) => Unit::read(ast, |ast| Some(ast.is_dynamic())).unwrap_or(false),
             Unit::Compiled(_) => false,
         }
     }
 
     /// Der Syntaxbaum, wenn es einen gibt.
-    pub(crate) fn ast(&self) -> Option<&Rc<Ast>> {
+    pub(crate) fn ast(&self) -> Option<&Rc<RefCell<Ast>>> {
         match self {
             Unit::Ast(ast) => Some(ast),
             Unit::Compiled(_) => None,

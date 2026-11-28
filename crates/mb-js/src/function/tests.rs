@@ -313,15 +313,13 @@ fn symbols_name_functions_by_their_description() {
         else {
             panic!("keine Funktion");
         };
-        let unit = Rc::new(ast);
+        let unit = Unit::from_ast(ast);
         let template = FunctionTemplate {
             function: id,
             binds_name: false,
             outer: Rc::default(),
         };
-        let shared = agent
-            .add_shared_function(Unit::Ast(Rc::clone(&unit)), template)
-            .expect("Speicher");
+        let shared = agent.add_shared_function(unit, template).expect("Speicher");
         let iterator = agent.well_known_symbol(scope, WellKnownSymbol::Iterator);
         let anonymous = agent.new_symbol(scope, None).expect("Speicher");
         let empty = agent.heap_mut().alloc_string(scope, &[]).expect("Speicher");

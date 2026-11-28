@@ -63,6 +63,7 @@ fn what_stays_whole() {
     let none = PreCheck {
         min_nodes: usize::MAX,
         max_depth: MAX_DEPTH,
+        immediate: false,
     };
     let ast = parse_script_pre_checked(&units("function f() { return 1; }"), none).expect("ganz");
     assert_eq!(lazy_count(&ast), 0);
@@ -75,6 +76,7 @@ fn deep_bodies_stay_whole() {
     let pre_check = PreCheck {
         min_nodes: 0,
         max_depth: 6,
+        immediate: false,
     };
     let ast = parse_script_pre_checked(&units(shallow), pre_check).expect("flach");
     assert_eq!(lazy_count(&ast), 1);
@@ -86,6 +88,34 @@ fn deep_bodies_stay_whole() {
     assert_eq!(lazy_count(&ast), 0);
     same(deep);
     same(nested);
+}
+
+#[test]
+fn wrapped_function_expressions_stay_whole() {
+    let pre_check = PreCheck {
+        immediate: true,
+        ..PreCheck::ALL
+    };
+    for (text, lazy) in [
+        // Die äußere bleibt ganz, die innere nicht.
+        ("(function () { return function () { return 1; }; })();", 1),
+        ("!function () { return 1; }();", 0),
+        ("(async function () { await 1; })();", 0),
+        ("f(function () { return 1; });", 0),
+        // Nicht direkt hinter `(` oder `!`
+        ("var g = function () { return 1; };", 1),
+        ("(1, function () { return 1; });", 1),
+        ("(/* ( */ function () { return 1; });", 0),
+        ("'(' + function () { return 1; };", 1),
+        ("`(${function () { return 1; }}`;", 1),
+        ("function h() { return 1; } (h);", 1),
+        // Pfeilfunktionen erkennt die Regel nicht.
+        ("(() => { return 1; })();", 1),
+    ] {
+        let ast = parse_script_pre_checked(&units(text), pre_check).expect("vorgeprüft");
+        assert_eq!(lazy_count(&ast), lazy, "{text}");
+        assert_eq!(compare(&units(text), false, pre_check), Ok(()), "{text}");
+    }
 }
 
 #[test]

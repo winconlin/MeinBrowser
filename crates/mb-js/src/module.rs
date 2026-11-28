@@ -32,6 +32,7 @@
 
 #![forbid(unsafe_code)]
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
@@ -44,7 +45,7 @@ use crate::heap::{Local, Persistent, Scope};
 use crate::interpreter::execute_module;
 use crate::object::ordinary_object_create;
 use crate::operations::create_data_property_or_throw;
-use crate::parser::parse_module;
+use crate::parser::{parse_module, parse_module_pre_checked};
 use crate::promise::{promise_create, settle_pending};
 use crate::realm::{Intrinsic, RealmId};
 use crate::script::ScriptError;
@@ -196,7 +197,7 @@ enum Body {
     /// übersetzter Code und für jede Funktionsdeklaration auf oberster Ebene
     /// die Nummer ihrer gemeinsamen Daten, parallel zu den Bindungen.
     SourceText {
-        unit: Rc<Ast>,
+        unit: Rc<RefCell<Ast>>,
         code: Rc<Code>,
         bindings: Vec<ModuleBinding>,
         functions: Vec<Option<i32>>,
@@ -347,7 +348,11 @@ impl Agent {
         realm: RealmId,
         source: &[u16],
     ) -> Result<ModuleId, ScriptError> {
-        let ast = Rc::new(parse_module(source).map_err(ScriptError::Syntax)?);
+        let ast = match self.pre_check {
+            Some(pre_check) => parse_module_pre_checked(source, pre_check),
+            None => parse_module(source),
+        }
+        .map_err(ScriptError::Syntax)?;
         let compiled = match compile_module(&ast) {
             Ok(compiled) => compiled,
             Err(CompileError::Unsupported(position)) => {
@@ -358,6 +363,7 @@ impl Agent {
             }
         };
         let entries = entries::collect(&ast);
+        let ast = Rc::new(RefCell::new(ast));
         let agent = self;
         let inner = scope;
         (|| -> Completion<ModuleId> {
@@ -1302,7 +1308,7 @@ impl Agent {
     }
 
     /// Das Modul, zu dessen Syntaxbaum `unit` gehört.
-    pub(crate) fn module_of_unit(&self, unit: &Rc<Ast>) -> Option<ModuleId> {
+    pub(crate) fn module_of_unit(&self, unit: &Rc<RefCell<Ast>>) -> Option<ModuleId> {
         self.modules
             .iter()
             .position(|record| match &record.body {

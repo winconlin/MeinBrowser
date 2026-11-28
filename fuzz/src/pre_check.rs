@@ -7,6 +7,7 @@
 //!   Surrogate den Parser erreichen.
 //! - Bits 2 und 3: die kleinste Zahl Knoten eines vorgeprüften Rumpfs.
 //! - Bits 4 bis 6: die größte Tiefe seines Inhalts.
+//! - Bit 7: Funktionsausdrücke direkt hinter `(` oder `!` bleiben ganz.
 //!
 //! `mb_js::pre_check::compare` liest den Quelltext einmal ganz und einmal
 //! vorgeprüft, liest die Rümpfe nach, einmal erst vor dem Übersetzen und
@@ -36,6 +37,7 @@ pub fn js_pre_check(data: &[u8]) {
     let pre_check = PreCheck {
         min_nodes: MIN_NODES[usize::from(control >> 2 & 3)],
         max_depth: MAX_DEPTHS[usize::from(control >> 4 & 7)],
+        immediate: control & 0x80 != 0,
     };
     if let Err(difference) = mb_js::pre_check::compare(&source, module, pre_check) {
         panic!("vorgeprüft anders als ganz gelesen: {difference:?}");
@@ -65,8 +67,9 @@ mod tests {
             "export default function () { return import.meta; }",
             "await 1; export async function h() { return () => h; }",
             "function f() {",
+            "(function () { return function () { return this; }; })(); !function () {}();",
         ] {
-            for control in 0..=0x7F_u8 {
+            for control in 0..=0xFF_u8 {
                 if control & 2 == 0 {
                     js_pre_check(&input(control, source));
                 }

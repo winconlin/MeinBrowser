@@ -14,7 +14,7 @@ use crate::compiler::{CompileError, Script, compile_script};
 use crate::function::instantiate_function;
 use crate::heap::{Local, Scope};
 use crate::interpreter::execute_script;
-use crate::parser::{SyntaxError, parse_script};
+use crate::parser::{SyntaxError, parse_script, parse_script_pre_checked};
 use crate::realm::RealmId;
 use crate::unit::Unit;
 
@@ -77,12 +77,16 @@ impl Agent {
         if let Some(store) = self.code_store.clone() {
             return self.evaluate_cached_script(scope, realm, source, &store);
         }
-        let ast = Rc::new(parse_script(source).map_err(ScriptError::Syntax)?);
+        let ast = match self.pre_check {
+            Some(pre_check) => parse_script_pre_checked(source, pre_check),
+            None => parse_script(source),
+        }
+        .map_err(ScriptError::Syntax)?;
         let script = self.compile(&ast)?;
         // Parse und Übersetzen laufen ohne Bytecodeschritte. Ein dort
         // gesetztes Abbruchsignal muss vor der ersten Bindung wirken.
         self.spend_execution_steps(0).map_err(ScriptError::Abrupt)?;
-        self.run_script(scope, realm, &Unit::Ast(ast), &script)
+        self.run_script(scope, realm, &Unit::from_ast(ast), &script)
     }
 
     fn compile(&mut self, ast: &crate::ast::Ast) -> Result<Script, ScriptError> {
@@ -122,7 +126,7 @@ impl Agent {
                     }
                     Err(script) => {
                         self.spend_execution_steps(0).map_err(ScriptError::Abrupt)?;
-                        return self.run_script(scope, realm, &Unit::Ast(Rc::new(ast)), &script);
+                        return self.run_script(scope, realm, &Unit::from_ast(ast), &script);
                     }
                 }
             }

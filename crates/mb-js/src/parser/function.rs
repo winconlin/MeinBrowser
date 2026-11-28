@@ -111,13 +111,19 @@ impl Parser<'_> {
             generator,
             is_async,
         };
-        let function = self.function_rest(signature, name, start)?;
+        let function = self.function_rest(signature, name, start, false)?;
         Ok(self.node(Node::FunctionDeclaration(function), start))
     }
 
     /// *FunctionExpression* und die Formen mit `*` und `async`. Das
-    /// aktuelle Token ist `function`.
-    pub(super) fn function_expression(&mut self, start: usize, is_async: bool) -> Result<NodeId> {
+    /// aktuelle Token ist `function`. Mit `wrapped` steht der Ausdruck
+    /// direkt hinter `(` oder `!` und wird wohl gleich aufgerufen.
+    pub(super) fn function_expression(
+        &mut self,
+        start: usize,
+        is_async: bool,
+        wrapped: bool,
+    ) -> Result<NodeId> {
         self.expect_keyword("function", Goal::RegExp)?;
         let generator = self.eat(Punctuator::Star, Goal::Div)?;
         let name = if self.at(Punctuator::LeftParenthesis, Goal::Div)? {
@@ -140,7 +146,8 @@ impl Parser<'_> {
             generator,
             is_async,
         };
-        let function = self.function_rest(signature, name, start)?;
+        let whole = wrapped && self.pre_check.is_some_and(|pre_check| pre_check.immediate);
+        let function = self.function_rest(signature, name, start, whole)?;
         Ok(self.node(Node::Function(function), start))
     }
 
@@ -161,23 +168,25 @@ impl Parser<'_> {
             generator: modifiers.generator,
             is_async: modifiers.is_async,
         };
-        self.function_rest(signature, None, start)
+        self.function_rest(signature, None, start, false)
     }
 
     /// Parameter und Rumpf einer Funktion ab `(` in ihrem eigenen
     /// Zustand und Gültigkeitsbereich. `name` ist der Name der Funktion
-    /// für die Prüfungen, die eine Direktive `"use strict"` nachholt.
+    /// für die Prüfungen, die eine Direktive `"use strict"` nachholt. Mit
+    /// `whole` behält der Parser den Rumpf auch mit [`super::PreCheck`].
     fn function_rest(
         &mut self,
         signature: Signature,
         name: Option<(Atom, usize)>,
         start: usize,
+        whole: bool,
     ) -> Result<FunctionId> {
         self.enter()?;
         let context = self.function_context(signature);
         let outer = std::mem::replace(&mut self.function, FunctionState::new(context));
         self.push_scope(ScopeKind::Function);
-        let result = self.function_inner(signature, name, start);
+        let result = self.function_inner(signature, name, start, whole);
         self.pop_scope();
         self.function = outer;
         self.leave();
@@ -189,6 +198,7 @@ impl Parser<'_> {
         signature: Signature,
         name: Option<(Atom, usize)>,
         start: usize,
+        whole: bool,
     ) -> Result<FunctionId> {
         let parameters_start = self.start(Goal::Div)?;
         let mut names: Names = Vec::new();
@@ -214,7 +224,7 @@ impl Parser<'_> {
         for &(parameter, _) in &names {
             self.declare_parameter(parameter);
         }
-        let (body, lazy) = self.function_body(parameters.simple, &names, name, false)?;
+        let (body, lazy) = self.function_body(parameters.simple, &names, name, false, whole)?;
         let function = Function {
             kind: signature.kind,
             generator: signature.generator,
@@ -306,19 +316,23 @@ impl Parser<'_> {
 
     /// *FunctionBody* in geschweiften Klammern, mit Direktiven. Mit
     /// [`super::PreCheck`] verwirft er die Knoten danach vielleicht wieder
-    /// ([`super::lazy`]); dann ist die Liste leer, und daneben steht, was
-    /// bleibt. `arrow` sagt, ob die Funktion eine Pfeilfunktion ist.
+    /// ([`super::lazy`]), außer mit `whole`; dann ist die Liste leer, und
+    /// daneben steht, was bleibt. `arrow` sagt, ob die Funktion eine
+    /// Pfeilfunktion ist.
     fn function_body(
         &mut self,
         simple: bool,
         names: &Names,
         name: Option<(Atom, usize)>,
         arrow: bool,
+        whole: bool,
     ) -> Result<(List, Option<Box<LazyBody>>)> {
         let start = self.start(Goal::Div)?;
         match self.pre_check {
-            None => Ok((self.body_statements(start, simple, names, name)?, None)),
-            Some(pre_check) => self.pre_checked_body(pre_check, start, simple, names, name, arrow),
+            Some(pre_check) if !whole => {
+                self.pre_checked_body(pre_check, start, simple, names, name, arrow)
+            }
+            _ => Ok((self.body_statements(start, simple, names, name)?, None)),
         }
     }
 
@@ -445,7 +459,7 @@ impl Parser<'_> {
             let expression = self.assignment(in_, None)?;
             (self.ast.add_list(&[expression]), None)
         } else {
-            self.function_body(simple, names, None, true)?
+            self.function_body(simple, names, None, true, false)?
         };
         let function = Function {
             kind: FunctionKind::Arrow,

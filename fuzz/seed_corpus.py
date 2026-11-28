@@ -474,8 +474,8 @@ def main():
                bytes([20, 0, 0, 40, 0, 0xFF, 60, 0, 1]))
     code_cache("changed-code", "function f(a) { return a + 1; } f(1)", bytes([5, 0, 0x7F, 9, 0, 0x80]))
     def pre_check(name, control, source):
-        # Bit 0 module, bit 1 UTF-16LE, bits 2-3 smallest body, bits 4-6 deepest body
-        # (src/pre_check.rs); 0x70 pre-checks every body that can be.
+        # Bit 0 module, bit 1 UTF-16LE, bits 2-3 smallest body, bits 4-6 deepest body, bit 7
+        # keeps `(function` whole (src/pre_check.rs); 0x70 pre-checks every body that can be.
         data = source.encode("utf-16-le", "surrogatepass") if control & 2 else source.encode()
         write("js-pre-check", name, bytes([control]) + data)
     pre_check("closures", 0x70, "function f(a, b = 2) { var c = a + b; return function g() { return c; }; }"
@@ -493,6 +493,8 @@ def main():
     pre_check("thresholds", 0x24, "function f() { return 1; } function g() { return [[[[[[[[1]]]]]]]]; }"
               " function h() { var a = 1, b = 2, c = 3; return function () { return a + b + c; }; }")
     pre_check("utf16le", 0x72, "function f() { return '\ud800'; }")
+    pre_check("immediate", 0xF0, "(function () { var a = 1; return function () { return a; }; })();"
+              " !function () { return this; }();")
     part = b"\x1f\x1f"  # PART_SEPARATOR in src/lib.rs
     write("page", "document", "<!doctype html><style>@media (max-width: 400px) { p { margin: 0 } }"
           " p { border: 2px dashed red; padding: 4px; font-style: italic }"
