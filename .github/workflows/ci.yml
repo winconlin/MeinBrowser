@@ -1,9 +1,19 @@
 name: CI
 
+# Reine Doku-Änderungen (Markdown, zum Beispiel README.md und docs/) lösen
+# keinen Lauf aus: Kein Build und kein Test liest .md-Dateien. Ändert ein
+# Pull Request daneben auch nur eine andere Datei, läuft alles wie bisher.
+# Werden die drei Prüfungen einmal Pflichtprüfungen im Branch-Schutz, bleiben
+# reine Doku-PRs bei „Expected“ stehen; dann müssen statt des ganzen Laufs
+# nur die Schritte entfallen.
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "**.md"
   pull_request:
+    paths-ignore:
+      - "**.md"
 
 permissions:
   contents: read
