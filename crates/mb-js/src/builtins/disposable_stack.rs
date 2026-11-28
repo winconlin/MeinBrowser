@@ -43,11 +43,18 @@ use crate::realm::{Intrinsic, RealmId};
 use crate::value::{Kind, Value};
 
 /// Die internen Felder eines Stapels: ob er async ist, ob er ~disposed~
-/// ist, die Zelle mit den Ressourcen oder *undefined* und deren Zahl.
+/// ist und die Zelle seiner [[DisposeCapability]].
 const ASYNC: usize = 0;
 const DISPOSED: usize = 1;
-const RESOURCES: usize = 2;
-const COUNT: usize = 3;
+const CAPABILITY: usize = 2;
+
+/// Die Plätze der Zelle einer [[DisposeCapability]]: die Zelle mit den
+/// Ressourcen oder *undefined* und deren Zahl. Sie ist eine eigene Zelle,
+/// weil `move` sie dem neuen Stapel gibt, während `use` sie schon vor dem
+/// Getter der Methode gelesen hat und die Ressource danach anhängt.
+const RESOURCES: usize = 0;
+const COUNT: usize = 1;
+const CAPABILITY_SLOTS: usize = 2;
 
 /// So viele Plätze belegt eine Ressource: Wert, Methode und ob sie aus
 /// `adopt` kommt.
@@ -195,7 +202,9 @@ fn stack_create<'s>(
     )?;
     write(agent, stack, ASYNC, Value::boolean(asynchronous));
     write(agent, stack, DISPOSED, Value::FALSE);
-    write(agent, stack, COUNT, Value::int32(0));
+    let capability = agent.heap_mut().alloc_slots(scope, CAPABILITY_SLOTS)?;
+    write_slot(agent, capability, COUNT, Value::int32(0));
+    write(agent, stack, CAPABILITY, agent.heap().get(capability));
     Ok(stack)
 }
 
@@ -245,28 +254,51 @@ fn write(agent: &Agent, stack: Local<'_>, index: usize, value: Value<'_>) {
     }
 }
 
-/// Die Zahl der Ressourcen des Stapels.
-fn count(agent: &Agent, stack: Local<'_>) -> usize {
-    field(agent, stack, COUNT)
+/// Platz `index` einer internen Zelle, etwa einer [[DisposeCapability]].
+fn slot<'h>(agent: &'h Agent, cell: Local<'_>, index: usize) -> Value<'h> {
+    let heap = agent.heap();
+    match heap.get(cell).kind() {
+        Kind::Internal(cell) => heap.slot(cell, index).unwrap_or(Value::UNDEFINED),
+        _ => Value::UNDEFINED,
+    }
+}
+
+fn write_slot(agent: &Agent, cell: Local<'_>, index: usize, value: Value<'_>) {
+    let heap = agent.heap();
+    if let Kind::Internal(cell) = heap.get(cell).kind() {
+        heap.set_slot(cell, index, value);
+    }
+}
+
+/// Die Zelle der [[DisposeCapability]] des Stapels.
+fn capability<'s>(agent: &Agent, scope: &'s Scope, stack: Local<'_>) -> Local<'s> {
+    agent.heap().local(scope, field(agent, stack, CAPABILITY))
+}
+
+/// Die Zahl der Ressourcen der [[DisposeCapability]] `capability`.
+fn count(agent: &Agent, capability: Local<'_>) -> usize {
+    slot(agent, capability, COUNT)
         .as_int32()
         .and_then(|count| usize::try_from(count).ok())
         .unwrap_or(0)
 }
 
-/// Hängt eine Ressource an [[DisposableResourceStack]] an, für
-/// AddDisposableResource.
+/// Hängt eine Ressource an [[DisposableResourceStack]] der
+/// [[DisposeCapability]] `capability` an, für AddDisposableResource.
 fn push_resource(
     agent: &mut Agent,
     scope: &Scope,
-    stack: Local<'_>,
+    capability: Local<'_>,
     value: Local<'_>,
     method: Local<'_>,
     adopted: bool,
 ) -> Completion<()> {
-    let count = count(agent, stack);
+    let count = count(agent, capability);
     let next = count.checked_add(1).ok_or(OutOfMemory)?;
     let counted = i32::try_from(next).map_err(|_| OutOfMemory)?;
-    let resources = agent.heap().local(scope, field(agent, stack, RESOURCES));
+    let resources = agent
+        .heap()
+        .local(scope, slot(agent, capability, RESOURCES));
     let capacity = match agent.heap().get(resources).kind() {
         Kind::Internal(cell) => agent.heap().slot_count(cell) / STRIDE,
         _ => 0,
@@ -287,7 +319,7 @@ fn push_resource(
                 );
             }
         }
-        write(agent, stack, RESOURCES, heap.get(grown));
+        write_slot(agent, capability, RESOURCES, heap.get(grown));
         grown
     } else {
         resources
@@ -299,17 +331,20 @@ fn push_resource(
         heap.set_slot(cell, start + 1, heap.get(method));
         heap.set_slot(cell, start + 2, Value::boolean(adopted));
     }
-    write(agent, stack, COUNT, Value::int32(counted));
+    write_slot(agent, capability, COUNT, Value::int32(counted));
     Ok(())
 }
 
 /// Nimmt dem Stapel seine Ressourcen und lässt ihm eine leere
 /// [[DisposeCapability]]: die Zelle oder *undefined* und die Zahl.
 fn take_resources<'s>(agent: &Agent, scope: &'s Scope, stack: Local<'_>) -> (Local<'s>, usize) {
-    let resources = agent.heap().local(scope, field(agent, stack, RESOURCES));
-    let count = count(agent, stack);
-    write(agent, stack, RESOURCES, Value::UNDEFINED);
-    write(agent, stack, COUNT, Value::int32(0));
+    let capability = capability(agent, scope, stack);
+    let resources = agent
+        .heap()
+        .local(scope, slot(agent, capability, RESOURCES));
+    let count = count(agent, capability);
+    write_slot(agent, capability, RESOURCES, Value::UNDEFINED);
+    write_slot(agent, capability, COUNT, Value::int32(0));
     (resources, count)
 }
 
@@ -445,7 +480,8 @@ fn adopt_value<'s>(
     if !is_callable(agent.heap(), agent.heap().get(on_dispose)) {
         return Err(agent.throw_error(ErrorKind::TypeError));
     }
-    push_resource(agent, scope, stack, value, on_dispose, true)?;
+    let capability = capability(agent, scope, stack);
+    push_resource(agent, scope, capability, value, on_dispose, true)?;
     Ok(value)
 }
 
@@ -481,7 +517,8 @@ fn defer_callback<'s>(
         return Err(agent.throw_error(ErrorKind::TypeError));
     }
     let undefined = agent.heap().local(scope, Value::UNDEFINED);
-    push_resource(agent, scope, stack, undefined, on_dispose, false)?;
+    let capability = capability(agent, scope, stack);
+    push_resource(agent, scope, capability, undefined, on_dispose, false)?;
     Ok(undefined)
 }
 
@@ -504,7 +541,8 @@ fn async_move_stack<'s>(
 /// DisposableStack.prototype.move ( ) und
 /// AsyncDisposableStack.prototype.move ( ): Der neue Stapel kommt immer
 /// aus %DisposableStack% beziehungsweise %AsyncDisposableStack%, auch bei
-/// Unterklassen, und übernimmt die [[DisposeCapability]].
+/// Unterklassen, und übernimmt die [[DisposeCapability]]; der alte Stapel
+/// bekommt die leere des neuen.
 fn move_resources<'s>(
     agent: &mut Agent,
     scope: &'s Scope,
@@ -520,14 +558,10 @@ fn move_resources<'s>(
     };
     let prototype = agent.intrinsic(scope, arguments.realm, prototype);
     let moved = stack_create(agent, scope, prototype, asynchronous)?;
-    let (resources, count) = take_resources(agent, scope, stack);
-    write(agent, moved, RESOURCES, agent.heap().get(resources));
-    write(
-        agent,
-        moved,
-        COUNT,
-        Value::int32(i32::try_from(count).unwrap_or(0)),
-    );
+    let taken = capability(agent, scope, stack);
+    let empty = capability(agent, scope, moved);
+    write(agent, moved, CAPABILITY, agent.heap().get(taken));
+    write(agent, stack, CAPABILITY, agent.heap().get(empty));
     write(agent, stack, DISPOSED, Value::TRUE);
     Ok(moved)
 }
@@ -550,7 +584,8 @@ fn async_use_value<'s>(
 
 /// DisposableStack.prototype.use ( value ) und
 /// AsyncDisposableStack.prototype.use ( value ): AddDisposableResource
-/// ohne Methode, wie bei `using` und `await using`.
+/// ohne Methode, wie bei `using` und `await using`. Die
+/// [[DisposeCapability]] wird vor dem Getter der Methode gelesen.
 fn use_resource<'s>(
     agent: &mut Agent,
     scope: &'s Scope,
@@ -560,6 +595,7 @@ fn use_resource<'s>(
     let stack = arguments.this;
     require_pending(agent, stack, asynchronous)?;
     let value = arguments.argument(agent, scope, 0);
+    let capability = capability(agent, scope, stack);
     if let Some((method, resource)) =
         create_disposable_resource(agent, scope, arguments.realm, value, asynchronous)?
     {
@@ -567,7 +603,7 @@ fn use_resource<'s>(
         if agent.heap().get(method).is_null() {
             agent.heap().set(method, Value::UNDEFINED);
         }
-        push_resource(agent, scope, stack, resource, method, false)?;
+        push_resource(agent, scope, capability, resource, method, false)?;
     }
     Ok(value)
 }
@@ -682,17 +718,17 @@ fn dispose_async<'s>(
     let (resources, count) = take_resources(agent, scope, stack);
     let state = agent.heap_mut().alloc_slots(scope, STATE_FIELDS)?;
     let heap = agent.heap();
-    write_state(agent, state, RESOLVE, heap.get(capability.resolve));
-    write_state(agent, state, REJECT, heap.get(capability.reject));
-    write_state(agent, state, STATE_RESOURCES, heap.get(resources));
-    write_state(
+    write_slot(agent, state, RESOLVE, heap.get(capability.resolve));
+    write_slot(agent, state, REJECT, heap.get(capability.reject));
+    write_slot(agent, state, STATE_RESOURCES, heap.get(resources));
+    write_slot(
         agent,
         state,
         LEFT,
         Value::int32(i32::try_from(count).unwrap_or(0)),
     );
     for flag in [NEEDS_AWAIT, HAS_AWAITED, THROWING] {
-        write_state(agent, state, flag, Value::FALSE);
+        write_slot(agent, state, flag, Value::FALSE);
     }
     if let Err(abrupt) = continue_disposal(agent, scope, realm, state) {
         reject_abrupt(agent, scope, realm, abrupt, capability.reject)?;
@@ -712,7 +748,7 @@ fn continue_disposal(
     state: Local<'_>,
 ) -> Completion<()> {
     loop {
-        let left = state_field(agent, state, LEFT)
+        let left = slot(agent, state, LEFT)
             .as_int32()
             .and_then(|left| usize::try_from(left).ok())
             .unwrap_or(0);
@@ -720,7 +756,7 @@ fn continue_disposal(
             break;
         };
         agent.spend_execution_steps(1)?;
-        write_state(
+        write_slot(
             agent,
             state,
             LEFT,
@@ -729,17 +765,17 @@ fn continue_disposal(
         let suspended = agent.scope(|agent, inner| -> Completion<bool> {
             let resources = agent
                 .heap()
-                .local(inner, state_field(agent, state, STATE_RESOURCES));
+                .local(inner, slot(agent, state, STATE_RESOURCES));
             let (value, method, adopted) = resource(agent, inner, resources, index);
             if agent.heap().get(method).is_undefined() {
-                write_state(agent, state, NEEDS_AWAIT, Value::TRUE);
+                write_slot(agent, state, NEEDS_AWAIT, Value::TRUE);
                 return Ok(false);
             }
             let result = match call_dispose(agent, inner, value, method, adopted) {
                 // Schritt 3.e.ii: Await, danach gilt *hasAwaited*, auch
                 // wenn schon PromiseResolve wirft.
                 Ok(result) => {
-                    write_state(agent, state, HAS_AWAITED, Value::TRUE);
+                    write_slot(agent, state, HAS_AWAITED, Value::TRUE);
                     await_value(agent, inner, realm, state, result)
                 }
                 Err(abrupt) => Err(abrupt),
@@ -761,7 +797,7 @@ fn continue_disposal(
     // Schritt 4: ein Await für Ressourcen aus *null* oder *undefined*,
     // wenn sonst keins war.
     if is_true(agent, state, NEEDS_AWAIT) && !is_true(agent, state, HAS_AWAITED) {
-        write_state(agent, state, HAS_AWAITED, Value::TRUE);
+        write_slot(agent, state, HAS_AWAITED, Value::TRUE);
         let undefined = agent.heap().local(scope, Value::UNDEFINED);
         return await_value(agent, scope, realm, state, undefined);
     }
@@ -809,8 +845,8 @@ fn record_error(
     let thrown = agent.heap().local(scope, agent.heap().get(thrown));
     let previous = is_true(agent, state, THROWING).then(|| state_local(agent, scope, state, ERROR));
     let error = suppress(agent, scope, realm, previous, thrown)?;
-    write_state(agent, state, ERROR, agent.heap().get(error));
-    write_state(agent, state, THROWING, Value::TRUE);
+    write_slot(agent, state, ERROR, agent.heap().get(error));
+    write_slot(agent, state, THROWING, Value::TRUE);
     Ok(())
 }
 
@@ -856,25 +892,10 @@ fn resume<'s>(
     Ok(agent.heap().local(scope, Value::UNDEFINED))
 }
 
-fn state_field<'h>(agent: &'h Agent, state: Local<'_>, index: usize) -> Value<'h> {
-    let heap = agent.heap();
-    match heap.get(state).kind() {
-        Kind::Internal(cell) => heap.slot(cell, index).unwrap_or(Value::UNDEFINED),
-        _ => Value::UNDEFINED,
-    }
-}
-
 fn state_local<'s>(agent: &Agent, scope: &'s Scope, state: Local<'_>, index: usize) -> Local<'s> {
-    agent.heap().local(scope, state_field(agent, state, index))
-}
-
-fn write_state(agent: &Agent, state: Local<'_>, index: usize, value: Value<'_>) {
-    let heap = agent.heap();
-    if let Kind::Internal(cell) = heap.get(state).kind() {
-        heap.set_slot(cell, index, value);
-    }
+    agent.heap().local(scope, slot(agent, state, index))
 }
 
 fn is_true(agent: &Agent, state: Local<'_>, index: usize) -> bool {
-    state_field(agent, state, index).kind() == Kind::Boolean(true)
+    slot(agent, state, index).kind() == Kind::Boolean(true)
 }

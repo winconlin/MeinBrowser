@@ -164,6 +164,29 @@ fn move_hands_the_resources_to_a_new_stack() {
              t.defer(() => log.push('b')); t.dispose(); log.join()",
             "b,a",
         ),
+        // `use` hängt die Ressource an die [[DisposeCapability]], die es vor
+        // dem Getter der Methode gelesen hat: Zieht der Getter sie mit `move`
+        // zu einem neuen Stapel, gibt dieser sie frei.
+        (
+            "var s = new DisposableStack(); var t; s.defer(() => log.push('a')); \
+             s.use({ get [Symbol.dispose]() { t = s.move(); return () => log.push('r'); } }); \
+             s.dispose(); log.push(s.disposed); t.dispose(); log.join()",
+            "true,r,a",
+        ),
+        (
+            "var s = new AsyncDisposableStack(); var t; \
+             s.use({ get [Symbol.asyncDispose]() { t = s.move(); return () => log.push('r'); } }); \
+             t.disposeAsync(); log.join()",
+            "r",
+        ),
+        // Gibt der Getter den Stapel selbst frei, geht die Ressource wie in
+        // der Spezifikation verloren.
+        (
+            "var s = new DisposableStack(); \
+             s.use({ get [Symbol.dispose]() { s.dispose(); return () => log.push('r'); } }); \
+             s.dispose(); log.length",
+            "0",
+        ),
     ]);
 }
 

@@ -337,9 +337,9 @@ pub(crate) const FINALIZATION_REGISTRY_FIELDS: usize = 5;
 pub(crate) const NAMESPACE_FIELDS: usize = 1;
 /// Die internen Felder eines DisposableStack oder AsyncDisposableStack: ob
 /// er async ist ([[AsyncDisposableState]] statt [[DisposableState]]), ob
-/// er ~disposed~ ist, die Zelle mit den Ressourcen seiner
-/// [[DisposeCapability]] oder *undefined* und wie viele es sind.
-pub(crate) const DISPOSABLE_STACK_FIELDS: usize = 4;
+/// er ~disposed~ ist und die Zelle seiner [[DisposeCapability]] mit den
+/// Ressourcen und ihrer Zahl.
+pub(crate) const DISPOSABLE_STACK_FIELDS: usize = 3;
 
 fn is_object(kind: u64) -> bool {
     OBJECT_KINDS.contains(&kind)
