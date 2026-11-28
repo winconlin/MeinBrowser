@@ -289,7 +289,7 @@ fn runtime_negative_requires_the_exact_error_and_phase() {
         "throw new Error('TypeError')",
         "assert.sameValue(1, 2)",
         "let = ;",
-        "String.raw`x`",
+        "{ using a = null; }",
         "while (true) {}",
     ] {
         assert_ne!(run_negative(source), wanted, "{source}");
@@ -298,8 +298,8 @@ fn runtime_negative_requires_the_exact_error_and_phase() {
         ordinary("while (true) {}"),
         Outcome::Host(Abrupt::Exhausted(crate::agent::Exhausted::Steps))
     );
-    // Templates mit Tag kann der Übersetzer noch nicht.
-    assert_eq!(ordinary("String.raw`x`"), Outcome::Unsupported);
+    // `using` kann der Übersetzer noch nicht.
+    assert_eq!(ordinary("{ using a = null; }"), Outcome::Unsupported);
 }
 
 #[test]
@@ -549,8 +549,8 @@ fn modules_run_once_and_load_their_files_from_the_test_directory() {
         ("bad_FIXTURE.js", "0++;"),
         ("value_FIXTURE.json", "{\"a\": [1, 2]}"),
         ("broken_FIXTURE.json", "{a: 1}"),
-        // Templates mit Tag kann der Übersetzer noch nicht.
-        ("tag_FIXTURE.js", "String.raw`x`;"),
+        // `using` kann der Übersetzer noch nicht.
+        ("using_FIXTURE.js", "{ using a = null; }"),
     ] {
         std::fs::write(directory.join(name), text).expect("Hilfsdatei");
     }
@@ -609,7 +609,7 @@ fn modules_run_once_and_load_their_files_from_the_test_directory() {
                 "await Promise.reject(new RangeError());",
                 Outcome::Error(ErrorKind::RangeError),
             ),
-            ("await import('./tag_FIXTURE.js');", Outcome::Unsupported),
+            ("await import('./using_FIXTURE.js');", Outcome::Unsupported),
             ("export {", Outcome::Syntax),
         ] {
             assert_eq!(run_module(source, stress), wanted, "{source}");
@@ -631,7 +631,7 @@ fn modules_run_once_and_load_their_files_from_the_test_directory() {
                 Outcome::Normal,
             ),
             (
-                "import('./tag_FIXTURE.js').then($DONE, () => $DONE());",
+                "import('./using_FIXTURE.js').then($DONE, () => $DONE());",
                 Outcome::Unsupported,
             ),
         ] {

@@ -50,8 +50,13 @@
 //! bevor der Code läuft (ExecuteAsyncModule, Abschnitt 16.2.1.6.1.3.2).
 //! `import()` ist [`Op::ImportCall`].
 //!
-//! Noch nicht unterstützt sind Templates mit Tag und Funktionsdeklarationen
-//! mit Marke (Anhang B.3.1).
+//! Templates mit Tag sind Aufrufe in einer Kette wie `f(…)`: Das erste
+//! Argument ist das Template-Objekt aus [`Op::GetTemplateObject`], dann
+//! folgen die Werte der Ausdrücke. Jede Stelle hat eine eigene Konstante;
+//! ihr Platz im Pool hält das Objekt nach dem ersten Mal.
+//!
+//! Noch nicht unterstützt sind Funktionsdeklarationen mit Marke (Anhang
+//! B.3.1).
 //!
 //! Klassen: Eine Klasse hat einen eigenen Bereich mit ihrem Namen als
 //! Konstante, die bis zum Ende der Klasse in der TDZ bleibt (classEnv). Darin
@@ -190,7 +195,7 @@ use crate::bigint::BigInt;
 use crate::bytecode::{
     BindingKind, Code, Constant, ContextBinding, ContextLayout, DynamicName, Emitter, Enclosing,
     EvalSite, Extension, Fallback, FunctionScope, FunctionTemplate, HandlerKind, Label, Op,
-    TooLarge,
+    TemplateStrings, TooLarge,
 };
 use crate::number;
 use crate::value::Value;
@@ -649,6 +654,10 @@ struct Compiler<'a> {
     /// Im Code einer Funktion, die keine Pfeilfunktion ist, was für `eval`
     /// darin gilt.
     function_scope: Option<FunctionScope>,
+    /// Die Konstante jedes Templates mit Tag, das schon übersetzt ist. Jede
+    /// Stelle hat ihr eigenes Template-Objekt (Abschnitt 13.2.8.4), auch
+    /// wenn ihre Teile denen einer anderen gleichen.
+    template_sites: BTreeMap<NodeId, i64>,
 }
 
 /// Übersetzt ein Script (Abschnitt 16.1).
@@ -1698,6 +1707,7 @@ impl<'a> Compiler<'a> {
             hoisted: BTreeMap::new(),
             strict_class: false,
             function_scope: None,
+            template_sites: BTreeMap::new(),
         }
     }
 
@@ -1768,7 +1778,8 @@ impl<'a> Compiler<'a> {
             | Constant::Dynamic(_)
             | Constant::EvalSite(_)
             | Constant::EvalInstantiation(_)
-            | Constant::EvalBinding(_) => None,
+            | Constant::EvalBinding(_)
+            | Constant::Template(_) => None,
             Constant::Module => Some(ConstantKey::Module),
         };
         if let Some(&index) = key.as_ref().and_then(|key| self.constant_index.get(key)) {
@@ -4181,7 +4192,8 @@ impl<'a> Compiler<'a> {
             Node::Member { .. }
             | Node::ComputedMember { .. }
             | Node::PrivateMember { .. }
-            | Node::Call { .. } => self.chain(node, ChainEnd::Value).map(|_| ()),
+            | Node::Call { .. }
+            | Node::TaggedTemplate { .. } => self.chain(node, ChainEnd::Value).map(|_| ()),
             Node::Chain(chain) => self.chain(chain, ChainEnd::Value).map(|_| ()),
             Node::New { callee, arguments } => self.construct(node, callee, arguments),
             Node::NewTarget => self.load_new_target(node),
@@ -5097,7 +5109,7 @@ impl<'a> Compiler<'a> {
                     links.push(head);
                     head = object;
                 }
-                Node::Call { callee, .. } => {
+                Node::Call { callee, .. } | Node::TaggedTemplate { tag: callee, .. } => {
                     links.push(head);
                     head = callee;
                 }
@@ -5108,8 +5120,13 @@ impl<'a> Compiler<'a> {
         (head, links)
     }
 
+    /// Ob das Glied einer Kette ein Aufruf ist, auch der eines Templates
+    /// mit Tag.
     fn is_call(&self, node: NodeId) -> bool {
-        matches!(self.ast.node(node), Node::Call { .. })
+        matches!(
+            self.ast.node(node),
+            Node::Call { .. } | Node::TaggedTemplate { .. }
+        )
     }
 
     /// Eine Kette aus Zugriffen und Aufrufen: GetValue für Zugriffe
@@ -5154,6 +5171,14 @@ impl<'a> Compiler<'a> {
                     nullish.push(self.jump(Op::JumpIfNullish)?);
                 }
                 self.call(link, callee, has_this, arguments)?;
+                has_this = false;
+                continue;
+            }
+            if let Node::TaggedTemplate { quasi, .. } = *self.ast.node(link) {
+                let Some(callee) = callee else {
+                    return Err(self.unsupported(link));
+                };
+                self.tagged_template(link, callee, has_this, quasi)?;
                 has_this = false;
                 continue;
             }
@@ -5249,6 +5274,87 @@ impl<'a> Compiler<'a> {
             Op::Call
         };
         self.call_arguments(node, op, callee, arguments)
+    }
+
+    /// Ein Template mit Tag (Abschnitt 13.3.11.1) mit dem Tag im
+    /// Akkumulator: EvaluateCall wie bei [`Compiler::call`], die Argumente
+    /// nach ArgumentListEvaluation (Abschnitt 13.3.8.1) erst das
+    /// Template-Objekt, dann die Werte der Ausdrücke.
+    fn tagged_template(
+        &mut self,
+        node: NodeId,
+        callee: u32,
+        has_this: bool,
+        quasi: NodeId,
+    ) -> Result<()> {
+        let register = i64::from(callee);
+        self.emit(Op::Star, &[register])?;
+        if !has_this {
+            self.emit(Op::LdaUndefined, &[])?;
+            self.emit(Op::Star, &[register + 1])?;
+        }
+        let Node::Template {
+            quasis,
+            expressions,
+        } = *self.ast.node(quasi)
+        else {
+            return Err(self.unsupported(quasi));
+        };
+        let first = self.next_register;
+        if callee.checked_add(2) != Some(first) {
+            return Err(self.unsupported(node));
+        }
+        let site = self.template_site(quasi, quasis)?;
+        let slot = self.allocate()?;
+        self.emit(Op::GetTemplateObject, &[site])?;
+        self.emit(Op::Star, &[i64::from(slot)])?;
+        let ast = self.ast;
+        let expressions = ast.list(expressions);
+        for &expression in expressions {
+            let slot = self.allocate()?;
+            self.expression(expression)?;
+            self.emit(Op::Star, &[i64::from(slot)])?;
+        }
+        self.position(node)?;
+        let count = expressions
+            .len()
+            .checked_add(1)
+            .and_then(|count| i64::try_from(count).ok())
+            .ok_or(CompileError::TooLarge)?;
+        let op = if self.tail_calls.contains(&node) {
+            Op::TailCall
+        } else {
+            Op::Call
+        };
+        self.emit(op, &[register, count])?;
+        self.release(first);
+        Ok(())
+    }
+
+    /// Die Konstante für das Template-Objekt des Templates `quasi` mit den
+    /// Teilen `quasis`.
+    fn template_site(&mut self, quasi: NodeId, quasis: List) -> Result<i64> {
+        if let Some(&site) = self.template_sites.get(&quasi) {
+            return Ok(site);
+        }
+        let ast = self.ast;
+        let mut cooked = Vec::new();
+        let mut raw = Vec::new();
+        for &element in ast.list(quasis) {
+            let Node::TemplateElement {
+                cooked: value,
+                raw: raw_value,
+            } = *ast.node(element)
+            else {
+                return Err(self.unsupported(element));
+            };
+            cooked.push(value.map(|atom| ast.atom(atom).to_vec()));
+            raw.push(ast.atom(raw_value).to_vec());
+        }
+        let strings = TemplateStrings { cooked, raw };
+        let site = self.constant(Constant::Template(Rc::new(strings)))?;
+        self.template_sites.insert(quasi, site);
+        Ok(site)
     }
 
     /// Ob der Aufruf `node` ein direktes `eval` sein kann: Sein Ausdruck ist
@@ -5436,7 +5542,9 @@ impl<'a> Compiler<'a> {
                     right,
                     ..
                 } => pending.push(right),
-                Node::Call { .. } => {
+                // Auch ein Template mit Tag ist ein Aufruf (Abschnitt
+                // 15.10.2).
+                Node::Call { .. } | Node::TaggedTemplate { .. } => {
                     calls.insert(node);
                 }
                 // Am Ende einer optionalen Kette zählt nur ein Aufruf.

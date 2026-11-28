@@ -394,13 +394,9 @@ fn instructions_know_their_place_in_the_source() {
 #[test]
 fn unsupported_constructs_name_their_place() {
     let cases = [
-        ("a = f`x`;", 4),
-        ("class A { [f`x`]() {} }", 11),
-        ("x = {a: f`x`};", 8),
-        ("x = {[f`x`]: 1};", 6),
-        ("let {[f`x`]: a} = b;", 6),
-        ("[a = class { [f`x`]() {} }] = b;", 14),
-        ("f`x`;", 0),
+        ("{ using a = b; }", 8),
+        ("if (c) { using a = b; }", 15),
+        ("for (using a of b) {}", 5),
         ("l: function g() {}", 3),
     ];
     for (source, position) in cases {
@@ -421,6 +417,19 @@ fn unsupported_constructs_name_their_place() {
         "x = {1n: 1, 0x10n: 2};",
         "let {1n: a} = b;",
         "1n;",
+    ] {
+        assert!(compile(source).is_ok(), "{source}");
+    }
+    // Templates mit Tag seit Schritt 13a, auch an den Stellen, an denen
+    // dieser Test vorher ihre Lage prüfte.
+    for source in [
+        "a = f`x`;",
+        "class A { [f`x`]() {} }",
+        "x = {a: f`x`};",
+        "x = {[f`x`]: 1};",
+        "let {[f`x`]: a} = b;",
+        "[a = class { [f`x`]() {} }] = b;",
+        "f`x`;",
     ] {
         assert!(compile(source).is_ok(), "{source}");
     }

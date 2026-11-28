@@ -285,6 +285,11 @@ ops! {
     /// Ein Literal `/muster/flags` (Abschnitt 13.2.7.3): RegExpCreate mit
     /// dem Muster aus der ersten und den Flags aus der zweiten Konstante.
     CreateRegExp [Constant, Constant],
+    /// Akkumulator := GetTemplateObject (Abschnitt 13.2.8.4) für das
+    /// Template mit Tag aus der Konstante ([`Constant::Template`]). Das
+    /// Objekt entsteht beim ersten Mal und bleibt danach an ihrem Platz im
+    /// Pool der Konstanten.
+    GetTemplateObject [Constant],
     /// CreateDataPropertyOrThrow für das Objekt im Register mit dem Namen
     /// und dem Akkumulator als Wert.
     DefineNamed [Register, Constant],
@@ -741,6 +746,32 @@ pub enum Constant {
     /// [`Op::ImportMeta`] und [`Op::ImportCall`]. Es wird zur Nummer des
     /// Moduls, für Code, der zu keinem Modul gehört, zu *undefined*.
     Module,
+    /// Die Teile eines Templates mit Tag für [`Op::GetTemplateObject`]. Im
+    /// Pool ist der Platz *undefined*, bis der Befehl das Objekt anlegt.
+    Template(Rc<TemplateStrings>),
+}
+
+/// Die Teile eines Templates mit Tag: TemplateStrings (Abschnitt
+/// 13.2.8.3) mit *raw* *false* und *true*, gleich viele.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TemplateStrings {
+    /// Die Werte der Teile (TV), `None` für *undefined* nach einer
+    /// ungültigen Escape-Sequenz.
+    pub(crate) cooked: Vec<Option<Vec<u16>>>,
+    /// Die Rohwerte der Teile (TRV).
+    pub(crate) raw: Vec<Vec<u16>>,
+}
+
+impl TemplateStrings {
+    /// Die Werte der Teile, `None` für *undefined*.
+    pub fn cooked(&self) -> &[Option<Vec<u16>>] {
+        &self.cooked
+    }
+
+    /// Die Rohwerte der Teile.
+    pub fn raw(&self) -> &[Vec<u16>] {
+        &self.raw
+    }
 }
 
 /// Ein Name, den der Übersetzer nicht fest einer Bindung zuordnen kann:
@@ -1536,6 +1567,14 @@ impl fmt::Display for Code {
                             formatter.write_str(" declarations")?;
                         }
                         Some(Constant::Module) => formatter.write_str(" module")?,
+                        Some(Constant::Template(strings)) => {
+                            formatter.write_str(" template")?;
+                            for raw in &strings.raw {
+                                formatter.write_str(" `")?;
+                                display_units(formatter, raw)?;
+                                formatter.write_str("`")?;
+                            }
+                        }
                         None => write!(formatter, " c{value}?")?,
                     },
                 }

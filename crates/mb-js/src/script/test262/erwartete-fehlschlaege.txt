@@ -3,7 +3,7 @@
 # nur der genannte. Erzeugt von script/test262/language.rs; bei einer
 # Abweichung schreibt der Test die neue Fassung nach
 # target/test262/erwartete-fehlschlaege.txt.
-# 23828 Dateien, 532 Vorschläge übersprungen; bestanden 23089 von 23296 Dateien und 43431 von 43794 Varianten
+# 23828 Dateien, 532 Vorschläge übersprungen; bestanden 23133 von 23296 Dateien und 43515 von 43794 Varianten
 arguments-object/10.6-13-a-2.js
 arguments-object/10.6-13-a-3.js
 comments/S7.4_A5.js
@@ -19,55 +19,11 @@ expressions/coalesce/tco-pos-undefined.js
 expressions/comma/tco-final.js
 expressions/conditional/tco-cond.js
 expressions/conditional/tco-pos.js
-expressions/dynamic-import/assignment-expression/tagged-function-call.js
-expressions/dynamic-import/syntax/valid/callexpression-templateliteral.js
 expressions/logical-and/tco-right.js
 expressions/logical-or/tco-right.js
-expressions/new.target/value-via-tagged-template.js
-expressions/optional-chaining/call-expression.js
-expressions/optional-chaining/member-expression.js
-expressions/tagged-template/cache-different-functions-same-site.js
-expressions/tagged-template/cache-differing-expressions-eval.js
-expressions/tagged-template/cache-differing-expressions-new-function.js
-expressions/tagged-template/cache-differing-expressions.js
-expressions/tagged-template/cache-differing-raw-strings.js
-expressions/tagged-template/cache-differing-string-count.js
-expressions/tagged-template/cache-eval-inner-function.js
-expressions/tagged-template/cache-identical-source-eval.js
-expressions/tagged-template/cache-identical-source-new-function.js
-expressions/tagged-template/cache-identical-source.js
-expressions/tagged-template/cache-realm.js
-expressions/tagged-template/cache-same-site-top-level.js
-expressions/tagged-template/cache-same-site.js
-expressions/tagged-template/call-expression-argument-list-evaluation.js
-expressions/tagged-template/call-expression-context-no-strict.js
-expressions/tagged-template/call-expression-context-strict.js
-expressions/tagged-template/chained-application.js
-expressions/tagged-template/constructor-invocation.js
-expressions/tagged-template/invalid-escape-sequences.js
-expressions/tagged-template/member-expression-argument-list-evaluation.js
-expressions/tagged-template/member-expression-context.js
 expressions/tagged-template/tco-call.js
 expressions/tagged-template/tco-member.js
-expressions/tagged-template/template-object-frozen-non-strict.js
-expressions/tagged-template/template-object-frozen-strict.js
-expressions/tagged-template/template-object-template-map.js
-expressions/tagged-template/template-object.js
 expressions/tco-pos.js
-expressions/template-literal/evaluation-order.js
-expressions/template-literal/tv-character-escape-sequence.js
-expressions/template-literal/tv-hex-escape-sequence.js
-expressions/template-literal/tv-line-continuation.js
-expressions/template-literal/tv-line-terminator-sequence.js
-expressions/template-literal/tv-no-substitution.js
-expressions/template-literal/tv-null-character-escape-sequence.js
-expressions/template-literal/tv-template-character.js
-expressions/template-literal/tv-template-characters.js
-expressions/template-literal/tv-template-head.js
-expressions/template-literal/tv-template-middle.js
-expressions/template-literal/tv-template-tail.js
-expressions/template-literal/tv-utf16-escape-sequence.js
-expressions/template-literal/tv-zwnbsp.js
 literals/regexp/S7.8.5_A1.1_T2.js
 literals/regexp/S7.8.5_A1.4_T2.js
 literals/regexp/S7.8.5_A2.1_T2.js

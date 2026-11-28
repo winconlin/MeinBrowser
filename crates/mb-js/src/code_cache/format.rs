@@ -28,7 +28,7 @@ use crate::ast::{Atom, ClassId, FunctionId, FunctionKind};
 use crate::bigint::BigInt;
 use crate::bytecode::{
     BindingKind, Code, Constant, ContextBinding, ContextLayout, DynamicName, Enclosing, EvalSite,
-    Extension, Fallback, FunctionScope, FunctionTemplate, Handler, HandlerKind,
+    Extension, Fallback, FunctionScope, FunctionTemplate, Handler, HandlerKind, TemplateStrings,
 };
 use crate::compiler::{CompileError, Script};
 use crate::unit::Shape;
@@ -45,6 +45,7 @@ const DEFAULT_CONSTRUCTOR: u8 = 5;
 const DYNAMIC: u8 = 6;
 const EVAL_SITE: u8 = 7;
 const MODULE: u8 = 8;
+const TEMPLATE: u8 = 9;
 /// Für die Konstanten aus dem Code eines `eval`. Sie kommen in einem Script
 /// nicht vor; der Leser lehnt sie ab.
 const UNSUPPORTED: u8 = 0xFF;
@@ -383,6 +384,19 @@ impl Writer {
                 }
             }
             Constant::Module => self.byte(MODULE),
+            // Je Teil der Wert als *undefined* (0) oder Zeichenkette (1),
+            // dann der Rohwert.
+            Constant::Template(strings) => {
+                self.byte(TEMPLATE);
+                self.count(strings.raw.len());
+                for (cooked, raw) in strings.cooked.iter().zip(&strings.raw) {
+                    self.bool(cooked.is_some());
+                    if let Some(cooked) = cooked {
+                        self.units(cooked);
+                    }
+                    self.units(raw);
+                }
+            }
             Constant::EvalInstantiation(_) | Constant::EvalBinding(_) => self.byte(UNSUPPORTED),
         }
     }
@@ -929,6 +943,26 @@ impl<'b> Reader<'b> {
                 }))
             }
             MODULE => Constant::Module,
+            TEMPLATE => {
+                // Jeder Teil hat mindestens zwei Bytes: die Angabe zum Wert
+                // und die Länge des Rohwerts.
+                let count = self.count_of(2)?;
+                let mut cooked = Vec::new();
+                let mut raw = Vec::new();
+                for _ in 0..count {
+                    cooked.push(if self.bool()? {
+                        Some(self.units()?)
+                    } else {
+                        None
+                    });
+                    raw.push(self.units()?);
+                }
+                // Ein Template hat mindestens einen Teil.
+                if raw.is_empty() {
+                    return reject("Template ohne Teile");
+                }
+                Constant::Template(Rc::new(TemplateStrings { cooked, raw }))
+            }
             _ => return reject("unbekannte Art der Konstante"),
         })
     }

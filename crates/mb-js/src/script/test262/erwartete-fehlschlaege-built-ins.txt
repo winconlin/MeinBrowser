@@ -3,7 +3,7 @@
 # nur der genannte. Erzeugt von script/test262/language.rs; bei einer
 # Abweichung schreibt der Test die neue Fassung nach
 # target/test262/erwartete-fehlschlaege-built-ins.txt.
-# 18560 Dateien, 203 Vorschläge übersprungen; bestanden 17543 von 18357 Dateien und 34824 von 36431 Varianten
+# 18560 Dateien, 203 Vorschläge übersprungen; bestanden 17547 von 18357 Dateien und 34832 von 36431 Varianten
 Array/prototype/concat/Array.prototype.concat_large-typed-array.js
 Array/prototype/concat/Array.prototype.concat_small-typed-array.js
 Array/prototype/concat/Array.prototype.concat_spreadable-sparse-object.js
@@ -715,10 +715,6 @@ String/prototype/repeat/repeat-string-n-times.js
 String/prototype/replace/regexp-prototype-replace-v-u-flag.js
 String/prototype/search/regexp-prototype-search-v-flag.js
 String/prototype/search/regexp-prototype-search-v-u-flag.js
-String/raw/return-the-string-value-from-template.js
-String/raw/special-characters.js
-String/raw/template-substitutions-are-appended-on-same-index.js
-String/raw/zero-literal-segments.js
 TypedArray/prototype/byteLength/return-bytelength.js
 TypedArray/prototype/byteOffset/BigInt/detached-buffer.js
 TypedArray/prototype/byteOffset/detached-buffer.js

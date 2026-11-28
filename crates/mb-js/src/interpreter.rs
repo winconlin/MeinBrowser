@@ -122,6 +122,7 @@ use crate::reference::{
     copy_data_properties, delete_property, get_value, instanceof_operator, put_value,
     to_object_base,
 };
+use crate::template::create_template_object;
 use crate::unit::Unit;
 use crate::value::{Kind, Ref, Value};
 
@@ -1264,8 +1265,9 @@ fn constant_pool<'s>(
                 }
                 Constant::Dynamic(dynamic) => agent.atom(inner, &dynamic.name)?,
                 Constant::EvalBinding(binding) => agent.atom(inner, &binding.name)?,
-                // Die Befehle lesen sie aus dem Code.
-                Constant::EvalSite(_) | Constant::EvalInstantiation(_) => {
+                // Die Befehle lesen sie aus dem Code. Den Platz eines
+                // Templates füllt sein Objekt beim ersten Mal.
+                Constant::EvalSite(_) | Constant::EvalInstantiation(_) | Constant::Template(_) => {
                     agent.heap().local(inner, Value::UNDEFINED)
                 }
                 // Code, der zu keinem Modul gehört, kann nur `import()`
@@ -1419,6 +1421,32 @@ impl<'c> Frame<'c, '_> {
         heap.local(scope, value.unwrap_or(Value::UNDEFINED))
     }
 
+    /// GetTemplateObject (Abschnitt 13.2.8.4) für die Konstante `operand`:
+    /// das Objekt aus ihrem Platz im Pool, beim ersten Mal ein neues, das
+    /// dann dort bleibt (siehe [`crate::template`]).
+    fn template_object<'s>(
+        &self,
+        agent: &mut Agent,
+        scope: &'s Scope,
+        operand: i64,
+    ) -> Completion<Local<'s>> {
+        let cached = self.constant(agent, scope, operand);
+        if matches!(agent.heap().get(cached).kind(), Kind::Object(_)) {
+            return Ok(cached);
+        }
+        let Some(Constant::Template(strings)) = self.code.constant(operand) else {
+            return Err(agent.throw_error(ErrorKind::TypeError));
+        };
+        let template = create_template_object(agent, scope, self.realm, strings)?;
+        // Erst jetzt den Pool lesen: Das Anlegen kann ihn verschieben.
+        let heap = agent.heap();
+        let pool = heap.register(self.base.checked_sub(POOL).unwrap_or(usize::MAX));
+        if let (Kind::Internal(cell), Ok(index)) = (pool.kind(), usize::try_from(operand)) {
+            heap.set_slot(cell, index, heap.get(template));
+        }
+        Ok(template)
+    }
+
     /// Der Name in der Konstante `operand` und der Schlüssel dazu. Die
     /// Konstante ist schon ein Atom; nur Namen aus Literalen wie `{0: x}`
     /// können ein Array-Index sein.
@@ -1472,6 +1500,10 @@ impl<'c> Frame<'c, '_> {
                 let flags = self.constant(agent, scope, second);
                 let regexp = create_regexp(agent, scope, self.realm, pattern, flags)?;
                 self.set_accumulator(agent, regexp);
+            }
+            Op::GetTemplateObject => {
+                let template = self.template_object(agent, scope, first)?;
+                self.set_accumulator(agent, template);
             }
             Op::DefineNamed | Op::DefineKeyed => {
                 let object = self.register(agent, scope, first);
@@ -3240,6 +3272,7 @@ impl<'c> Frame<'c, '_> {
             Op::CreateObject
             | Op::CreateArray
             | Op::CreateRegExp
+            | Op::GetTemplateObject
             | Op::DefineNamed
             | Op::DefineKeyed
             | Op::SetPrototypeLiteral

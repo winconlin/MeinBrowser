@@ -41,6 +41,7 @@ pub mod reference;
 pub mod regexp;
 pub mod script;
 mod shared;
+mod template;
 mod unit;
 pub mod value;
 mod waiting;
