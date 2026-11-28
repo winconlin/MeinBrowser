@@ -271,6 +271,9 @@ mod budget_tests;
 mod eval_tests;
 
 #[cfg(test)]
+mod using_tests;
+
+#[cfg(test)]
 mod with_tests;
 
 #[cfg(test)]

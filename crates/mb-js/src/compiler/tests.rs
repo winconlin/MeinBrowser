@@ -393,17 +393,31 @@ fn instructions_know_their_place_in_the_source() {
 
 #[test]
 fn unsupported_constructs_name_their_place() {
+    // Eine Funktion namens `arguments` in einem Block einer Pfeilfunktion:
+    // Die Bindung entstünde nach Anhang B.3.2.1 erst bei der Auswertung.
+    // Das Script lässt sich übersetzen, der Rumpf der Pfeilfunktion nicht.
     let cases = [
-        ("{ using a = b; }", 8),
-        ("if (c) { using a = b; }", 15),
-        ("for (using a of b) {}", 5),
+        ("x = () => { { function arguments() {} } };", 14),
+        ("x = () => { if (c) { function arguments() {} } };", 21),
+        ("x = a => { for (;;) { function arguments() {} } };", 22),
     ];
     for (source, position) in cases {
+        let ast = parse_script(&units(source)).expect("gültig");
+        let script = compile_script(&ast).expect("übersetzbar");
         assert_eq!(
-            compile(source).map(|_| ()),
+            compile_function(&ast, &first_template(&script.code)).map(|_| ()),
             Err(CompileError::Unsupported(position)),
             "{source}"
         );
+    }
+    // `using` seit Schritt 13c, auch an den Stellen, an denen dieser Test
+    // vorher seine Lage prüfte.
+    for source in [
+        "{ using a = b; }",
+        "if (c) { using a = b; }",
+        "for (using a of b) {}",
+    ] {
+        assert!(compile(source).is_ok(), "{source}");
     }
     // Literale regulärer Ausdrücke übersetzt der Übersetzer seit Welle 8g,
     // BigInt-Literale auch als Eigenschaftsnamen seit Welle 8h.
@@ -2004,6 +2018,49 @@ fn for_await_waits_for_next_and_return() {
             "Finally @ -> @",
             "Finally @ -> @",
             "Catch @ -> @",
+        ]
+    );
+}
+
+/// `using` (DisposeResources): Die Ressource hält Methode und Wert in zwei
+/// Registern, *undefined* als Methode heißt, sie kam nicht hinzu. Der Block
+/// ist ein Bereich wie bei `finally`, und der Aufruf beim Freigeben hat
+/// einen eigenen Handler, der seinen Fehler an den Abschluss hängt.
+#[test]
+fn using_blocks_dispose_through_a_finally_region() {
+    assert_eq!(
+        listing("{ using a = b; }"),
+        [
+            "LdaHole",
+            "Star r2",
+            "LdaUndefined",
+            "Star r3",
+            "SaveContext r5",
+            "LdaGlobal b",
+            "AddDisposableResource r3 0",
+            "Star r2",
+            "LdaSmi 0",
+            "Star r6",
+            "Jump @33",
+            "RestoreContext r5",
+            "Star r7",
+            "LdaSmi 1",
+            "Star r6",
+            "LdaUndefined",
+            "TestEqualStrict r3",
+            "JumpIfTrue @53",
+            "Call r3 0",
+            "Jump @53",
+            "DisposeError r6",
+            "LdaSmi 1",
+            "TestEqualStrict r6",
+            "JumpIfFalse @66",
+            "Ldar r7",
+            "Rethrow",
+            "Ldar r1",
+            "Return",
+            "Finally @8..@15 -> @25",
+            "Catch @42..@45 -> @51",
         ]
     );
 }

@@ -1,0 +1,1 @@
+pfunction f(a) { using b = a; { using c = null; } for (using d of a) ; } async function g() { await using e = null; for (await using h of []) { using i = h; } }

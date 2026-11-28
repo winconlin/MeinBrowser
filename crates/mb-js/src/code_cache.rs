@@ -64,7 +64,7 @@ pub use store::{CodeStore, MemoryStore};
 
 /// Die Fassung des Formats. Sie steht im Kopf jedes Eintrags und geht in
 /// den Schlüssel ein; ändert sich das Format, muss sie steigen.
-pub const FORMAT: u32 = 3;
+pub const FORMAT: u32 = 4;
 
 /// Die Kennung dieses Baus der Engine: SHA-256 über die Quellen von `mb-js`
 /// und den Crates, von denen es abhängt (`build.rs`). Sie steht wie

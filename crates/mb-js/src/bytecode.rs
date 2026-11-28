@@ -92,6 +92,13 @@
 //! mit [`Op::Await`] auf jedes Ergebnis des inneren Iterators
 //! ([`Op::AsyncYieldStar`], [`Op::AsyncYieldStarResult`]).
 //!
+//! `using` und `await using`: Jede Ressource liegt in zwei Registern, ihre
+//! Methode zum Freigeben und ihr Wert ([`Op::AddDisposableResource`]). Am
+//! Ende des Blocks ruft der Code die Methoden in umgekehrter Reihenfolge
+//! auf, jeden Aufruf mit einem eigenen Handler, der den Fehler mit
+//! [`Op::DisposeError`] an den Abschluss davor hängt. Die Wege hinaus gehen
+//! dafür wie bei `finally` durch den Block.
+//!
 //! Im Bytecode steht keine Adresse im Heap. Zahlen, Zeichenketten und die
 //! Funktionen, die der Code anlegt, liegen als [`Constant`] bei ihm; der
 //! Interpreter legt sie im Heap an, für ein Script zu Beginn des Laufs, für
@@ -106,6 +113,11 @@ use std::rc::Rc;
 use crate::ast::{Atom, ClassId, FunctionId};
 use crate::bigint::BigInt;
 use crate::parser::EvalOptions;
+
+/// Die Art eines Abschlusses mit *throw*, wie sie der Übersetzer für
+/// `finally` und das Freigeben von Ressourcen in ein Register legt und
+/// [`Op::DisposeError`] sie liest und schreibt.
+pub const THROW_COMPLETION: i32 = 1;
 
 /// Die Art eines Operanden.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -583,6 +595,25 @@ ops! {
     AsyncIteratorClose [Jump, Register],
     /// Wirft einen TypeError, wenn der Akkumulator kein Objekt ist.
     ThrowIfNotObject [],
+    /// AddDisposableResource für `using` (Immediate 0) und `await using`
+    /// (Immediate 1) mit dem Wert im Akkumulator: Das Register nimmt die
+    /// Methode zum Freigeben auf, das danach den Wert. Bei `using` mit
+    /// *null* oder *undefined* bleiben beide, wie sie sind; bei `await
+    /// using` kommen *null* und *undefined* hinein, denn DisposeResources
+    /// wartet auch für sie. Sonst wirft es einen TypeError, wenn der Wert
+    /// kein Objekt ist oder keine Methode hat (CreateDisposableResource mit
+    /// GetDisposeMethod). Hat ein Wert bei `await using` kein
+    /// @@asyncDispose, aber @@dispose, ist die Methode eine neue Funktion,
+    /// die @@dispose aufruft und ein Promise zurückgibt. Der Akkumulator
+    /// bleibt.
+    AddDisposableResource [Register, Immediate],
+    /// Ein Fehler beim Freigeben im Akkumulator (DisposeResources, Schritt
+    /// 3.e.iii). Das Register hält die Art des Abschlusses davor, das danach
+    /// seinen Wert. War er ein *throw* ([`THROW_COMPLETION`]), kommt ein
+    /// neues SuppressedError mit dem Fehler als `error` und dem alten Wert
+    /// als `suppressed` in das zweite Register, sonst wird der Abschluss zu
+    /// einem *throw* mit dem Fehler.
+    DisposeError [Register],
 
     /// EvaluateGeneratorBody (Abschnitt 15.5.2) nach
     /// FunctionDeclarationInstantiation: ein neuer Generator für die

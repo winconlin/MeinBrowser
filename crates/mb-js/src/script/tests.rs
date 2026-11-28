@@ -359,7 +359,13 @@ fn throw_and_early_errors() {
     assert!(syntax.starts_with("Syntax("), "{syntax}");
     let redeclared = eval("let a; var a;");
     assert!(redeclared.starts_with("Syntax("), "{redeclared}");
-    assert_eq!(eval("1; { using a = null; }"), "Unsupported(11)");
+    // Eine Funktion namens `arguments` in einem Block einer Pfeilfunktion
+    // kann der Übersetzer nicht (die Bindung entstünde nach Anhang B.3.2.1
+    // erst bei der Auswertung), und Rümpfe übersetzt er beim ersten Aufruf.
+    assert_eq!(
+        eval("1; (() => { { function arguments() {} } })();"),
+        "Unsupported(14)"
+    );
 }
 
 #[test]
@@ -2626,7 +2632,8 @@ fn tail_calls_throw_to_the_caller() {
 #[test]
 fn a_failed_tail_call_leaves_no_frame() {
     let (mut agent, realm) = checked();
-    let source = "function g() { using a = null; } (function () { 'use strict'; return g(); })()";
+    let source = "var g = () => { { function arguments() {} } }; \
+                  (function () { 'use strict'; return g(); })()";
     assert!(run(&mut agent, realm, source).starts_with("Unsupported"));
     assert_eq!(run(&mut agent, realm, "1 + 1"), "2");
 }

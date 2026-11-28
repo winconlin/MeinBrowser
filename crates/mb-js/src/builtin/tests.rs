@@ -866,9 +866,10 @@ fn iterator_prototypes_inherit_from_iterator_prototype() {
     });
 }
 
-/// %AsyncIteratorPrototype% hat nur @@asyncIterator, das `this` zurückgibt,
-/// %AsyncFromSyncIteratorPrototype% erbt von ihm und hat `next`, `return`
-/// und `throw` mit optionalem Parameter, also mit `length` 0.
+/// %AsyncIteratorPrototype% hat @@asyncIterator, das `this` zurückgibt, und
+/// @@asyncDispose; %AsyncFromSyncIteratorPrototype% erbt von ihm und hat
+/// `next`, `return` und `throw` mit optionalem Parameter, also mit `length`
+/// 0.
 #[test]
 fn async_iterator_prototypes_inherit_from_object_prototype() {
     let (mut agent, realm) = agent_with(false);
@@ -877,7 +878,12 @@ fn async_iterator_prototypes_inherit_from_object_prototype() {
         let iterator = agent.intrinsic(scope, realm, Intrinsic::AsyncIteratorPrototype);
         let parent = prototype_of(agent, scope, iterator);
         assert!(same(agent, parent, object));
-        assert_eq!(keys(agent, scope, iterator), ["Symbol"]);
+        assert_eq!(keys(agent, scope, iterator), ["Symbol", "Symbol"]);
+        let (method, attributes) =
+            symbol_data(agent, scope, iterator, WellKnownSymbol::AsyncDispose);
+        assert_eq!(attributes, HIDDEN);
+        let (name, _) = data(agent, scope, method, "name");
+        assert_eq!(describe(agent, name), "\"[Symbol.asyncDispose]\"");
         let (method, attributes) =
             symbol_data(agent, scope, iterator, WellKnownSymbol::AsyncIterator);
         assert_eq!(attributes, HIDDEN);

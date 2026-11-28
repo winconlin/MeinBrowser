@@ -246,9 +246,14 @@ fn verify_code(script: &CompiledScript, code: &Code, owner: Owner) -> Result<(),
             Op::LdaSuperKeyed | Op::StaSuperKeyed => spans(code, first, 3),
             Op::CreateClass => spans(code, second, 2) && code.is_strict_at(instruction.start),
             Op::NextField => spans(code, second, 5),
+            Op::AddDisposableResource | Op::DisposeError => spans(code, first, 2),
             _ => true,
         };
         check(fits, "Register eines Befehls außerhalb")?;
+        check(
+            op != Op::AddDisposableResource || matches!(second, 0 | 1),
+            "unbekannte Art der Freigabe",
+        )?;
 
         // Generatoren, async und was nur in Modulen oder eval vorkommt.
         let allowed = match op {

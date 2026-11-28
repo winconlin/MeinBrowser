@@ -684,8 +684,36 @@ impl Agent {
 
     /// Wirft wieder, was [`Agent::take_thrown_for_rethrow`] lieferte.
     pub(crate) fn rethrow(&mut self, value: Local<'_>) -> Abrupt {
-        let Kind::Internal(cell) = self.heap.get(value).kind() else {
+        let Some((kind, realm)) = self.engine_error(value) else {
             return self.throw_value(value);
+        };
+        self.set_exception(Pending::Error(kind, realm));
+        Abrupt::Throw
+    }
+
+    /// Der geworfene Wert, den [`Agent::take_thrown_for_rethrow`] lieferte,
+    /// als Wert der Sprache: Für einen Fehler der Engine ist es ein neues
+    /// Fehlerobjekt in dessen Realm, ohne Realm in `realm`, wie es ein
+    /// Handler von `catch` bekäme.
+    pub(crate) fn thrown_value<'s>(
+        &mut self,
+        scope: &'s Scope,
+        value: Local<'_>,
+        realm: RealmId,
+    ) -> Result<Local<'s>, OutOfMemory> {
+        let Some((kind, found)) = self.engine_error(value) else {
+            return Ok(self.heap.local(scope, self.heap.get(value)));
+        };
+        let realm = found.unwrap_or(realm);
+        let prototype = self.intrinsic(scope, realm, Intrinsic::error_prototype(kind));
+        error_create(self, scope, prototype)
+    }
+
+    /// Art und Realm eines Fehlers der Engine in einer internen Zelle aus
+    /// [`Agent::take_thrown_for_rethrow`], `None` für andere Werte.
+    fn engine_error(&self, value: Local<'_>) -> Option<(ErrorKind, Option<RealmId>)> {
+        let Kind::Internal(cell) = self.heap.get(value).kind() else {
+            return None;
         };
         let kind = self.heap.slot(cell, 0).and_then(|code| code.as_int32());
         let realm = self
@@ -694,13 +722,12 @@ impl Agent {
             .and_then(|index| index.as_int32())
             .and_then(|index| usize::try_from(index).ok())
             .map(RealmId::from_index);
-        match kind.and_then(ErrorKind::from_code) {
-            Some(kind) => self.set_exception(Pending::Error(kind, realm)),
-            // Kann nicht vorkommen: Die Zelle stammt immer aus
-            // `take_thrown_for_rethrow`.
-            None => self.set_exception(Pending::Error(ErrorKind::TypeError, realm)),
-        }
-        Abrupt::Throw
+        // Eine andere Art kann nicht vorkommen: Die Zelle stammt immer aus
+        // `take_thrown_for_rethrow`.
+        let kind = kind
+            .and_then(ErrorKind::from_code)
+            .unwrap_or(ErrorKind::TypeError);
+        Some((kind, realm))
     }
 }
 

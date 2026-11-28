@@ -1,13 +1,14 @@
 //! Fehlerobjekte (Abschnitt 20.5): %Error% mit `Error.isError`, die sechs
-//! %NativeError% (Abschnitt 20.5.6) und %AggregateError% (Abschnitt
-//! 20.5.7) mit ihren Prototypen und `Error.prototype.toString`.
+//! %NativeError% (Abschnitt 20.5.6), %AggregateError% (Abschnitt 20.5.7)
+//! und %SuppressedError% (Abschnitt 20.5.8) mit ihren Prototypen und
+//! `Error.prototype.toString`.
 //!
 //! Die Prototypen sind gewöhnliche Objekte, keine Fehlerobjekte, mit dem
 //! Namen in `name` und der leeren Zeichenkette in `message` (Abschnitte
-//! 20.5.3, 20.5.6.3 und 20.5.7.3). Die Konstruktoren der %NativeError% und
-//! %AggregateError% haben %Error% als [[Prototype]], ihre Prototypen
-//! %Error.prototype% (Abschnitte 20.5.6.2, 20.5.6.3, 20.5.7.2 und
-//! 20.5.7.3).
+//! 20.5.3, 20.5.6.3, 20.5.7.3 und 20.5.8.3). Die Konstruktoren der
+//! %NativeError%, von %AggregateError% und %SuppressedError% haben %Error%
+//! als [[Prototype]], ihre Prototypen %Error.prototype% (Abschnitte
+//! 20.5.6.2, 20.5.6.3, 20.5.7.2, 20.5.7.3, 20.5.8.2 und 20.5.8.3).
 
 use super::{define_functions, link_constructor, units};
 use crate::agent::{Agent, Completion, ErrorKind};
@@ -38,6 +39,13 @@ static AGGREGATE_ERROR: Builtin = Builtin {
     length: 2,
     constructor: true,
     behaviour: aggregate_error,
+};
+
+static SUPPRESSED_ERROR: Builtin = Builtin {
+    name: "SuppressedError",
+    length: 3,
+    constructor: true,
+    behaviour: suppressed_error,
 };
 
 static CONSTRUCTOR_FUNCTIONS: [Builtin; 1] = [Builtin {
@@ -145,6 +153,12 @@ pub(super) fn create(agent: &mut Agent, scope: &Scope, realm: RealmId) -> Comple
     link_constructor(agent, scope, function, own)?;
     agent.set_intrinsic(realm, Intrinsic::AggregateError, function);
     agent.set_intrinsic(realm, Intrinsic::AggregateErrorPrototype, own);
+    let own = error_prototype(agent, scope, prototype, SUPPRESSED_ERROR.name)?;
+    let function =
+        builtin_function_with_prototype(agent, scope, realm, &SUPPRESSED_ERROR, constructor)?;
+    link_constructor(agent, scope, function, own)?;
+    agent.set_intrinsic(realm, Intrinsic::SuppressedError, function);
+    agent.set_intrinsic(realm, Intrinsic::SuppressedErrorPrototype, own);
     Ok(())
 }
 
@@ -245,6 +259,65 @@ pub(super) fn aggregate_error_create<'s>(
     let object = error_create(agent, scope, prototype)?;
     define_errors(agent, scope, realm, object, errors)?;
     Ok(object)
+}
+
+/// SuppressedError ( error, suppressed, message ) (Abschnitt 20.5.8.1.1):
+/// erst `message`, dann `error` und `suppressed`.
+fn suppressed_error<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    arguments: &BuiltinCall<'_, '_>,
+) -> Completion<Local<'s>> {
+    let new_target = arguments.new_target.unwrap_or(arguments.function);
+    let prototype = get_prototype_from_constructor(
+        agent,
+        scope,
+        new_target,
+        Intrinsic::SuppressedErrorPrototype,
+        arguments.realm,
+    )?;
+    let object = error_create(agent, scope, prototype)?;
+    let message = arguments.argument(agent, scope, 2);
+    if !agent.heap().get(message).is_undefined() {
+        let text = to_string(agent, scope, message)?;
+        let key = agent.key_from_units(scope, &units("message"))?;
+        create_non_enumerable_data_property_or_throw(agent, scope, object, key, text)?;
+    }
+    let error = arguments.argument(agent, scope, 0);
+    let suppressed = arguments.argument(agent, scope, 1);
+    define_suppressed(agent, scope, object, error, suppressed)?;
+    Ok(object)
+}
+
+/// Ein neues SuppressedError-Objekt ohne `message`, wie DisposeResources es
+/// für `using` anlegt, wenn das Freigeben einer Ressource nach einem
+/// anderen Fehler wirft. `realm` ist der aktuelle Realm.
+pub(crate) fn suppressed_error_create<'s>(
+    agent: &mut Agent,
+    scope: &'s Scope,
+    realm: RealmId,
+    error: Local<'_>,
+    suppressed: Local<'_>,
+) -> Completion<Local<'s>> {
+    let prototype = agent.intrinsic(scope, realm, Intrinsic::SuppressedErrorPrototype);
+    let object = error_create(agent, scope, prototype)?;
+    define_suppressed(agent, scope, object, error, suppressed)?;
+    Ok(object)
+}
+
+/// Die Eigenschaften `error` und `suppressed`, nicht aufzählbar.
+fn define_suppressed(
+    agent: &mut Agent,
+    scope: &Scope,
+    object: Local<'_>,
+    error: Local<'_>,
+    suppressed: Local<'_>,
+) -> Completion<()> {
+    for (name, value) in [("error", error), ("suppressed", suppressed)] {
+        let key = agent.key_from_units(scope, &units(name))?;
+        create_non_enumerable_data_property_or_throw(agent, scope, object, key, value)?;
+    }
+    Ok(())
 }
 
 /// Die Eigenschaft `errors`: beschreibbar und konfigurierbar, nicht
